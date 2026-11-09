@@ -2967,6 +2967,16 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 emit(base(0x5c10000000000000ULL) | (u64{250} << 8) | (u64{252} << 20));
                 break;
             }
+            // (hookshot) pred-out = PT with no carry chain feeding this instruction: the shape OoT emits when the
+            // LEA is a plain sum. The predicate fields pinned by the equality below were constant across all 40
+            // captured programs (the shift slot and the data field may vary); with nothing reading a flag, the
+            // second word — which exists to set one — drops away and the first emit stands alone.
+            if (insn.words[2] == 0x078fd8ffU && !insn.Bits(62, 2)) {
+                const u32 b = operand(1, false);
+                emit(base(0x5c18000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) | (u64{b} << 20) |
+                     (u64{insn.Bits(75, 5)} << 39));
+                break;
+            }
             if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) ||
                 insn.Bits(81, 3) == 7 || insn.Bits(62, 2))
                 return fail(index, "native constant LEA carry mode");
