@@ -775,6 +775,12 @@ static int oot_event_arg(Ctx *c, uint64_t arg, const char *name, uint32_t type, 
     return 1;
 }
 
+/* (the Main sequence's "Event" test: an event is playing) */
+static int oot_event_playing(Ctx *c) {
+    const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
+    return events && recomp_load64(c, events + 104);
+}
+
 static struct {
     int64_t requested_at, check_at;
     unsigned destination;
@@ -986,7 +992,12 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     static uint64_t flying_actor, marked_actor, marked_controller;
     static int64_t last_tick, last_player_tick;
     static float target[3], velocity[3], mark[3], yaw;
-    const int flying = rx_option(HOS_OPT_CHEAT_FLIGHT, 0) > 0;
+    int flying = rx_option(HOS_OPT_CHEAT_FLIGHT, 0) > 0;
+    /* An event that takes Link (a map change he flew into, the age toggle's, a cutscene) waits for him to stand, and the
+       flight holds him in the air: the screen the event had faded stayed black until the flight was switched off, and a
+       second request met "waits until the current event ends". While an event plays he is let go and lands; the flight
+       takes him again, from where he then stands, when it has ended. */
+    if (flying && oot_event_playing(c)) flying = 0;
     if (!flying) flying_actor = 0;
     const int64_t now = hos_now_ns();
     __atomic_store_n(&flight_player_seen, now, __ATOMIC_RELAXED);
