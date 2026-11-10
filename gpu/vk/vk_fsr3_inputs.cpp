@@ -73,6 +73,7 @@ struct State {
     bool have_frame = false;
     std::atomic<uint64_t> upscaled_frame{0};   // (the frame FSR's upscaler last drew: jitter_size, on the game's thread)
     std::atomic<uint32_t> jitter_w{0}, jitter_h{0}, jitter_phases{8};
+    std::atomic<uint32_t> jitter_to_w{0};      // (the width FSR scales the scene to: the scene's texture LOD bias)
     struct Dead { uint64_t frame; std::function<void()> free; };
     std::vector<Dead> dead;   // (what work in flight may still use: freed a few frames on)
     const char* reason = nullptr;
@@ -351,6 +352,7 @@ bool take(Frame& out) {
 void upscaled(uint32_t rw, uint32_t rh, uint32_t dw, uint32_t dh) {
     State& s = st();
     s.jitter_w = rw, s.jitter_h = rh, s.jitter_phases = (uint32_t)dlss_jitter_phases(rw, rh, dw, dh);
+    s.jitter_to_w = dw;
     s.upscaled_frame = texture_frame_no();
 }
 
@@ -361,6 +363,7 @@ uint32_t jitter_size(int axis) {
     const uint64_t last = s.upscaled_frame.load(std::memory_order_relaxed);
     if (off || !last || texture_frame_no() - last > 30 || !fsr3_wanted()) return 0;
     if (axis == 2) return s.jitter_phases.load(std::memory_order_relaxed);
+    if (axis == 3) return s.jitter_to_w.load(std::memory_order_relaxed);
     return axis ? s.jitter_h.load(std::memory_order_relaxed) : s.jitter_w.load(std::memory_order_relaxed);
 }
 

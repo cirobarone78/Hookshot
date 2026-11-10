@@ -509,7 +509,9 @@ SDK 1.1.4 shaders (`third_party/fidelityfx-sdk`, MIT), compiled into the rendere
 the row offers FSR 3.1 on any Vulkan 1.3 GPU with push descriptors, extended storage image formats and storage writes
 without a format (`vk: fsr3: ... can run on this GPU` in the log). Its inputs are the scene's colour, its depth, motion
 from the camera, and the same camera jitter DLSS uses (`RX_VK_FSR_JITTER=0` turns it off); things that move by
-themselves can trail for now.
+themselves can trail for now. While it scales the scene up, the scene's textures are sampled with the negative LOD bias
+AMD's guide asks for (the mips the picture's size would pick; `RX_VK_UPSCALE_LOD_BIAS=0` turns it off, a number up to 2
+scales it), as they are under DLSS.
 
 </details>
 

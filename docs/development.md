@@ -148,6 +148,7 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_NO_WRITEBACK` (set) | GPU writes to mirrored pools are not copied back to guest memory (an experiment, for A/B) |
 | `RX_VK_WB_DIFF=0` | Write-backs copy every byte again instead of only what changed against a VRAM shadow (the diff is on by default; v2.0.9 and v2.0.10 had it off, issue 1161) |
 | `RX_VK_DLSS=0/1/2`, `RX_VK_DLSS_PRESET=<letter>`, `RX_VK_DLSS_LOG=1`, `RX_VK_REFLEX`, `RX_VK_REFLEX_LOG=1` | NVIDIA DLSS and Reflex for one run: the readme's NVIDIA DLSS section. `RX_VK_DLSS_TRACE=<frames>` logs one frame's large draws every that many frames, `RX_VK_DLSS_DEBUG=motion` shows the motion vectors, `=alternate` the game's own upscale every other frame |
+| `RX_VK_UPSCALE_LOD_BIAS=0` or `<0..2>` | The scene's texture LOD bias while DLSS or FSR 3.1 scales it up, log2(scene width / picture width) mip levels in quarter steps (`gpu/vk/upscale_lod_bias.h`): off, or scaled by the number (default 1). The log's `vk: the scene's texture LOD bias:` line says what is applied, `vk: sampler LOD bias: the game asks for` what the game's own samplers already ask |
 | `RX_VK_ASYNC=1` | The replay on a thread of its own instead of the game's submitting thread |
 | `HOS_VCORES=0`, `HOS_CORES=<1..8>`, `HOS_RESERVE_CORE=0` | No virtual cores; the cores the game sees (6); no core kept for the replay (one is, with 8 or more logical processors) |
 

@@ -73,7 +73,8 @@ int dlss_status(char* b, size_t n);
 
 /// The scene's width (axis 0) or height (1) for the host's camera jitter (nx2/oot_jitter.py, HOS_OPT_DLSS_JITTER_W and _H): 0 when
 /// there is to be none (DLSS not drawing, or RX_VK_DLSS_JITTER=0). Axis 2: the jitter sequence's length for DLSS's scale
-/// (dlss_jitter_phases, HOS_OPT_DLSS_JITTER_PHASES)
+/// (dlss_jitter_phases, HOS_OPT_DLSS_JITTER_PHASES). Axis 3: the width DLSS scales that scene to (the scene's own for DLAA),
+/// for the scene's texture LOD bias (upscale_lod_bias.h)
 uint32_t dlss_jitter_size(int axis);
 
 } // namespace mkwvk

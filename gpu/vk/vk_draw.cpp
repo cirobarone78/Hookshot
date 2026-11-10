@@ -43,6 +43,7 @@
 #include "vk_shader.h"
 #include "vk_texture.h"
 #include "movie_upscale_policy.h"
+#include "upscale_lod_bias.h"
 #include "skip_code.h"
 
 #include "shaders/clear_f_frag_spv.h"
@@ -1728,26 +1729,65 @@ uint32_t aniso_override() {
     static const uint32_t n = getenv("RX_VK_ANISO") ? (uint32_t)std::clamp(atoi(getenv("RX_VK_ANISO")), 0, 16) : 0u;
     return n;
 }
-/// compare: the shader reads depth with a reference (a sampler without one cannot compare)
-VkSampler sampler_make(int id, bool compare);
+// (hookshot) RX_VK_UPSCALE_LOD_BIAS (default 1; 0: none; a number up to 2 scales it): while NVIDIA DLSS or AMD FSR 3.1 scales the
+// scene up, the scene's draws sample their mipmapped textures with a bias of log2(scene width / picture width) mip levels
+// (upscale_lod_bias.h), as both upscalers' guides ask: the mips the picture's size would pick, not the smaller scene's, so the
+// upscaler has that detail to rebuild. Only with the camera jitter on (the upscalers' jitter sizes are 0 without it, and for
+// a while after the upscaler stops): a sharper mip without it only shimmers. 0 for DLAA, whose scene is the picture's size.
+// The steps the scene's draws of this frame take, 0 for every other target: the scene is the B10G11R11 target with a depth of
+// the size the upscaler last took (a new size of the game's dynamic resolution has no bias until the upscaler drew it once)
+int scene_lod_steps(const Targets& at) {
+    static const float strength = upscale_lod::strength(getenv("RX_VK_UPSCALE_LOD_BIAS"));
+    if (!(strength > 0.0f)) return 0;
+    struct Seen { uint64_t frame; uint32_t w, h; int steps; };
+    static thread_local Seen seen{~0ull, 0, 0, 0};
+    if (const uint64_t now = texture_frame_no(); seen.frame != now) {   // (once a frame on each thread, not once a draw)
+        const bool dlss = dlss_jitter_size(0) != 0;
+        const auto size = [dlss](int axis) { return dlss ? dlss_jitter_size(axis) : fsr3_inputs::jitter_size(axis); };
+        seen = {now, size(0), size(1), upscale_lod::steps(size(0), size(3), strength)};
+        static std::atomic<int> told_steps{-1}, told{0};
+        if (told_steps.exchange(seen.steps) != seen.steps && told++ < 16)
+            logf("vk: the scene's texture LOD bias: %+.2f mip levels (%s %u -> %u wide; RX_VK_UPSCALE_LOD_BIAS=%g)",
+                 (double)upscale_lod::bias(seen.steps), dlss ? "NVIDIA DLSS" : "AMD FSR 3.1", size(0), size(3), (double)strength);
+    }
+    return seen.steps && at.n && at.depth && at.width == seen.w && at.height == seen.h &&
+                   at.color_format[0] == VK_FORMAT_B10G11R11_UFLOAT_PACK32
+               ? seen.steps : 0;
+}
+thread_local int draw_lod_steps = 0;        // (the draw's being recorded: build_descriptors gives it to the textures it biases)
+thread_local int last_desc_lod_steps = 0;   // (the draw's whose descriptors are bound: another bias is other samplers)
+
+/// compare: the shader reads depth with a reference (a sampler without one cannot compare). lod_steps: the scene's
+/// texture LOD bias (scene_lod_steps), which only a sampler that filters between mip levels and does not compare takes
+VkSampler sampler_make(int id, bool compare, int lod_steps = 0);
 // (each texture of each draw found its sampler through reg_mu, a copy of the registration, a hash of it and a map lookup:
 // ~48000 times a frame at 3000 draws. Now a thread's table by id and compare, good while no sampler registration's contents
 // changed (sampler_registrations_generation). RX_VK_SAMPLER_CACHE=0 turns off both this table and the parameters' cache inside
 // sampler_make; =1 or the Sampler cache row turns the parameters' cache on (this table stays on, as it is without the option)
 bool sampler_cache_on();   // (hookshot, RX_VK_SAMPLER_CACHE and the Sampler cache row: defined below with the descriptor fingerprint's)
-VkSampler sampler_for(int id, bool compare) {
+VkSampler sampler_for(int id, bool compare, int lod_steps = 0) {
     static const bool on = !getenv("RX_VK_SAMPLER_CACHE") || atoi(getenv("RX_VK_SAMPLER_CACHE")) != 0;
-    if (!on || id < 0 || id >= 4096) return sampler_make(id, compare);
+    if (compare) lod_steps = 0;
+    if (!on || id < 0 || id >= 4096) return sampler_make(id, compare, lod_steps);
     struct Entry { uint64_t gen; VkSampler s; };
     static thread_local Entry table[2][4096];   // (gen 0: never filled; the generation starts at 1)
     const uint64_t gen = sampler_registrations_generation();   // (read first: a registration after it makes the next call miss)
+    if (lod_steps) {   // (the scene's biased ones, a table of their own: one bias at a time, the last one asked for)
+        struct Biased { uint64_t gen; int steps; VkSampler s; };
+        static thread_local Biased biased[4096];
+        Biased& e = biased[id];
+        if (e.gen == gen && e.steps == lod_steps) return e.s;
+        const VkSampler made = sampler_make(id, false, lod_steps);
+        e = {gen, lod_steps, made};
+        return made;
+    }
     Entry& e = table[compare ? 1 : 0][id];
     if (e.gen == gen) return e.s;
     const VkSampler made = sampler_make(id, compare);
     e = {gen, made};
     return made;
 }
-VkSampler sampler_make(int id, bool compare) {
+VkSampler sampler_make(int id, bool compare, int lod_steps) {
     nvn_samp_par p{};
     bool known = false;
     if (sampler_cache_on()) {   // (hookshot: what an id holds stays cached with its version on this thread: resolving an id
@@ -1759,7 +1799,11 @@ VkSampler sampler_make(int id, bool compare) {
     } else
         known = sampler_of(id, &p);
     if (!known) p.minf = NVN_MIN_FILTER_LINEAR, p.magf = NVN_MAG_FILTER_LINEAR, p.lod_max = 1000.0f;
+    // (the scene's LOD bias: for the samplers that filter between mip levels; one without a mip filter reads its base level)
+    const bool mip_filter = p.minf != NVN_MIN_FILTER_NEAREST && p.minf != NVN_MIN_FILTER_LINEAR;
+    if (compare || !mip_filter) lod_steps = 0;
     uint64_t key = mix(compare ? 0xC0 : 0xAB, aniso_override());
+    if (lod_steps) key = mix(key, 0x10D0000u | (uint32_t)lod_steps);
     const uint8_t* b = reinterpret_cast<const uint8_t*>(&p);
     for (size_t i = 0; i < sizeof p; i += 8) {
         uint64_t w = 0;
@@ -1790,7 +1834,17 @@ VkSampler sampler_make(int id, bool compare) {
         }
     }
     ci.addressModeU = wrap(p.ws), ci.addressModeV = wrap(p.wt), ci.addressModeW = wrap(p.wr);
-    ci.mipLodBias = std::clamp(p.lod_bias, -dev.props.limits.maxSamplerLodBias, dev.props.limits.maxSamplerLodBias);
+    ci.mipLodBias = std::clamp(p.lod_bias + upscale_lod::bias(lod_steps), -dev.props.limits.maxSamplerLodBias,
+                               dev.props.limits.maxSamplerLodBias);
+    if (p.lod_bias != 0.0f) {   // (the game's own bias, told once for each value, 16 at most: the scene's is added to it)
+        static std::mutex bm;
+        static std::unordered_set<uint32_t> biases;
+        uint32_t bits;
+        std::memcpy(&bits, &p.lod_bias, sizeof bits);
+        std::lock_guard bg(bm);
+        if (biases.size() < 16 && biases.insert(bits).second)
+            logf("vk: sampler LOD bias: the game asks for %+g (sampler %d, min filter %u)", (double)p.lod_bias, id, (unsigned)p.minf);
+    }
     float aniso = p.aniso;
     {   // (RX_VK_ANISO: what the game asks for is told once for each value, 16 at most: what it sets is not known otherwise)
         static std::mutex am;
@@ -2710,7 +2764,11 @@ void build_descriptors(const NvnState& s, const Program& p) {
                                (void*)view, view ? "" : " (dummy)");
                 if (view && tex && tex->gpu_written) draw_sampled().push_back(tex);
                 if (!view) view = dummies.view[(int)vt], st_dummy_textures += handle != 0;
-                dw().imgs.push_back({sampler_for((int)(handle >> 20), d.is_depth), view, VK_IMAGE_LAYOUT_GENERAL});
+                // (the scene's texture LOD bias, scene_lod_steps: for what its fragment stage samples from the game's own
+                // mipmapped textures. Not for what the GPU drew (shadow maps, the passes' pictures: no smaller scene there))
+                const int lod_steps = draw_lod_steps && st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT && tex && view &&
+                                              !tex->gpu_written && tex->levels > 1 ? draw_lod_steps : 0;
+                dw().imgs.push_back({sampler_for((int)(handle >> 20), d.is_depth, lod_steps), view, VK_IMAGE_LAYOUT_GENERAL});
             }
             w.pImageInfo = &dw().imgs[first];
             dw().writes.push_back(w);
@@ -5558,8 +5616,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // with the fallback's layout, its task and mesh stages read another program's buffers, and descriptors the push left
     // as they were: stale addresses, like the one RADV faulted on in Hyrule Field (#792))
     const bool slotgen = desc_slotgen_on();
+    draw_lod_steps = scene_lod_steps(at);   // (hookshot: the scene's texture LOD bias under DLSS or FSR 3.1; 0 anywhere else)
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
-                           last_desc_ub == ub_gen && last_desc_dgen == dgen &&
+                           last_desc_ub == ub_gen && last_desc_dgen == dgen && last_desc_lod_steps == draw_lod_steps &&
                            (slotgen ? desc_slots_kept(reg_gen) : last_desc_reg == reg_gen) &&
                            (!p.fallback || dw().prog == &p);
     if (p.fallback && !same_desc && dw().prog != &p && last_desc_valid && last_desc_prog == &p) {
@@ -5690,7 +5749,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         FINE_SCOPE(FT_BINDDESC);
         if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
         last_desc_valid = true, last_desc_prog = &p, last_desc_bind = s.bind_gen, last_desc_reg = reg_gen;
-        last_desc_ub = ub_gen, last_desc_dgen = dgen;
+        last_desc_ub = ub_gen, last_desc_dgen = dgen, last_desc_lod_steps = draw_lod_steps;
         if (slotgen)   // (RX_VK_DESC_SLOTGEN: what its handles resolved; the next such draw may keep it through other slots' churn)
             last_desc_fp() = desc_fp(), last_desc_fp_dummy = desc_fp_dummy, last_desc_samp = desc_samp_seen,
             last_desc_destroy = desc_destroy_seen;

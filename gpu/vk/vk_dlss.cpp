@@ -154,6 +154,7 @@ struct State {
     float last_vp[16]{};      // (its camera's view-projection: the frame before's)
     std::atomic<uint32_t> jitter_w{0}, jitter_h{0};   // (the scene's size while DLSS draws: the host's jitter's scale)
     std::atomic<uint32_t> jitter_phases{8};           // (its sequence's length, for DLSS's scale: dlss_jitter_phases)
+    std::atomic<uint32_t> jitter_to_w{0};             // (the width DLSS scales the scene to: the scene's texture LOD bias)
     std::unordered_map<VkImage, VkImageView> depth_views;
     uint64_t depth_views_gen = 0;
     const char* reason = nullptr;
@@ -886,6 +887,7 @@ uint32_t dlss_jitter_size(int axis) {
     const uint64_t last = s.last_frame.load(std::memory_order_relaxed);
     if (off || !dlss_wanted() || s.failed.load(std::memory_order_relaxed) || !last || texture_frame_no() - last > 30) return 0;
     if (axis == 2) return s.jitter_phases.load(std::memory_order_relaxed);
+    if (axis == 3) return s.jitter_to_w.load(std::memory_order_relaxed);
     return axis ? s.jitter_h.load(std::memory_order_relaxed) : s.jitter_w.load(std::memory_order_relaxed);
 }
 
@@ -1193,6 +1195,7 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
 
     std::memcpy(s.last_vp, cam.current, sizeof s.last_vp);
     s.jitter_w = rw, s.jitter_h = rh, s.jitter_phases = (uint32_t)dlss_jitter_phases(rw, rh, dw, dh);
+    s.jitter_to_w = dw;
     if (s.reason) logf("vk: NVIDIA DLSS draws the upscale again (frame %llu)", (unsigned long long)now);
     s.reason = nullptr;
     // (RX_VK_DLSS_DEBUG=alternate, a test's reference: every other frame the game's own upscale over DLSS's, which still
