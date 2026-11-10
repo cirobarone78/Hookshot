@@ -16,10 +16,10 @@ class RecompLauncherJsonTests(unittest.TestCase):
         self.assertEqual(manifest["format"], 1)
         menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
         rows = {re.sub(" ", "_", name.lower()) for name in re.findall(r'\{TAB_[A-Z]+, "([^"]+)"', menu)}
-        # (vk_menu.cpp ini_key: the rows whose saved key is not their name, output_res, resolution, upscaling, dlss: read from it)
-        body = menu[menu.index("const char* ini_key(const Row& r) {"):]
-        body = body[:body.index("static char k[")]
-        rows |= set(re.findall(r'return "([a-z_]+)";', body))
+        # (vk_menu.cpp ini_key: the rows whose key is not their name, renamed rows keeping the key an options file has:
+        # output_res, resolution, upscaling, frame_rate_cap, dlss)
+        ini_key = menu.split("const char* ini_key(const Row& r) {", 1)[1].split("\n}", 1)[0]
+        rows |= set(re.findall(r'return "([a-z_0-9]+)";', ini_key))
         keys = {key for setting in manifest["settings"] for choice in setting["choices"] for key in choice["set"]}
         self.assertTrue(keys)
         self.assertEqual(keys - rows, set())
