@@ -3724,6 +3724,7 @@ void texture_frame(uint64_t completed) {
             }
 
             budget = std::max(budget, 1024ull << 20);  // Minimum 1 GB
+            budget = std::min(budget, driver_budget);  // Don't exceed driver's limit
             own = budget;
 
             if (!told) {

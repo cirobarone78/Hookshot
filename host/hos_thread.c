@@ -7,6 +7,7 @@
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION   /* (older Windows SDKs lack it: Windows 10 1803 and later take it) */
@@ -829,8 +830,14 @@ uint64_t hos_reserved_cpus(void) {
     // Allow explicit hex mask override for testing
     const char* override = getenv("HOS_RESERVE_CORE_MASK");
     if (override) {
-        mask = strtoull(override, NULL, 16);
-        hos_log("vk: HOS_RESERVE_CORE_MASK override: %#llx", (unsigned long long)mask);
+        char* endptr;
+        mask = strtoull(override, &endptr, 16);
+        if (*endptr != '\0') {
+            hos_log("vk: HOS_RESERVE_CORE_MASK '%s' is not a valid hex value, ignoring", override);
+            mask = 0;
+        } else {
+            hos_log("vk: HOS_RESERVE_CORE_MASK override: %#llx", (unsigned long long)mask);
+        }
         return mask;
     }
 

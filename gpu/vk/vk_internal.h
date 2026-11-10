@@ -144,6 +144,8 @@ void memory_end_submission(VkCommandBuffer cmd);
 void checkpoints_report();
 /// The device is lost: that report once, then the process ends (vk_replay.cpp)
 [[noreturn]] void device_lost();
+/// Report device fault info via VK_EXT_device_fault (vk_draw.cpp)
+void device_fault_report();
 /// VK_AMD_buffer_marker's buffer, for RX_VK_CHECKPOINTS on a device without the NV checkpoints (vk_draw.cpp)
 void buffer_markers_init();
 void coopmat_init();   // vk_coopmat.cpp (once the device is made)
