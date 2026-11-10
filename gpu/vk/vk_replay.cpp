@@ -17,6 +17,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -27,6 +28,7 @@
 #include <unordered_set>
 
 #include "vk_dlss.h"
+#include "vk_fsr3_inputs.h"   // (the camera jitter while AMD FSR 3.1 upscales)
 #include "status_line.h"
 #include "vk_reflex.h"
 #include "vk_draw.h"
@@ -834,7 +836,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (in_stream && !worker) {
                 uint32_t words[64];
                 for (auto& w : words) w = c0.value;
-                host->gpu_write(c0.dst, words, c0.size);
+                host->gpu_write(c0.dst, words, std::min<uint64_t>(c0.size, sizeof words));   // (hookshot: not past words)
             }
             if (dry) break;
             ParLock lk;
@@ -2513,9 +2515,10 @@ void log_frame_stats() {
         draw_stats3(&pskip, &pwaits, &pwait_ms);
         static int64_t l_pskip, l_pwaits;
         static double l_pwait_ms;
-        static int64_t l_reused;
-        logf("vk: a frame: %.0f draws kept their neighbour's descriptors", (draw_desc_reused() - l_reused) / 120.0);
-        l_reused = draw_desc_reused();
+        static int64_t l_reused, l_saves;
+        logf("vk: a frame: %.0f draws kept their neighbour's descriptors (%.0f of them through other slots' registrations)",
+             (draw_desc_reused() - l_reused) / 120.0, (draw_slotgen_saves() - l_saves) / 120.0);
+        l_reused = draw_desc_reused(), l_saves = draw_slotgen_saves();
         logf("vk: a frame: %.1f draws left out (not ready), %.2f waits for shaders or pipelines (%.1f ms); "
              "translation %.0f ms in all, %d jobs queued",
              (pskip - l_pskip) / 120.0, (pwaits - l_pwaits) / 120.0, (pwait_ms - l_pwait_ms) / 120.0,
@@ -2773,8 +2776,14 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         if (interpolated) framegen_queue(value);
         else menu_note_frame(true);   // (the FPS counter's, as frame generation's thread counts what it shows)
         {   // (RX_VK_WAIT_GPU=<frames>: the replay no further ahead of the GPU than that)
-            static const int ahead = getenv("RX_VK_WAIT_GPU") ? atoi(getenv("RX_VK_WAIT_GPU")) : 0;
             static uint64_t values[8];
+            static const int ahead = [] {
+                const char* e = getenv("RX_VK_WAIT_GPU");
+                const long count = e ? std::strtol(e, nullptr, 10) : 0;
+                constexpr long capacity = sizeof(values) / sizeof(values[0]);
+                if (count > capacity) logf("vk: RX_VK_WAIT_GPU=%ld exceeds the ring capacity; using %ld", count, capacity);
+                return (int)std::clamp<long>(count, 0, capacity);
+            }();
             if (ahead > 0) {
                 const uint64_t old = values[presents % ahead];
                 values[presents % ahead] = value;
@@ -3114,12 +3123,18 @@ std::atomic<uint32_t> present_kind{0};   // (vk_framegen.cpp: 1 while a made fra
 std::mutex present_image_mu;
 void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view) {
     std::lock_guard lk(present_image_mu);
-    if (const uint64_t want = dev.swap_resize.exchange(0, std::memory_order_acquire)) {   // (the window was resized: main's resize)
+    const uint64_t want = dev.swap_resize.exchange(0, std::memory_order_acquire);
+    if (want || !dev.swapchain || reflex_swapchain_stale()) {
         std::lock_guard qk(dev.present_mu);
-        create_swapchain((uint32_t)(want >> 32), (uint32_t)want);
-    } else if (reflex_swapchain_stale()) {   // (NVIDIA Reflex turned on or off: its latency mode is the swapchain's)
-        std::lock_guard qk(dev.present_mu);
-        create_swapchain(dev.swap_extent.width, dev.swap_extent.height);
+        const uint32_t width = want ? (uint32_t)(want >> 32) : dev.swap_extent.width;
+        const uint32_t height = want ? (uint32_t)want : dev.swap_extent.height;
+        if (!create_swapchain(width, height)) {
+            // Retry without replacing a newer resize published while recreation was in progress.
+            uint64_t empty = 0;
+            dev.swap_resize.compare_exchange_strong(empty, ((uint64_t)width << 32) | height,
+                                                   std::memory_order_release, std::memory_order_relaxed);
+            return;   // (the old swapchain may already be retired; do not acquire or reset a frame fence)
+        }
     }
     if (src) {   // (the Window scaling filter's row: whether the window is the picture's size. Only the game's frames and the
                  // made ones: the start-up screen (no src) is drawn at the window's own size, which made the row read "Not
@@ -3171,8 +3186,8 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     VkImage dst = dev.swap_images[index];
     full_barrier(f.cmd);   // (after the game's work for the frame: earlier submits on this queue)
     image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    const bool preserve_stretch = host && host->aspect_ratio && host->aspect_ratio() > 1.0f;
-    const PresentRect rect = present_rect(sw, sh, crop, dev.swap_extent.width, dev.swap_extent.height, preserve_stretch);
+    const PresentAspect aspect{src && host && host->aspect_ratio ? host->aspect_ratio() : 0.0f};
+    const PresentRect rect = present_rect(sw, sh, crop, dev.swap_extent.width, dev.swap_extent.height, aspect);
     const bool has_bars = rect.x || rect.y || rect.w != dev.swap_extent.width || rect.h != dev.swap_extent.height;
     if (has_bars) {
         const VkClearColorValue black{0.0f, 0.0f, 0.0f, 1.0f};
@@ -3778,6 +3793,15 @@ bool replay_start() {
     return true;
 }
 
+/// (hookshot) The host's camera jitter (nx2/oot_jitter.py, host/rx_backend.c): the scene's size while a temporal upscaler
+/// draws, NVIDIA DLSS (vk_dlss.cpp) or AMD FSR 3.1 (vk_fsr3_inputs.cpp), whichever it is (one at a time: the Upscaler row);
+/// 0, no jitter, otherwise
+int jitter_option(int id) {
+    const int axis = id - HOS_OPT_DLSS_JITTER_W;
+    const uint32_t d = dlss_jitter_size(axis);
+    return (int)(d ? d : fsr3_inputs::jitter_size(axis));
+}
+
 void fill_replay_table(MkwVkRenderer& t) {
     t.stats = stats;
     t.nvn_submit = submit;
@@ -3799,9 +3823,8 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_CHEAT_ACTION) return menu_take_cheat_action();
         if (id == HOS_OPT_CHEAT_CAMERA) return menu_free_camera();
         return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !dlss_full_scale() : id == 3 ? (dlss_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
-               id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 9 ? opts.rumble : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y : id == HOS_OPT_GYRO ? opts.gyro : id == HOS_OPT_GYRO_SENS_X ? opts.gyro_sens_x : id == HOS_OPT_GYRO_SENS_Y ? opts.gyro_sens_y : id == HOS_OPT_GYRO_INV_X ? opts.gyro_inv_x : id == HOS_OPT_GYRO_INV_Y ? opts.gyro_inv_y :
-               id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H ? (int)dlss_jitter_size(id - HOS_OPT_DLSS_JITTER_W) :
-               id == HOS_OPT_DLSS_JITTER_PHASES ? (int)dlss_jitter_size(2) : 0;
+               id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 9 ? opts.rumble : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y : id == HOS_OPT_GYRO ? opts.gyro : id == HOS_OPT_GYRO_SENS_X ? opts.gyro_sens_x : id == HOS_OPT_GYRO_SENS_Y ? opts.gyro_sens_y : id == HOS_OPT_GYRO_INV_X ? opts.gyro_inv_x : id == HOS_OPT_GYRO_INV_Y ? opts.gyro_inv_y : id == HOS_OPT_GYRO_DEADZONE ? opts.gyro_deadzone :
+               id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H || id == HOS_OPT_DLSS_JITTER_PHASES ? jitter_option(id) : 0;
     };
     t.option_set = menu_option_set;
     t.nvn_register_sampler = register_sampler_queued;

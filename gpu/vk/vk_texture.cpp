@@ -213,8 +213,89 @@ struct Dead {
     std::vector<VkDeviceMemory> memory;   // (a sparse image's)
     VkBuffer buffer = VK_NULL_HANDLE;     // (the BC3 scratch's output buffer: given back with its image)
     VmaAllocation buffer_alloc = nullptr;
+    uint64_t pool_key = 0;                // (a render target's image: to the pool below, with its views, not destroyed)
+    std::unordered_map<uint64_t, VkImageView> view_map;
+    uint64_t bytes = 0;
 };
 std::deque<Dead> dead;
+
+// ---- (hookshot) Render target images, reused. OoT makes a frame's transient targets in a scratch heap whose offsets shift with
+// what came before them in the frame (the dead targets, texture_frame): each shifted one was a texture of its own with a new image,
+// and every 60 presents the sweep let go of the dead ones, 300-700 at once, destroyed in the next present: 20-50 ms on the thread
+// replaying, once a second while the camera moves (RTX 5070, Kokiri Forest: 10,500 images made and destroyed in 4.5 minutes,
+// 17 GB). Now a render target's image whose texture is gone waits in a pool by its create info, views and all, and a new texture
+// of the same create info takes it; it is put into GENERAL from UNDEFINED and cleared as a new one is (create), so nothing it held
+// shows. Only images made for a target (texture_get's !for_sampling) are pooled. The pool is bounded (RX_VK_TARGET_POOL_MB, default
+// 256; 0: none, every image destroyed as before; and none while VRAM is near what the driver allows), and an image unused in it for
+// 120 presents is destroyed, at most 16 a present ----
+struct Pooled {
+    VkImage image;
+    VmaAllocation allocation;
+    std::unordered_map<uint64_t, VkImageView> views;
+    uint64_t bytes, since;
+};
+std::mutex pool_mu;
+std::unordered_map<uint64_t, std::vector<Pooled>> target_pool;   // by pool_key_of
+uint64_t pool_bytes, pool_n, st_pool_reused, st_pool_made, st_pool_destroyed;
+bool pool_pressed;   // (VRAM near what the driver allows: texture_frame's budget)
+uint64_t pool_cap() {
+    static const uint64_t mb = getenv("RX_VK_TARGET_POOL_MB") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_TARGET_POOL_MB"))) : 256;
+    return mb << 20;
+}
+uint64_t pool_key_of(const VkImageCreateInfo& ci) {
+    uint64_t k = mix((uint64_t)ci.flags, (uint64_t)ci.imageType << 32 | (uint64_t)ci.format);
+    k = mix(k, (uint64_t)ci.extent.width << 32 | ci.extent.height);
+    k = mix(k, (uint64_t)ci.extent.depth << 32 | ci.mipLevels);
+    k = mix(k, (uint64_t)ci.arrayLayers << 32 | (uint64_t)ci.samples);
+    k = mix(k, (uint64_t)ci.usage << 8 | (uint64_t)ci.tiling);
+    return k | 1;   // (0: not pooled)
+}
+bool pool_take(uint64_t key, VkImage& image, VmaAllocation& allocation, std::unordered_map<uint64_t, VkImageView>& views) {
+    std::lock_guard lk(pool_mu);
+    auto it = target_pool.find(key);
+    if (it == target_pool.end() || it->second.empty()) return false;
+    Pooled& p = it->second.back();
+    image = p.image, allocation = p.allocation, views = std::move(p.views);
+    pool_bytes -= std::min(pool_bytes, p.bytes), pool_n--;
+    it->second.pop_back();
+    if (it->second.empty()) target_pool.erase(it);
+    st_pool_reused++;
+    return true;
+}
+void pool_destroy(Pooled& p) {
+    for (auto& kv : p.views)
+        if (kv.second) vkDestroyImageView(dev.device, kv.second, nullptr);
+    destroy_image(p.image, p.allocation);
+    st_pool_destroyed++;
+}
+/// (texture_frame) a dead render target's image the GPU is done with, into the pool
+void pool_put(Dead& d) {
+    std::lock_guard lk(pool_mu);
+    target_pool[d.pool_key].push_back(Pooled{d.image, d.allocation, std::move(d.view_map), d.bytes, frame_no});
+    pool_bytes += d.bytes, pool_n++;
+}
+/// (texture_frame, each present) the pool over its bound, or all of it while VRAM is short, and what waits in it unused for 120
+/// presents: destroyed, at most 16 a present (64 while VRAM is short). Returns how many
+size_t pool_trim() {
+    std::lock_guard lk(pool_mu);
+    const uint64_t cap = pool_pressed ? 0 : pool_cap();
+    const size_t most = pool_pressed ? 64 : 16;
+    size_t n = 0;
+    for (auto it = target_pool.begin(); it != target_pool.end() && n < most;) {
+        auto& v = it->second;
+        for (size_t i = 0; i < v.size() && n < most;) {   // (the oldest of a shape first: the front)
+            if (pool_bytes <= cap && frame_no - v[i].since <= 120) {
+                ++i;
+                continue;
+            }
+            pool_destroy(v[i]);
+            pool_bytes -= std::min(pool_bytes, v[i].bytes), pool_n--, n++;
+            v.erase(v.begin() + (ptrdiff_t)i);
+        }
+        it = v.empty() ? target_pool.erase(it) : std::next(it);
+    }
+    return n;
+}
 
 // ---- the recording's upload command buffer ----
 thread_local VkCommandBuffer up_cmd = VK_NULL_HANDLE;   // (each recording thread's: a parallel replay's segments
@@ -1468,8 +1549,13 @@ uint64_t destroy_gen = 1;   // (bumped when textures go: what was resolved to th
 void destroy_later(Texture& tex) {
     destroy_gen++;
     Dead d{tex.last_value, tex.image, tex.allocation, {}, {}};
-    for (auto& kv : tex.views)
-        if (kv.second) d.views.push_back(kv.second);
+    if (tex.pool_key && tex.allocation && tex.sparse_chunks.empty() && pool_cap()) {   // (a render target's: to the pool, its views too)
+        d.pool_key = tex.pool_key, d.view_map = std::move(tex.views), d.bytes = tex.bytes + tex.pad;
+        tex.views.clear();
+    } else {
+        for (auto& kv : tex.views)
+            if (kv.second) d.views.push_back(kv.second);
+    }
     d.memory = tex.sparse_chunks;
     dead.push_back(std::move(d));
     total_bytes -= std::min(total_bytes, tex.bytes + tex.pad);
@@ -1486,7 +1572,9 @@ void forget_gpu(Texture* tex) {
         }
 }
 
-Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb) {
+/// (as_target: texture_get's for a render target or a copy's destination, not for sampling: its image goes to the render targets'
+/// blocks, and to the target pool when its texture goes)
+Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb, bool as_target) {
     PROF_EXACT();   // (texture_get's slow path: PROF_TEXGET samples the rest)
     auto tex = std::make_unique<Texture>();
     Texture& x = *tex;
@@ -1657,6 +1745,23 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
             vkGetPhysicalDeviceImageFormatProperties(dev.physical, x.format, x.type, VK_IMAGE_TILING_OPTIMAL,
                 x.usage, flags, &limits) == VK_SUCCESS)
             x.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        // (and colour attachment views, raw too: OoT renders the slices of two 64^3 BC4 noise volumes as RGBA16UI targets, one
+        // texel a block (53509044401d78d2, while an area loads). Without the usage those views were not made, the volumes
+        // stayed zero, and the foliage's dithered LOD crossfade, which reads them, left trees bare at mid distance, #1151.
+        // 3D images take the usage on the driver's word for the 2D one: the query does not cover 2D_ARRAY_COMPATIBLE's
+        // per-slice attachment views)
+        if (format_props(raw).optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) {
+            // (asked with the flags a 3D image is made with below; a refused image is made again without the usage)
+            const VkImageCreateFlags asked = flags | (x.type != VK_IMAGE_TYPE_3D ? 0u
+                : VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT | (dev.view_2d_of_3d ? VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT : 0u));
+            const VkResult r = vkGetPhysicalDeviceImageFormatProperties(dev.physical, x.format, x.type, VK_IMAGE_TILING_OPTIMAL,
+                x.usage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, asked, &limits);
+            if (r == VK_SUCCESS || x.type == VK_IMAGE_TYPE_3D) x.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            static int told;
+            if (r != VK_SUCCESS && told++ < 4)
+                logf("vk: BC image %ux%ux%u (vk %d) as a raw colour attachment: the driver says %d%s", x.width, x.height, x.depth,
+                     (int)x.format, (int)r, x.type == VK_IMAGE_TYPE_3D ? " (3D: taken)" : "");
+        }
     }
     if (x.type == VK_IMAGE_TYPE_2D && x.layers >= 6 && x.width == x.height && x.samples == VK_SAMPLE_COUNT_1_BIT)
         flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, x.cube = true;
@@ -1675,6 +1780,12 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = x.usage;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    // (a render target's image, not compressed: from the pool when one of this create info waits there, above)
+    const uint64_t pool_key = as_target && !x.sparse && pool_cap() && !is_bc(x.format) && !is_astc(x.format) &&
+                                      (x.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))
+                                  ? pool_key_of(ci)
+                                  : 0;
+    x.pool_key = pool_key;
     if (x.sparse) {
         ci.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
         bool ok = vkCreateImage(dev.device, &ci, nullptr, &x.image) == VK_SUCCESS;
@@ -1709,7 +1820,12 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
              x.sparse_req.formatProperties.imageGranularity.width, x.sparse_req.formatProperties.imageGranularity.height,
              x.sparse_req.imageMipTailFirstLod, (unsigned long long)(x.sparse_req.imageMipTailSize >> 10),
              x.sparse_req.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT ? ", one for all layers" : " a layer");
-    } else if (!create_image(ci, x.image, x.allocation) &&
+    } else if (!(pool_key && pool_take(pool_key, x.image, x.allocation, x.views)) && (st_pool_made += pool_key != 0, true) &&
+               !create_image(ci, x.image, x.allocation, false, as_target && !is_bc(x.format) && !is_astc(x.format)) &&
+               // (a compressed image refused: made again without its raw attachment usage, then without its raw storage
+               // usage, as #1332 does; its raw views are then not made, as before)
+               !((ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && is_bc(x.format) &&
+                 (ci.usage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, x.usage = ci.usage, create_image(ci, x.image, x.allocation))) &&
                !((ci.usage & VK_IMAGE_USAGE_STORAGE_BIT) && (is_bc(x.format) || is_astc(x.format)) &&
                  (ci.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT, x.usage = ci.usage, create_image(ci, x.image, x.allocation)))) {
         static int logged;
@@ -1910,7 +2026,7 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling) {
     Texture* tex;
     auto it = textures.find(k);
     if (it == textures.end()) {
-        tex = create(k, t, fi.format, fi.astc, bw, bh, bpb);
+        tex = create(k, t, fi.format, fi.astc, bw, bh, bpb, !for_sampling);
         if (!tex) return nullptr;
         static const int64_t log_from = getenv("RX_VK_LOG_MADE") ? atoll(getenv("RX_VK_LOG_MADE")) : -1;
         static int made_logged;
@@ -3051,12 +3167,18 @@ void texture_frame(uint64_t completed) {
             ++it;
             continue;
         }
+        if (it->pool_key) {   // (a render target's image: kept for the next of its shape, above)
+            pool_put(*it);
+            it = dead.erase(it);
+            continue;
+        }
         for (VkImageView v : it->views) vkDestroyImageView(dev.device, v, nullptr);
         destroy_image(it->image, it->allocation);
         if (it->buffer) destroy_buffer(it->buffer, it->buffer_alloc);
         for (VkDeviceMemory m : it->memory) vkFreeMemory(dev.device, m, nullptr);
         it = dead.erase(it);
     }
+    pool_trim();
     // A budget: RX_VK_VRAM_MB of textures (default 4096), and less when the driver says the process is near what it
     // may have (other programs use the GPU too). The least recently used go first, down to 7/8 of it; nothing the
     // last 8 presents used, nothing recorded work may still read.
@@ -3093,6 +3215,7 @@ void texture_frame(uint64_t completed) {
     // out. RX_VK_BUDGET_BY_BLOCKS=1: as before)
     static const bool by_blocks = getenv("RX_VK_BUDGET_BY_BLOCKS") != nullptr;
     const uint64_t pressure = by_blocks ? used : used - std::min(used, block_free);
+    pool_pressed = known && pressure > allowed / 10 * 9;   // (the target pool given back meanwhile)
     if (known && pressure > allowed / 10 * 9) {
         const uint64_t over = pressure - allowed / 10 * 9;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
@@ -3103,6 +3226,14 @@ void texture_frame(uint64_t completed) {
     }
     if (frame_no % 600 == 0) {
         vma_log_heaps();
+        vma_log_image_blocks();
+        {
+            std::lock_guard lk(pool_mu);
+            logf("vk: render target images: %llu reused from the pool, %llu made new, %llu destroyed from it; it holds %llu "
+                 "(%llu MB)%s", (unsigned long long)st_pool_reused, (unsigned long long)st_pool_made,
+                 (unsigned long long)st_pool_destroyed, (unsigned long long)pool_n, (unsigned long long)(pool_bytes >> 20),
+                 pool_cap() ? (pool_pressed ? ", VRAM short: given back" : "") : " (RX_VK_TARGET_POOL_MB=0)");
+        }
         logf("vk: VRAM: %llu MB used of %llu MB allowed (%llu MB of it free in the blocks); textures %llu MB (budget %llu "
              "MB), %zu textures", (unsigned long long)(used >> 20), (unsigned long long)(allowed >> 20),
              (unsigned long long)(block_free >> 20), (unsigned long long)(total_bytes >> 20),
@@ -3184,7 +3315,12 @@ void texture_frame(uint64_t completed) {
     // sweep or the budget, ~200 dead ones (1.2 GB) filled an 8 GB card's VRAM in Hyrule Field, the driver paged it out and the
     // GPU's frame went from 15 to 35 ms. RX_VK_DEAD_TARGETS=0: as before
     static const bool dead_targets = !getenv("RX_VK_DEAD_TARGETS") || atoi(getenv("RX_VK_DEAD_TARGETS")) != 0;
-    if (no_evict || (sweep && frame_no % (dead_targets ? 60 : 600))) return;
+    // (hookshot) every 10 presents (RX_VK_DEAD_EVERY; 60 before): the target pool gets the dead ones as the game makes new ones,
+    // not 300-700 at once every second, of which the new ones of the next second missed most. The choice is cheap: 1930 textures
+    // ordered in 0.3 ms, 251 chosen in 0.2 (RTX 5070, Ryzen 7 9800X3D)
+    static const uint64_t dead_every =
+        getenv("RX_VK_DEAD_EVERY") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_DEAD_EVERY"))) : 10;
+    if (no_evict || (sweep && frame_no % (dead_targets ? dead_every : 600))) return;
     std::vector<std::pair<uint64_t, Texture*>> order;
     order.reserve(textures.size());
     for (auto& kv : textures) order.push_back({kv.second->last_frame, kv.second.get()});
@@ -3469,6 +3605,21 @@ uint64_t texture_bytes() {
 }
 void texture_stats(int64_t* uploads, int64_t* astc_gpu, int64_t* bytes_uploaded) {
     *uploads = st_uploads, *astc_gpu = st_astc, *bytes_uploaded = st_bytes;
+}
+
+bool texels_fit(const nvn_tex* t, const NVNcopyRegion* r, uint64_t row, uint64_t avail) {
+    if (!t || !r) return false;
+    int bw = 1, bh = 1;
+    const int bpb = nvn_block_size(t->d.format, &bw, &bh);
+    if (bpb <= 0) return true;   // (texture_read_texels copies nothing)
+    const uint64_t w = (uint64_t)((std::max(0, r->width) + bw - 1) / bw), h = (uint64_t)((std::max(0, r->height) + bh - 1) / bh);
+    const uint64_t dd = (uint64_t)std::max(1, r->depth);
+    if (!w || !h) return true;
+    const uint64_t pitch = row ? row : w * bpb;
+    uint64_t image = 0, a = 0, b = 0, n = 0;
+    return !__builtin_mul_overflow(pitch, h, &image) && !__builtin_mul_overflow(dd - 1, image, &a) &&
+           !__builtin_mul_overflow(h - 1, pitch, &b) && !__builtin_add_overflow(a, b, &n) &&
+           !__builtin_add_overflow(n, w * bpb, &n) && n <= avail;
 }
 
 /// ReadTexels / WriteTexels: the CPU's copy of a region in guest memory (block linear, the Switch 2 GOB swizzle).
