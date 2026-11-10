@@ -83,6 +83,7 @@ bool can_mic() { return false; }
 /* (the Upscaler row's choices, which set_row steps through: the game's own only, here) */
 unsigned upscalers_available() { return 1; }
 void mic_chosen() {}
+void samplers_changed() {}
 // (set_row steps the Output row through vk_menu.cpp's step_output_choice (#1144): not what this checks)
 int step_output_choice(int id, int dir) { return id + dir; }
 %(set_row)s
@@ -173,8 +174,8 @@ def menu_fixture():
 def option_ids():
     """option 9 is the menu's Rumble strength, and no other option has its id"""
     replay, api = read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h")
-    value = {}   # (every HOS_OPT_* enum: the cheats', the motion rows' and DLSS's jitter)
-    for first, start, rest in re.findall(r"enum \{ (HOS_OPT_\w+) = (\d+), ([^}]*)\}", api):
+    value = {}   # (every HOS_OPT_* enum: the cheats', the motion rows', DLSS's jitter and one-name ones as Text size's)
+    for first, start, rest in re.findall(r"enum \{ (HOS_OPT_\w+) = (\d+)([^}]*)\}", api):
         names = [first] + [n.strip() for n in rest.split(",") if n.strip()]
         value.update({n: int(start) + i for i, n in enumerate(names)})
     table = block(replay, replay.index("t.option = [](int id) -> int {"))

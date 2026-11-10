@@ -39,6 +39,7 @@
 #include <unistd.h>
 #endif
 #include "shaders/wb_diff_comp_spv.h"
+#include "vram_pressure.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -305,11 +306,13 @@ bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
         VkBuffer buffer = VK_NULL_HANDLE;
         if (vkCreateBuffer(dev.device, &bi, nullptr, &buffer) != VK_SUCCESS) return false;
         const VkDeviceMemory memory = dma_buf_memory(lo, hi - lo);
-        if (!memory) {
+        // Allocation alone does not make the buffer usable. A failed bind owns both resources,
+        // but must leave no partial import for the host-pointer fallback to publish.
+        if (!memory || vkBindBufferMemory(dev.device, buffer, memory, 0) != VK_SUCCESS) {
             destroy_import_buffer(buffer);
+            if (memory) vkFreeMemory(dev.device, memory, nullptr);
             return false;
         }
-        vkBindBufferMemory(dev.device, buffer, memory, 0);
         p.lo = lo, p.hi = hi, p.buffer = buffer, p.memory = memory;
     }
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
@@ -418,15 +421,16 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     ai.allocationSize = bytes;
     ai.memoryTypeIndex = type;
     const VkResult allocated = vkAllocateMemory(dev.device, &ai, nullptr, &p.memory);
-    if (allocated != VK_SUCCESS) {
-        import_result = allocated;
+    t3 = clk::now();
+    const VkResult bound = allocated == VK_SUCCESS ? vkBindBufferMemory(dev.device, p.buffer, p.memory, 0) : allocated;
+    if (bound != VK_SUCCESS) {
+        import_result = bound;
         destroy_import_buffer(p.buffer);
-        p.buffer = VK_NULL_HANDLE;
+        if (allocated == VK_SUCCESS) vkFreeMemory(dev.device, p.memory, nullptr);
+        p.buffer = VK_NULL_HANDLE, p.memory = VK_NULL_HANDLE;
         import_remember_failure(lo, hi);
         return false;
     }
-    t3 = clk::now();
-    vkBindBufferMemory(dev.device, p.buffer, p.memory, 0);
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     da.buffer = p.buffer;
     p.address = vkGetBufferDeviceAddress(dev.device, &da);
@@ -1269,7 +1273,7 @@ uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever) {
 /// costs a memcpy; ReadProcessMemory per page was ~2.3 us each). Not inlined, and the copy a call: without
 /// -fasync-exceptions clang catches a fault in a __try block only across a call, and a 4 KB memcpy inlined into the
 /// block (the per-page retry) faulted past the handler: the crash that kept the texture storage out of the capture.
-/// (hookshot) The capture's copy with non-temporal stores (x86-64; RX_VK_CAPTURE_NT=0: memcpy, as before). A capture's
+/// (hookshot) The capture's copy with non-temporal stores (x86-64; opt-in, RX_VK_CAPTURE_NT=1; memcpy otherwise). A capture's
 /// buffer comes from a pool that cycles through some thirty buffers (cap_bufs, cap_free): memory last written several
 /// frames ago, in no cache by now. A plain store reads each line before it overwrites it (the read for ownership: the
 /// copy asks for twice the memory traffic it needs), and the copy then stays in the caches, where nothing reads it
@@ -1308,8 +1312,11 @@ __attribute__((noinline)) void* copy_nt(void* dst, const void* src, size_t n) {
     if (n & 63) std::memcpy(d, s, n & 63);
     return dst;
 }
+// (opt-in since 2026-11-10: four interleaved field runs on an RTX desktop (main + #1619) showed no lower capture time with
+// it, 0.41-0.44 ms a submit either way, and more stutters: 3.43% and 4.22% of frames over 39-41 ms with it, 3.08% and 2.89%
+// without; p99 61.9/65.8 ms against 58.5/54.7. RX_VK_CAPTURE_NT=1 turns it on, for CPUs where it helps)
 bool capture_nt() {
-    static const bool on = !(getenv("RX_VK_CAPTURE_NT") && atoi(getenv("RX_VK_CAPTURE_NT")) == 0);
+    static const bool on = getenv("RX_VK_CAPTURE_NT") && atoi(getenv("RX_VK_CAPTURE_NT")) != 0;
     return on;
 }
 void* (*volatile guarded_memcpy)(void*, const void*, size_t) = capture_nt() ? copy_nt : std::memcpy;
@@ -2635,6 +2642,12 @@ struct BindMemo {
 };
 thread_local BindMemo bind_memo[256];
 
+void note_direct_write(Pool& p, uint64_t off, uint64_t size) {   // (pools_mu held)
+    p.direct_write_epoch = mirror_epoch;
+    if (size <= (1u << 20))   // (EvilBoyce: GPU results written in place; small ones: the readbacks are)
+        wb_pages_note(p.lo + off, p.lo + std::min(off + size, p.hi - p.lo), mem_rec_value);
+}
+
 BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     if (written) texture_gpu_wrote(gpu, size);
     // (below 1 TB a GPU address is the guest address itself, and a pool holds the whole range or nothing: the host's
@@ -2693,6 +2706,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
     const uint64_t off = guest - p->lo;
     if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED) {
+        if (written) note_direct_write(*p, off, size);
         if (mirror_on()) { auto& e = direct_by_pool[p->lo]; e.first++, e.second = mirror_upload ? (int)p->mstate : 9; direct_bytes_by_pool[p->lo] += size; }
         // (hookshot) written by the GPU in guest memory itself, past the mirror (bound outside a recording's uploads): the
         // write-back diff's shadow no longer knows those pages, and reads them again at its next write-back, after this write
@@ -2723,9 +2737,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         auto& e = direct_by_pool[p->lo];
         e.first++, e.second = (int)p->mstate;
         direct_bytes_by_pool[p->lo] += size;
-        if (written) p->direct_write_epoch = mirror_epoch;
-        if (written && size <= (1u << 20))   // (EvilBoyce: GPU results written in place; small ones: the readbacks are)
-            wb_pages_note(p->lo + off, p->lo + std::min(off + size, p->hi - p->lo), mem_rec_value);
+        if (written) note_direct_write(*p, off, size);
         return remember({p->buffer, off, size, 0});
     }
     if (p->synced_epoch != mirror_epoch || p->sync_seg > texture_segment()) mirror_sync(*p);
@@ -3193,7 +3205,22 @@ void shadows_reap() {
         dead_shadows.pop_front();
     }
 }
-bool shadow_room(uint64_t n) {   // (the shadows' budget, and VRAM 85% full at most: the textures and the mirrors come first)
+// (hookshot) The shadows' two rules read what is really allocated (the driver's count less the free space inside VMA's blocks,
+// as the texture budget's 90% rule does: vram_pressure.h), not the count alone. By the count alone they went at 95% and
+// came back only under 85%. On a 12 GB card the texture cache fills VRAM to 93-98% of what the driver allows within minutes
+// of play, gigabytes of it free space inside the blocks that evicting cannot give back, so the shadows went (272-448 MB) and
+// never returned: the write-backs were whole copies again for the rest of the session. In a player's log (RTX 4070 SUPER,
+// 2560 x 1440, 10,462 of 10,732 MB used, 3.5 GB of it free inside the blocks) "the shadows given back" is where 58 fps
+// became 26. Here, on v2.0.11's code with 9.8 GB allowed, five minutes across Hyrule Field, two runs each: 56.6 and 58.8 fps
+// with 32 and 8 of 120 two-second windows under 55 fps before, 59.8 and 59.6 fps with 1 and 2 after; the GPU's frame
+// 11.7-12.0 -> 9.8-10.1 ms, the capture's wait in a frame 2.1-2.4 -> 1.1 ms. (The free space is of no use to the shadows
+// themselves, which are allocations of their own: they are made only under the textures' lines. vram_pressure.h)
+// RX_VK_SHADOW_RAW=1: by the count alone, as before
+bool shadow_rules_raw() {
+    static const bool v = getenv("RX_VK_SHADOW_RAW") != nullptr;
+    return v;
+}
+bool shadow_room(uint64_t n) {   // (the shadows' budget, and room in VRAM: the textures and the mirrors come first)
     static const uint64_t cap = [] {
         if (const char* e = getenv("RX_VK_WB_SHADOW_MB")) return (uint64_t)atoll(e) << 20;
         uint64_t used = 0, allowed = 0;
@@ -3202,8 +3229,10 @@ bool shadow_room(uint64_t n) {   // (the shadows' budget, and VRAM 85% full at m
         return dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? std::min<uint64_t>(eighth, (uint64_t)512 << 20) : eighth;
     }();
     if (shadow_bytes + n > cap) return false;
-    uint64_t used = 0, allowed = 0;
-    return !(vram_usage(&used, &allowed) && allowed && used + n > allowed / 100 * 85);
+    uint64_t used = 0, allowed = 0, block_free = 0;
+    if (!vram_usage(&used, &allowed, &block_free) || !allowed) return true;
+    if (shadow_rules_raw()) return used + n <= allowed / 100 * 85;
+    return vram_pressure::shadow_fits(n, used, allowed, block_free);
 }
 bool shadow_make(Pool& p) {
     const uint64_t n = p.hi - p.lo;
@@ -3222,12 +3251,14 @@ bool shadow_make(Pool& p) {
              (unsigned long long)(n >> 20), (unsigned long long)(shadow_bytes >> 20));
     return true;
 }
-// (pools_mu held) every shadow given back while VRAM is 95% full (every 120 write-back submissions): made again when there is room
+// (pools_mu held) every shadow given back while VRAM is really 95% full, or the driver's count at 99% (every 120 write-back
+// submissions): made again when there is room
 void shadows_check_room() {
     static int64_t n;
     if (!shadow_bytes || ++n % 120) return;
-    uint64_t used = 0, allowed = 0;
-    if (!vram_usage(&used, &allowed) || !allowed || used <= allowed / 100 * 95) return;
+    uint64_t used = 0, allowed = 0, block_free = 0;
+    if (!vram_usage(&used, &allowed, &block_free) || !allowed) return;
+    if (shadow_rules_raw() ? used <= allowed / 100 * 95 : !vram_pressure::shadows_go(used, allowed, block_free)) return;
     const uint64_t had = shadow_bytes;
     for (auto& [lo, p] : imported) shadow_free(p);
     for (auto& nh : retired_pools) shadow_free(nh.mapped());

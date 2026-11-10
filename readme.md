@@ -222,7 +222,8 @@ use and cause stalls when the card runs out of headroom. To undo it, remove that
 
 ## In-game menu
 
-By default, press <kbd>Insert</kbd> or <kbd>F1</kbd> in game. On a controller, press Home or Select and Start together.
+By default, press <kbd>Insert</kbd> or <kbd>F1</kbd> in game. On a controller, press Home or Select and Start together; on
+a DualShock 4 or DualSense, clicking the touchpad does the same as <kbd>F1</kbd>.
 The same keys close it, and so does <kbd>Esc</kbd>. <kbd>F1</kbd> always works; **Controls → Menu shortcut** can leave
 <kbd>Insert</kbd> free for another overlay. The menu has four tabs, Graphics, Gameplay, Controls and Debug:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
@@ -268,6 +269,7 @@ HDR peak brightness show only while HDR is on.
 | | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS, FSR 3.1 or FSR 4: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR 4 Native AA: Native | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
+| | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
 | | Profile | Docked, Handheld (after a restart) | Docked |
 | | Ultrawide | 16:9, Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | 16:9 |
 | | Robust buffers | Auto, Off, On (after a restart) | Auto |
@@ -275,12 +277,14 @@ HDR peak brightness show only while HDR is on.
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
 | Gameplay | FPS counter | Off, On | Off |
-| | Menu size | Auto, Small, Medium, Large | Auto |
+| | Menu size | Small, Medium, Large | Medium |
 | | Game speed | Per frame, Real time | Real time |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
+| | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
 | | Microphone | Off, Default, or each microphone by name | Default |
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
+| | Disable camera centering | Off, On | Off |
 | | Mouse sensitivity | 0.10 to 5.00 | 1.00 |
 | | Invert mouse vertical | Off, On | Off |
 | | Invert camera X | Off, On | Off |
@@ -296,8 +300,8 @@ HDR peak brightness show only while HDR is on.
   and the video memory limits for a card with that much memory. It leaves the Upscaler and Frame generation as
   you chose them: with DLSS, FSR 3.1 or FSR 4, the preset's resolution becomes their nearest mode. Changing most other
   rows yourself sets it back to Custom.
-- **Menu size** is how large the menu, the FPS counter and the start-up screen are drawn. Auto is Large in fullscreen on a
-  screen of 1080 lines or more while you use a controller (a TV across the room), else Medium.
+- **Menu size** is how large the menu, the FPS counter and the start-up screen are drawn: Medium unless you choose Small
+  (a desk) or Large (a TV across the room). It stays the same whether you use a controller or the keyboard and mouse.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a
   second card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed.
   `hookshot_log.txt` lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins
@@ -324,11 +328,20 @@ HDR peak brightness show only while HDR is on.
   3840x2160 the game's render targets get a bigger GPU pool, so a full-size 3D fits. On a 5120x1440 (32:9) ultrawide
   monitor, 5120x1440 gives a native frame with a sharp HUD. Set **Ultrawide** to Monitor's shape with it: it widens the
   cameras to the frame's shape and keeps the HUD and movies in the middle 16:9; without it, the game's 16:9 picture is
-  stretched across the 32:9 output, sharp but wide. For one run, set `HOS_OUTPUT_RES` to `3` for 1920x1080,
-  `0` for 2048x1152, `1` for 2560x1440, `2` for 3840x2160, `4` for 5120x1440, or `5` for 5120x2880.
+  stretched across the 32:9 output, sharp but wide. For a size the menu does not offer (3440x1440, 2560x1080, ...), set
+  `output_res=<width>x<height>` in `hookshot_options.ini`: each side a multiple of 8, at least 640x360, at most 5120x2880's
+  pixels, and between 5:4 and 32:9 in shape; anything else uses the game's 2048x1152. The menu then offers it as its own
+  choice. With **Ultrawide** on, a picture wider than 16:9 is kept to 3840x2160's pixels, so above that a wide size is not a
+  native frame. For one run, set `HOS_OUTPUT_RES` to a size, such as `HOS_OUTPUT_RES=3840x2160`.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest
   picture, set the Output resolution to your screen's, and the row shows "Not needed (window = output)". It and
   **Sharpness** also work when Frame generation is Off.
+- **Anisotropic filtering** keeps textures sharp on surfaces seen at a slant: the paths and floors ahead of Link. The game
+  asks for 1x or 2x, which at a PC's resolutions smears the ground a few metres off; 16x costs little on most cards, and
+  Game's is the console's own. `RX_VK_ANISO=<n>` sets it for one run (0: the game's).
+- **Texture detail with DLSS, FSR 3.1 or FSR 4:** below 75% Render resolution, the world's textures are sampled one finer
+  mip step for each halving of the 3D (the game already does so for its own 75%), so the upscaled picture keeps their
+  detail. `RX_VK_UPSCALE_LOD_BIAS=0` turns it off.
 - **NVIDIA Reflex** Off is the game as without it. `RX_VK_REFLEX_LOG=1` logs the driver's latency timings every 300
   frames while it is on.
 - **AMD Anti-Lag 2** Off is the game as without it. Like Reflex, it is not used while Frame generation is on.
@@ -354,6 +367,9 @@ HDR peak brightness show only while HDR is on.
   mouse still need the game's window.
 - **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in
   place of the right stick. The <kbd>-</kbd> and <kbd>=</kbd> keys change the sensitivity in game too.
+- **Disable camera centering:** On stops the game gradually turning the camera toward your movement, so it does not fight
+  native mouse look. Off keeps the game's standard behavior. Changes apply immediately with either Mouse camera mode.
+  Manual controls, explicit recentering and scripted camera headings still work; automatic pitch adjustment is unchanged.
 - **Stick dead zone:** how far a stick moves before it counts, on each axis. Default is XInput's (about 24%); lower suits
   a precise stick, higher one that drifts. The game keeps a dead zone of its own after it.
 - **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble
@@ -453,6 +469,7 @@ Add `--check` with your `.nup` or `--exefs` to only check the game's version. It
 Add `--log "C:\path\build.log"` to also save the build's output to a file (UTF-8, replaced if it exists); it works
 with `--check` and `--update` too, and on Linux.
 `HOOKSHOT_JOBS=<n>` (or `--jobs <n>`) limits how many files compile at once.
+`HOOKSHOT_MEM_LIMIT_GB=<n>` lets the compilers take that many GB together, whatever is free now; up to 4 always run.
 
 You need:
 
@@ -488,6 +505,8 @@ You need:
 ```
 
 `HOOKSHOT_JOBS=<n>` (or `--jobs <n>` with `--cli`) limits how many files compile at once.
+`HOOKSHOT_MEM_LIMIT_GB=<n>` lets the compilers take that many GB together, whatever is free now. Linux stops a compiler
+that does not fit; it is then compiled again alone at the end.
 
 In a game folder, `hookshot` is the launcher and the game itself is `bin/hookshot`. The builder's settings are in
 `~/.config/hookshot/builder.ini`.

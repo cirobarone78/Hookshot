@@ -103,6 +103,27 @@ def say(*words):
     print("@@" + " ".join(str(w) for w in words), flush=True)
 
 
+def check_writable(out):
+    """The game folder must take new files before anything is read into it. A folder under Program Files (or another protected
+    place) only takes them with administrator rights, and the build used to stop minutes later inside nup.py with a bare
+    "PermissionError: [WinError 5]" on its .game folder"""
+    probe = os.path.join(out, ".hookshot_write_check")
+    try:
+        os.makedirs(out, exist_ok=True)
+        with open(probe, "w") as f:
+            f.write("ok")
+        os.remove(probe)
+    except PermissionError as e:
+        protected = [os.environ.get(k) for k in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "SystemRoot")]
+        inside = any(d and os.path.normcase(os.path.abspath(out)).startswith(os.path.normcase(os.path.abspath(d)) + os.sep)
+                     for d in protected)
+        where = (" Windows protects folders under Program Files and Windows, and only lets administrators write there."
+                 if inside else "")
+        example = "~/Games/Hookshot" if LINUX else r"C:\Games\Hookshot"
+        fail("The game folder %s can't be written to (%s).%s In Hookshot Builder, choose a game folder of your own, for example "
+             "%s, and build again." % (out, e.strerror or e, where, example))
+
+
 def fail(text):
     say("error", text)
     sys.exit(1)
@@ -357,6 +378,24 @@ def file_progress(verb, clock=time.monotonic):
     return progress
 
 
+HEADS = ".hookshot_romfs_heads"   # (the extraction's damaged .zs list, under the stamp of the unpack that made it)
+
+
+def keep_heads(out, game, stamp):
+    """nup.py's list of the romfs .zs files that do not start as zstd (its HEADS_NAME, beside the extracted romfs), kept in the
+    game folder under this unpack's stamp for stand_in_damaged_files: the ~100,000 files are then not opened again"""
+    import nup
+    made = os.path.join(game, nup.HEADS_NAME)
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(os.path.join(out, HEADS))
+    if nup.read_heads(made) is None:
+        return
+    with open(made, encoding="utf-8") as f:
+        listed = f.read().partition("\n")[2]
+    with open(os.path.join(out, HEADS), "w", encoding="utf-8", newline="\n") as f:
+        f.write(stamp.strip() + "\n" + listed)
+
+
 def stand_in_damaged_files(out, romfs):
     """An incomplete dump's damaged textures replaced by whole ones of the same kind, and said: without them the game
     leaves out the walls and floors that use them (the Water Temple, #1002). Only in a romfs this builder unpacked (its
@@ -373,11 +412,25 @@ def stand_in_damaged_files(out, romfs):
             if f.read() == stamp:
                 return
     import nup
-    print("checking your game files for damaged textures (once after an unpack): every .zs file is opened, which can take "
-          "minutes", flush=True)
-    done = nup.stand_in_damaged(romfs, file_progress("checked"))
+    heads = os.path.join(out, HEADS)
+    known = None
+    try:
+        with open(heads, encoding="utf-8") as f:
+            first, _, rest = f.read().partition("\n")
+        if first == stamp.strip():   # (made by this unpack's extraction: nup.py HEADS_NAME)
+            known = nup.read_heads_text(rest)
+    except OSError:
+        pass
+    if known is None:
+        print("checking your game files for damaged textures (once after an unpack): every .zs file is opened, which can take "
+              "minutes", flush=True)
+        done = nup.stand_in_damaged(romfs, file_progress("checked"))
+    else:   # (found while the .nup was extracted: no file opened again)
+        done = nup.stand_in_damaged(romfs, damaged=[os.path.normpath(os.path.join(romfs, rel)) for rel in known])
     with open(checked, "w") as f:
         f.write(stamp)
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(heads)
     if not done:
         return
     print("Your game dump is incomplete: %d game file%s in it %s damaged (a complete dump is about 23.8 GB, an incomplete "
@@ -926,17 +979,33 @@ def seed_pipelines(out):
 
 
 def ship_state_list(out):
-    """The pipeline state list made from a play of the game on the development PC (work/pipeline_states.bin: each pipeline's stage
-    code keys, vertex and target formats and draw state; hashes and state only, no game code), as the folder's
-    hookshot_pipeline_states_shipped.bin: the first start's shader preparation builds those pipelines before the title, from the
-    player's own shaders (hookshot_shaders.bin), instead of compiling each when it is first drawn. Good for any build: optional"""
-    src = os.path.join(ROOT, "work", "pipeline_states.bin")
+    """The pipeline state list made from play of the game on the development PC (assets/pipeline_states.bin.xz: each
+    pipeline's stage code keys, vertex and target formats and draw state; hashes and state only, no game code), unpacked as the
+    folder's hookshot_pipeline_states_shipped.bin: the first start's shader preparation builds those pipelines before the
+    title, from the player's own shaders (hookshot_shaders.bin), instead of compiling each when it is first drawn. Good for
+    any build, and optional: a list that is missing or does not read is left out with a line saying so (the release checks
+    stop on it: nx2/pipeline_states.py --check)"""
+    import pipeline_states
+    src = os.path.join(ROOT, *pipeline_states.SHIPPED)
     dst = os.path.join(out, "hookshot_pipeline_states_shipped.bin")
     if not os.path.isfile(src):
         return
-    if not (os.path.isfile(dst) and filecmp.cmp(src, dst, shallow=False)):
-        shutil.copyfile(src, dst)
-    print("the shipped pipeline state list: %d pipelines" % ((os.path.getsize(src) - 12) // 528), flush=True)
+    try:
+        data = pipeline_states.load(src)
+        n = len(pipeline_states.parse(data, src, strict=True))
+    except (OSError, SystemExit) as e:
+        print("the shipped pipeline state list was left out: %s" % e, flush=True)
+        return
+    try:
+        with open(dst, "rb") as f:
+            same = f.read() == data
+    except OSError:
+        same = False
+    if not same:
+        with open(dst + ".new", "wb") as f:
+            f.write(data)
+        os.replace(dst + ".new", dst)
+    print("the shipped pipeline state list: %d pipelines" % n, flush=True)
 
 
 # (the builders read this line's start: the step was skipped or failed, and the shaders' row says so instead of a check mark)
@@ -1336,7 +1405,7 @@ def main(a=None):
     out = os.path.abspath(a.out)
     work = os.path.abspath(a.work)
     warn_slow_disk(out, work)   # (a warning, not a stop: a hard drive still builds, only much slower)
-    os.makedirs(out, exist_ok=True)
+    check_writable(out)
     # (linux) the compiler probe waits until the compile. The game-free cache test stops at the lift, and a missing
     # compiler is still said before the long compile, not after the package has been read
     check_cpu()   # (no game read yet: the AppImage on a CPU without AVX2 stops here)
@@ -1414,6 +1483,7 @@ def main(a=None):
             if os.path.exists(romfs):
                 shutil.rmtree(romfs)
             shutil.move(os.path.join(game, "romfs"), romfs)
+            keep_heads(out, game, stamp)
             shutil.move(staged_exefs, exefs)
             shutil.rmtree(game, ignore_errors=True)
             shutil.rmtree(kept, ignore_errors=True)

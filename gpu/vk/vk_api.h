@@ -15,8 +15,10 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 13
+#define MKWVK_API_VERSION 14
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA };
+/* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
+enum { HOS_OPT_TEXT_SIZE = 10 };
 /* (hookshot) the Motion page's rows (host/pad_sdl.c reads them, vk_replay.cpp's option answers them): Motion controls on
    or off, the horizontal's and the vertical's sensitivity in percent, each turned around, and the deadzone (0 to 2) */
 enum { HOS_OPT_GYRO = 18, HOS_OPT_GYRO_SENS_X, HOS_OPT_GYRO_INV_X, HOS_OPT_GYRO_INV_Y, HOS_OPT_GYRO_SENS_Y, HOS_OPT_GYRO_DEADZONE };
@@ -30,6 +32,9 @@ enum { HOS_OPT_VOLUME = 27, HOS_OPT_MUTE_BACKGROUND };
    the game is told its display is HDR10 (the swapchain is one), and the peak and paper white it is told, in nits */
 /* (HOS_OPT_DISCORD, 43: the Insert menu's Discord status row, host/discord_rpc.c: 1 on) */
 enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE, HOS_OPT_DISCORD };
+/* (HOS_OPT_DISABLE_CAMERA_CENTERING, 45: Controls' movement-follow yaw, host/mouse_native.c: 0 stock, 1 disabled;
+   44 is reserved for HOS_OPT_SKIP_TITLE) */
+enum { HOS_OPT_DISABLE_CAMERA_CENTERING = 45 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
@@ -39,6 +44,9 @@ enum { HOS_SW_A, HOS_SW_B, HOS_SW_X, HOS_SW_Y, HOS_SW_LS, HOS_SW_RS, HOS_SW_L, H
 enum { HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_WEST, HOS_PAD_NORTH, HOS_PAD_BACK, HOS_PAD_GUIDE, HOS_PAD_START,
        HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER, HOS_PAD_RSHOULDER, HOS_PAD_UP, HOS_PAD_DOWN, HOS_PAD_LEFT,
        HOS_PAD_RIGHT, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_N };
+/* (hookshot) a DualShock 4's or DualSense's touchpad click, which opens the Insert menu as F1 does (host/pad_sdl.c,
+   gpu/vk/vk_menu.cpp): its own bit past HOS_PAD_N, so it is not one of the inputs the Controls page binds */
+enum { HOS_PAD_TOUCHPAD = 31 };
 enum { HOS_BIND_PAD, HOS_BIND_KEY };
 /* (hookshot) the controller faces of the button prompts (host/prompts.c): the Switch, then nx2/prompt_faces.py FACES' order;
    the Button prompts row's value is one more (0 Auto) */
@@ -140,6 +148,11 @@ typedef struct MkwVkHost {
     float (*wide_menus)(uint32_t keep_mask);
 } MkwVkHost;
 
+/* One completed temporal-upscale sample; all zero while inactive. */
+typedef struct MkwVkJitter {
+    uint32_t width, height, phases;
+} MkwVkJitter;
+
 /* what the back end gives the executable: the rx_* functions (gpu/render/rx_nvn.h, rx_core) */
 typedef struct MkwVkRenderer {
     uint32_t version;
@@ -187,6 +200,8 @@ typedef struct MkwVkRenderer {
     /* (hookshot, the Insert menu) a setting changed from the game's side, kept in the options file: 7 the mouse's sensitivity
        in percent (the - and = keys, host/nn_hid.c) */
     void (*option_set)(int id, int value);
+    /* (version 14) one coherent camera-jitter sample, without per-axis queries */
+    void (*jitter_sample)(MkwVkJitter *out);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */
