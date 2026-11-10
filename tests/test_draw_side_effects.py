@@ -109,7 +109,7 @@ void scenario(int kind, bool translated, bool pipeline_hot, bool persistent) {
     check(!early_reads, "metadata inspected before publication");
     check(translation_waits == int(!translated && !skip_unknown), "translation wait mode");
     if (pipeline_hot || force || !persistent || skip_unknown) check(scans == 0, "unnecessary classification");
-    if (!pipeline_hot && !force && persistent && should_draw) check(pipeline_waits == 1, "side effects must wait for pipeline");
+    check(pipeline_waits == int(!pipeline_hot && should_draw), "pending pipeline must publish before draw");
     std::printf("%s %s draws%d skips%d scans%d twait%d pwait%d\n", failures == before ? "PASS" : "RED", label,
                 draws, st_pending_skips, scans, translation_waits, pipeline_waits);
 }
