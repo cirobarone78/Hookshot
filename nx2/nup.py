@@ -33,6 +33,16 @@ ZSTD = b"\x28\xb5\x2f\xfd"
 WINDOWS_DEVICES = {"CON", "CONIN$", "CONOUT$", "PRN", "AUX", "NUL"} | {p + n for p in ("COM", "LPT") for n in "123456789¹²³"}
 
 
+def win_long(p):
+    """A Windows absolute path handed to the wide API through the long-path prefix, so a deep folder that runs past
+    MAX_PATH still opens — up to #1468: extraction died at 260 characters on an ordinary game folder name. The raw-
+    path prefix takes absolute normalised paths only and nothing else about them changes."""
+    if os.name != "nt":
+        return p
+    full = os.path.normpath(os.path.abspath(p))
+    return full if full.startswith("\\\\?\\") else "\\\\?\\" + full
+
+
 def frame_content_size(head):
     """The content size a zstd frame header states, None when it states none"""
     if head[:4] != ZSTD or len(head) < 18:
@@ -417,13 +427,13 @@ def extract(nup, t, out, only=None, quiet=False):
             dst = extraction_path(out, part, rel)
             if os.path.exists(dst) and os.path.getsize(dst) == r[2]:
                 continue          # (re-runs pick up where they stopped)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            temporary = dst + ".part"
+            os.makedirs(win_long(os.path.dirname(dst)), exist_ok=True)
+            temporary = win_long(dst + ".part")
             g = open(temporary, "wb")
             try:
                 with g:
                     nup.copy_to(r, g, rel)
-                os.replace(temporary, dst)
+                os.replace(temporary, win_long(dst))
             except BaseException:
                 # Free the failed member's space without hiding the extraction error.
                 with suppress(OSError):
