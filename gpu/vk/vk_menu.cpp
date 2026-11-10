@@ -99,6 +99,15 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+// The shadow maps' size (opts.shadow_res; vk_texture.cpp create)
+const char* tx_shadow_res(int v) {
+    static const char* const t[] = {"Game", "1.5x", "2x", "3x", "4x"};
+    return t[std::clamp(v, 0, 4)];
+}
+MENU_HINTS(hn_shadow_res, 0, "The game's own: the sun's shadows 3072 pixels a side, the characters' 768 or less.",
+           "Sharper shadow edges, a little more GPU time and memory.", "Sharper shadow edges, more GPU time and memory.",
+           "Much sharper; the sun's shadows at 8192 a side (400 MB or more of video memory).",
+           "The finest; the sun's shadows at 8192 a side, the characters' 3072.")
 const char* tx_profile(int v) { return v ? "Handheld" : "Docked"; }   // (opts.handheld: the Profile row)
 const char* tx_menu_shortcut(int v) {
     // (F1 is never turned off: the menu is always one key away. Esc as well, as a PC game's pause menu)
@@ -760,6 +769,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "Anisotropic filtering", &opts.anisotropy, 0, 4, 1, tx_anisotropy,
      "Keeps textures sharp on surfaces seen at a slant, such as the ground ahead: higher is sharper in the distance, for a "
      "little GPU time. Game's is the console's own (1x or 2x).", nullptr},
+    {TAB_GRAPHICS, "Shadow resolution", &opts.shadow_res, 0, 4, 1, tx_shadow_res,
+     "How many pixels the shadow maps have: sharper shadow edges, less stair-stepping and shimmer. Applies after a restart.",
+     hn_shadow_res, true},
     {TAB_GRAPHICS, "Profile", &opts.handheld, 0, 1, 1, tx_profile,
      "Runs the game as the console docked or handheld. Applies after a restart.", hn_handheld, true},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
@@ -2683,6 +2695,13 @@ void menu_first_start_for_gpu(const VkPhysicalDeviceProperties& props, const VkP
 
 int menu_vsync() { return getenv("RX_VK_FIFO") ? 1 : getenv("RX_VK_IMMEDIATE") ? 2 : opts.vsync; }
 bool resolution_auto() { return opts.resolution == 0; }
+float shadow_resolution_factor() {   // (the value the game started with: textures made since keep one size)
+    static const float f = [] {
+        static const float k[] = {1.0f, 1.5f, 2.0f, 3.0f, 4.0f};
+        return k[std::clamp(opts.shadow_res, 0, 4)];
+    }();
+    return f;
+}
 int resolution_scale() {
     const float s = upscaler_rows::percent(opts.resolution) / 100.0f;
     return s > 0 ? (int)(twelfths(s) * 10000.0f / 12.0f + 0.5f) : 0;   // (the twelfth game_size labels)

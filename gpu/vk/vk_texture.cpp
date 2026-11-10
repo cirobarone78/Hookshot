@@ -1919,6 +1919,28 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         return nullptr;
     }
     x.samples = d.samples > 1 ? (VkSampleCountFlagBits)d.samples : VK_SAMPLE_COUNT_1_BIT;
+    {   // Shadow resolution (the Insert menu's Graphics tab, as at the start): the shadow maps' images made larger
+        // than the game's, and the passes that render them scaled to match (vk_draw.cpp targets: the viewport, scissor and
+        // clears). OoT's shadow maps are square depth targets of one level: the characters' (768 and less) and the sun's
+        // cascades (3072 x 3072 x 3). The game samples them by normalized coordinates, so it reads the finer map as it is.
+        // Each side 8192 at most, and the image 1 GB at most
+        const float want = shadow_resolution_factor();
+        if (want > 1.0f && depth && (x.aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && x.type == VK_IMAGE_TYPE_2D &&
+            (d.target == NVN_TEXTURE_TARGET_2D || d.target == NVN_TEXTURE_TARGET_2D_ARRAY) && x.samples == VK_SAMPLE_COUNT_1_BIT &&
+            x.levels == 1 && !x.skip && !x.sparse && x.width == x.height && x.width >= 256 && x.width <= 4096 &&
+            x.width % 256 == 0) {
+            const uint64_t texel = std::max(2, bpb), layers = std::max(1u, x.layers);
+            uint32_t side = std::min<uint32_t>({8192u, dev.props.limits.maxImageDimension2D, (uint32_t)(x.width * want + 0.5f)});
+            while (side > x.width && (uint64_t)side * side * layers * texel > (1ull << 30)) side -= 256;
+            if (side > x.width) {
+                x.rs = (float)side / (float)x.width;
+                static int told;
+                if (told++ < 16)
+                    logf("vk: shadow resolution: texture %#llx %ux%u x%u (NVN %#x) made %ux%u", (unsigned long long)t->gpu,
+                         x.width, x.height, x.layers, d.format, side, side);
+            }
+        }
+    }
     {   // (decoded ASTC as BC3: 2D, at most the scratch's size; from blocks of 6 x 6 texels up (2.25 bits a texel or
         // less: BC3's 8 keep what they have) from 2 MB as RGBA8 (RX_VK_ASTC_BC_MB), the finer ones (UI, characters)
         // only from 64 MB)
@@ -2047,7 +2069,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     ci.flags = flags;
     ci.imageType = x.type;
     ci.format = x.format;
-    ci.extent = {x.width, x.height, x.depth};
+    ci.extent = {image_width(&x), image_height(&x), x.depth};   // (a shadow map's larger image, above)
     ci.mipLevels = x.levels;
     ci.arrayLayers = x.layers;
     ci.samples = x.samples;
@@ -2116,7 +2138,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     // what it costs: the level chain's texels
     uint64_t px = 0;
     for (uint32_t l = 0; l < x.levels; l++)
-        px += (uint64_t)std::max(1u, x.width >> l) * std::max(1u, x.height >> l) * std::max(1u, x.depth >> l);
+        px += (uint64_t)std::max(1u, image_width(&x) >> l) * std::max(1u, image_height(&x) >> l) * std::max(1u, x.depth >> l);
     const uint32_t texel = x.bc || is_bc(x.format) ? 1 : astc ? 4 : std::max(1, from ? (from == 3 ? 4 : from == 6 ? 8 : 16) : bpb);
     x.bytes = x.sparse ? 0 : px * x.layers * texel * x.samples;   // (a sparse image's: as its layers are bound)
     // (the budget counts what the allocator gave it: the texels' 8% short of that over a scene's 2000 textures, 3228 MB counted for 3504

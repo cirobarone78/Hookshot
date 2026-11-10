@@ -31,6 +31,8 @@ struct Options {
     int sharpness = 0;    // 0 to 100
     int anisotropy = 4;   // (hookshot) Anisotropic filtering: 0 the game's own (1x or 2x), 1 2x, 2 4x, 3 8x, 4 16x (the
                           // device's limit at most; gpu/vk/vk_draw.cpp aniso_override, RX_VK_ANISO over it)
+    int shadow_res = 0;   // the shadow maps' size: 0 the game's, 1 1.5x, 2 2x, 3 3x, 4 4x (each side, 8192 at most); read once, at
+                          // the start (vk_texture.cpp create, shadow_resolution_factor)
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
     int handheld = 0;     // the game's handheld profile: ~4 fps, softer; read once, at the start (host/nn_applet.c)
     int ultrawide = 0;    // the camera at the monitor's shape when it is wider than 16:9; read once, at the start (host/hos_main.c)
@@ -94,6 +96,7 @@ void menu_tick();             // (each frame shown: the keys, while the game's w
 bool menu_is_open();
 bool resolution_auto();       // (the game's dynamic resolution: Resolution Auto)
 int resolution_scale();       // (the fixed path's scale in 1/10000: the Resolution row's, as a twelfth of the output)
+float shadow_resolution_factor();   // (the Shadow resolution row's as it was at the start: 1 the game's)
 void menu_option_set(int id, int value);   // (from the game's side: 7 the mouse's sensitivity, the - and = keys)
 int menu_heart_protection();
 int menu_player_flight();

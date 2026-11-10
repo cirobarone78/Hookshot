@@ -29,6 +29,10 @@ struct Texture {
     VkImageCreateFlags create_flags = 0;   // (hookshot: as its image was made, for the compaction's copy of it)
     uint32_t width = 1, height = 1, depth = 1, levels = 1, layers = 1;   // the image's (after skip)
     uint32_t skip = 0;        // top levels of the texture left out (huge textures: RX_VK_TEX_MAX_DIM, _MAX_MB)
+    // Shadow resolution: a shadow map's image made rs times the game's size each side (1: as the game's). width and
+    // height stay the game's (uploads, copies and read-backs address its texels, inside the image); passes that render into it
+    // are scaled to the image (vk_draw.cpp targets), and sampling, by normalized coordinates, reads the finer map
+    float rs = 1.0f;
     // (a huge array kept whole as a sparse resident image instead: each layer gets device memory when it is first
     // written, so only what the game streams in costs VRAM. MKW's terrain arrays, 8192 x 8192 x 68 BC6H: 5.8 GB
     // each, written by the GPU's copies into level 0, which a texture with its top level left out lost)
@@ -86,6 +90,10 @@ struct Texture {
     std::unordered_map<uint64_t, VkImageView> views;
     uint64_t view_failed_frame = 0;   // (transient allocation failure: retry uncached views next frame, keep cached ones usable)
 };
+
+/// The size of a texture's image (the game's size times its Shadow resolution scale)
+inline uint32_t image_width(const Texture* t) { return t->rs == 1.0f ? t->width : (uint32_t)(t->width * t->rs + 0.5f); }
+inline uint32_t image_height(const Texture* t) { return t->rs == 1.0f ? t->height : (uint32_t)(t->height * t->rs + 0.5f); }
 
 /// Makes texels [x, x + w) x [y, y + h) of level `level`, layers [first, first + count), of a sparse texture resident
 /// (device memory bound to the sparse blocks they fall in) before anything writes them; true when they are (always,
