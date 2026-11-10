@@ -49,10 +49,10 @@ def main():
     for path in sorted((args.source / "gpu" / "vk" / "eden" / "shader_recompiler").rglob("*")):
         if path.suffix not in (".cpp", ".h"):
             continue
-        for name in re.findall(r'getenv\("(RX_VK_[A-Z0-9_]+)"\)', path.read_text(encoding="utf-8", errors="replace")):
+        for name in re.findall(r'(?:getenv|env_on)\("(RX_VK_[A-Z0-9_]+)"\)', path.read_text(encoding="utf-8", errors="replace")):
             names.setdefault(name, path.relative_to(args.source).as_posix())
     for name in SHADER_SWITCHES:
-        if 'getenv("%s")' % name not in shader:
+        if 'getenv("%s")' % name not in shader and 'env_on("%s")' % name not in shader:
             raise SystemExit("vk_shader.cpp no longer reads %s: update this check" % name)
         names.setdefault(name, "gpu/vk/vk_shader.cpp")
     if len(names) < 10:

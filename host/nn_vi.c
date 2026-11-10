@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 
 void hos_system_event_init(uint64_t key, int autoclear);   /* nn_os_sync.c */
 void hos_system_event_signal(uint64_t key);
@@ -153,8 +156,8 @@ static int64_t shown_at[16];
 static volatile LONG64 shown_count;
 void hos_vi_native_acquire(int active) {
     static int no_pacing = -1, double_buffered = -1;
-    if (no_pacing < 0) no_pacing = getenv("HOS_NO_PACING") != NULL;
-    if (double_buffered < 0) double_buffered = getenv("HOS_VI_DOUBLE") != NULL;
+    if (no_pacing < 0) no_pacing = env_on("HOS_NO_PACING");
+    if (double_buffered < 0) double_buffered = env_on("HOS_VI_DOUBLE");
     if (no_pacing || !next_frame_at) return;
     int64_t until = next_frame_at;
     if (!double_buffered && active >= 2) {
@@ -303,7 +306,7 @@ static void realtime_step(int64_t now) {
            +0xe2c bit 3: recompute asked, +0xe50/+0xe54/+0xe58: the sizes the scale is taken against, +0xe5c: the scale */
         static int on = -1;
         static long long n;
-        if (on < 0) on = getenv("HOS_RES_LOG") != NULL;
+        if (on < 0) on = env_on("HOS_RES_LOG");
         const uint64_t m = hos_res_module;
         if (on && m && !(n++ % 300)) {
             float f[4], s;
@@ -320,7 +323,7 @@ static void realtime_step(int64_t now) {
            HOS_FPS_LOG=1: what the game asks for, every 300 presents */
         static int target = -1, log_on = -1;
         static long long n;
-        if (target < 0) target = getenv("HOS_FPS_TARGET") ? atoi(getenv("HOS_FPS_TARGET")) : 0, log_on = getenv("HOS_FPS_LOG") != NULL;
+        if (target < 0) target = getenv("HOS_FPS_TARGET") ? atoi(getenv("HOS_FPS_TARGET")) : 0, log_on = env_on("HOS_FPS_LOG");
         int *limit = (int *)GP(mod + 0xfc);
         if (log_on && !(n++ % 300))
             hos_log("vi: frame limiter %d, vrr %d %d, nominal %d, controller +0x58.. %d %d %d %d", *limit, *(uint8_t *)GP(mod + 0x231),

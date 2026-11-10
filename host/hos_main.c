@@ -9,6 +9,9 @@
    Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 #include "hos_paths.h"
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/oot_cheat_items.h"
@@ -127,7 +130,7 @@ static int reserve_guest(void) {
        pages changed (GetWriteWatch) so that it uploads only those (soft write watch builds mark pages themselves). */
 #if defined(A64_WRITE_TRACK)
     const DWORD watch = 0;
-    if (getenv("HOS_LARGE_PAGES") && reserve_large(GUEST_SPACE) == (void *)A64_HOST_BASE) {
+    if (env_on("HOS_LARGE_PAGES") && reserve_large(GUEST_SPACE) == (void *)A64_HOST_BASE) {
         hos_large_pages = 1;
         hos_log("mem: the guest window is in large pages (%llu MB)", (unsigned long long)(GUEST_SPACE >> 20));
         return 1;
@@ -195,11 +198,11 @@ static int reserve_guest(void) {
     /* (issue 312) no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
        collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
        next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
-    if (!getenv("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
+    if (!env_on("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
 #ifdef __linux__
     /* (HOS_NO_THP=1, experiment: none outside the window either. With THP "always" 400-450 MB of the host heap's and the binary's bss are huge
        pages, each resident whole when any of its 2 MB is touched) */
-    if (getenv("HOS_NO_THP")) prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
+    if (env_on("HOS_NO_THP")) prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
 #endif
     return 1;
 #endif
@@ -1263,7 +1266,7 @@ static void memory_notice(void) {
         return;
     }
     hos_log("boot: LOW MEMORY: %llu MB of memory, %llu MB of swap, below the ~%llu MB the game needs", ram, swap, HOS_MEMORY_NEEDED_MB);
-    if (getenv("HOS_HEADLESS")) return;
+    if (env_on("HOS_HEADLESS")) return;
 #ifndef _WIN32
     int hos_sdl_load(void);
     hos_sdl_load();   /* (host/posix MessageBoxA shows it through the SDL already loaded) */
@@ -1290,7 +1293,7 @@ static int narrow_paths_ok(int argc, char **argv) {
     GetModuleFileNameW(NULL, w, MAX_PATH * 2);
     fprintf(stderr, "hookshot: this folder's path cannot be opened (code page %u, %s): move the game to a folder with a plain name\n",
             GetACP(), n >= MAX_PATH ? "too long" : "has characters the code page lacks");
-    int quiet = getenv("HOS_HEADLESS") != NULL;
+    int quiet = env_on("HOS_HEADLESS");
     for (int i = 1; i < argc; i++) quiet |= !strcmp(argv[i], "--prepare-shaders");
     if (!quiet) {
         wchar_t text[MAX_PATH * 2 + 640];
@@ -1324,7 +1327,7 @@ static int game_main(int argc, char **argv) {
         // Windows answered such a thread 2560 x 1440: the picture was that size, in the corner of the window. Hookshot issues 15, 18, 20)
         typedef BOOL(WINAPI * SetAware)(void *);
         SetAware set = (SetAware)(void *)GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDpiAwarenessContext");
-        if (set && !getenv("HOS_DPI_UNAWARE")) set((void *)(intptr_t)-4);
+        if (set && !env_on("HOS_DPI_UNAWARE")) set((void *)(intptr_t)-4);
     }
 #endif
     {   // (started from its icon the game has nowhere to log to: hookshot_log.txt beside it, last run only, for players to send in)
@@ -1415,7 +1418,7 @@ static int game_main(int argc, char **argv) {
                 argv[0]);
         return 2;
     }
-    if (getenv("HOS_TRACE")) hos_trace = 1;
+    if (env_on("HOS_TRACE")) hos_trace = 1;
     if (!hos_user_dir) hos_user_dir = "user";
     CreateDirectoryA(hos_user_dir, NULL);
     if (!reserve_guest()) {

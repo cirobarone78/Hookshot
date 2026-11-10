@@ -50,7 +50,7 @@ and responds to the supplied controller input.
 
 Physical keyboard and mouse input stays with the foreground window. Physical controllers can also play in the
 background when the existing "Controller in background" option or `HOS_INPUT_BACKGROUND=1` enables them;
-`HOS_INPUT_BACKGROUND=0` overrides that option. With `HOS_INPUT_EXCLUSIVE` set (to any value, `0` too) the script
+`HOS_INPUT_BACKGROUND=0` overrides that option. With `HOS_INPUT_EXCLUSIVE=1` the script
 alone drives the game until 5 s after its last press; without it the player's devices add to the script's presses. It
 is not a focus override.
 
@@ -64,8 +64,10 @@ that stands in for a menu row lasts for its run; the options file keeps the play
 (`disk_stamp` in `gpu/vk/vk_shader.cpp`; `tests/test_program_stamp_knobs.py` checks the translator's). The build reads its own from the
 environment. The README has the ones players are asked to try (`RX_VK_ASTC_RGBA8`, `RX_VK_LOW_SPEC`,
 `RX_VK_MOVIE_UPSCALE`, `RX_VK_SKIP_CODE`, `HOS_OOT_CHEATS`). There are several hundred more, most of them one-off
-experiments: `grep -rn 'getenv("' host gpu/vk` lists them, and the comment where each is read says what it does.
-"Set" below means any value, `0` included.
+experiments: `grep -rnE '(getenv|env_on)\("' host gpu/vk` lists them, and the comment where each is read says what it
+does. An on/off switch ("(set)" below) is on for `1` or any other value, and off when it is unset, empty, `0`, `false`,
+`off` or `no` (`env_on` in `gpu/vk/compat/hookshot_env.h`, `kit.env_on` in Python); it used to be that any value turned
+one on, `0` included. A switch that takes a number or a list reads its value as it says.
 
 `RX_VK_MESH_NOCULL=<prefix,...>` turns off the culling in the task shaders whose native code key starts with one of
 the prefixes. On a Steam Deck, `RX_VK_MESH_NOCULL=2c56dc1006942f74` avoids the same hang without leaving anything out:

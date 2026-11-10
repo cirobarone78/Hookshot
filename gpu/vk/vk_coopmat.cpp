@@ -18,6 +18,9 @@
 #include "vk_internal.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include <sirit/sirit.h>
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 
 namespace mkwvk {
 namespace {
@@ -351,7 +354,7 @@ void coopmat_init() {
         Shader::Backend::SPIRV::frag_nan_guard = !e || std::atoi(e) != 0;
     }
     if (Shader::Backend::SPIRV::frag_nan_guard) logf("vk: colour outputs NaN-guarded");
-    Shader::Backend::SPIRV::position_invariant = dev.props.vendorID != 0x10DE && !std::getenv("RX_VK_NO_INVARIANT");
+    Shader::Backend::SPIRV::position_invariant = dev.props.vendorID != 0x10DE && !env_on("RX_VK_NO_INVARIANT");
     if (Shader::Backend::SPIRV::position_invariant) logf("vk: positions invariant (not an NVIDIA card)");
     // (hookshot) RX_VK_MMA_SOFTWARE=1: HMMA_nx2 in a shader function on subgroup shuffles, no cooperative matrices
     // (emit_spirv_warp.cpp, from Lichii): the lowering still gives HMMA_nx2 (dev.native_mma)
@@ -366,7 +369,7 @@ void coopmat_init() {
         logf("vk: native matrix multiplies off (RX_VK_NATIVE_MMA=0)");
         return;
     }
-    if (!dev.coop_matrix || !vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR || std::getenv("RX_VK_MMA_NO_COOP")) {
+    if (!dev.coop_matrix || !vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR || env_on("RX_VK_MMA_NO_COOP")) {
         software_multiplies("no cooperative matrices");
         return;
     }

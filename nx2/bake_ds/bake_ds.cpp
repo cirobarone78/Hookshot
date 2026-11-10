@@ -69,6 +69,9 @@
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/host_translate_info.h"
 #include "shader_recompiler/ir_opt/fragment_output_guard.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on, as the live back end reads its switches)
+#include "hookshot_env.h"
+#endif
 #include "shader_recompiler/object_pool.h"
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/program_header.h"
@@ -413,7 +416,7 @@ public:
     u32 LocalMemorySize() const override { return local_memory; }
     u32 SharedMemorySize() const override {
         // (live: vk_shader.cpp:416; RX_VK_SHARED_48K=1 is the pre-PR-91 48 KB)
-        static const bool old = std::getenv("RX_VK_SHARED_48K") != nullptr;
+        static const bool old = env_on("RX_VK_SHARED_48K");
         return old ? 48u << 10 : nvn.shared_memory;
     }
     std::array<u32, 3> WorkgroupSize() const override {
@@ -421,7 +424,7 @@ public:
     }
     bool HasHLEMacroState() const override {
         // (live: vk_shader.cpp:430; RX_VK_NO_DRAW_PARAMS=1 is the pre-fix bank)
-        static const bool off = std::getenv("RX_VK_NO_DRAW_PARAMS") != nullptr;
+        static const bool off = env_on("RX_VK_NO_DRAW_PARAMS");
         return !off && stage == Shader::Stage::VertexB;
     }
     bool HasNativeInstructions() const override { return true; }

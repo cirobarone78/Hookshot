@@ -93,6 +93,9 @@ void ptr_diag_log(uint64_t key, const char* kind) {
 }
 } // namespace
 #include "vk_shader.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 
 namespace mkwvk {
 namespace {
@@ -457,7 +460,7 @@ public:
     u32 SharedMemorySize() const override {
         // (what the program declares, from the control section: 48 KB for every one was past an RX 9070 XT's 32 KB, and its
         // pipelines were invalid. klimovich008, Hookshot PR 91. RX_VK_SHARED_48K=1: as before)
-        static const bool old = getenv("RX_VK_SHARED_48K") != nullptr;
+        static const bool old = env_on("RX_VK_SHARED_48K");
         return old ? 48u << 10 : nvn.shared_memory;
     }
     std::array<u32, 3> WorkgroupSize() const override {
@@ -471,7 +474,7 @@ public:
     // each patch two triangles, one of them often degenerate (the triangular holes in the far terrain).
     // (RX_VK_NO_DRAW_PARAMS=1: as before)
     bool HasHLEMacroState() const override {
-        static const bool off = getenv("RX_VK_NO_DRAW_PARAMS") != nullptr;
+        static const bool off = env_on("RX_VK_NO_DRAW_PARAMS");
         return !off && (stage == Shader::Stage::VertexA || stage == Shader::Stage::VertexB);
     }
     bool HasNativeInstructions() const override { return true; }   // (lowered NVN2 programs: Lichii's passes ask)
@@ -709,7 +712,7 @@ uint8_t answer_of(uint32_t handle, bool image) {
 uint8_t canonical_answer(const Program& p, const Program::Answer& a, uint8_t type) {
     static const bool strict = [] {
         const char* capture = getenv("RX_VK_CAPTURE");
-        return getenv("RX_VK_HANDLES_LIVE") || getenv("RX_VK_REGISTER_AT_ONCE") ||
+        return getenv("RX_VK_HANDLES_LIVE") || env_on("RX_VK_REGISTER_AT_ONCE") ||
                (capture && atoi(capture) == 0);
     }();
     if (strict) return type;
@@ -1105,7 +1108,7 @@ uint64_t disk_stamp() {
 void disk_init() {
     static std::once_flag once;
     std::call_once(once, [] {
-        if (getenv("RX_VK_NO_PROGRAM_CACHE")) return;
+        if (env_on("RX_VK_NO_PROGRAM_CACHE")) return;
         char exe[MAX_PATH];
         const DWORD n = game_module_path(exe, MAX_PATH);
         std::string path(exe, n);
@@ -2091,7 +2094,7 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
     // (hookshot) the pair of the last picks stood only while nothing at all was bound anew, and OoT binds a uniform buffer for nearly every
     // draw: a draw of the same program with the same textures found its program through the full pick (the key, the answers' handles, a
     // compare). It stands now while the textures its answers are read from do (answer_stage_mask). RX_VK_PICK_BIND_GEN=1: as before
-    static const bool by_bind = getenv("RX_VK_PICK_BIND_GEN") != nullptr;
+    static const bool by_bind = env_on("RX_VK_PICK_BIND_GEN");
     for (const ProgFast& f : prog_fast) {   // (the draw before this one, and the one that took turns with it)
         if (!(f.on && f.p && f.p->ready.load(std::memory_order_acquire) && !f.p->failed)) continue;
         uint64_t fbind = f.bind;
@@ -2179,7 +2182,7 @@ const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t c
     std::memcpy(p->codes, codes, sizeof codes);
     Program* raw = p.get();
     variants.push_back(std::move(p));
-    static const bool sync = getenv("RX_VK_SYNC_SHADERS") != nullptr;
+    static const bool sync = env_on("RX_VK_SYNC_SHADERS");
     if (compute || sync) {   // (compute: dispatches are never left out, so they are translated where they are)
         translate_into(*raw, s, stage_code[0], stage_code[1], compute ? stage_code[5] : nullptr, color_types);
         return raw->failed ? nullptr : raw;

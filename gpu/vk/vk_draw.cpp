@@ -54,6 +54,9 @@
 #include "shaders/taau_upscale_comp_spv.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -123,7 +126,7 @@ const char* const kFineC[] = {"draws", "descriptor builds", "descriptors", "desc
                                       "push constants", "pipeline keys from the fast pair", "pipeline keys from the thread's map",
                                       "sets allocated (over the push limit)", "descriptors in them", "storage buffer descriptors built"};
 static_assert(std::size(kFineT) == FT_COUNT && std::size(kFineC) == FC_COUNT, "every section and count is named");
-const bool g_fine = getenv("RX_VK_PROF_FINE") != nullptr;
+const bool g_fine = env_on("RX_VK_PROF_FINE");
 int64_t fine_ns[FT_COUNT], fine_n[FC_COUNT];
 struct FineScope {
     int ph;
@@ -161,7 +164,7 @@ void fine_report(double frames) {
 }
 
 bool no_a2c() {   // (RX_VK_NO_A2C, read once: it was a getenv on every alpha-to-coverage draw, the foliage's)
-    static const bool v = getenv("RX_VK_NO_A2C") != nullptr;
+    static const bool v = env_on("RX_VK_NO_A2C");
     return v;
 }
 
@@ -185,10 +188,10 @@ inline uint64_t mix(uint64_t h, uint64_t v) {
 
 // ---- environment switches, read once ----
 struct Switches {
-    bool no_depth = getenv("RX_VK_NODEPTH") != nullptr;
-    bool no_cull = getenv("RX_VK_NOCULL") != nullptr;
-    bool ignore_discard = getenv("RX_VK_IGNORE_DISCARD") != nullptr;
-    bool log_draws = getenv("RX_VK_LOG_DRAWS") != nullptr;
+    bool no_depth = env_on("RX_VK_NODEPTH");
+    bool no_cull = env_on("RX_VK_NOCULL");
+    bool ignore_discard = env_on("RX_VK_IGNORE_DISCARD");
+    bool log_draws = env_on("RX_VK_LOG_DRAWS");
 };
 const Switches& sw() {
     static const Switches s;
@@ -260,7 +263,7 @@ void stats_dump_stage(uint64_t prog, const NvnState& s, int stage) {
         // (uniform buffers whole up to 2 KB and with the stream's inline updates, ub_read: what the shader reads)
         const bool ubo = kind[0] == 'u';
         // (RX_VK_DUMP_LIVE=1: storage buffers as guest memory holds them now, not as submitted: what the CPU wrote since)
-        static const bool live = getenv("RX_VK_DUMP_LIVE") != nullptr;
+        static const bool live = env_on("RX_VK_DUMP_LIVE");
         const auto read = [&](uint64_t a, void* dst, uint64_t bytes) {
             return ubo ? ub_read(a, dst, bytes) : live ? host->gpu_read(a, dst, bytes) : memory_read_as_submitted(a, dst, bytes);
         };
@@ -395,7 +398,7 @@ struct RecordingRes {
 // that needs more is given a bigger stream for the rest of it (RX_VK_STREAM_GROW_OFF=1: draws are skipped instead, and the default
 // is 24 MB as before); the most a recording used is logged: "the recording streams")
 bool stream_grow_off() {
-    static const bool off = getenv("RX_VK_STREAM_GROW_OFF") != nullptr;
+    static const bool off = env_on("RX_VK_STREAM_GROW_OFF");
     return off;
 }
 const uint64_t kStream = (getenv("RX_VK_STREAM_MB") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_STREAM_MB"))) : stream_grow_off() ? 24u : 2u) << 20;
@@ -1059,7 +1062,7 @@ VkResult guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInf
 VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part = -1,
                           bool* cold = nullptr);
 bool gpl_libs_cached() {
-    static const bool on = !getenv("RX_VK_GPL_NO_CACHE");
+    static const bool on = !env_on("RX_VK_GPL_NO_CACHE");
     return on;
 }
 thread_local bool driver_cache_only = false;   // (predict_run's: pipelines for the driver's own cache, not into ours)
@@ -1084,7 +1087,7 @@ uint32_t target_write_mask(const Program& p, const NvnState& s, int i) {
     if (!fs || i >= 8 || !fs->info.stores_frag_color[i]) return 0;
     // (amd-fix, Lichii #353) and none of the components it does not write: Vulkan writes undefined values there, AMD its
     // export registers' garbage (NaN and saturated pixels above OoT's horizon, which the bloom spread). RX_VK_ALL_COMPONENTS=1: off
-    static const bool all = getenv("RX_VK_ALL_COMPONENTS") != nullptr;
+    static const bool all = env_on("RX_VK_ALL_COMPONENTS");
     const uint32_t written = fs->info.frag_color_components[i];
     return (s.chmask.mask >> (4 * i)) & 0xF & (all || !written ? 0xFu : (uint32_t)written);
 }
@@ -1216,7 +1219,7 @@ void notes_open_locked(const std::vector<std::unique_ptr<PipeNote>>* known) {
 }
 void pipeline_note(uint64_t key, const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo,
                    const uint8_t* color_types = nullptr) {
-    static const bool off = getenv("RX_VK_NO_PROGRAM_CACHE") != nullptr;
+    static const bool off = env_on("RX_VK_NO_PROGRAM_CACHE");
     if (off) return;
     if (color_types) state_record(p, s, at, topo, color_types);
     auto rec = std::make_unique<PipeNote>();
@@ -1256,7 +1259,7 @@ std::unordered_set<uint64_t> computes_read() {
     return keys;
 }
 void compute_note(uint64_t key) {
-    static const bool off = getenv("RX_VK_NO_PROGRAM_CACHE") != nullptr;
+    static const bool off = env_on("RX_VK_NO_PROGRAM_CACHE");
     if (off) return;
     std::lock_guard lk(compute_note_mu);
     if (!compute_note_file) {
@@ -1343,7 +1346,7 @@ void state_open_locked() {
     }
 }
 void state_record(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, const uint8_t color_types[8]) {
-    static const bool off = getenv("RX_VK_NO_STATE_LIST") != nullptr;
+    static const bool off = env_on("RX_VK_NO_STATE_LIST");
     if (off) return;
     StateRec r{};
     std::memcpy(r.code, p.codes, sizeof r.code);   // (kept with the program: the stages' lock is not taken on the draw's path)
@@ -1373,7 +1376,7 @@ void state_record(const Program& p, const NvnState& s, const Targets& at, VkPrim
 /// (prepare_run, the seed open) every pipeline of the state lists (the player's own and the shipped one): its program translated
 /// when the program cache lacks it, then noted in hookshot_pipelines.bin for precompile_run to build. RX_VK_NO_STATE_LIST=1: off
 void state_list_prepare(void (*progress)(size_t done, size_t total)) {
-    if (getenv("RX_VK_NO_STATE_LIST")) return;
+    if (env_on("RX_VK_NO_STATE_LIST")) return;
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<StateRec> recs = state_list_read(state_list_path("hookshot_pipeline_states_shipped.bin"));
     const size_t shipped = recs.size();
@@ -1504,11 +1507,11 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
 // Needs pipelineCreationCacheControl. RX_VK_GPL_SYNC (set to anything): compiled in the draw, as before) ----
 bool gpl_wanted() {
     static const bool on = dev.graphics_pipeline_library && dev.eds3_blend && dev.eds3_polygon && dev.eds3_clamp && dev.eds3_a2c &&
-                           getenv("RX_VK_GPL") != nullptr;   // (off until the driver step is safe: linked cold, the libraries stall the draw)
+                           env_on("RX_VK_GPL");   // (off until the driver step is safe: linked cold, the libraries stall the draw)
     return on;
 }
 bool gpl_ask_only() {
-    static const bool on = dev.vk13.pipelineCreationCacheControl && !getenv("RX_VK_GPL_SYNC");
+    static const bool on = dev.vk13.pipelineCreationCacheControl && !env_on("RX_VK_GPL_SYNC");
     return on;
 }
 std::mutex gpl_mu;
@@ -1687,7 +1690,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     pcache_init();
     PipeEntry* e = pipelines.emplace(key, std::make_unique<PipeEntry>()).first->second.get();
     pipeline_note(key, p, s, at, topo, color_types);
-    static const bool sync = getenv("RX_VK_SYNC_PIPELINES") != nullptr;
+    static const bool sync = env_on("RX_VK_SYNC_PIPELINES");
     if (sync) {
         e->pipeline = build_graphics(p, s, at, topo);
         e->ready = true;
@@ -1909,7 +1912,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     VkPipeline pl = VK_NULL_HANDLE;
     {   // (local) RX_VK_NOOPT=1: build every pipeline without the driver's optimizer. AMD's proprietary compiler crashes
         // (-13 here) or takes minutes on some Ocarina shaders it builds in seconds unoptimized (Lichii #200, #210).
-        static const bool noopt = getenv("RX_VK_NOOPT") != nullptr;
+        static const bool noopt = env_on("RX_VK_NOOPT");
         if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         // (from PR 430, YunaraDebugs: on AMD the task and mesh programs (OoT's foliage culling, following pointers through its
         // tables) hung the GPU when the driver's optimizer built them: a device lost one to four minutes into Kokiri, each time with
@@ -1920,7 +1923,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
             vkGetPhysicalDeviceProperties(dev.physical, &pr);
             return pr.vendorID == 0x1002;
         }();
-        static const bool mesh_opt = getenv("RX_VK_MESH_OPT") != nullptr;
+        static const bool mesh_opt = env_on("RX_VK_MESH_OPT");
         if (amd && !mesh_opt) {
             bool mesh = false;
             for (const Stage& st : p.stages) mesh |= (st.vk_stage & (VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)) != 0;
@@ -2095,7 +2098,7 @@ VkSampler sampler_make(int id, bool compare) {
                         ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
     {   // (hookshot, issue 1117: blocky halos, smoke and fog shafts since v2.0.6, gone with every sampler linear. The nearest ones
         // named, with the game's own words for them; RX_VK_FORCE_LINEAR=1: every sampler linear, for the A/B)
-        static const bool force_linear = getenv("RX_VK_FORCE_LINEAR") != nullptr;
+        static const bool force_linear = env_on("RX_VK_FORCE_LINEAR");
         if (ci.magFilter == VK_FILTER_NEAREST || ci.minFilter == VK_FILTER_NEAREST) {
             static std::atomic<int> told{0};
             if (told++ < 24)
@@ -2130,7 +2133,7 @@ VkSampler sampler_make(int id, bool compare) {
     {   // (amd-fix) A depth-reference sample through a sampler that does not compare is undefined in Vulkan: NVIDIA's driver
         // compares anyway, AMD's does not (OoT samples this way: compare mode 0, function 0). A shader that compares gets
         // a comparing sampler: the game's function when it set one, LEQUAL otherwise. RX_VK_DREF_FROM_SAMPLER=1: as before
-        static const bool as_before = getenv("RX_VK_DREF_FROM_SAMPLER") != nullptr;
+        static const bool as_before = env_on("RX_VK_DREF_FROM_SAMPLER");
         if (compare && !as_before && !ci.compareEnable) {
             ci.compareEnable = VK_TRUE;
             ci.compareOp = p.cmp_func >= 1 && p.cmp_func <= 8 ? compare_op(p.cmp_func) : VK_COMPARE_OP_LESS_OR_EQUAL;
@@ -2306,7 +2309,7 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
     const uint32_t version = texture_slot_version((int)(handle & 0xFFFFF));
     const uint64_t dgen = texture_destroy_generation();
     const uint64_t key = (uint64_t)(handle & 0xFFFFF) | (uint64_t)want << 20 | (uint64_t)use << 28 | (uint64_t)storage_as << 32;
-    static const bool log_hits = getenv("RX_VK_LOG_HITS") != nullptr;
+    static const bool log_hits = env_on("RX_VK_LOG_HITS");
     static int64_t st_hit, st_new, st_ver, st_gen, st_n;
     const auto it = handle_hits().find(key);
     if (log_hits) {   // (the counters were a second search of this map on every binding, with the log off)
@@ -2409,7 +2412,7 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         static const bool no_bank_cache = desc_reuse_level() == 0;   // (RX_VK_DESC_REUSE=0: filled every time)
         // (hookshot) a graphics stage's c2 is made from its textures, samplers and images, its c0 from its storage buffers: it stands while
         // those do, whatever else was bound (a uniform buffer for each draw). RX_VK_BANK_GEN_OFF=1: while nothing at all was bound anew)
-        static const bool stage_gen_off = getenv("RX_VK_BANK_GEN_OFF") != nullptr;
+        static const bool stage_gen_off = env_on("RX_VK_BANK_GEN_OFF");
         const int bank_stage = std::clamp(st.nvn_stage, 0, kNvnStages - 1);
         const uint64_t gen = stage_gen_off || bank_stage > 4 ? s.bind_gen : index == 2 ? s.tex_gen[bank_stage] : s.ssbo_gen[bank_stage];
         if (!no_bank_cache && c.at != UINT64_MAX && c.bind_gen == gen && grid_same && c.size >= n) {
@@ -2421,7 +2424,7 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         FINE_N(FC_BANK_FILLS, 1);
         FINE_N(FC_BANK_FILL_BYTES, n);
         driver_bank_fill(s, (int)index, st.nvn_stage, tmp.data(), n);
-        static const bool check = getenv("RX_VK_CHECK_BANKS") != nullptr;   // (the fill against the word path)
+        static const bool check = env_on("RX_VK_CHECK_BANKS");   // (the fill against the word path)
         if (check)
             for (uint32_t off = 0; off < n; off += 4) {
                 const uint32_t w = driver_bank_word(s, (int)index, st.nvn_stage, off);
@@ -2478,7 +2481,7 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
                 return {cur->stream, at, n};
             }
         // (RX_VK_UB_SNAPSHOT=1: the contents as they are now, in the stream, not the pool the GPU reads later)
-        static const bool snapshot = getenv("RX_VK_UB_SNAPSHOT") != nullptr;
+        static const bool snapshot = env_on("RX_VK_UB_SNAPSHOT");
         BufferRef b = snapshot ? BufferRef{} : gpu_buffer_bind(u.addr, n, false);
         if (b && b.offset % align == 0) return {b.buffer, b.offset, n};
         const uint64_t at = stream_alloc(n, align);   // (unaligned or outside the pools: copied into the stream)
@@ -2553,7 +2556,7 @@ void dump_input(char kind, uint32_t index, uint32_t handle, const Texture* tex) 
 
 /// A descriptor over 2 ms is logged, 40 times, and only while RX_VK_SLOW_DESC is set. Off, the clock is not read.
 bool slow_desc_timing() {
-    static const int on = getenv("RX_VK_SLOW_DESC") != nullptr;
+    static const int on = env_on("RX_VK_SLOW_DESC");
     return on;
 }
 
@@ -2800,7 +2803,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 uint64_t n = std::max<uint64_t>(((size + (addr - base)) + 3) & ~3ull, 16);
                 {   // (hookshot, RX_VK_SSBO_STRETCH=1: a read-only buffer bound to its pool's end, up to 64 MB. Lichii bf3f395c9: the grass's
                     // task and mesh programs read records 12-18 MB past a base whose size word said less, read 0 and culled every blade)
-                    static const bool stretch = getenv("RX_VK_SSBO_STRETCH") != nullptr;
+                    static const bool stretch = env_on("RX_VK_SSBO_STRETCH");
                     if (stretch && !d.is_written && addr && d.count == 1)
                         if (const uint64_t end = gpu_pool_end(base); end > base + n)
                             n = std::max<uint64_t>(n, std::min<uint64_t>(end - base, 64ull << 20) & ~uint64_t{3});
@@ -2823,7 +2826,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 // (AyyBeeDee20738, PR 138) a table entry's region that does not fit its pool this moment bound nothing, and the next
                 // frame bound it again: its reads flipped between the data and 0, the picture between bright and dark. Smaller,
                 // down to 1 MB, rather than nothing (and past what is bound the shaders' search now goes on to the page table)
-                static const bool no_shrink = getenv("RX_VK_NO_TABLE_SHRINK") != nullptr;   // (A/B: unbound as before)
+                static const bool no_shrink = env_on("RX_VK_NO_TABLE_SHRINK");   // (A/B: unbound as before)
                 if (!b.buffer && d.count > 1 && addr && plausible && !no_shrink) {
                     uint64_t m = n;
                     if (const uint64_t end = gpu_pool_end(base); end > base) m = std::min<uint64_t>(m, end - base);
@@ -2878,7 +2881,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                                     none && ub ? ub->addr : (uint64_t)(uintptr_t)b.buffer, none && ub ? ub->size : b.offset);
                 }
                 static std::atomic<int> table_told{0}, table_seen{0};
-                static const int table_unlimited = getenv("RX_VK_LOG_TABLE") != nullptr;
+                static const int table_unlimited = env_on("RX_VK_LOG_TABLE");
                 if (d.count > 1 && table_track_open(table_told.load(std::memory_order_relaxed),
                                                     table_seen.load(std::memory_order_relaxed), table_unlimited)) {
                     table_seen.fetch_add(1, std::memory_order_relaxed);   // (hookshot) a table entry bound one frame and not the next, 60 lines, then it stops looking
@@ -2900,7 +2903,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 }
                 {   // (hookshot) RX_VK_LOG_WRITEBACK=1: the programs that bind a big written storage buffer (each written
                     // range is copied back to guest memory at the submission's end), 40 of them
-                    static const bool log_wb = getenv("RX_VK_LOG_WRITEBACK") != nullptr;
+                    static const bool log_wb = env_on("RX_VK_LOG_WRITEBACK");
                     static int logged;
                     if (log_wb && d.is_written && n >= (8ull << 20) && logged < 40) {
                         static std::vector<std::pair<uint64_t, uint32_t>> seen;
@@ -2960,7 +2963,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                                     : VkDescriptorBufferInfo{dev.null_descriptor ? VK_NULL_HANDLE : zero_buffer, 0,
                                                              dev.null_descriptor ? VK_WHOLE_SIZE : 16});
                 {   // (RX_VK_LOG_WRITTEN=1: every storage buffer range a program writes, once, 300 of them)
-                    static const bool on = getenv("RX_VK_LOG_WRITTEN") != nullptr;
+                    static const bool on = env_on("RX_VK_LOG_WRITTEN");
                     if (on && d.is_written) {
                         static std::mutex wm;
                         static std::unordered_set<uint64_t> seen;
@@ -3016,7 +3019,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 // every other frame. No texture there now. RX_VK_HANDLE_POINTER=1: the old handle
                 // (fragment stages only, the water's case: in other stages (the foliage culling's) the textures went missing and
                 // the foliage was culled whenever Link swung his sword. RX_VK_HANDLE_POINTER_ALL=1: every stage, as before)
-                static const bool all_stages = getenv("RX_VK_HANDLE_POINTER_ALL") != nullptr;
+                static const bool all_stages = env_on("RX_VK_HANDLE_POINTER_ALL");
                 const uint32_t handle = ((all_stages || st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) && handle_is_storage_pointer(info, d, k))
                                             ? 0u : handle_of(s, st, d, k);
                 desc_fp_note(handle);   // (Descriptor reuse)
@@ -3193,8 +3196,8 @@ bool bind_descriptors(VkCommandBuffer cmd, VkPipelineBindPoint bp, const Program
                 if (!w.pImageInfo[k].sampler) return false;
     Pushed& ps = pushed()[bp == VK_PIPELINE_BIND_POINT_COMPUTE];
     if (p.push) {
-        static const bool whole = getenv("RX_VK_PUSH_ALL") != nullptr;   // (A/B: every binding every time)
-        static const bool old_state = getenv("RX_VK_PUSH_STATE_OLD") != nullptr;   // (A/B: a vector of words a write, as before)
+        static const bool whole = env_on("RX_VK_PUSH_ALL");   // (A/B: every binding every time)
+        static const bool old_state = env_on("RX_VK_PUSH_STATE_OLD");   // (A/B: a vector of words a write, as before)
         if (whole || ps.cmd != cmd || ps.layout != p.layout || ps.n != dw().writes.size()) {
             if (g_fine) {
                 fine_n[FC_PUSH_FULL]++, fine_n[FC_PUSH_WRITES] += (int64_t)dw().writes.size();
@@ -3462,7 +3465,7 @@ void checkpoints_report() {
     static bool done;
     if (done) return;
     done = true;
-    if (getenv("RX_VK_FAULT_INFO")) device_fault_report();   // (now, while the process is still alive: the faulting address)
+    if (env_on("RX_VK_FAULT_INFO")) device_fault_report();   // (now, while the process is still alive: the faulting address)
     {   // (RX_VK_FLASH_RECORD=<program,...>: those programs' last draws, sizes and all)
         const uint64_t f = texture_frame_no();
         draw_records_log(f > 6 ? f - 6 : 0, f);
@@ -3471,7 +3474,7 @@ void checkpoints_report() {
     logf("vk: device lost: reading %s", dev.checkpoints ? "the checkpoints"
                                         : marker_words ? "the buffer markers"
                                                        : "the fault info (RX_VK_CHECKPOINTS=1 for markers)");
-    struct FaultLast { ~FaultLast() { if (std::getenv("RX_VK_FAULT_INFO")) device_fault_report(); } } fault_last;
+    struct FaultLast { ~FaultLast() { if (env_on("RX_VK_FAULT_INFO")) device_fault_report(); } } fault_last;
     const auto watched = [] {
         std::lock_guard lk(watch_mu);
         for (int i = 0; i < 40; i++)
@@ -3778,7 +3781,7 @@ int dyn_pack(const NvnState& s, const Targets& at, VkPrimitiveTopology topo, boo
     atb += (int)sizeof s.blend;
     // (hookshot) what the program makes of the write masks, not the program: draws change program far more often than they change that,
     // and each program change worked the whole state out again. RX_VK_DYN_PROG_KEY=1: the program, as before)
-    static const bool by_program = getenv("RX_VK_DYN_PROG_KEY") != nullptr;
+    static const bool by_program = env_on("RX_VK_DYN_PROG_KEY");
     const uint64_t prog = by_program || !cur_program ? (uint64_t)(uintptr_t)cur_program : program_wm_sig(*cur_program);
     std::memcpy(raw + atb, &prog, 8);
     return atb + 8;
@@ -3850,7 +3853,7 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
                 return true;
             }();
             (void)parsed;
-            static const bool log_on = getenv("RX_VK_LOG_CASCADE_BIAS") != nullptr;
+            static const bool log_on = env_on("RX_VK_LOG_CASCADE_BIAS");
             static int logged;
             if (log_on && logged < 40) {
                 logged++;
@@ -3893,7 +3896,7 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     d.scmpop[0] = compare_op(s.ds.sf_f), d.scmpop[1] = compare_op(s.ds.sf_b);
     d.discard = s.raster_discard && !sw().ignore_discard;
     d.poly = s.poly.mode == 0 ? VK_POLYGON_MODE_POINT : s.poly.mode == 1 ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
-    static const bool fp_lines = getenv("RX_VK_FOOTPRINT_LINES") != nullptr;   // (the footprints as wireframes)
+    static const bool fp_lines = env_on("RX_VK_FOOTPRINT_LINES");   // (the footprints as wireframes)
     if (fp && fp_lines) d.poly = VK_POLYGON_MODE_LINE;
     d.clamp = s.depth_clamp, d.a2c = s.ms.a2c != 0 && !no_a2c();
     d.n = dev.eds3_blend ? at.n : 0;
@@ -4120,7 +4123,7 @@ int64_t st_clears, st_masked_clears;
 /// before it still sampled them: a band of the picture, below or above a line that moved, for a frame (the fog's flat
 /// colour over a Grand Prix intro, the shadows' dark band in its race). RX_VK_CLEAR_IN_PASS=1: in the pass, as before.
 void clear_after_draws(VkCommandBuffer cmd) {
-    static const bool in_pass = getenv("RX_VK_CLEAR_IN_PASS") != nullptr;
+    static const bool in_pass = env_on("RX_VK_CLEAR_IN_PASS");
     if (in_pass || !pass().open || pass().draws == 0) return;
     static int logged;
     if (logged++ < 6)
@@ -4156,7 +4159,7 @@ uint16_t draw_hazards(VkCommandBuffer cmd, const Program& p, const NvnState& s, 
                 break;
             }
     }
-    static const bool off = getenv("RX_VK_NO_PASS_HAZARDS") != nullptr;
+    static const bool off = env_on("RX_VK_NO_PASS_HAZARDS");
     if (off || !pass().open) return writes;
     bool same = pass().depth == at.depth_view && pass().n == at.n && pass().width == at.width && pass().height == at.height;
     for (int i = 0; i < at.n && same; i++) same = pass().color[i] == at.color_view[i];
@@ -4280,7 +4283,7 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
         r.extra.clear();
         // (the streams the last recording of the slot grew into: given back after 120 recordings that stayed in the first, the
         // slot's last one being done (recording_wait). RX_VK_STREAM_KEEP=1: kept)
-        static const bool keep = getenv("RX_VK_STREAM_KEEP") != nullptr;
+        static const bool keep = env_on("RX_VK_STREAM_KEEP");
         if (r.streams.size() > 1 && !keep) {
             if (r.si > 0) r.idle = 0;
             else if (++r.idle >= 120) {
@@ -4333,7 +4336,7 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
 // ---- RX_VK_PASS_TRACE=1: the passes and dispatches of the last frames in stream order, logged around a flash (the
 // one-frame glitches: what the frame that showed one did differently from its neighbours) ----
 bool pass_trace_on() {
-    static const bool v = getenv("RX_VK_PASS_TRACE") != nullptr;
+    static const bool v = env_on("RX_VK_PASS_TRACE");
     return v;
 }
 std::mutex trace_mu;
@@ -4455,7 +4458,7 @@ void probe_draw(const NvnState& s, const Program& p, int pass_draws) {
             snprintf(line, sizeof line, "U %llu %016llx s%d c%d %#llx +%#llx nan %d inf %d huge %.0f zero %d first %#x", (unsigned long long)f,
                      (unsigned long long)p.key, ns, i + 3, (unsigned long long)u.addr, (unsigned long long)k, nan, inf, big, zero, first_bad);
             probe_ubos[slot].push_back(line);
-            static const bool hex = getenv("RX_VK_PROBE_UBO_HEX") != nullptr;   // (the words themselves: which constant went wrong)
+            static const bool hex = env_on("RX_VK_PROBE_UBO_HEX");   // (the words themselves: which constant went wrong)
             if (hex) {
                 std::string h = "H " + std::to_string(f) + " " + std::string(line + 2 + std::to_string(f).size() + 1, 16) + " c" + std::to_string(i + 3) + " ";
                 char w8[12];
@@ -5573,7 +5576,7 @@ bool fallback_compute_pipelines(Program& p) {
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = si;
         ci.layout = p.layout;
-        if (dev.task_mesh_fallback || getenv("RX_VK_NOOPT"))
+        if (dev.task_mesh_fallback || env_on("RX_VK_NOOPT"))
             ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         if (const VkResult r = cached_compute(&ci, &made[i]); r != VK_SUCCESS) {
             {
@@ -6078,7 +6081,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PROF_HOT(PROF_CMDS);
     texture_watch_prog(p.key);
     if (!same_desc) gfx_sampled() = draw_sampled();
-    static const bool barrier_every = getenv("RX_VK_BARRIER_EVERY_DRAW") != nullptr;   // (an experiment: a pass each)
+    static const bool barrier_every = env_on("RX_VK_BARRIER_EVERY_DRAW");   // (an experiment: a pass each)
     if (barrier_every) end_pass(cmd);
     uint16_t writes;
     {
@@ -6102,7 +6105,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             static thread_local std::vector<VkBufferCopy> copies;
             copies.clear();
             mesh_args_at = mesh_args_take(n);
-            static const bool show = getenv("RX_VK_LOG_MESH_INDIRECT") != nullptr;
+            static const bool show = env_on("RX_VK_LOG_MESH_INDIRECT");
             if (show && mesh_args_at > 4096 && (mesh_args_at & 4095) < n) {   // (the counts the GPU copied, of the last 4096)
                 uint32_t nonzero = 0, most = 0;
                 uint64_t sum = 0;
@@ -6113,7 +6116,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                 logf("vk: mesh counts: %u of 4096 not zero, largest %u, sum %llu", nonzero, most, (unsigned long long)sum);
             }
             {   // (amd-fix, RX_VK_LOG_MESH_PERPROG=1, diagnosis: per mesh program, the counts and firsts the GPU wrote, 4096 to 8192 entries ago)
-                static const bool per_prog = getenv("RX_VK_LOG_MESH_PERPROG") != nullptr;
+                static const bool per_prog = env_on("RX_VK_LOG_MESH_PERPROG");
                 if (per_prog) {
                     static std::vector<uint64_t> prog_at(kMeshArgs);
                     static uint32_t last_window = 0;
@@ -6239,7 +6242,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         }
     }
     if (d.indexed && s.restart) {   // (RX_VK_LOG_RESTART=1: the restarts draws ask for, by topology, index type and index)
-        static const bool log_restart = getenv("RX_VK_LOG_RESTART") != nullptr;
+        static const bool log_restart = env_on("RX_VK_LOG_RESTART");
         if (log_restart) {
             static std::mutex m;
             static std::map<uint64_t, int64_t> seen;
@@ -6257,7 +6260,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         for (const int stage : {6, 7, 1}) stats_dump_stage(p.key, s, stage);
         // (and as the GPU holds them, after it: RX_VK_GPU_DUMP=1 only; its bindings can sync a pool's mirror mid-frame, and
         // the culling chain then measured as broken)
-        static const bool gpu_dump_on = getenv("RX_VK_GPU_DUMP") != nullptr;
+        static const bool gpu_dump_on = env_on("RX_VK_GPU_DUMP");
         if (stats_query.cmd && gpu_dump_on) stats_query.state = &s, stats_query.prog = p.key;
     }
     if (d.mesh) {
@@ -6269,7 +6272,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         }
         {   // (amd-fix, diagnosis) RX_VK_LOG_MESH_PROGS=1: each mesh program's first draw and every 600th, with what its
             // indirect arguments hold in guest memory (0 groups: the culling pass before it left nothing)
-            static const bool per_prog = getenv("RX_VK_LOG_MESH_PROGS") != nullptr;
+            static const bool per_prog = env_on("RX_VK_LOG_MESH_PROGS");
             if (dump_on() && d.indirect && dump_mesh_indirect().size() < 256) dump_mesh_indirect().push_back({p.key, d.indirect});
             if (per_prog) {
                 static std::mutex mm;
@@ -6290,7 +6293,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             }
         }
         {   // (RX_VK_LOG_MESH_DRAWS=1: how large each is, the largest so far, 400 lines)
-            static const bool log_sizes = getenv("RX_VK_LOG_MESH_DRAWS") != nullptr;
+            static const bool log_sizes = env_on("RX_VK_LOG_MESH_DRAWS");
             if (log_sizes) {
                 static std::atomic<int> told{0};
                 static std::atomic<uint32_t> most{0};
@@ -6307,7 +6310,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             }
         }
         {   // (RX_VK_LOG_MESH_INDIRECT=1: what indirect mesh draws hold, 300 lines)
-            static const bool on = getenv("RX_VK_LOG_MESH_INDIRECT") != nullptr;
+            static const bool on = env_on("RX_VK_LOG_MESH_INDIRECT");
             static std::atomic<int> told{0};
             if (on && d.indirect && told < 300) {
                 uint32_t w[12]{}, cnt = 0;
@@ -6492,7 +6495,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
 
 /// A dispatch over 2 ms is logged, 60 times, and only while RX_VK_SLOW_DISPATCH is set. Off, the clock is not read.
 bool slow_dispatch_timing() {
-    static const int on = getenv("RX_VK_SLOW_DISPATCH") != nullptr;
+    static const int on = env_on("RX_VK_SLOW_DISPATCH");
     return on;
 }
 
@@ -6526,7 +6529,7 @@ struct DispatchClock {   // (a dispatch over 2 ms: logged, with where its time w
 /// (shaders/movie_upscale.comp) The upscale in a shader: it reads and writes the two images as the network's own passes do, where a blit came
 /// out black on an RX 9070 XT. False: no way to, the blit is tried
 bool movie_upscale(VkCommandBuffer cmd, uint32_t in_handle, uint32_t out_handle, const Texture* out) {
-    static const bool off = getenv("RX_VK_MOVIE_BLIT") != nullptr;
+    static const bool off = env_on("RX_VK_MOVIE_BLIT");
     if (off || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return false;
     Texture* a = nullptr;
     Texture* b = nullptr;
@@ -6604,7 +6607,7 @@ static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture
                                       const nvn_tex* out);
 
 bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
-    static const bool off = getenv("RX_VK_NO_UPSCALE_STUB") != nullptr;
+    static const bool off = env_on("RX_VK_NO_UPSCALE_STUB");
     if (off) return false;
     nvn_tex out{}, in{};
     uint64_t out_area = 0, in_area = 0, in_h = 0, out_h = 0;
@@ -6813,12 +6816,12 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
     auto& hist_frame = history.frame;
     // (off by default: bounding a pixel by the last frame's smeared everything that moves (the user: blurry, warping)
     // and only dimmed the flashes; RX_VK_TAAU_CLAMP=1 turns it on)
-    static const bool no_clamp = getenv("RX_VK_TAAU_CLAMP") == nullptr;
+    static const bool no_clamp = !env_on("RX_VK_TAAU_CLAMP");
     // (the ones a new size replaced: given back 120 presents later, when no work in flight can use them. They were left, the
     // output's size changing with the dynamic resolution. RX_VK_TAAU_HIST_LEAK=1: as before)
     struct OldHist { VkImage image; VmaAllocation mem; VkImageView view; uint64_t frame; };
     static std::vector<OldHist> old_hist;
-    static const bool leak = getenv("RX_VK_TAAU_HIST_LEAK") != nullptr;
+    static const bool leak = env_on("RX_VK_TAAU_HIST_LEAK");
     for (size_t i = 0; i < old_hist.size();) {
         if (texture_frame_no() - old_hist[i].frame < 120) { i++; continue; }
         if (old_hist[i].view) vkDestroyImageView(dev.device, old_hist[i].view, nullptr);
@@ -7151,7 +7154,7 @@ uint64_t warmed_stamp(bool libraries) {
 bool prepare_is_update() {
     // (opt-in, RX_VK_PREPARE_BACKGROUND=1: when the translator changed, the program cache is gone too, and the first area then
     // translated thousands of programs in play: 1 fps and black frames for minutes, which looked broken. Before the game is the default)
-    if (getenv("RX_VK_PREPARE_AGAIN") || !getenv("RX_VK_PREPARE_BACKGROUND")) return false;
+    if (env_on("RX_VK_PREPARE_AGAIN") || !env_on("RX_VK_PREPARE_BACKGROUND")) return false;
     FILE* f = fopen(prepared_path().c_str(), "rb");
     if (!f) return false;
     uint64_t have = 0;
@@ -7257,14 +7260,14 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     PreparedFor prepared_for;
     double hash_ms = 0;
     const PrepareWhy why = prepare_check(path, seed_path(), program_cache_stamp(), &prepared_for, &hash_ms);
-    const bool libraries = gpl_wanted() && !getenv("RX_VK_NO_WARM");
+    const bool libraries = gpl_wanted() && !env_on("RX_VK_NO_WARM");
     const uint64_t warmed = warmed_stamp(libraries);
     const std::string warming = path + ".warming";
     if (hash_ms > 0)
         logf("vk: the shader list was hashed (%.0f MB in %.0f ms): written since the last check, or too close to it to go by its time",
              prepared_for.seed_size / 1048576.0, hash_ms);
-    if (why == PrepareWhy::None && !getenv("RX_VK_PREPARE_AGAIN")) {
-        if (getenv("RX_VK_SEED_CHECK")) seed_open();
+    if (why == PrepareWhy::None && !env_on("RX_VK_PREPARE_AGAIN")) {
+        if (env_on("RX_VK_SEED_CHECK")) seed_open();
         if (prepared_for.warmed == warmed || background) return false;
         // (translated, and the driver's part is another driver's, or of before the libraries were wanted: that part alone, no
         // shader translated. Without libraries it is predict_run's pipelines, which follow a prepare that prepared)
@@ -7300,7 +7303,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     // crashes on one of them (it happens: TotK Recomp's issue 30) would crash here at every start: the file says this step began and
     // did not end, and the next start goes without it. Those libraries are then built when a draw first needs them
     bool warm = libraries && !background;
-    bool warm_cs = !getenv("RX_VK_NO_WARM") && !background;
+    bool warm_cs = !env_on("RX_VK_NO_WARM") && !background;
     if (background) {
     } else if (FILE* f = fopen(warming.c_str(), "rb")) {
         fclose(f);
@@ -7336,7 +7339,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
         ci.stage.pName = "main";
         pin_subgroup(ci.stage, p.workgroup[0]);
         ci.layout = p.layout;
-        if (getenv("RX_VK_NOOPT")) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+        if (env_on("RX_VK_NOOPT")) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         VkPipeline pl = VK_NULL_HANDLE;
         // (into the app's pipeline cache, saved to mkw_vk_pipelines.bin: without it the next start compiled them again in play
         // where the driver's own cache missed them, AMD's 15 s culling compiles each time)
@@ -7398,7 +7401,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     }
     for (std::thread& t : threads) t.join();
     if (!background) state_list_prepare(nullptr);   // (in play it is too late for the precompile: an update's is state_list_run, before)
-    if (!getenv("RX_VK_SEED_CHECK")) seed_close();
+    if (!env_on("RX_VK_SEED_CHECK")) seed_close();
     if (prepare_stopped()) {   // (closed: what was made is in the program cache already, the rest is made at the next start)
         logf("vk: shader preparation stopped at %zu of %zu (the window was closed): the next start goes on from there", done.load(),
              total);
@@ -7428,9 +7431,9 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
 /// (hookshot) An update (prepare_is_update): the seed is prepared in play, behind the game, too late for the precompile; the pipelines
 /// of the state list are made now, before it, so that precompile_run builds them before the game as on a first start
 void state_list_run() {
-    if (getenv("RX_VK_NO_STATE_LIST") || !seed_open()) return;
+    if (env_on("RX_VK_NO_STATE_LIST") || !seed_open()) return;
     state_list_prepare(nullptr);
-    if (!getenv("RX_VK_SEED_CHECK")) seed_close();
+    if (!env_on("RX_VK_SEED_CHECK")) seed_close();
 }
 void prepare_background() {
     std::thread([] {
@@ -7466,11 +7469,11 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
     // (the notes file and the state list opened now, before play, with the notes just read: pipeline_note and state_record opened
     // them at the first new pipeline in play, on the thread replaying, 150 ms and more)
-    if (!getenv("RX_VK_NO_PROGRAM_CACHE")) {
+    if (!env_on("RX_VK_NO_PROGRAM_CACHE")) {
         std::lock_guard lk(note_mu);
         if (!note_file) notes_open_locked(&notes);
     }
-    if (!getenv("RX_VK_NO_STATE_LIST")) {
+    if (!env_on("RX_VK_NO_STATE_LIST")) {
         std::lock_guard lk(state_mu);
         if (!state_file) state_open_locked();
     }
@@ -7605,7 +7608,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
 void predict_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
-    if (notes.empty() || getenv("RX_VK_NO_PREDICT")) return;
+    if (notes.empty() || env_on("RX_VK_NO_PREDICT")) return;
     size_t programs = 0;
     const std::vector<std::unique_ptr<PipeNote>> predicted = predict_pipelines(notes, &programs);
     std::unordered_map<uint64_t, std::vector<const PipeNote*>> by_program;
@@ -7764,7 +7767,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     // culling programs, every recording thread stopped behind it and the screen stayed black after the opening (6950 XT, RX 6600,
     // 2026-11-08). The dispatch waits up to 50 ms for it, which covers NVIDIA's compiles; one still compiling after that is left
     // out until it is ready, as graphics draws are. RX_VK_COMPUTE_WAIT=1: waited for, as before)
-    static const bool compute_wait = getenv("RX_VK_COMPUTE_WAIT") != nullptr;
+    static const bool compute_wait = env_on("RX_VK_COMPUTE_WAIT");
     if (!compute_wait && !p.compute_pipeline && !taau_key(p.key) && p.compute_state.load(std::memory_order_acquire) != 2) {
         int none = 0;
         const bool fresh = p.compute_state.compare_exchange_strong(none, 1);
@@ -7782,7 +7785,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 ci.stage.pName = "main";
                 pin_subgroup(ci.stage, q.workgroup[0]);
                 ci.layout = q.layout;
-                static const bool noopt = getenv("RX_VK_NOOPT") != nullptr;
+                static const bool noopt = env_on("RX_VK_NOOPT");
                 if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
                 return ci;
             };
@@ -7851,7 +7854,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         pin_subgroup(ci.stage, p.workgroup[0]);
         ci.layout = p.layout;
         {   // (local) RX_VK_NOOPT=1, as for graphics pipelines above
-            static const bool noopt = getenv("RX_VK_NOOPT") != nullptr;
+            static const bool noopt = env_on("RX_VK_NOOPT");
             if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         }
         const auto t0 = std::chrono::steady_clock::now();
@@ -7877,7 +7880,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     if (plk.on) par_mutex().unlock(), plk.on = false;
     dclock.t_pipe = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     end_pass(cmd);
-    static const bool no_grid_patch = getenv("RX_VK_NO_GRID_PATCH") != nullptr;
+    static const bool no_grid_patch = env_on("RX_VK_NO_GRID_PATCH");
     grid_patch_want = indirect && !no_grid_patch, grid_patch_at = UINT64_MAX;
     build_descriptors(s, p);
     grid_patch_want = false;
@@ -7911,7 +7914,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     }
     // (dispatches after other work wait for it: the WebGPU renderer's dispatches were ordered the same way by
     // wgpu's own tracking, and MKW's compute chains read what the one before wrote)
-    static const bool no_order = getenv("RX_VK_NO_DISPATCH_ORDER") != nullptr;
+    static const bool no_order = env_on("RX_VK_NO_DISPATCH_ORDER");
     if (work_since_barrier && !no_order) full_barrier(cmd, "barrier (dispatch)");
     work_since_barrier = true;
     if (!p.stages.empty() && p.stages[0].info.uses_cooperative_matrix) {   // (the game's networks, once each: what they read and write)
@@ -7978,7 +7981,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     {
         StatsQuery stats_query(cmd, p.key, indirect, x, y, z);   // (EvilOOT, RX_VK_DRAW_STATS)
         {   // (RX_VK_GPU_DUMP=1 with RX_VK_DRAW_STATS_PROGS: the wanted dispatches' storage buffers as the GPU holds them after)
-            static const bool gpu_dump_on = getenv("RX_VK_GPU_DUMP") != nullptr;
+            static const bool gpu_dump_on = env_on("RX_VK_GPU_DUMP");
             if (gpu_dump_on && stats_query.cmd && stats_prog_wanted(p.key)) stats_query.state = &s, stats_query.prog = p.key;
         }
         if (indirect) {
@@ -8035,11 +8038,11 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
 // against 2 with serial replay). RX_VK_NO_DRY_MARKS=1: as before
 thread_local bool dry_last_valid = false;   // (dry_mark_written's last targets are this dry pass's)
 void dry_marks_begin() {
-    static const bool kept = getenv("RX_VK_DRY_LAST_KEPT") != nullptr;
+    static const bool kept = env_on("RX_VK_DRY_LAST_KEPT");
     if (!kept) dry_last_valid = false;
 }
 void dry_mark_written(NvnState& s, bool compute, bool first) {
-    static const bool off = getenv("RX_VK_NO_DRY_MARKS") != nullptr;
+    static const bool off = env_on("RX_VK_NO_DRY_MARKS");
     if (off) return;
     if (!compute) {
         // (hookshot) the targets as the draw before had them are skipped, within one dry pass only: `first` is the pass's first draw OR

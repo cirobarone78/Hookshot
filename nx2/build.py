@@ -760,7 +760,7 @@ def main():
     obj_dir = os.path.join(out, "obj")
     gen_dir = os.path.join(out, "gen")   # (the logo and the fonts the Vulkan back end compiles in: made with it, below)
     os.makedirs(obj_dir, exist_ok=True)
-    if os.environ.get("RX_VK_ONLY") or a.dry_run:   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
+    if kit.env_on("RX_VK_ONLY") or a.dry_run:   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
         os.makedirs(gen, exist_ok=True)
     rt64 = rtgen.write(os.path.join(out, "rt64"))
     cc = toolchain.need(toolchain.find("clang"))
@@ -794,7 +794,7 @@ def main():
             host_srcs += [os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c", "prof.c")]
     else:
         srcs += [os.path.join(NX2_RT, "eden_shim.c"), write_info(out)]
-    if os.environ.get("RX_VK_ONLY"):   # (no lift needed: the back end alone)
+    if kit.env_on("RX_VK_ONLY"):   # (no lift needed: the back end alone)
         srcs = [s for s in srcs if os.path.exists(s)]
     if a.dry_run:   # (the lift's files: there is no game here)
         srcs = [s for s in srcs if os.path.dirname(s) != gen]
@@ -835,6 +835,7 @@ def main():
         host_deps += b"".join(open(os.path.join(POSIX, f), "rb").read() for f in sorted(os.listdir(POSIX)) if f.endswith(".h"))
         host_deps += open(os.path.join(GPU, "vk", "vk_api.h"), "rb").read()
     host_deps += open(os.path.join(GPU, "vk", "dlss_math.h"), "rb").read()   # (host/rx_backend.c's DLSS jitter)
+    host_deps += open(os.path.join(GPU, "vk", "compat", "hookshot_env.h"), "rb").read()   # (env_on: the switches' one rule)
     host_deps += ffmpeg_version_key()
     jobs += [(cc, s, os.path.join(obj_dir, "host_" + os.path.basename(s)[:-2] + ".o"),
               host_fl + ["-I" + os.path.join(OPUS, "include")] +
@@ -985,7 +986,7 @@ def main():
             for f in ("win32_posix.c",):
                 vk_jobs.append((cc, os.path.join(POSIX, f), os.path.join(obj_dir, "vk_posix_" + f[:-2] + ".o"), cflags, pdeps))
         jobs += vk_jobs
-    vk_only = bool(os.environ.get("RX_VK_ONLY"))   # (the renderer alone, the game's objects as they are)
+    vk_only = kit.env_on("RX_VK_ONLY")   # (the renderer alone, the game's objects as they are)
     if vk_only:
         jobs = list(vk_jobs)
     if a.dry_run:   # (the compile starts here: what it would read, said and checked, and nothing compiled)
