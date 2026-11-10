@@ -397,6 +397,12 @@ static void load_hookshot_env(void) {
     }
     FILE *f = fopen(path, "r");
     if (!f) return;
+    /* The environment the game was started with wins over the file: a switch set for one launch (HOS_FULLSCREEN=0 in a
+       shell, a script's RX_VK_PACE=1) beats the same name saved in the file. The file's own later lines still replace its
+       earlier ones: the names it set are kept here (for the whole run: a second read sets them again), so they are not taken
+       for the environment's */
+    static char from_file[64][96];
+    static int from_file_n;
     char line[512];
     while (fgets(line, sizeof line, f)) {
         char *s = line;
@@ -411,6 +417,14 @@ static void load_hookshot_env(void) {
             fprintf(stderr, "env: hookshot_env.txt: %s left out (only the game's switches, and no paths, are taken from it)\n", s);
             continue;
         }
+        int ours = 0;
+        for (int i = 0; i < from_file_n && !ours; i++) ours = !strcmp(from_file[i], s);
+        if (!ours && getenv(s)) {
+            fprintf(stderr, "env: %s: %s left out (set in the environment, which goes first)\n",
+                    other && *other ? "HOS_ENV_FILE" : "hookshot_env.txt", s);
+            continue;
+        }
+        if (!ours && from_file_n < 64 && strlen(s) < sizeof from_file[0]) strcpy(from_file[from_file_n++], s);
 #ifdef _WIN32
         *eq = '=';
         _putenv(s);
