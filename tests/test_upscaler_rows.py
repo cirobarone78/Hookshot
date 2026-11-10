@@ -46,8 +46,9 @@ def main():
             raise SystemExit("ini_key: %s is not saved as %s (an options file from before would lose it)" % (value, name))
     # the menu's rules are upscaler_rows.h's, checked by behaviour in test_upscaler_rows.cpp: here only that the menu uses them
     uses = {
-        "row_fixed": ("ur::upscaler_fixed(", "ur::resolution_fixed(", "reflex_available()", "ur::model_fixed("),
-        "row_shown": ("ur::upscaler_shown(dlss_built())", "ur::model_shown(dlss_built())"),
+        "row_fixed": ("ur::upscaler_fixed(", "ur::resolution_fixed(", "reflex_available()", "ur::model_fixed(",
+                      "ur::fsr_model_fixed("),
+        "row_shown": ("ur::upscaler_shown(dlss_built() || ffx::built())", "ur::model_shown(dlss_built())", "fsr_drawing()"),
         "set_row": ("ur::step_upscaler(", "ur::step(", "ur::snap(", "row_fixed("),
     }
     for name, calls in uses.items():
@@ -92,8 +93,19 @@ def main():
         raise SystemExit("vk_dlss.cpp: DLSS's feature is not made again for another DLSS model")
     if "upscaler_rows::dlss_preset(opts.dlss_model" not in function(dlss, "unsigned wanted_preset() {"):
         raise SystemExit("vk_dlss.cpp: the DLSS model row (and RX_VK_DLSS_PRESET over it) is not the preset asked for")
-    if "dlss_why() != DLSS_OK" not in function(dlss, "int dlss_mode() {"):
+    mode = function(dlss, "int dlss_mode() {")
+    if "dlss_why() != DLSS_OK" not in mode:
         raise SystemExit("dlss_mode asks for DLSS where it cannot run (DLAA would hold the 3D at full scale for nothing)")
+    if "ffx::why() != ffx::OK" not in mode:
+        raise SystemExit("dlss_mode asks for AMD FSR where its runtime is not there")
+    # AMD FSR's two rows: not the Quality preset's, no restart
+    for row, hint in (('"FSR version", &opts.fsr_version', "hn_fsr_version, false, true"),
+                      ('"FSR 4 model", &opts.fsr_model', "hn_fsr_model, false, true")):
+        if row not in menu:
+            raise SystemExit("vk_menu.cpp: %s is missing" % row.split(",")[0])
+        entry = menu[menu.index(row):]
+        if not entry[:entry.index("},")].rstrip().endswith(hint):
+            raise SystemExit("vk_menu.cpp: %s takes a restart or turns the Quality preset to Custom" % row.split(",")[0])
     with tempfile.TemporaryDirectory(prefix="upscaler-rows-") as tmp:
         exe = Path(tmp) / "upscaler-rows"
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror",

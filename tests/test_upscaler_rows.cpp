@@ -74,5 +74,23 @@ int main() {
     CHECK("model row shown with DLSS built", ur::model_shown(true) && !ur::model_shown(false));
     CHECK("model row fixed with the game's own or the switch", ur::model_fixed(GAME, false) && !ur::model_fixed(DLSS, false) &&
                                                                !ur::model_fixed(DLAA, false) && ur::model_fixed(DLSS, true));
+    // AMD FSR (vk_ffx.cpp): its two Upscaler values, the Render resolution's steps as DLSS's, Native AA as DLAA
+    CHECK("FSR's values follow DLAA's", ur::FSR == 3 && ur::FSR_AA == 4);
+    CHECK("FSR steps as DLSS", ur::step(ur::FSR, 0, 1) == 3 && ur::step(ur::FSR, 3, 1) == 5 && ur::step(ur::FSR, 0, -1) == 6 &&
+                                   ur::snap(ur::FSR, 1) == 3);
+    CHECK("FSR Native AA does not step", ur::step(ur::FSR_AA, 3, 1) == 3 && ur::snap(ur::FSR_AA, 5) == 5 &&
+                                             ur::resolution_fixed(ur::FSR_AA) && !ur::resolution_fixed(ur::FSR));
+    CHECK("native and scaled", ur::native(DLAA) && ur::native(ur::FSR_AA) && !ur::native(DLSS) && !ur::native(ur::FSR) &&
+                                   ur::temporal_scaled(DLSS) && ur::temporal_scaled(ur::FSR) && !ur::temporal_scaled(GAME));
+    CHECK("upscaler with FSR only", ur::step_upscaler(0, 1, false, true) == 3 && ur::step_upscaler(3, 1, false, true) == 4 &&
+                                        ur::step_upscaler(4, 1, false, true) == 0 && ur::step_upscaler(0, -1, false, true) == 4);
+    CHECK("upscaler with DLSS and FSR", ur::step_upscaler(2, 1, true, true) == 3 && ur::step_upscaler(4, 1, true, true) == 0 &&
+                                            ur::step_upscaler(3, -1, true, true) == 2);
+    CHECK("upscaler: FSR left out without its runtime", ur::step_upscaler(2, 1, true, false) == 0 &&
+                                                            ur::step_upscaler(3, 1, true, false) == 1);
+    CHECK("DLSS model row fixed with FSR", ur::model_fixed(ur::FSR, false) && ur::model_fixed(ur::FSR_AA, false));
+    CHECK("FSR rows fixed unless FSR draws", ur::fsr_model_fixed(GAME, false) && ur::fsr_model_fixed(DLSS, false) &&
+                                                 !ur::fsr_model_fixed(ur::FSR, false) && !ur::fsr_model_fixed(ur::FSR_AA, false) &&
+                                                 ur::fsr_model_fixed(ur::FSR, true));
     std::puts("upscaler rows: all checks passed");
 }

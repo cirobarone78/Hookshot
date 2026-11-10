@@ -75,7 +75,7 @@ you start the game from its launcher, which also updates it.
 - **Your copy of the game at the supported version:** program `0400486024DEC000`, update v131072, build `e0f3ccfa`.
   Other versions do not work. A `.nup` file, or the `romfs` and `exefs` folders.
 - 64-bit Windows 10 or 11, or 64-bit Linux with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora, Arch,
-  SteamOS...) and a CPU with AVX2.
+  SteamOS ...) and a CPU with AVX2.
 - A graphics card with Vulkan 1.3 and mesh shaders, with an up-to-date driver: NVIDIA GeForce RTX 20 series or newer,
   AMD Radeon RX 6000 series or newer, or Intel Arc. On Linux, Mesa or NVIDIA's driver. Cards without mesh shaders are
   not supported.
@@ -220,9 +220,11 @@ choices and starts the game again, so progress since your last save is lost.
 | | Frame pacing | Off, On | Off |
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160 (after a restart) | 2048x1152 |
-| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs) | Game's own |
-| | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (builds with DLSS; used by DLSS and DLAA) | Transformer (K) |
-| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA: Native | Auto |
+| | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR, AMD FSR Native AA (Windows, with AMD's FSR runtime, below; any GPU) | Game's own |
+| | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (builds with DLSS; shown with DLSS and DLAA) | Transformer (K) |
+| | FSR version | Auto (AMD's choice), FSR 4, FSR 3.1 (shown with AMD FSR and FSR Native AA) | Auto |
+| | FSR 4 model | Auto, FP8, INT8, INT8 RDNA2, INT8 Lite (shown with FSR version FSR 4) | Auto |
+| | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS or AMD FSR: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA or FSR Native AA: Native | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Handheld profile | Off, On (after a restart) | Off |
@@ -260,9 +262,10 @@ choices and starts the game again, so progress since your last save is lost.
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
   show artifacts. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
-  included. The **Upscaler** fills it from the 3D: the game's own network, or NVIDIA DLSS or DLAA (the 3D at full size,
-  edges smoothed). Both look softer than the game's own: set **Sharpness** to around 80% with them. **DLSS model**
-  chooses their network (below). **Render
+  included. The **Upscaler** fills it from the 3D: the game's own network, NVIDIA DLSS or DLAA (the 3D at full size,
+  edges smoothed), or AMD FSR or FSR Native AA (the same two ways, on any GPU). They look softer than the game's own:
+  set **Sharpness** to around 80% with them. **DLSS model** chooses DLSS's network, **FSR version** and **FSR 4 model**
+  FSR's (both below). **Render
   resolution** is the 3D's share of the output. The **Window scaling filter** then scales the frame to your window,
   and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
   profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
@@ -529,15 +532,39 @@ of its own downloads (`C:\ProgramData\NVIDIA\NGX\models`) before it uses the gam
 </details>
 
 <details>
+<summary>AMD FSR (optional, AMD's runtime under AMD's license)</summary>
+
+On Windows the Upscaler row also offers **AMD FSR** and **AMD FSR Native AA** (`dlss=3` and `dlss=4` in
+`hookshot_options.ini`, `RX_VK_DLSS=3/4` for one run), on any GPU with Vulkan 1.3. They take the same inputs as DLSS
+(the scene's colour, depth, the camera's and the characters' motion, the camera's jitter) and run AMD's FSR from its
+signed runtime for Vulkan, FSR SDK 2.4: **FSR 4.1.2** (machine learning) and **FSR 3.1.6**.
+
+- **FSR version:** Auto takes the newest FSR AMD offers on your GPU: FSR 4 on Radeon RX 9000, RX 7000, RX 6000 and
+  recent Ryzen APUs, FSR 3.1 elsewhere. FSR 4 and FSR 3.1 choose one.
+- **FSR 4 model** (with FSR 4): AMD's FSR 4 carries four networks: FP8 (made for RDNA 4), INT8 (RDNA 3), INT8 RDNA2 and
+  INT8 Lite (APUs and handhelds). Auto takes AMD's pick for your GPU, and INT8 Lite where AMD offers no FSR 4 (NVIDIA
+  and Intel cards). Choosing one runs that network whatever AMD's own check says, so it may not run on every GPU. On an
+  NVIDIA card the INT8 networks cost more GPU time than FSR 3.1; INT8 Lite is the lightest of them.
+- `RX_VK_FSR_MODEL=<0..6>` chooses for one run (0 Auto, 1 FSR 3.1, 2 FP8, 3 INT8, 4 INT8 RDNA2, 5 INT8 Lite, 6 FSR 4
+  Auto); `RX_VK_FSR=0` leaves FSR out; `RX_VK_FFX_LOG=1` puts AMD's runtime messages in `hookshot_log.txt`.
+
+AMD's runtime is not in the repository. `python -I scripts/ffx_sdk.py [--game <game folder>]` fetches
+`amd_fidelityfx_loader_vk.dll`, `amd_fidelityfx_upscaler_vk.dll` and AMD's license from AMD's FidelityFX SDK repository
+(tag v2.4.0), each checked against its SHA-256; `make_game.py --fetch-ffx-sdk` does the same before a build
+(`HOOKSHOT_FFX_SDK=<folder>` keeps them elsewhere than `work\ffx-sdk`) and puts them in the game folder's `ffx` folder.
+The game looks for them in `RX_VK_FFX_DIR`, then the game folder's `ffx` folder, then `%LOCALAPPDATA%\Hookshot\ffx`.
+A build with them has the camera jitter FSR needs, as a build with DLSS does.
+
+</details>
+
+<details>
 <summary>Switches for testing (hookshot_env.txt)</summary>
 
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` in the game folder, one `NAME=VALUE` a
 line, on Windows and Linux. The running game reads it, not the builder. A test run can name another file with
 `HOS_ENV_FILE=<path>`; the game then reads that one instead and leaves `hookshot_env.txt` alone.
 `hookshot_env.txt` sets only the game's own switches (names that start with `RX_`, `HOS_`, `HOOKSHOT_`, `EDEN_`,
-`NVN_`, `TOTK_` or `SDL_`, but not SDL's library names such as `SDL_VULKAN_LIBRARY`), and no value that is a path except
-`RX_VK_DLSS_DIR`'s (a folder on this PC, not a network share), and no file name for the switches that write one;
-other lines are left out, and the
+`NVN_`, `TOTK_` or `SDL_`), and no value that is a path except `RX_VK_DLSS_DIR`'s; other lines are left out, and the
 log says so. Switches that need a path, or other variables, go in a file named by `HOS_ENV_FILE`.
 
 To enable the debug menu, add `HOS_OOT_CHEATS=1` to `hookshot_env.txt` in the game folder. Restart the game,

@@ -60,6 +60,7 @@
 #include "dlss_math.h"
 #include "upscaler_rows.h"
 #include "vk_draw.h"
+#include "vk_ffx.h"
 #include "vk_menu.h"
 #include "vk_paths.h"
 #include "vk_texture.h"
@@ -68,7 +69,11 @@
 #include "nvsdk_ngx_vk.h"
 #include "nvsdk_ngx_helpers.h"
 #include "nvsdk_ngx_helpers_vk.h"
-
+#endif
+// the inputs below (the scene's camera, colour, depth and motion) are DLSS's and AMD FSR's alike (vk_ffx.cpp):
+// they are built with either upscaler there
+#if defined(HOOKSHOT_NGX) || defined(HOOKSHOT_FFX)
+#define HOOKSHOT_TEMPORAL 1
 #include "shaders/dlss_actor_frag_spv.h"
 #include "shaders/dlss_actor_vert_spv.h"
 #include "shaders/dlss_out_comp_spv.h"
@@ -97,14 +102,17 @@ DlssWhy dlss_why() {
 }
 
 int dlss_mode() {
-    if (dlss_why() != DLSS_OK) return 0;
+    // (3 AMD FSR and 4 AMD FSR Native AA too, where AMD's runtime is: vk_ffx.cpp)
     static const int env = env_switch("RX_VK_DLSS");
-    return std::clamp(env >= 0 ? env : opts.dlss, 0, 2);
+    const int m = std::clamp(env >= 0 ? env : opts.dlss, 0, 4);
+    if ((m == 1 || m == 2) && dlss_why() != DLSS_OK) return 0;
+    if ((m == 3 || m == 4) && ffx::why() != ffx::OK) return 0;
+    return m;
 }
 bool dlss_wanted() { return dlss_mode() != 0; }
-bool dlss_full_scale() { return dlss_mode() == 2; }
+bool dlss_full_scale() { return dlss_mode() == 2 || dlss_mode() == 4; }
 
-#ifdef HOOKSHOT_NGX
+#ifdef HOOKSHOT_TEMPORAL
 
 namespace {
 
@@ -119,6 +127,7 @@ struct Image {
 struct Camera {
     float current[16]{};      // (its view-projection)
     float jitter[2]{};        // (the projection's offset of the picture's centre, in clip space: nx2/oot_jitter.py)
+    float near_plane = 0.1f, far_plane = 1000.0f, fov_y = 1.0f;   // (from its projection, for AMD FSR)
     uint32_t width = 0, height = 0;
     Texture* depth = nullptr;
     uint64_t depth_gen = 0;   // (texture_destroy_generation when taken: a depth texture destroyed since is not used)
@@ -130,9 +139,12 @@ struct State {
     std::mutex mu;
     bool ngx_tried = false, ngx_ok = false;
     std::atomic<bool> failed{false};   // (atomic: dlss_jitter_size reads it on the game's thread, without the lock)
+#ifdef HOOKSHOT_NGX
     NVSDK_NGX_Parameter* caps = nullptr;
     NVSDK_NGX_Parameter* params = nullptr;
     NVSDK_NGX_Handle* feature = nullptr;
+#endif
+    std::chrono::steady_clock::time_point last_time{};   // (the last upscale's: AMD FSR's frame time)
     uint32_t feature_rw = 0, feature_rh = 0, feature_ow = 0, feature_oh = 0;   // (its largest render size, its output)
     uint32_t min_rw = 0, min_rh = 0;
     unsigned feature_preset = ~0u;   // (the preset it was made with: another one from the menu makes it again)
@@ -270,6 +282,7 @@ bool make_image(VkCommandBuffer cmd, Image& im, VkFormat format, uint32_t w, uin
     return true;
 }
 
+#ifdef HOOKSHOT_NGX
 NVSDK_NGX_Resource_VK resource(const Image& im, bool write) {
     return NVSDK_NGX_Create_ImageView_Resource_VK(im.view, im.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, im.format,
                                                   im.width, im.height, write);
@@ -446,6 +459,7 @@ bool ngx_init() {
     g_why = DLSS_OK;
     return true;
 }
+#endif  // HOOKSHOT_NGX
 
 /// One compute pipeline with push descriptors; what it made is destroyed again when a step fails
 bool make_pipeline(const uint32_t* code, size_t size, const VkDescriptorType* types, uint32_t n, uint32_t push,
@@ -718,6 +732,7 @@ int actor_motion(VkCommandBuffer cmd, const Camera& cam, const float* before, ui
     return (int)draws.size();
 }
 
+#ifdef HOOKSHOT_NGX
 /// DLSS's preset: the DLSS model row's, RX_VK_DLSS_PRESET over it (upscaler_rows.h dlss_preset)
 unsigned wanted_preset() {
     static const char* const env = getenv("RX_VK_DLSS_PRESET");
@@ -805,12 +820,26 @@ bool make_feature(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, ui
     s.last_frame = 0;   // (a new history)
     return true;
 }
+#endif  // HOOKSHOT_NGX
+
+/// later() as vk_ffx.cpp takes it
+const ffx::Later& ffx_later() {
+    static const ffx::Later l = [](std::function<void()> f) { later(std::move(f)); };
+    return l;
+}
 
 }  // namespace
 
+#ifdef HOOKSHOT_NGX
 bool dlss_built() { return true; }
+#else
+bool dlss_built() { return false; }
+#endif
 
 void dlss_instance_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all) {
+#ifndef HOOKSHOT_NGX
+    return;
+#endif
     if (env_switch("RX_VK_DLSS") == 0) return;
     for (const auto& e : all)
         if (!strcmp(e.extensionName, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)) {
@@ -823,6 +852,9 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
     // (NGX's: VK_NVX_binary_import and VK_NVX_image_view_handle, with push descriptors and buffer device addresses,
     // which the replay enables already: core 1.2's bufferDeviceAddress stands for VK_EXT_buffer_device_address. The NVX ones
     // are on whenever the device has them, so the Insert menu's row needs no restart)
+#ifndef HOOKSHOT_NGX
+    return;
+#endif
     if (env_switch("RX_VK_DLSS") == 0) return;
     bool both = true;
     for (const char* name : {VK_NVX_BINARY_IMPORT_EXTENSION_NAME, VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME}) {
@@ -838,10 +870,13 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
 }
 
 void dlss_probe() {
+    ffx::probe();   // (AMD FSR's runtime asked once too)
+#ifdef HOOKSHOT_NGX
     if (dlss_why() != DLSS_OK || g_why.load(std::memory_order_relaxed) >= 0 || !dev.device) return;
     State& s = st();
     std::lock_guard lk(s.mu);
     ngx_init();
+#endif
 }
 
 void dlss_note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Texture* depth, uint64_t camera,
@@ -866,6 +901,14 @@ void dlss_note_scene_draw(const Texture* color0, uint32_t width, uint32_t height
     std::memcpy(k.current, c + 0x30 / 4, sizeof k.current);
     // (the offset sead's projection gave the frustum, in its third column: 2 * offset, which moves the picture by -that)
     k.jitter[0] = -c[0x78 / 4], k.jitter[1] = -c[0x88 / 4];
+    {   // (for AMD FSR: the near and far planes and the vertical field of view from the projection at 0x70, row
+        // major: z_clip = A z + B with A at 0x98 and B at 0x9c, w = -z; depth 0 at the near plane, 1 at the far one)
+        const float p11 = std::fabs(c[0x84 / 4]), a = c[0x98 / 4], b = c[0x9c / 4];
+        if (p11 > 0.0f) k.fov_y = 2.0f * std::atan(1.0f / p11);
+        if (a != 0.0f) k.near_plane = std::fabs(b / a);
+        k.far_plane = std::fabs(a + 1.0f) > 1e-6f ? std::fabs(b / (a + 1.0f)) : 1e6f;
+        if (!(k.near_plane > 0.0f) || !(k.far_plane > k.near_plane)) k.near_plane = 0.1f, k.far_plane = 1e6f;
+    }
     k.width = width, k.height = height, k.depth = depth, k.depth_gen = texture_destroy_generation(), k.frame = now;
     k.valid = true;
 }
@@ -901,15 +944,24 @@ int dlss_status(char* b, size_t n) {
     for (const auto& u : s.uploads)
         if (u.buffer) own += allocation_size(u.memory);
     unsigned long long ngx = 0;
-    const bool ngx_known = s.caps && NVSDK_NGX_SUCCEED(NGX_DLSS_GET_STATS(s.caps, &ngx));
+    bool ngx_known = false;
+#ifdef HOOKSHOT_NGX
+    ngx_known = s.caps && NVSDK_NGX_SUCCEED(NGX_DLSS_GET_STATS(s.caps, &ngx));
+#endif
+    if (mode >= 3 && ffx::memory()) ngx = ffx::memory(), ngx_known = true;   // (AMD FSR's context)
     const uint64_t draws = s.actor_draws - s.status_draws, frames = s.actor_frames - s.status_frames;
     char feature[48] = "";
     if (ngx_known) snprintf(feature, sizeof feature, ", its feature %llu MB", ngx >> 20);
     char passed[64] = "";
     if (s.status_passed) snprintf(passed, sizeof passed, ", %llu left to the game's network", (unsigned long long)s.status_passed);
+    char name[64];
+    if (mode >= 3)
+        snprintf(name, sizeof name, "AMD FSR %s%s%s%s", ffx::version_name(), *ffx::model_name() ? " " : "", ffx::model_name(),
+                 mode == 4 ? " Native AA" : "");
+    else snprintf(name, sizeof name, "%s", mode == 2 ? "DLAA" : "DLSS");
     snprintf(b, n, "; %s: %llu frames drawn%s, %llu features made, jitter %+.3f %+.3f px%s, actor motion %llu draws in %llu "
              "frames (%.3f ms CPU a frame), its images %llu MB%s",
-             mode == 2 ? "DLAA" : "DLSS", (unsigned long long)s.status_drawn, passed, (unsigned long long)s.features_made,
+             name, (unsigned long long)s.status_drawn, passed, (unsigned long long)s.features_made,
              s.status_jitter[0], s.status_jitter[1], s.status_motion ? "" : " (no motion)",
              (unsigned long long)draws, (unsigned long long)frames, frames ? s.actor_ns / 1e6 / (double)frames : 0.0,
              (unsigned long long)(own >> 20), feature);
@@ -923,6 +975,7 @@ void dlss_idle() {
     std::lock_guard lk(s.mu);
     const uint64_t now = texture_frame_no();
     if (now - s.asked <= 120) return;   // (DLSS in use, or off for under 120 frames (2 s): kept, a row stepped through comes back at once)
+#ifdef HOOKSHOT_NGX
     if (s.feature) {
         NVSDK_NGX_Handle* old = s.feature;
         later([old] { NVSDK_NGX_VULKAN_ReleaseFeature(old); });
@@ -931,6 +984,8 @@ void dlss_idle() {
         logf("vk: NVIDIA DLSS: not used for 120 frames (the last at frame %llu, now %llu): its feature and images let go; "
              "the next upscale with it makes them again", (unsigned long long)s.asked, (unsigned long long)now);
     }
+#endif
+    ffx::release(ffx_later());   // (AMD FSR's context too)
     for (Image* im : {&s.color, &s.depth, &s.motion, &s.output}) drop_image(*im);
     for (auto& pb : s.pose_buffers)   // (the actor motion's poses and cameras)
         if (pb.buffer) {
@@ -1061,10 +1116,17 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
         return fail("unexpected scene depth");
     if (out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || !dlss_checks::scene_size_fits(rw, rh, ow, oh))
         return fail("unexpected output");
-    if (!ngx_init()) {
+    // (3 and 4 are AMD FSR and its Native AA, vk_ffx.cpp, with the same inputs)
+    const int mode = dlss_mode();
+    const bool fsr = mode >= 3;
+#ifdef HOOKSHOT_NGX
+    if (!fsr && !ngx_init()) {
         s.failed = true;
         return fail("DLSS not available");
     }
+#else
+    if (!fsr) return fail("DLSS not in this build");
+#endif
     if (!make_pipelines()) {
         s.failed = true;
         return fail("its shaders were not made");
@@ -1072,18 +1134,25 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     const VkImageView dview = depth_view(cam.depth);
     if (!dview) return fail("no view of the scene depth");
     // (DLAA: DLSS at the render size, anti-aliasing alone; its picture then scaled to the output's by dlss_out.comp. With
-    // it the 3D is drawn at full scale, dlss_full_scale)
-    const bool dlaa = dlss_mode() == 2;
+    // it the 3D is drawn at full scale, dlss_full_scale. FSR's Native AA the same)
+    const bool dlaa = mode == 2 || mode == 4;
     const uint32_t dw = dlaa ? rw : ow, dh = dlaa ? rh : oh;
     // (from here commands are recorded, NGX's own too: whichever way this returns, the program's descriptor pushes are gone from
     // the bind point and are pushed again)
     struct Disturbed {
         ~Disturbed() { descriptors_disturbed(); }
     } disturbed;
-    if (!make_feature(cmd, rw, rh, dw, dh)) return false;
-    if (!make_image(cmd, s.color, VK_FORMAT_R16G16B16A16_SFLOAT, s.feature_rw, s.feature_rh) ||
-        !make_image(cmd, s.depth, VK_FORMAT_R32_SFLOAT, s.feature_rw, s.feature_rh) ||
-        !make_image(cmd, s.motion, VK_FORMAT_R16G16_SFLOAT, s.feature_rw, s.feature_rh, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) ||
+    // (the inputs' images: DLSS's feature's largest render size; FSR's the output's, which any render size the game's dynamic
+    // resolution picks fits in, so they are not made again as it moves)
+    uint32_t iw = s.feature_rw, ih = s.feature_rh;
+#ifdef HOOKSHOT_NGX
+    if (!fsr && !make_feature(cmd, rw, rh, dw, dh)) return false;
+    iw = s.feature_rw, ih = s.feature_rh;
+#endif
+    if (fsr) iw = dw, ih = dh;
+    if (!make_image(cmd, s.color, VK_FORMAT_R16G16B16A16_SFLOAT, iw, ih) ||
+        !make_image(cmd, s.depth, VK_FORMAT_R32_SFLOAT, iw, ih) ||
+        !make_image(cmd, s.motion, VK_FORMAT_R16G16_SFLOAT, iw, ih, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) ||
         !make_image(cmd, s.output, VK_FORMAT_R16G16B16A16_SFLOAT, dw, dh))
         return fail("its images were not made");
 
@@ -1148,24 +1217,48 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
         vkCmdDispatch(cmd, (rw + 7) / 8, (rh + 7) / 8, 1);
         full_barrier(cmd);
     }
-    NVSDK_NGX_Resource_VK color = resource(s.color, false), depth = resource(s.depth, false), mv = resource(s.motion, false),
-                          output = resource(s.output, true);
-    NVSDK_NGX_VK_DLSS_Eval_Params ep{};
-    ep.Feature.pInColor = &color, ep.Feature.pInOutput = &output;
-    ep.pInDepth = &depth, ep.pInMotionVectors = &mv;
     // (the jitter in render pixels, x right and y down)
     float jitter_px[2];
     dlss_math::jitter_to_pixels(cam.jitter, rw, rh, jitter_px);
-    ep.InJitterOffsetX = jitter_px[0], ep.InJitterOffsetY = jitter_px[1];
-    ep.InRenderSubrectDimensions = {rw, rh};
-    ep.InReset = reset ? 1 : 0;
-    ep.InMVScaleX = ep.InMVScaleY = 1.0f;
-    const NVSDK_NGX_Result r = NGX_VULKAN_EVALUATE_DLSS_EXT(cmd, s.feature, s.params, &ep);
-    note_work();   // (as at its creation: the barrier after it, and the game's next one, are recorded)
-    if (NVSDK_NGX_FAILED(r)) {
-        logf("vk: NVIDIA DLSS: its evaluation failed (%#x): the game's upscale from now on", (unsigned)r);
-        s.failed = true;
-        return false;   // (the network writes its output over whatever the evaluation did)
+    {   // (RX_VK_FSR_JITTER=<sx><sy>, a test: the signs FSR is given the jitter with, "++" by default)
+        static const char* const js = getenv("RX_VK_FSR_JITTER");
+        if (fsr && js && strlen(js) >= 2) jitter_px[0] *= js[0] == '-' ? -1.f : 1.f, jitter_px[1] *= js[1] == '-' ? -1.f : 1.f;
+    }
+    if (fsr) {   // (AMD FSR, vk_ffx.cpp)
+        const auto t = std::chrono::steady_clock::now();
+        float ms = s.last_time.time_since_epoch().count() ? std::chrono::duration<float, std::milli>(t - s.last_time).count() : 16.7f;
+        s.last_time = t;
+        ffx::Frame f;
+        f.cmd = cmd;
+        f.color = {s.color.image, s.color.format, s.color.width, s.color.height};
+        f.depth = {s.depth.image, s.depth.format, s.depth.width, s.depth.height};
+        f.motion = {s.motion.image, s.motion.format, s.motion.width, s.motion.height};
+        f.output = {s.output.image, s.output.format, s.output.width, s.output.height};
+        f.render_w = rw, f.render_h = rh, f.max_w = iw, f.max_h = ih, f.out_w = dw, f.out_h = dh;
+        f.jitter[0] = jitter_px[0], f.jitter[1] = jitter_px[1];
+        f.reset = reset;
+        f.frame_ms = std::clamp(ms, 1.0f, 100.0f);
+        f.near_plane = cam.near_plane, f.far_plane = cam.far_plane, f.fov_y = cam.fov_y;
+        if (!ffx::upscale(f, ffx_later())) return false;   // (the network runs; vk_ffx.cpp said why)
+    } else {
+#ifdef HOOKSHOT_NGX
+        NVSDK_NGX_Resource_VK color = resource(s.color, false), depth = resource(s.depth, false), mv = resource(s.motion, false),
+                              output = resource(s.output, true);
+        NVSDK_NGX_VK_DLSS_Eval_Params ep{};
+        ep.Feature.pInColor = &color, ep.Feature.pInOutput = &output;
+        ep.pInDepth = &depth, ep.pInMotionVectors = &mv;
+        ep.InJitterOffsetX = jitter_px[0], ep.InJitterOffsetY = jitter_px[1];
+        ep.InRenderSubrectDimensions = {rw, rh};
+        ep.InReset = reset ? 1 : 0;
+        ep.InMVScaleX = ep.InMVScaleY = 1.0f;
+        const NVSDK_NGX_Result r = NGX_VULKAN_EVALUATE_DLSS_EXT(cmd, s.feature, s.params, &ep);
+        note_work();   // (as at its creation: the barrier after it, and the game's next one, are recorded)
+        if (NVSDK_NGX_FAILED(r)) {
+            logf("vk: NVIDIA DLSS: its evaluation failed (%#x): the game's upscale from now on", (unsigned)r);
+            s.failed = true;
+            return false;   // (the network writes its output over whatever the evaluation did)
+        }
+#endif
     }
     full_barrier(cmd);
     {
@@ -1185,7 +1278,7 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     s.last_frame = now;
     s.last_jitter[0] = cam.jitter[0], s.last_jitter[1] = cam.jitter[1];
     // (for the status line, dlss_status: the jitter DLSS was given, in render pixels)
-    s.status_jitter[0] = ep.InJitterOffsetX, s.status_jitter[1] = ep.InJitterOffsetY, s.status_motion = motion;
+    s.status_jitter[0] = jitter_px[0], s.status_jitter[1] = jitter_px[1], s.status_motion = motion;
     s.status_drawn++;
 
     std::memcpy(s.last_vp, cam.current, sizeof s.last_vp);
@@ -1198,7 +1291,10 @@ bool dlss_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     if (alternate && (now & 1)) return false;
     if (!s.told_first) {
         s.told_first = true;
-        logf("vk: NVIDIA DLSS draws OoT's upscale: %ux%u -> %ux%u%s", rw, rh, ow, oh, show_motion ? " (its motion shown)" : "");
+        logf("vk: %s draws OoT's upscale: %ux%u -> %ux%u%s", fsr ? "AMD FSR" : "NVIDIA DLSS", rw, rh, ow, oh,
+             show_motion ? " (its motion shown)" : "");
+        if (fsr) logf("vk: AMD FSR: the camera: near %.3f, far %.1f, vertical field of view %.1f degrees", cam.near_plane,
+                      cam.far_plane, cam.fov_y * 57.2958f);
     }
     return true;
 }

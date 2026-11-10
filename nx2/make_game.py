@@ -948,6 +948,45 @@ def place_ngx_runtime(out):
     return dst
 
 
+def ffx_script():
+    """scripts/ffx_sdk.py as a module: AMD's FSR runtime, its files and SHA-256s"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ffx_sdk", os.path.join(ROOT, "scripts", "ffx_sdk.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def ffx_folder():
+    """Where AMD's FSR runtime is kept for builds: HOOKSHOT_FFX_SDK, else work/ffx-sdk in this checkout"""
+    return os.environ.get("HOOKSHOT_FFX_SDK") or os.path.join(ROOT, "work", "ffx-sdk")
+
+
+def fetch_ffx_sdk():
+    """--fetch-ffx-sdk: AMD's FSR runtime (scripts/ffx_sdk.py) into ffx_folder() before the build; only what is missing or not
+    the file expected is downloaded"""
+    ffx = ffx_script()
+    print(ffx.NOTICE, flush=True)
+    try:
+        ffx.fetch(ffx_folder(), say=lambda line: print(line, flush=True))
+    except (OSError, ValueError) as e:
+        fail("AMD's FSR runtime could not be downloaded (%s). Check the connection and build again." % e)
+
+
+def ffx_built():
+    """This build has AMD FSR's runtime to put beside it (Windows: gpu/vk/vk_ffx.cpp is built there)"""
+    return not LINUX and ffx_script().complete(ffx_folder())
+
+
+def place_ffx_runtime(out):
+    """(AMD FSR) AMD's runtime into the game folder's ffx folder, where gpu/vk/vk_ffx.cpp looks first. Returns it, or None"""
+    if not ffx_built():
+        return None
+    dst = ffx_script().install(ffx_folder(), os.path.join(out, "ffx"))
+    print("AMD FSR: AMD's runtime in %s" % dst, flush=True)
+    return dst
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--nup")
@@ -966,6 +1005,8 @@ def parse_args():
     # (NVIDIA DLSS, off unless asked: NVIDIA's SDK into HOOKSHOT_NGX_SDK first, under NVIDIA's license. scripts/ngx_sdk.py)
     p.add_argument("--fetch-ngx-sdk", action="store_true", help="download NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build")
     p.add_argument("--accept-nvidia-license", action="store_true", help="NVIDIA's DLSS SDK license, accepted (with --fetch-ngx-sdk)")
+    # (AMD FSR: AMD's runtime into HOOKSHOT_FFX_SDK (default work/ffx-sdk) first, then into the game's ffx folder. scripts/ffx_sdk.py)
+    p.add_argument("--fetch-ffx-sdk", action="store_true", help="download AMD's FSR runtime before the build (Windows)")
     a = p.parse_args()
     a.default_work = p.get_default("work")   # (main: the builder's own work folder, stop_stray_compilers)
     return a
@@ -1001,6 +1042,8 @@ def main(a=None):
     drop_stale_objects(work)
     if getattr(a, "fetch_ngx_sdk", False):
         fetch_ngx_sdk(a)
+    if getattr(a, "fetch_ffx_sdk", False) and not LINUX:
+        fetch_ffx_sdk()
     exefs = os.path.join(work, "exefs")
     romfs = os.path.join(out, "romfs")
 
@@ -1086,7 +1129,7 @@ def main(a=None):
     if os.path.exists(os.path.join(work, "hookshot_pieces.prof")) and profile_readable(os.path.join(work, "hookshot_pieces.prof")):
         env["RX_PGO"] = os.path.join(work, "hookshot_pieces.prof")
 
-    if ngx_built():   # (NVIDIA DLSS's camera jitter: only in a build with it, nx2/oot_jitter.py)
+    if ngx_built() or ffx_built():   # (the camera jitter DLSS and AMD FSR take: only in a build with one, nx2/oot_jitter.py)
         env["OOT_DLSS_JITTER"] = "1"
     say("stage", "lift", "Translating the game to PC code")
     # (the same game, tools and settings as the lift before: its C is what this lift would write, and nothing recompiles from it. A
@@ -1234,6 +1277,7 @@ def main(a=None):
             except OSError:
                 pass
     place_ngx_runtime(out)
+    place_ffx_runtime(out)
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
     if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
