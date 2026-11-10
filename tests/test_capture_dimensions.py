@@ -32,7 +32,7 @@ def main():
     source = (a.source / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     start = source.index("VkImage off_image =")
     globals_and_setup = source[start:source.index("void image_barrier(", start)]
-    gate = "if (src && (dev.offscreen || shots) && offscreen_init())"
+    gate = "if (src && (dev.offscreen || shots || take_request) && offscreen_init())"
     assert gate in source
     tail = "if (dev.offscreen || interpolated) return;\n    present_image(src, sw, sh, crop, direct_view);"
     assert tail in source

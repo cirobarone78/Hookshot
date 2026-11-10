@@ -35,9 +35,9 @@ def main():
     p.add_argument("--cache", choices=["all", "coherent", "noncoherent"], default="all")
     a = p.parse_args()
     source = (a.source / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
-    start = source.index("        auto take = [&](uint64_t at_value, int64_t at_present) {")
+    start = source.index("        auto take = [&](uint64_t at_value, int64_t at_present")
     end = source.index("            // (RX_VK_DUMP_BLACK", start)
-    take = source[start:end] + "\n(void)at_present; return px; };\n"
+    take = source[start:end] + "\n(void)at_present; (void)path; return px; };\n"
     helper_start = source.index("std::shared_ptr<std::vector<uint8_t>> shot_pixels(")
     helper_end = source.index("void do_present(", helper_start)
     helper = source[helper_start:helper_end]

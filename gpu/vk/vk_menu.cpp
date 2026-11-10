@@ -812,7 +812,24 @@ std::atomic<int> protect_hearts{-1};
 // -1 disables the shortcut, 0 enables it on the ground, and 1 means flying.
 std::atomic<int> player_flight{-1};
 std::atomic<int> free_camera{0};
-std::atomic<int> cheat_action{0};
+// (the cheat actions the game takes: a queue, so two Enters in one frame, or an MCP "!cheat" right after another, are both
+// taken rather than the second overwriting the first)
+std::atomic<int> cheat_actions[8];
+std::atomic<unsigned> cheat_head{0}, cheat_tail{0};
+void queue_cheat_action(int action) {
+    const unsigned tail = cheat_tail.load(std::memory_order_relaxed);
+    const unsigned next = (tail + 1) % (unsigned)std::size(cheat_actions);
+    if (next == cheat_head.load(std::memory_order_acquire)) return;   // (full: a player cannot get here)
+    cheat_actions[tail].store(action, std::memory_order_relaxed);
+    cheat_tail.store(next, std::memory_order_release);
+}
+int take_cheat_action() {
+    const unsigned head = cheat_head.load(std::memory_order_relaxed);
+    if (head == cheat_tail.load(std::memory_order_acquire)) return 0;
+    const int action = cheat_actions[head].load(std::memory_order_relaxed);
+    cheat_head.store((head + 1) % (unsigned)std::size(cheat_actions), std::memory_order_release);
+    return action;
+}
 std::atomic<int> link_age{-1};   // (the game side's report, OOT_CHEAT_AGE_ID: 0 child, 1 adult, -1 no save loaded)
 int clock_hour = 12;
 int pouch_item = 0;
@@ -2524,7 +2541,7 @@ int menu_heart_protection() {
 }
 int menu_player_flight() { return cheats_on() ? player_flight.load(std::memory_order_relaxed) : -1; }
 int menu_free_camera() { return cheats_on() ? free_camera.load(std::memory_order_relaxed) : 0; }
-int menu_take_cheat_action() { return cheat_action.exchange(0, std::memory_order_relaxed); }
+int menu_take_cheat_action() { return take_cheat_action(); }
 
 void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t window_w, uint32_t window_h) {
     const auto c = [](uint32_t v) { return (uint64_t)std::min(v, 0xffffu); };
@@ -2596,6 +2613,179 @@ void menu_option_set(int id, int value) {
     save();
 }
 
+// ---- (hookshot, tests) the settings and cheats the MCP server drives (scripts/hookshot_mcp.py, docs/mcp.md) ----
+// The same rows the Insert menu shows, read and set from outside the window: a live input "!settings" dump, "!setting
+// <key> <value>" and "!cheat <name> <value> <extra>" (host/nn_hid.c). The lines are logged, so the server reads them back
+// from the game's log. Values go through the menu's own setters: the same clamps, presets, bindings and options file.
+namespace {
+void dump_put(char* out, int cap, int& n, const char* line) {
+    const int len = (int)strlen(line);
+    if (n + len + 2 > cap) return;   // (the caller's buffer is sized for the whole dump; a line that no longer fits is dropped)
+    memcpy(out + n, line, (size_t)len);
+    n += len;
+    out[n++] = '\n';
+    out[n] = 0;
+}
+}
+
+int menu_settings_dump(char* out, int cap) {
+    if (!out || cap < 32) return 0;
+    int n = 0;
+    out[0] = 0;
+    char line[512];
+    dump_put(out, cap, n, "mcp: settings begin");
+    for (const Row& r : rows) {
+        if (!r.value) continue;   // (the Controls and Cheats rows open pages: not settings)
+        snprintf(line, sizeof line, "mcp: value|%s|%s|%s|%d|%d|%d|%d|%s", ini_key(r), r.name,
+                 r.tab == TAB_GRAPHICS ? "graphics" : r.tab == TAB_GAMEPLAY ? "gameplay" : "controls", *r.value, r.lo,
+                 r.hi, r.step, r.text ? r.text(*r.value) : "");
+        dump_put(out, cap, n, line);
+    }
+    dump_put(out, cap, n, "mcp: settings end");
+    dump_put(out, cap, n, cheats_on() ? "mcp: cheats on" : "mcp: cheats off");
+    if (cheats_on()) {
+        const int hearts = protect_hearts.load(std::memory_order_relaxed) == 1 ? 1 : 0;
+        const int flight = player_flight.load(std::memory_order_relaxed) >= 0 ? 1 : 0;
+        const int camera = free_camera.load(std::memory_order_relaxed) ? 1 : 0;
+        dump_put(out, cap, n, "mcp: cheats begin");
+        snprintf(line, sizeof line, "mcp: cheatrow|heart_protection|Heart protection|toggle|%d|%s", hearts, tx_onoff(hearts));
+        dump_put(out, cap, n, line);
+        snprintf(line, sizeof line, "mcp: cheatrow|no_clip_flight|No-clip flight|toggle|%d|%s", flight, tx_onoff(flight));
+        dump_put(out, cap, n, line);
+        dump_put(out, cap, n, "mcp: cheatrow|mark_position|Mark position|action|0|");
+        dump_put(out, cap, n, "mcp: cheatrow|return_to_mark|Return to mark|action|0|");
+        snprintf(line, sizeof line, "mcp: cheatrow|set_time|Set time|choice|%d|%02d:00", clock_hour, clock_hour);
+        dump_put(out, cap, n, line);
+        snprintf(line, sizeof line, "mcp: cheatrow|pouch_item|Inventory item|choice|%d|%s", pouch_item, pouch_items[pouch_item]);
+        dump_put(out, cap, n, line);
+        snprintf(line, sizeof line, "mcp: cheatrow|change_quantity|Change quantity|choice|%d|%+d", pouch_delta, pouch_delta);
+        dump_put(out, cap, n, line);
+        snprintf(line, sizeof line, "mcp: cheatrow|free_camera|Free camera|toggle|%d|%s", camera, tx_onoff(camera));
+        dump_put(out, cap, n, line);
+        snprintf(line, sizeof line, "mcp: cheatrow|teleport|Teleport|choice|%d|%s", teleport_choice, teleport_names[teleport_choice]);
+        dump_put(out, cap, n, line);
+        dump_put(out, cap, n, "mcp: cheatrow|switch_age|Switch age|action|0|");
+        dump_put(out, cap, n, "mcp: cheatrow|inventory|Inventory|action|0|");
+        dump_put(out, cap, n, "mcp: cheats end");
+        dump_put(out, cap, n, "mcp: pouch begin");
+        for (int i = 0; i < kPouchItems; i++) {
+            snprintf(line, sizeof line, "mcp: pouch|%d|%s", i, pouch_items[i]);
+            dump_put(out, cap, n, line);
+        }
+        dump_put(out, cap, n, "mcp: pouch end");
+        dump_put(out, cap, n, "mcp: teleports begin");
+        for (int i = 0; i < kTeleports; i++) {
+            snprintf(line, sizeof line, "mcp: teleport|%d|%s", i, teleport_names[i]);
+            dump_put(out, cap, n, line);
+        }
+        dump_put(out, cap, n, "mcp: teleports end");
+        dump_put(out, cap, n, "mcp: items begin");
+        for (int i = 0; i < kItems; i++) {
+            snprintf(line, sizeof line, "mcp: item|%d|%s|%d|%d", i, item_names[i], (int)item_kinds[i],
+                     item_counts[i].load(std::memory_order_relaxed));
+            dump_put(out, cap, n, line);
+        }
+        dump_put(out, cap, n, "mcp: items end");
+    }
+    dump_put(out, cap, n, "mcp: dump end");
+    return n;
+}
+
+int menu_setting_set(const char* key, int value) {
+    for (Row& r : rows) {
+        if (!r.value || !key || strcmp(key, ini_key(r))) continue;
+        if (r.value == &opts.output_res) {   // (its value is the size's id, not a step: the file's own mapping)
+            opts.output_res = output_choice(value);
+            menu_refresh = true;
+            save();
+            return opts.output_res;
+        }
+        int v = std::min(std::max(value, r.lo), r.hi);
+        if (r.value == &opts.framegen && v == 1) v = 2;   // (1 is not a count of made frames: menu_init says 2 for it)
+        set_row(r, v, 0);   // (the menu's own setter: presets, bindings, the Custom mark and the options file)
+        menu_refresh = true;
+        return *r.value;
+    }
+    return -1;
+}
+
+int menu_cheat(const char* name, int value, int extra) {
+    if (!cheats_on()) return -2;   // (the Cheats page is off: HOS_OOT_CHEATS=1 at start)
+    if (!name) return -1;
+    if (!strcmp(name, "heart_protection")) {
+        protect_hearts.store(value ? 1 : 0, std::memory_order_relaxed);
+        return value ? 1 : 0;
+    }
+    if (!strcmp(name, "no_clip_flight")) {
+        player_flight.store(value ? 0 : -1, std::memory_order_relaxed);
+        return value ? 1 : 0;
+    }
+    if (!strcmp(name, "free_camera")) {
+        free_camera.store(value ? 1 : 0, std::memory_order_relaxed);
+        return value ? 1 : 0;
+    }
+    if (!strcmp(name, "mark_position")) { queue_cheat_action(2); return 2; }
+    if (!strcmp(name, "return_to_mark")) { queue_cheat_action(3); return 3; }
+    if (!strcmp(name, "switch_age")) { queue_cheat_action(999); return 999; }
+    if (!strcmp(name, "set_time")) {
+        if (value < 0 || value > 23) return -3;
+        queue_cheat_action(100 + value);
+        return value;
+    }
+    if (!strcmp(name, "pouch_item")) {
+        if (value < 0 || value >= kPouchItems) return -3;
+        pouch_item = value;
+        return value;
+    }
+    if (!strcmp(name, "change_quantity")) {
+        if (value < -10 || value > 10 || value == 0) return -3;
+        pouch_delta = value;
+        return value;
+    }
+    if (!strcmp(name, "teleport")) {
+        if (value < 0 || value >= kTeleports) return -3;
+        teleport_choice = value;
+        queue_cheat_action(1000 + value);
+        return value;
+    }
+    if (!strcmp(name, "pouch")) {   // (item, amount: the menu's Inventory item and Change quantity, then Enter)
+        if (value < 0 || value >= kPouchItems || extra < -10 || extra > 10 || extra == 0) return -3;
+        pouch_item = value;
+        pouch_delta = extra;
+        queue_cheat_action(200 + value * 32 + extra + 10);
+        return extra;
+    }
+    if (!strcmp(name, "inventory")) {   // (item, the count wanted; -1: unlock when locked, relock when held)
+        if (value < 0 || value >= kItems) return -3;
+        const int have = item_counts[value].load(std::memory_order_relaxed);
+        if (have < 0) return -3;   // (the game side has not reported the counts yet)
+        if (extra < 0) {   // (Enter: unlock a locked item, relock a held one)
+            queue_cheat_action(OOT_CHEAT_ITEM_ACTION + value * 256 + 200);
+            return have > 0 ? 0 : 1;
+        }
+        int op;
+        if (item_kinds[value] == 0) {
+            if ((have > 0) == (extra > 0)) return extra;
+            op = 200;
+        } else {
+            const int delta = std::clamp(extra - have, -64, 63);
+            if (!delta) return extra;
+            op = delta + 64;
+        }
+        queue_cheat_action(OOT_CHEAT_ITEM_ACTION + value * 256 + op);
+        return extra;
+    }
+    return -1;
+}
+
+
+/// A list page's line (from the top of the list, headings included) to its item: -1 a section's heading
+int list_item(int line, const TeleportSection* sec, int sections) {
+    int section = 0;
+    while (section + 1 < sections && line >= sec[section + 1].first + section + 1) section++;
+    return line == sec[section].first + section ? -1 : line - section - 1;
+}
+
 /// (hookshot) the mouse on the inventory: a section tab chooses it, a card the item (a click selects it, it does not edit),
 /// the page arrows turn the page with the choice, the action button and the amount's halves act; the wheel turns the page
 /// shown and leaves the choice where it is; a right click goes back
@@ -2653,8 +2843,8 @@ void cheat_press(int i, const bool* press, bool& changed) {
         if (!pouch_delta) pouch_delta = step;
         changed = true;
     }
-    if (press[7] && i >= 2 && i <= 4) cheat_action.store(i == 4 ? 100 + clock_hour : i);
-    if (press[7] && i == 6) cheat_action.store(200 + pouch_item * 32 + pouch_delta + 10);
+    if (press[7] && i >= 2 && i <= 4) queue_cheat_action(i == 4 ? 100 + clock_hour : i);
+    if (press[7] && i == 6) queue_cheat_action(200 + pouch_item * 32 + pouch_delta + 10);
     if ((press[3] || press[4] || press[7]) && i == 7) {   // (an On / Off as the first two: Left Off, Right On, confirm flips)
         free_camera.store(press[7] ? !free_camera.load() : press[4] ? 1 : 0);
         changed = true;
@@ -2664,13 +2854,13 @@ void cheat_press(int i, const bool* press, bool& changed) {
     if (i == 9 && (press[3] || press[4])) {   // (Kid | Adult: Left Kid, Right Adult, a switch when Link is the other age)
         const int age = link_age.load(std::memory_order_relaxed);
         if (age >= 0 && age != (press[4] ? 1 : 0)) {
-            cheat_action.store(999);
+            queue_cheat_action(999);
             open_now = false;
             changed = true;
         }
     }
     if (press[7] && i == 9) {
-        cheat_action.store(999);   // (host/hos_main.c OOT_AGE_ACTION)
+        queue_cheat_action(999);   // (host/hos_main.c OOT_AGE_ACTION)
         open_now = false;
         changed = true;
     }
@@ -2904,7 +3094,7 @@ void menu_tick() {
             changed = true;
         } else if (inventory_amount) {
             if (press[7]) inventory_amount = false, changed = true;
-            else if (press[3] || press[4]) cheat_action.store(OOT_CHEAT_ITEM_ACTION + item_choice * 256 + 64 + (press[4] ? 1 : -1));
+            else if (press[3] || press[4]) queue_cheat_action(OOT_CHEAT_ITEM_ACTION + item_choice * 256 + 64 + (press[4] ? 1 : -1));
         } else {
             // (the cards as drawn, inventory_columns to a row: the arrows move, Page Up and Down a page, Home and End the ends)
             const int begin = inventory_begin(), end = inventory_end();
@@ -2915,7 +3105,7 @@ void menu_tick() {
                 changed = true;
             } else if (press[7] && item_counts[item_choice].load(std::memory_order_relaxed) >= 0) {
                 if (item_kinds[item_choice]) inventory_amount = true, changed = true;   // (an amount: Left and Right change it)
-                else cheat_action.store(OOT_CHEAT_ITEM_ACTION + item_choice * 256 + 200);   // (unlock or relock)
+                else queue_cheat_action(OOT_CHEAT_ITEM_ACTION + item_choice * 256 + 200);   // (unlock or relock)
             }
             if (item_choice != chosen) inventory_reveal();   // (a click on a card: its page)
         }
@@ -2923,7 +3113,7 @@ void menu_tick() {
         if (mouse) teleport_mouse(ptr, mx, my, press, changed);
         if (press[5]) page = 0, changed = true;   // (to the Debug tab, Teleport still selected)
         else if (press[7]) {
-            cheat_action.store(1000 + teleport_choice);
+            queue_cheat_action(1000 + teleport_choice);
             open_now = false, page = 0;   // (back to the game: the map change starts with an event)
             changed = true;
         } else if (tab_left || tab_right) {   // (the first map of the previous or next section)

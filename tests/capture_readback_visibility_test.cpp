@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 constexpr uint32_t kShotW = 344, kShotH = 144, kLogW = 320, kLogH = 180;
@@ -21,6 +22,9 @@ std::vector<uint8_t> captured;
 bool gpu_done = false;
 bool coherent = false;
 bool implicit_host = false;
+bool take_request = false;
+bool shot_requested = false;
+char shot_request_path[1]{};
 int waits = 0, invalidations = 0, pngs = 0;
 [[noreturn]] void device_lost() { std::abort(); }
 void require(bool ok, const char* why) {
@@ -98,7 +102,7 @@ void read_shot(bool generated, bool owned = false) {
     }
     /* TAKE */
     if (!generated) {
-        auto px = take(17, 1);
+        auto px = take(17, 1, std::string());
         require(*px == normal.gpu, "normal screenshot read stale CPU cache");
         return;
     }

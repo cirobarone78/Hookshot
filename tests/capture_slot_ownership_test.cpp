@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL line%d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
@@ -15,6 +16,8 @@ int shot_image=0,c=0;
 uint8_t pixels[2][8]{};
 void* shot_maps[2]={pixels[0],pixels[1]};
 int shot_bufs[2]={0,1},shot_allocs[2]={0,1};
+bool take_request=false;
+char shot_request_path[1]{};
 struct Copy { int slot; uint64_t frame; bool done=false; };
 std::vector<Copy> queue;
 Copy recorded{};
@@ -48,6 +51,7 @@ void run(int64_t current,bool fast_new,bool pending_old) {
     if (pending_old) { pending.on=true;pending.value=2;pending.presents=2;queue.push_back({0,2,false}); }
     std::vector<std::pair<int64_t,std::vector<uint8_t>>> captures;
     /* TAKE */
+        (void)path;   // (the shot's output path: unused by the extracted head)
         captures.emplace_back(at_present,*px);
     };
     bool shot=false;
@@ -66,7 +70,7 @@ void run(int64_t current,bool fast_new,bool pending_old) {
     // Re-arming must discard a saved snapshot, not attach it to the new frame.
     /* REARM */
     CHECK(pending.on && pending.value==value && pending.presents==current);
-    take(value,current);
+    take(value,current,std::string());
     CHECK(captures.back().first==current);
     CHECK(std::all_of(captures.back().second.begin(),captures.back().second.end(),[current](uint8_t b){return b==(current & 255);}));
 }

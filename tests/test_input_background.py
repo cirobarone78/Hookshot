@@ -24,7 +24,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ("foreground", "script-background", "headless", "noactivate", "live-background",
          "no-script-background", "exclusive-foreground", "exclusive-background", "pads-env", "pads-menu", "pads-off",
-         "frame-hold", "live-frame", "reuse-frame", "wall", "zero", "empty")
+         "frame-hold", "live-frame", "reuse-frame", "wall", "zero", "empty", "analog", "script-only")
 
 
 def block(text, marker):
@@ -118,8 +118,10 @@ static void player_used(void) {}
              "-I" + str(folder), str(ROOT / "tests/input_background_test.c"), "-o", str(exe)])
         for case in ((a.case,) if a.case else CASES):
             case_env = dict(env)
-            if case not in ("live-background", "no-script-background", "live-frame", "reuse-frame"):
+            if case not in ("live-background", "no-script-background", "live-frame", "reuse-frame", "analog"):
                 case_env["HOS_INPUT_SCRIPT"] = "0:A+LUP/200"
+            if case == "script-only":
+                case_env["HOS_INPUT_SCRIPT_ONLY"] = "1"
             if case in ("frame-hold", "live-frame", "reuse-frame"):
                 case_env["HOS_INPUT_FRAME_CLOCK"] = "1"
             elif case in ("zero", "empty"):

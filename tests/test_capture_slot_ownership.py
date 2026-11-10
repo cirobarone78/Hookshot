@@ -33,6 +33,8 @@ def main():
     present = source[source.index("void do_present("):]
     copy = next(line.strip() for line in present.splitlines() if "vkCmdCopyImageToBuffer(r.cmd, shot_image," in line)
     consume = next(line.strip() for line in present.splitlines() if "if (pending.on &&" in line and "completed()" in line)
+    if consume.endswith("{"):
+        consume = block(present, consume)
     rearm = next(line.strip() for line in present.splitlines() if "pending = {true, value, presents" in line)
     read_at = present.index("auto take = [&]")
     read = present[read_at:present.index("// (RX_VK_DUMP_BLACK", read_at)]
@@ -60,7 +62,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="capture-slot-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cxx, "-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+        subprocess.run([a.cxx, "-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",
+                        str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True, timeout=20)
 
 
