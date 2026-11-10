@@ -286,6 +286,7 @@ static volatile LONG mw_waiting;
 typedef struct { uint64_t key; int n; } MwWatched;
 static MwWatched *mw_watched;
 static int mw_nwatched, mw_capwatched;
+static int mw_watch_incomplete;   /* failed registration: keep old global wakes for this process */
 static int mw_watched_at_locked(uint64_t key) {
     for (int i = 0; i < mw_nwatched; i++)
         if (mw_watched[i].key == key) return i;
@@ -296,7 +297,7 @@ static void mw_watch_add_locked(uint64_t key) {
     if (i >= 0) { mw_watched[i].n++; return; }
     if (mw_nwatched == mw_capwatched) {
         MwWatched *w = (MwWatched *)realloc(mw_watched, (mw_capwatched ? mw_capwatched * 2 : 16) * sizeof *w);
-        if (!w) return;   /* (not counted: its changes wake no WaitAny early, the 5 ms re-check still sees them) */
+        if (!w) { mw_watch_incomplete = 1; return; }
         mw_watched = w;
         mw_capwatched = mw_capwatched ? mw_capwatched * 2 : 16;
     }
@@ -317,7 +318,7 @@ static void poke_multiwait(Obj *o) {
     if (all < 0) all = getenv("HOS_MW_WAKE") && !strcmp(getenv("HOS_MW_WAKE"), "all");
     if (!InterlockedCompareExchange(&mw_waiting, 0, 0)) return;
     AcquireSRWLockExclusive(&mw_lock);
-    const int wake = all || !o || mw_watched_at_locked(o->key) >= 0;
+    const int wake = all || mw_watch_incomplete || !o || mw_watched_at_locked(o->key) >= 0;
     ReleaseSRWLockExclusive(&mw_lock);
     if (wake) WakeAllConditionVariable(&mw_cv);
 }

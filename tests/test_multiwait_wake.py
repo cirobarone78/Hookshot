@@ -36,6 +36,12 @@ typedef struct { int x; } CONDITION_VARIABLE;
 #define SRWLOCK_INIT {0}
 #define CONDITION_VARIABLE_INIT {0}
 static int lock_depth, lookups_locked, target_lookups, wakes;
+static int fail_next_realloc;
+static void *test_realloc(void *p, size_t n) {
+    if (fail_next_realloc) { fail_next_realloc = 0; return NULL; }
+    return realloc(p, n);
+}
+#define realloc test_realloc
 static LONG InterlockedCompareExchange(volatile LONG *p, LONG x, LONG c) { LONG v = *p; if (v == c) *p = x; return v; }
 static void AcquireSRWLockExclusive(SRWLOCK *l) { (void)l; lock_depth++; }
 static void ReleaseSRWLockExclusive(SRWLOCK *l) { (void)l; lock_depth--; }
@@ -45,7 +51,7 @@ typedef struct Obj {
 } Obj;
 enum { K_EVENT = 1, K_TIMER, K_SEMA, K_QUEUE, K_MULTIWAIT, K_HOLDER };
 HOLDER_ENUM
-static Obj objs[64];
+static Obj objs[128];
 static Obj *obj(uint64_t key, int kind) {   /* (the real one is a scheduling point; a target lookup can resurrect it) */
     if (lock_depth) lookups_locked++;
     if (key < 8) target_lookups++;
@@ -103,6 +109,22 @@ int main(int argc, char **argv) {
     call(UNLINK, h1, 0);
     expect("unlink the last", 0, 0);
     if (mw_nwatched) { printf("FAIL: %d addresses still watched\n", mw_nwatched); bad = 1; }
+    /* Keep the holder array allocated so the injected failure hits the watched-address table. */
+    objs[40].links = (Obj **)realloc(NULL, 32 * sizeof *objs[40].links); objs[40].caplinks = 32;
+    for (uint64_t k = 1; k <= 17; k++) {
+        objs[k].key = k; objs[64 + k].event = k; objs[64 + k].sem_max = H_EVENT;
+        if (k <= 16) call(LINK, 40, 64 + k);
+    }
+    fail_next_realloc = 1;
+    call(LINK, 40, 81);
+    if (fail_next_realloc || poked(17, 1) != 1) { puts("FAIL: failed watch registration lost a wake"); bad = 1; }
+    call(UNLINK, 65, 0);   /* free a table slot, then link a second holder over address 17 */
+    objs[82].event = 17; objs[82].sem_max = H_EVENT;
+    call(LINK, 40, 82);
+    call(UNLINK, 81, 0);
+    if (poked(17, 1) != 1) { puts("FAIL: unlink of an uncounted holder hid another live holder"); bad = 1; }
+    call(UNLINKALL, 40, 0);
+    if (mw_nwatched) { puts("FAIL: watches remain after OOM-case cleanup"); bad = 1; }
     if (target_lookups) { printf("FAIL: %d lookups of a watched object (link, unlink, poke look up none)\n", target_lookups); bad = 1; }
     if (lookups_locked) { printf("FAIL: %d lookups (scheduling points) under mw_lock\n", lookups_locked); bad = 1; }
     puts(bad ? "FAILED" : "ok");
@@ -156,7 +178,7 @@ def main():
                 raise SystemExit("FAIL: " + mode)
     print("PASS: WaitAny woken only for watched addresses (HOS_MW_WAKE=all: every change); link, unlink, unlink all and move all"
           " keep the counts by address; a re-initialized watched event still wakes; finalize-before-unlink resurrects nothing;"
-          " no object lookup in link, unlink or poke")
+          " no watched-target lookups or lookups under the extracted paths' mw_lock; allocation failure preserves wakes")
 
 
 if __name__ == "__main__":
