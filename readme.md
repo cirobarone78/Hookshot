@@ -209,23 +209,18 @@ has more switches.
 
 For these AMD texture artifacts, try keeping decoded ASTC textures as RGBA8 instead of re-encoding them to BC3
 ([#57](https://github.com/NotRexed/Hookshot/issues/57), [#1006](https://github.com/NotRexed/Hookshot/issues/1006)).
-Close the game, then create or edit `hookshot_env.txt` in the built game folder, beside `image.bin`, and add:
-
-```ini
-RX_VK_ASTC_RGBA8=1
-```
-
-Restart the game. The same setting applies when Steam or RecompLauncher starts that game folder.
+Turn on **ASTC as RGBA8** in the menu's Debug tab, under Developer, and restart the game. (`RX_VK_ASTC_RGBA8=1` in
+`hookshot_env.txt` does the same; `=0` turns it off whatever the row says.)
 
 This is a workaround for some artifacts, not a general lighting fix. It can substantially increase graphics-memory
-use and cause stalls when the card runs out of headroom. To undo it, remove that line and restart the game.
+use and cause stalls when the card runs out of headroom. To undo it, turn the row off and restart the game.
 
 ## In-game menu
 
 By default, press <kbd>Insert</kbd> or <kbd>F1</kbd> in game. On a controller, press Home or Select and Start together; on
 a DualShock 4 or DualSense, clicking the touchpad does the same as <kbd>F1</kbd>.
 The same keys close it, and so does <kbd>Esc</kbd>. <kbd>F1</kbd> always works; **Controls → Menu shortcut** can leave
-<kbd>Insert</kbd> free for another overlay. The menu has four tabs, Graphics, Gameplay, Controls and Debug:
+<kbd>Insert</kbd> free for another overlay. The menu has five tabs, Graphics, Audio, Gameplay, Controls and Debug:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
 a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd>
 change it (<kbd>Enter</kbd> changes it too); beside the rows, the help says what the row is and, on a line of its own,
@@ -272,7 +267,6 @@ HDR peak brightness show only while HDR is on.
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
 | | Profile | Docked, Handheld (after a restart) | Docked |
 | | Ultrawide | 16:9, Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | 16:9 |
-| | Robust buffers | Auto, Off, On (after a restart) | Auto |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
@@ -295,6 +289,11 @@ HDR peak brightness show only while HDR is on.
 | | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
 | | Controls | Opens the Controls page | |
 | | Menu shortcut | Insert or F1, F1 only | Insert or F1 |
+| Debug | Debug tools | Off, On (the tools below it while on) | Off |
+| | Developer: Descriptor reuse | Off, On (after a restart) | On |
+| | Developer: Sampler cache | Off, On (after a restart) | Off |
+| | Developer: Robust buffers | Auto, Off, On (after a restart) | Auto |
+| | Developer: ASTC as RGBA8 | Off, On (after a restart) | Off |
 
 - **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame pacing, Game speed, Profile
   and the video memory limits for a card with that much memory. It leaves the Upscaler and Frame generation as
@@ -346,8 +345,9 @@ HDR peak brightness show only while HDR is on.
   frames while it is on.
 - **AMD Anti-Lag 2** Off is the game as without it. Like Reflex, it is not used while Frame generation is on.
 - **Profile** runs the game as the console docked (at the Output resolution) or Handheld (1536x864): lighter on the GPU.
-- **Robust buffers:** a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; Off
-  can be faster on some NVIDIA cards.
+- **Robust buffers** (Debug tab, Developer): a read past a buffer's end is dropped instead of stopping the GPU. Auto is
+  on, on every card; Off can be faster on some NVIDIA cards.
+- **ASTC as RGBA8** (Debug tab, Developer): the AMD texture workaround below.
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed
   down to 15 fps.
 - **FPS counter** shows in the top right corner. With frame generation on, it also shows the game's own rate.
@@ -675,7 +675,7 @@ switch that stands in for a menu row (`RX_VK_PACE`, `RX_VK_UPSCALE`, `RX_VK_FRAM
 
 To enable the debug tools, turn **Debug tools** on in the menu's Debug tab (or add `HOS_OOT_CHEATS=1` to
 `hookshot_env.txt` in the game folder). The tools then show below it on the same tab. The tab's Developer section,
-always shown, has the Descriptor reuse and Sampler cache rows.
+always shown, has the Descriptor reuse, Sampler cache, Robust buffers and ASTC as RGBA8 rows.
 
 `RX_VK_UI_GAME_FONT=0` draws the menu with the included font (Libertinus) even when the game's files have the game's own
 menu font. `RX_VK_UI_PROMPTS=pad` (or `keys`) shows the controller's (or the keyboard's) prompts whatever was used last,

@@ -552,7 +552,8 @@ VkImageView cached_image_view(Texture* tex, uint64_t key, Make&& make) {
 // layers at a time, re-encoded by Eden's encoder (host_shaders/bc_encoder.comp: bounding box along the colours'
 // covariance, inset; GPL, as the decoder) into a buffer, copied into the image. Decoded RGBA8 took 6 GB of VRAM at
 // the title (the terrain's material arrays, 2048 x 2048 x 68, 1.45 GB each): more than the driver allowed, which
-// paged VRAM out and evicted textures that were made and uploaded again. RX_VK_ASTC_RGBA8=1: all as RGBA8.
+// paged VRAM out and evicted textures that were made and uploaded again. ASTC as RGBA8 (the menu's Developer row) or
+// RX_VK_ASTC_RGBA8=1: all as RGBA8.
 struct BcPush {
     uint32_t blocks_x, blocks_y, width, height, bc3, out_offset;
 };
@@ -633,7 +634,9 @@ bool bc_ready() {
     static int state = 0;
     if (state) return state > 0;
     state = -1;
-    if (!astc_ready() || getenv("RX_VK_ASTC_RGBA8") || !dev.features.textureCompressionBC) return false;
+    // (the Developer section's ASTC as RGBA8 row, or RX_VK_ASTC_RGBA8 for a run: no BC3, the AMD texture workaround)
+    const char* rgba8 = getenv("RX_VK_ASTC_RGBA8");
+    if (!astc_ready() || (rgba8 ? atoi(rgba8) != 0 : opts.astc_rgba8 != 0) || !dev.features.textureCompressionBC) return false;
     VkFormatProperties fp{};
     vkGetPhysicalDeviceFormatProperties(dev.physical, VK_FORMAT_BC3_UNORM_BLOCK, &fp);
     if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) return false;
@@ -667,7 +670,7 @@ bool bc_ready() {
     vkDestroyShaderModule(dev.device, m, nullptr);
     if (r != VK_SUCCESS) return false;
     state = 1;
-    logf("vk: big ASTC textures are kept as BC3 (re-encoded on the GPU; RX_VK_ASTC_RGBA8=1: as RGBA8)");
+    logf("vk: big ASTC textures are kept as BC3 (re-encoded on the GPU; ASTC as RGBA8 or RX_VK_ASTC_RGBA8=1: as RGBA8)");
     return true;
 }
 
