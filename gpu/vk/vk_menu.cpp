@@ -104,10 +104,11 @@ const char* tx_shadow_res(int v) {
     static const char* const t[] = {"Game", "1.5x", "2x", "3x", "4x"};
     return t[std::clamp(v, 0, 4)];
 }
-MENU_HINTS(hn_shadow_res, 0, "The game's own: the sun's shadows 3072 pixels a side, the characters' 768 or less.",
-           "Sharper shadow edges, a little more GPU time and memory.", "Sharper shadow edges, more GPU time and memory.",
-           "Much sharper; the sun's shadows at 8192 a side (400 MB or more of video memory).",
-           "The finest; the sun's shadows at 8192 a side, the characters' 3072.")
+MENU_HINTS(hn_shadow_res, 0, "The game's own: the sun's shadows 1600 pixels a side, the characters' 768 or less.",
+           "The sun's shadows 2400 a side: sharper edges, a little more GPU time.",
+           "The sun's shadows 3200 a side: sharper, and the far ones too.",
+           "The sun's shadows 4800 a side: the far shadows much sharper.",
+           "The finest: the sun's 6400 a side (about 250 MB of video memory), the characters' 3072.")
 const char* tx_profile(int v) { return v ? "Handheld" : "Docked"; }   // (opts.handheld: the Profile row)
 const char* tx_menu_shortcut(int v) {
     // (F1 is never turned off: the menu is always one key away. Esc as well, as a PC game's pause menu)
@@ -770,7 +771,8 @@ Row rows[] = {
      "Keeps textures sharp on surfaces seen at a slant, such as the ground ahead: higher is sharper in the distance, for a "
      "little GPU time. Game's is the console's own (1x or 2x).", nullptr},
     {TAB_GRAPHICS, "Shadow resolution", &opts.shadow_res, 0, 4, 1, tx_shadow_res,
-     "How many pixels the shadow maps have: sharper shadow edges, less stair-stepping and shimmer. Applies after a restart.",
+     "How many pixels the shadow maps have. The sun's shadows lose detail with distance; more pixels keep the far ones sharp "
+     "too. Applies after a restart.",
      hn_shadow_res, true},
     {TAB_GRAPHICS, "Profile", &opts.handheld, 0, 1, 1, tx_profile,
      "Runs the game as the console docked or handheld. Applies after a restart.", hn_handheld, true},

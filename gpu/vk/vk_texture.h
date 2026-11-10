@@ -94,6 +94,9 @@ struct Texture {
 /// The size of a texture's image (the game's size times its Shadow resolution scale)
 inline uint32_t image_width(const Texture* t) { return t->rs == 1.0f ? t->width : (uint32_t)(t->width * t->rs + 0.5f); }
 inline uint32_t image_height(const Texture* t) { return t->rs == 1.0f ? t->height : (uint32_t)(t->height * t->rs + 0.5f); }
+/// A texture made larger found rendered with colour targets: not a shadow map, so its size and format are made at the
+/// game's size from now on
+void shadow_res_refuse(const Texture* t);
 
 /// Makes texels [x, x + w) x [y, y + h) of level `level`, layers [first, first + count), of a sparse texture resident
 /// (device memory bound to the sparse blocks they fall in) before anything writes them; true when they are (always,

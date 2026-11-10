@@ -1838,6 +1838,22 @@ bool texture_size_ok(VkImageType type, uint32_t w, uint32_t h, uint32_t z, uint3
     return w <= most && h <= most && z <= lim.maxImageDimension3D && layers <= lim.maxImageArrayLayers &&
            (samples <= 1 || samples == 2 || samples == 4 || samples == 8 || samples == 16);
 }
+// Shadow resolution: the sizes and formats of depth textures made larger that were then rendered with colour targets
+std::mutex shadow_res_mu;
+std::unordered_set<uint64_t> shadow_res_no;
+uint64_t shadow_res_key(uint32_t w, uint32_t h, int nvn_format) { return (uint64_t)w << 40 | (uint64_t)h << 16 | (uint32_t)nvn_format; }
+bool shadow_res_refused(uint32_t w, uint32_t h, int nvn_format) {
+    std::lock_guard lk(shadow_res_mu);
+    return shadow_res_no.count(shadow_res_key(w, h, nvn_format)) != 0;
+}
+}  // namespace
+void shadow_res_refuse(const Texture* t) {
+    std::lock_guard lk(shadow_res_mu);
+    if (shadow_res_no.insert(shadow_res_key(t->width, t->height, t->nvn_format)).second)
+        logf("vk: shadow resolution: depth %ux%u (NVN %#x) rendered with colour targets: not a shadow map, kept at the game's size "
+             "when made again", t->width, t->height, t->nvn_format);
+}
+namespace {
 Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb, bool as_target) {
     PROF_EXACT();   // (texture_get's slow path: PROF_TEXGET samples the rest)
     auto tex = std::make_unique<Texture>();
@@ -1922,13 +1938,15 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     {   // Shadow resolution (the Insert menu's Graphics tab, as at the start): the shadow maps' images made larger
         // than the game's, and the passes that render them scaled to match (vk_draw.cpp targets: the viewport, scissor and
         // clears). OoT's shadow maps are square depth targets of one level: the characters' (768 and less) and the sun's
-        // cascades (3072 x 3072 x 3). The game samples them by normalized coordinates, so it reads the finer map as it is.
+        // cascades (1600 x 1600 x 3 in D16 docked). The game samples them by normalized coordinates, so it reads the finer
+        // map as it is. A size a multiple of 32 (not the scene's odd dynamic sizes); a size once seen rendered with colour
+        // targets is not a shadow map and stays the game's from then on (shadow_res_refuse, vk_draw.cpp targets)
         // Each side 8192 at most, and the image 1 GB at most
         const float want = shadow_resolution_factor();
         if (want > 1.0f && depth && (x.aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && x.type == VK_IMAGE_TYPE_2D &&
             (d.target == NVN_TEXTURE_TARGET_2D || d.target == NVN_TEXTURE_TARGET_2D_ARRAY) && x.samples == VK_SAMPLE_COUNT_1_BIT &&
             x.levels == 1 && !x.skip && !x.sparse && x.width == x.height && x.width >= 256 && x.width <= 4096 &&
-            x.width % 256 == 0) {
+            x.width % 32 == 0 && !shadow_res_refused(x.width, x.height, d.format)) {
             const uint64_t texel = std::max(2, bpb), layers = std::max(1u, x.layers);
             uint32_t side = std::min<uint32_t>({8192u, dev.props.limits.maxImageDimension2D, (uint32_t)(x.width * want + 0.5f)});
             while (side > x.width && (uint64_t)side * side * layers * texel > (1ull << 30)) side -= 256;

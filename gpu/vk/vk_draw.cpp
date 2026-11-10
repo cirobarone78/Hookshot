@@ -3793,6 +3793,7 @@ Targets targets(NvnState& s) {
                 if (tex->rs != 1.0f && !at.n) {
                     at.scale = tex->rs;
                 } else if (tex->rs != 1.0f) {
+                    shadow_res_refuse(tex);
                     static int told;
                     if (told++ < 4)
                         logf("vk: shadow resolution: depth texture %#llx (%ux%u, made %ux%u) rendered with %d colour target(s): "
