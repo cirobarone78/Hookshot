@@ -665,6 +665,7 @@ static int flight_jump_shortcut(uint64_t *buttons, int mode, int menu_open, int 
 static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
+    void hos_mouse_native_stick(int held);
     scripted_input(buttons, stick);
     /* A scripted run (a test) takes no input from the player's devices until 5 s after its last press (a variable
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
@@ -709,16 +710,21 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         if (bound_down(i, 0)) *buttons |= 1ULL << i;
     int32_t mouse[4] = {0};
     /* the mouse's motion: the camera itself (mouse_native.c) with the menu's Mouse camera on Native, else the right
-       stick; also the stick while the player camera does not run (the pause menu, other cameras: mouse_native.c) */
+       stick; also the stick while the game does not give the camera free control (a menu, a lock-on, the pause menu,
+       other cameras: mouse_native.c) and while a button it takes the stick for is held: ZR (the bow's aim), L (the
+       item wheel) or R, where the mouse points as it does in As the stick */
     static const char *native_env;
     static int native_looked;
     if (!native_looked) native_looked = 1, native_env = getenv("HOS_MOUSE_NATIVE");
     const int native = native_env ? atoi(native_env) != 0 : rx_option(6, 0);
     int hos_mouse_native(void);
+    void hos_mouse_native_free(int free);
+    const uint64_t game_stick = (1ULL << B_ZR) | (1ULL << B_L) | (1ULL << B_R);
     int captured = 0, as_stick = !native;
     if (native) {
         mouse_setup();
         mouse_sens_keys();
+        hos_mouse_native_free(!(*buttons & game_stick));
         captured = hos_mouse_native();
         if (captured < 0) captured = 0, as_stick = 1;
     }
@@ -737,6 +743,9 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
                              (bound_down(HOS_KEY_MOVE_UP, captured) - bound_down(HOS_KEY_MOVE_DOWN, captured)) * 32767,
                              cx * 32767, cy * 32767};
     stick_max(stick, keys);
+    /* (hookshot, mouse_native.c) the keys and the pads are the right stick too: while they turn the camera, its angles are
+       the native mouse's new start, so the two do not undo each other */
+    hos_mouse_native_stick(stick[2] != 0 || stick[3] != 0);
 }
 
 static void vibration_send(uint64_t handle, uint64_t value);

@@ -292,8 +292,12 @@ choices and starts the game again, so progress since your last save is lost.
   (Settings, Privacy & security, Microphone). `HOS_MIC_LOG=1` logs what the game reads, a line a second.
 - **Controller in background:** On keeps the controller working while another window has the focus. The keyboard and
   mouse still need the game's window.
-- **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in
-  place of the right stick. The <kbd>-</kbd> and <kbd>=</kbd> keys change the sensitivity in game too.
+- **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game, and holds it where the mouse
+  leaves it: the game's own follow camera eases the view back toward Link as he walks, so the mouse's angles are put back
+  every frame and the view does not drift after a while. As the stick uses the mouse in place of the right stick. Native is
+  the camera's only while the game gives it free control: in a menu, in the item wheel, and while ZR, L or R is held, the
+  mouse is the right stick again, as with As the stick (the camera's keys turn it in Native too). The <kbd>-</kbd> and
+  <kbd>=</kbd> keys change the sensitivity in game too.
 - **Stick dead zone:** how far a stick moves before it counts, on each axis. Default is XInput's (about 24%); lower suits
   a precise stick, higher one that drifts. The game keeps a dead zone of its own after it.
 - **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble

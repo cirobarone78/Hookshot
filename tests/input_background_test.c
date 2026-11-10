@@ -68,6 +68,8 @@ void binds_load(void) {
 /* the native mouse look (no camera found: the motion goes to mouse_stick) and the mouse's sensitivity, which
    read_input calls */
 int hos_mouse_native(void) { return -1; }
+void hos_mouse_native_free(int free) { (void)free; }
+void hos_mouse_native_stick(int held) { (void)held; }
 static void mouse_setup(void) {}
 static void mouse_sens_keys(void) {}
 int mouse_stick(int32_t *x, int32_t *y, int held) { (void)x; (void)y; (void)held; mouse_queries++; return 0; }
