@@ -7,7 +7,9 @@ Hookshot follows [Semantic Versioning 2.0.0](https://semver.org/). Releases are 
 The git tag is the source of truth. The game reads it through `nx2/version.py`, and the builder and the AppImage are
 stamped from the same tag when they are packaged. `.release-please-manifest.json` holds the last released version for
 release-please, a release candidate's or a promoted one's; it is changed only by the release pull request and by
-Promote.
+Promote. The release pull request also writes the version to `.release-please-version` (release-please's version
+file, named so: a `version.txt` at the root would be read by `nx2/version.py` as the release name of every build from
+the checkout).
 
 ## The version number
 

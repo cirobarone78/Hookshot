@@ -11,9 +11,10 @@
 #   scripts/release_promote.sh record <tag> <rc tag>
 #                                                   .release-please-manifest.json set to the version, when it still
 #                                                   holds one of its release candidates, so the next release pull
-#                                                   request proposes the next version's first release candidate; and
-#                                                   the version's entry at the top of CHANGELOG.md. In the checkout
-#                                                   it is run in; the caller commits it.
+#                                                   request proposes the next version's first release candidate (and
+#                                                   .release-please-version); and the version's entry at the top of
+#                                                   CHANGELOG.md. In the checkout it is run in; the caller
+#                                                   commits it.
 #
 # The tag is made with GITHUB_TOKEN, so it starts no workflow: the Release workflow builds the files itself, as it does
 # for a release candidate. They are built again from the same commit, not copied from the release candidate, because
@@ -100,6 +101,8 @@ record() {
         jq --arg v "$version" '."." = $v' .release-please-manifest.json >.release-please-manifest.json.new
         mv .release-please-manifest.json.new .release-please-manifest.json
         echo ".release-please-manifest.json: $manifest -> $version"
+        # (release-please's version file, as the release pull request writes it)
+        if [[ -f .release-please-version ]]; then echo "$version" >.release-please-version; fi
     else
         # (a later version's release candidate is under way, 2.2.0-rc.1 while 2.1.0 is promoted: it goes on from there)
         echo ".release-please-manifest.json stays at $manifest"
@@ -119,5 +122,5 @@ Release candidate [$rc](https://github.com/$GH_REPO/releases/tag/$rc), published
 case ${1:-} in
     prepare) prepare "${2:-}" ;;
     record) record "$2" "$3" ;;
-    *) sed -n '6,17p' "$0" >&2; exit 2 ;;
+    *) sed -n '6,18p' "$0" >&2; exit 2 ;;
 esac
