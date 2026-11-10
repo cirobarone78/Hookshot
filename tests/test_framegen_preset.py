@@ -4,6 +4,7 @@ Compile the menu's actual preset and row handlers with small stand-ins. No game
 or GPU is needed.
 """
 import argparse
+import os
 import re
 import subprocess
 import tempfile
@@ -126,10 +127,16 @@ def main():
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="framegen-preset-") as tmp:
-        src, exe = Path(tmp) / "framegen_preset.cpp", Path(tmp) / "framegen_preset"
+        src = Path(tmp) / "framegen_preset.cpp"
+        exe = Path(tmp) / ("framegen_preset.exe" if os.name == "nt" else "framegen_preset")
         src.write_text(fixture(args.source), encoding="utf-8")
-        subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror",
-                        str(src), "-o", str(exe)], check=True)
+        if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
+            command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", str(src),
+                       "/Fo" + str(Path(tmp) / "framegen_preset.obj"), "/Fe" + str(exe)]
+        else:
+            command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror",
+                       str(src), "-o", str(exe)]
+        subprocess.run(command, cwd=tmp, check=True)
         subprocess.run([str(exe)], check=True)
 
 
