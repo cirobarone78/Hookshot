@@ -99,6 +99,8 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+// The Sharpness pass (opts.sharpen_method, shaders/fg_scale.comp)
+const char* tx_sharpen_method(int v) { return v == 1 ? "AMD CAS" : "Gentle"; }
 const char* tx_profile(int v) { return v ? "Handheld" : "Docked"; }   // (opts.handheld: the Profile row)
 const char* tx_menu_shortcut(int v) {
     // (F1 is never turned off: the menu is always one key away. Esc as well, as a PC game's pause menu)
@@ -757,6 +759,10 @@ Row rows[] = {
      "How the finished picture is scaled to the window, when its size differs from the Output resolution.", hn_filter},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
      "Sharpens the picture as it goes to the window, with any filter. Too much shows halos around edges.", hn_sharpness},
+    {TAB_GRAPHICS, "Sharpening method", &opts.sharpen_method, 0, 1, 1, tx_sharpen_method,
+     "How Sharpness sharpens. Gentle: never past the light and dark around a pixel, so no halos. AMD CAS: AMD's Contrast Adaptive "
+     "Sharpening, crisper; it brings back the detail DLSS and FSR soften, and holds back where the picture already has contrast.",
+     nullptr, false, true},
     {TAB_GRAPHICS, "Anisotropic filtering", &opts.anisotropy, 0, 4, 1, tx_anisotropy,
      "Keeps textures sharp on surfaces seen at a slant, such as the ground ahead: higher is sharper in the distance, for a "
      "little GPU time. Game's is the console's own (1x or 2x).", nullptr},
