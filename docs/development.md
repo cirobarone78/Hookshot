@@ -57,7 +57,11 @@ is not a focus override.
 ## Switches for testing and debugging
 
 The running game reads its switches from the environment or from `hookshot_env.txt` beside `image.bin` (one
-`NAME=VALUE` a line, `#` for notes; `HOS_ENV_FILE=<path>` reads that file instead). The build reads its own from the
+`NAME=VALUE` a line, `#` for notes; `HOS_ENV_FILE=<path>` reads that file instead). The environment goes first: a name
+already set when the game starts keeps its value and the file's line for it is left out (the log says so). A switch
+that stands in for a menu row lasts for its run; the options file keeps the player's value (`env_override` in
+`gpu/vk/vk_menu.cpp`). Switches the shader translation reads are part of the program cache's stamp
+(`disk_stamp` in `gpu/vk/vk_shader.cpp`; `tests/test_program_stamp_knobs.py` checks the translator's). The build reads its own from the
 environment. The README has the ones players are asked to try (`RX_VK_ASTC_RGBA8`, `RX_VK_LOW_SPEC`,
 `RX_VK_MOVIE_UPSCALE`, `RX_VK_SKIP_CODE`, `HOS_OOT_CHEATS`). There are several hundred more, most of them one-off
 experiments: `grep -rn 'getenv("' host gpu/vk` lists them, and the comment where each is read says what it does.
