@@ -58,7 +58,7 @@ the table says what works and what does not yet.
 | Stutter when entering new areas | ⚠️ Still happens the first time you visit a place. The next visits are smooth |
 | Performance | ⚠️ Depends on the PC: some reach a steady 60 fps, others stay below it, more so in Hyrule Field |
 | Hyrule Field, Castle Town, Kakariko and the dungeons | ⚠️ Players got there, with open bugs: striped shadows in Hyrule Field ([#468](https://github.com/NotRexed/Hookshot/issues/468)), some crashes ([#317](https://github.com/NotRexed/Hookshot/issues/317), [#648](https://github.com/NotRexed/Hookshot/issues/648)) |
-| Ultrawide | ⚠️ The 3D keeps its shape, but the HUD is stretched and the picture is softer |
+| Ultrawide and 4:3 | ⚠️ The 3D keeps its shape, but the HUD is stretched and the picture is softer |
 | NVIDIA cards | ✅ Works. The most tested |
 | AMD cards | ⚠️ Some tested: reports from the RX 6600, RX 7800 XT and RX 7900 XTX. Known issue: the game loses the GPU in the Deku Tree on the RX 6600 ([#708](https://github.com/NotRexed/Hookshot/issues/708), [#614](https://github.com/NotRexed/Hookshot/issues/614)) |
 | Intel cards | ❓ Few reports, many of them black screens or crashes ([#17](https://github.com/NotRexed/Hookshot/issues/17)) |
@@ -176,7 +176,7 @@ with `--update <game folder>`.
 | Parts of the picture are missing, or a message says your card has no mesh shader support | The card or its driver has no mesh shaders. Update the driver; older cards are not supported ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
 | AMD: blocky textures, solid rectangles in the sky or unusually dark courtyard surfaces | Try the [RGBA8 texture workaround](#amd-texture-workaround). It uses more graphics memory |
 | Linux: the game does not start or the picture is broken | The game needs a Vulkan 1.3 driver with mesh shaders. Check with `vulkaninfo \| grep mesh`: it should list `VK_EXT_mesh_shader`. Update Mesa or the NVIDIA driver |
-| Steam Deck: the game freezes and closes in Kokiri Forest or the Great Deku Tree (`gfx_0.0.0 timeout` in `journalctl -k`) | `RX_VK_SKIP_CODE=2c56dc1006942f74` in `hookshot_env.txt` gets past it, but the models those draws make go missing (see *Switches for testing* below, [#817](https://github.com/NotRexed/Hookshot/issues/817)) |
+| Steam Deck: the game freezes and closes in Kokiri Forest or the Great Deku Tree (`gfx_0.0.0 timeout` in `journalctl -k`) | `RX_VK_MESH_NOCULL=2c56dc1006942f74` in `hookshot_env.txt` gets past it with every model drawn (the culling pass that runs for seconds is turned off). `RX_VK_SKIP_CODE=2c56dc1006942f74` also gets past it, but the models those draws make go missing (see the [development guide](docs/development.md#switches-for-testing-and-debugging), [#817](https://github.com/NotRexed/Hookshot/issues/817)) |
 | "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, or add `%LOCALAPPDATA%\HookshotBuilder` to its exclusions, then press **Repair** |
 | Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again |
 | The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all |
@@ -224,18 +224,19 @@ choices and starts the game again, so progress since your last save is lost.
 | | Frame generation | Off, 2x to 8x | Off |
 | | Frame pacing | Off, On | Off |
 | | NVIDIA Reflex | Off, On, On + Boost (NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
-| | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160 (after a restart) | 2048x1152 |
+| | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440 (after a restart) | 2048x1152 |
 | | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs) | Game's own |
 | | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (builds with DLSS; used by DLSS and DLAA) | Transformer (K) |
 | | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS: Auto, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With DLAA: Native | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Handheld profile | Off, On (after a restart) | Off |
-| | Ultrawide | 16:9, Monitor's shape (after a restart) | 16:9 |
+| | Ultrawide | 16:9, Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | 16:9 |
 | | Robust buffers | Auto, Off, On (after a restart) | Auto |
 | Gameplay | FPS counter | Off, On | Off |
 | | Game speed | Per frame, Real time | Real time |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
+| | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
 | | Microphone | Off, Default, or each microphone by name | Default |
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
@@ -243,13 +244,10 @@ choices and starts the game again, so progress since your last save is lost.
 | | Invert mouse vertical | Off, On | Off |
 | | Invert camera X | Off, On | Off |
 | | Invert camera Y | Off, On | Off |
+| | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |
 | | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
-| | Motion controls | Off, On | On |
-| | Motion sensitivity X | 10% to 300% | 100% |
-| | Motion sensitivity Y | 10% to 300% | 100% |
-| | Invert motion X | Off, On | Off |
-| | Invert motion Y | Off, On | Off |
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom | Nintendo (Def) |
+| | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
 | | Controls | Opens the Controls page | |
 
 - **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame generation, Frame pacing, Game
@@ -268,11 +266,16 @@ choices and starts the game again, so progress since your last save is lost.
   edges smoothed). Both look softer than the game's own: set **Sharpness** to around 80% with them. **DLSS model**
   chooses their network (below). **Render
   resolution** is the 3D's share of the output. The **Window scaling filter** then scales the frame to your window,
-  and **Sharpness** sharpens it.
+  and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
+  profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
+  suit.
 - **Output resolution:** its rows below show the sizes for the output you chose. Docked only. On a 1920x1080 display,
   the 1920x1080 option keeps HUD and text sharp when the game fills the screen by mapping them pixel for pixel. At
-  3840x2160 the game's render targets get a bigger GPU pool, so a full-size 3D fits. For one run, set `HOS_OUTPUT_RES`
-  to `3` for 1920x1080, `0` for 2048x1152, `1` for 2560x1440, or `2` for 3840x2160.
+  3840x2160 the game's render targets get a bigger GPU pool, so a full-size 3D fits. On a 5120x1440 (32:9) ultrawide
+  monitor, 5120x1440 gives a native frame with a sharp HUD. Set **Ultrawide** to Monitor's shape with it: it widens the
+  cameras to the frame's shape and keeps the HUD and movies in the middle 16:9; without it, the game's 16:9 picture is
+  stretched across the 32:9 output, sharp but wide. For one run, set `HOS_OUTPUT_RES` to `3` for 1920x1080,
+  `0` for 2048x1152, `1` for 2560x1440, `2` for 3840x2160, or `4` for 5120x1440.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest
   picture, set the Output resolution to your screen's, and the row shows "Not needed (window = output)". It and
   **Sharpness** also work when Frame generation is Off.
@@ -284,6 +287,9 @@ choices and starts the game again, so progress since your last save is lost.
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed
   down to 15 fps.
 - **FPS counter** shows in the top right corner. With frame generation on, it also shows the game's own rate.
+- **Audio output** is the speakers the game mixes its sound for. Auto is 5.1 when your default output device has 5.1
+  or more speakers, else stereo; Stereo or 5.1 chooses one whatever the device has (5.1 on stereo speakers is mixed
+  down). For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses stereo or 5.1 and wins over the menu.
 - **Microphone** is what the ocarina hears when the game's own microphone option is on (an instrument, or humming).
   Default follows Windows' default recording device; the list shows each microphone by name, and a change applies at
   once. A chosen microphone that is unplugged stays chosen (shown as not connected): Default stands in until it is
@@ -293,12 +299,15 @@ choices and starts the game again, so progress since your last save is lost.
   mouse still need the game's window.
 - **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in
   place of the right stick. The <kbd>-</kbd> and <kbd>=</kbd> keys change the sensitivity in game too.
+- **Stick dead zone:** how far a stick moves before it counts, on each axis. Default is XInput's (about 24%); lower suits
+  a precise stick, higher one that drifts. The game keeps a dead zone of its own after it.
 - **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble
   goes to a controller's heavy and light motors by its frequency.
-- **Motion controls:** the controller's gyroscope aims where the game uses motion, as on the Switch. It works with
-  Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL), held flat or upright. Its row
+- **Motion controls** (Controls tab, Motion page): the controller's gyroscope aims where the game uses motion, as on the Switch. It works with
+  Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4 (through SDL). Its row
   says whether the connected pad has a gyroscope; Off leaves the game seeing a pad lying still. **Motion sensitivity X/Y**
-  scale the left-right and up-down aim (100% is the console's), **Invert motion X/Y** turn either direction around. Motion follows the pad used
+  scale the left-right and up-down aim (100% is the console's), **Invert motion X/Y** turn either direction around. The game gets the motion
+  state as a Switch (and Eden) builds it, so how you hold the pad when motion starts does not matter. Motion follows the pad used
   last. The gyroscope's drift is learned while the pad rests on a table, so set it down for a second if the aim
   creeps. `HOS_MOTION_DEBUG=1` (in `hookshot_env.txt`) logs what the game gets twice a second.
 - **Layout preset:** Nintendo has A on the right face button, Xbox / PC and Swap Face put A on the bottom one. Changing
@@ -309,6 +318,17 @@ choices and starts the game again, so progress since your last save is lost.
 Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> move
 and the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn the camera.
 With the default keyboard bindings, press <kbd>E</kbd> to select **New Game** on the title screen.
+
+**Rumble:** a Nintendo Switch Pro Controller or Joy-Con plays the game's HD rumble as the Switch does, each side and
+both frequency bands as the game asks, with SDL3 (the Windows game brings it; on Linux the system's SDL3, where it has
+one). Other controllers, Switch 2 controllers, a pair of Joy-Cons used as one controller, and SDL2's own library get
+the game's rumble on their two motors. The menu's Rumble strength scales it too. `HOS_HD_RUMBLE=0` sends the Switch
+controllers the motor rumble too. On Linux, SDL talks to the Switch controller itself through its hidraw device, which
+needs read and write access for your user; Steam's udev rules (the `steam-devices` package on most distributions) give
+it. Without them the kernel's hid-nintendo driver runs the controller, and it gets the motor rumble. HD rumble goes to
+anything SDL reports as a Switch Pro Controller or Joy-Con, and that includes third-party controllers in Switch mode
+(8BitDo, GameSir and others; SDL gives them Nintendo's ids). Some of them may turn it into weak rumble or none: set
+`HOS_HD_RUMBLE=0` to give them the plain motor rumble.
 
 To change which gamepad button or key presses a Switch button, or which keys move and turn the camera, open the
 Controls tab's Controls page. Choose a row and a column (Gamepad or Keyboard), press <kbd>Enter</kbd> (or the bottom
@@ -346,6 +366,13 @@ have the same file, the one whose folder name sorts last wins, so name them `01-
 Only RomFS mods are loaded. `exefs` patches (`.pchtxt`, `.ips`) are left out: Hookshot compiles the game's code ahead
 of time, so patching its instructions would need a rebuild. The log (`hookshot_log.txt`) names each mod and the files
 read from it.
+
+A mod file larger than the game's own does not load unless the resource size table allows for it:
+`System/Resource/ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs` gives each file the memory the game sets
+aside for it (by the CRC32 of its path without `.zs`; for a texture, its decompressed size + 280). Past that, the game
+goes on without the mod's file, or a loading screen waits for good. A mod that makes files bigger (HD
+textures, longer parameter files) ships the table with its entries grown. Since only one mod's table is used, mods that
+each grow files need one table with all their entries, in the mod that sorts last.
 
 ## Build from source
 
@@ -478,7 +505,9 @@ license. Never share a game folder built with them, and do not post builds made 
   driver.
 - **Linux:** the same with `--platform linux` (or `scripts/linux/ngx-sdk.sh`): `libnvsdk_ngx.a` for the build and
   `libnvidia-ngx-dlss.so` for the game folder's `ngx` folder (also looked for in `$XDG_DATA_HOME/hookshot/ngx`). NGX's
-  core comes with NVIDIA's Linux driver.
+  core comes with NVIDIA's Linux driver. NVIDIA's NGX on Linux loads the runtime only from a folder whose path is all
+  ASCII: with the game in a folder named otherwise (`~/Games/Zelda-Café`), put `libnvidia-ngx-dlss.so.*` in
+  `$XDG_DATA_HOME/hookshot/ngx` (`~/.local/share/hookshot/ngx`) or another ASCII folder named by `RX_VK_DLSS_DIR`.
 
 The **DLSS model** row chooses DLSS's network, by NVIDIA's preset letter, for every mode: **Transformer (K)**, the
 transformer model and the one tested most here (the default); **Transformer 2 (M)**, NVIDIA's second-generation
@@ -511,6 +540,11 @@ of its own downloads (`C:\ProgramData\NVIDIA\NGX\models`) before it uses the gam
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` in the game folder, one `NAME=VALUE` a
 line, on Windows and Linux. The running game reads it, not the builder. A test run can name another file with
 `HOS_ENV_FILE=<path>`; the game then reads that one instead and leaves `hookshot_env.txt` alone.
+`hookshot_env.txt` sets only the game's own switches (names that start with `RX_`, `HOS_`, `HOOKSHOT_`, `EDEN_`,
+`NVN_`, `TOTK_` or `SDL_`, but not SDL's library names such as `SDL_VULKAN_LIBRARY`), and no value that is a path except
+`RX_VK_DLSS_DIR`'s (a folder on this PC, not a network share), and no file name for the switches that write one;
+other lines are left out, and the
+log says so. Switches that need a path, or other variables, go in a file named by `HOS_ENV_FILE`.
 
 To enable the debug menu, add `HOS_OOT_CHEATS=1` to `hookshot_env.txt` in the game folder. Restart the game,
 press **Insert**, then open **Gameplay → Cheats**.

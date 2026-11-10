@@ -22,6 +22,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <map>
+#include <set>
+#include <utility>
 #include <vector>
 #include <thread>
 #include <setjmp.h>
@@ -690,10 +692,13 @@ void pcache_init() {
     }
     // (data of another device or driver is dropped before Vulkan sees it)
     if (data.size() >= 32) {
-        uint32_t vendor, device;
+        uint32_t head_size, version, vendor, device;
+        std::memcpy(&head_size, data.data(), 4);
+        std::memcpy(&version, data.data() + 4, 4);
         std::memcpy(&vendor, data.data() + 8, 4);
         std::memcpy(&device, data.data() + 12, 4);
-        if (vendor != dev.props.vendorID || device != dev.props.deviceID ||
+        if (head_size < 32 || head_size > data.size() || version != VK_PIPELINE_CACHE_HEADER_VERSION_ONE ||   // (hookshot)
+            vendor != dev.props.vendorID || device != dev.props.deviceID ||
             std::memcmp(data.data() + 16, dev.props.pipelineCacheUUID, VK_UUID_SIZE))
             data.clear();
     }
@@ -889,6 +894,24 @@ std::string pipe_notes_path() {
     return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_pipelines.bin";
 }
 /// The notes of this build (hookshot_pipelines.bin), each pipeline once
+/// (hookshot) Targets a pipeline can be made with: at most 8 colour targets, a sample count Vulkan has, a topology it has.
+/// The notes and the state list are files: what they say is checked before a pipeline is made from it
+bool targets_ok(uint32_t n, uint32_t samples, uint32_t topo) {
+    return n <= 8 && samples >= 1 && samples <= 64 && !(samples & (samples - 1)) && topo <= VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+}
+/// (hookshot) a note read from hookshot_pipelines.bin: its counts in range, its booleans 0 or 1, and no host pointers (the
+/// render targets' objects of the run that wrote it mean nothing here)
+bool note_sane(PipeNote& n) {
+    if (!targets_ok(n.n, n.samples, n.topo) || n.s.nvattr < 0 || n.s.nvattr > 16) return false;
+    n.s.rt = nvn_p_set_rt{};
+    for (bool* b : {&n.s.has_prog, &n.s.restart, &n.s.depth_clamp, &n.s.raster_discard, &n.s.render_enabled}) {
+        unsigned char v;
+        std::memcpy(&v, b, 1);
+        v = v != 0;
+        std::memcpy(b, &v, 1);
+    }
+    return n.s.prog.nstage <= 6;
+}
 std::vector<std::unique_ptr<PipeNote>> pipe_notes_read() {
     std::vector<std::unique_ptr<PipeNote>> notes;
     if (FILE* f = fopen(pipe_notes_path().c_str(), "rb")) {
@@ -898,6 +921,7 @@ std::vector<std::unique_ptr<PipeNote>> pipe_notes_read() {
             for (;;) {
                 auto rec = std::make_unique<PipeNote>();
                 if (fread(rec.get(), sizeof(PipeNote), 1, f) != 1) break;
+                if (!note_sane(*rec)) continue;
                 if (seen.insert(rec->key).second) notes.push_back(std::move(rec));
             }
         }
@@ -1004,7 +1028,9 @@ std::vector<StateRec> state_list_read(const std::string& path) {
     if (fread(magic, 8, 1, f) == 1 && !memcmp(magic, kStateMagic, 8) && fread(&size, 4, 1, f) == 1 && size == sizeof(StateRec)) {
         StateRec r;
         while (fread(&r, sizeof r, 1, f) == 1) {
-            if (r.nanswers > std::size(r.answers) || r.nquestions > std::size(r.questions)) continue;
+            if (r.nanswers > std::size(r.answers) || r.nquestions > std::size(r.questions) || r.nvattr > 16 ||
+                !targets_ok(r.n, r.samples, r.topo))
+                continue;   // (hookshot: a pipeline is made from the rest: its counts must be ones it can have)
             out.push_back(r);
         }
     }
@@ -1203,6 +1229,7 @@ VkPipeline gpl_part(const Program& p, const NvnState& s, const Targets& at, VkPr
     return it->second;
 }
 VkPipeline gpl_link(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo) {
+    if (at.n < 0 || at.n > 8) return VK_NULL_HANDLE;   // (hookshot: at most 8 colour targets)
     const uint64_t program = mix(p.key, p.variant);
     uint64_t input = (uint64_t)topology_class(topo) + 1;
     if (!p.mesh && !p.fallback) {
@@ -1270,6 +1297,7 @@ const Shader::Info* vertex_info(const Program& p) {
 
 /// A graphics pipeline's key: what is baked into it (the rest is dynamic state)
 uint64_t pipeline_key(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo) {
+    if (at.n < 0 || at.n > 8) return 0;   // (hookshot: at most 8 colour targets)
     uint64_t key = mix(mix(p.key, p.variant), (uint64_t)topology_class(topo) << 8 | (uint64_t)at.samples);
     const Shader::Info& vs = *vertex_info(p);
     if (!p.mesh && !p.fallback) {
@@ -1379,6 +1407,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
 /// part: -1 the whole pipeline, or the graphics pipeline library it stands for: 0 vertex input, 1 pre-rasterization, 2 fragment
 /// shader, 3 fragment output
 VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part) {
+    if (at.n < 0 || at.n > 8) return VK_NULL_HANDLE;   // (hookshot: at most 8 colour targets)
     const Shader::Info& vs = *vertex_info(p);
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<VkPipelineShaderStageCreateInfo> stages;
@@ -1615,7 +1644,9 @@ uint32_t aniso_override() {
 VkSampler sampler_make(int id, bool compare);
 // (each texture of each draw found its sampler through reg_mu, a copy of the registration, a hash of it and a map lookup:
 // ~48000 times a frame at 3000 draws. Now a thread's table by id and compare, good while no sampler registration's contents
-// changed (sampler_registrations_generation). RX_VK_SAMPLER_CACHE=0: off)
+// changed (sampler_registrations_generation). RX_VK_SAMPLER_CACHE=0 turns off both this table and the parameters' cache inside
+// sampler_make; =1 or the Sampler cache row turns the parameters' cache on (this table stays on, as it is without the option)
+bool sampler_cache_on();   // (hookshot, RX_VK_SAMPLER_CACHE and the Sampler cache row: defined below with the descriptor fingerprint's)
 VkSampler sampler_for(int id, bool compare) {
     static const bool on = !getenv("RX_VK_SAMPLER_CACHE") || atoi(getenv("RX_VK_SAMPLER_CACHE")) != 0;
     if (!on || id < 0 || id >= 4096) return sampler_make(id, compare);
@@ -1630,7 +1661,16 @@ VkSampler sampler_for(int id, bool compare) {
 }
 VkSampler sampler_make(int id, bool compare) {
     nvn_samp_par p{};
-    if (!sampler_of(id, &p)) p.minf = NVN_MIN_FILTER_LINEAR, p.magf = NVN_MAG_FILTER_LINEAR, p.lod_max = 1000.0f;
+    bool known = false;
+    if (sampler_cache_on()) {   // (hookshot: what an id holds stays cached with its version on this thread: resolving an id
+        static thread_local std::unordered_map<int, std::pair<uint32_t, nvn_samp_par>> seen;   // (that was not registered
+        const uint32_t v = sampler_slot_version(id);                                            // (anew takes no lock)
+        if (auto it = seen.find(id); it != seen.end() && it->second.first == v)
+            p = it->second.second, known = true;
+        else if (sampler_of(id, &p)) seen[id] = {v, p}, known = true;   // (ids are < 4096: the table cannot outgrow them)
+    } else
+        known = sampler_of(id, &p);
+    if (!known) p.minf = NVN_MIN_FILTER_LINEAR, p.magf = NVN_MAG_FILTER_LINEAR, p.lod_max = 1000.0f;
     uint64_t key = mix(compare ? 0xC0 : 0xAB, aniso_override());
     const uint8_t* b = reinterpret_cast<const uint8_t*>(&p);
     for (size_t i = 0; i < sizeof p; i += 8) {
@@ -2024,6 +2064,7 @@ struct DescWriter {
     std::vector<VkDescriptorBufferInfo> bufs;
     std::vector<VkDescriptorImageInfo> imgs;
     std::vector<VkBufferView> views;
+    const Program* prog = nullptr;   // (the program they were built for: a dispatch builds its own over a draw's)
     void reset() {
         writes.clear(), bufs.clear(), imgs.clear(), views.clear();
     }
@@ -2078,6 +2119,64 @@ void dump_input(char kind, uint32_t index, uint32_t handle, const Texture* tex) 
 bool slow_desc_timing() {
     static const int on = getenv("RX_VK_SLOW_DESC") != nullptr;
     return on;
+}
+
+// (hookshot) one switch read two ways, like the Robust buffers row of vk_main.cpp: the environment variable says it for test
+// runs (any value, 0 off); else the row's line in hookshot_options.ini beside the game; else off.
+bool menu_env_on(const char* env_name, const char* ini_key_name) {
+    if (const char* e = getenv(env_name)) return atoi(e) != 0;
+    char exe[MAX_PATH];
+    const DWORD n = game_module_path(exe, MAX_PATH);   // (the game folder, not bin beside the launcher: vk_paths.h)
+    std::string ini(exe, n);
+    ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
+    const size_t klen = strlen(ini_key_name);
+    int v = 0;
+    if (FILE* f = fopen(ini.c_str(), "r")) {
+        char line[80];
+        while (fgets(line, sizeof line, f))
+            if (!strncmp(line, ini_key_name, klen) && line[klen] == '=') {
+                v = atoi(line + klen + 1);
+                break;
+            }
+        fclose(f);
+    }
+    return v != 0;
+}
+/// (hookshot) the Descriptor reuse row / RX_VK_DESC_SLOTGEN=1: a draw keeps its descriptors through registrations of the
+/// texture slots it does not sample. What it does sample is checked by slot version, and the samplers by their
+/// registrations' generation, instead of the global one every registration moves. Its ready line is like the frame interpolation's.
+bool desc_slotgen_on() {
+    static int on = -1;
+    if (on < 0) {
+        on = menu_env_on("RX_VK_DESC_SLOTGEN", "descriptor_reuse");
+        if (on)
+            logf("vk: descriptor slotgen ready: draws keep their descriptors through the registrations of slots they do not "
+                 "sample (menu: Descriptor reuse)");
+    }
+    return on;
+}
+/// (hookshot) the Sampler cache row / RX_VK_SAMPLER_CACHE=1: what a sampler id holds is kept next to its version on the replay
+/// thread, so resolving an id that was not registered anew takes no lock (the registrations' mutex contends with the texture streaming)
+bool sampler_cache_on() {
+    static int on = -1;
+    if (on < 0) {
+        on = menu_env_on("RX_VK_SAMPLER_CACHE", "sampler_cache");
+        if (on) logf("vk: sampler cache ready: sampler ids answer their parameters without the registrations' lock (menu: Sampler cache)");
+    }
+    return on;
+}
+// (RX_VK_DESC_SLOTGEN) What the descriptors being built read of the registrations: the version of every slot whose handle they
+// resolved. The next draw of the same bindings keeps them while none of those versions moved. A handle read as 0 is noted: of a
+// slot that is not registered, only a registration (the global generation) can tell us that it is one now.
+TLS_OBJECT(desc_fp, std::vector<uint64_t>)   // ((version << 20 | slot), a handle read)
+thread_local bool desc_fp_dummy = false;      // (some handle read 0)
+thread_local uint64_t desc_samp_seen = 0;     // (the samplers' generation when the build began)
+thread_local uint64_t desc_destroy_seen = 0;  // (the eviction generation: destroy_later retires a view without touching any slot or sampler generation)
+void desc_fp_note(uint32_t handle) {
+    if (!desc_slotgen_on()) return;
+    const uint32_t slot = handle & 0xFFFFF;
+    desc_fp().push_back((uint64_t)texture_slot_version((int)slot) << 20 | slot);
+    desc_fp_dummy |= handle == 0;
 }
 
 /// (a descriptor that took over 2 ms to resolve: logged, 40 of them)
@@ -2159,6 +2258,10 @@ bool table_track_open(int logged, int seen, int unlimited) {
 
 void build_descriptors(const NvnState& s, const Program& p) {
     dw().reset();
+    dw().prog = &p;
+    desc_fp().clear(), desc_fp_dummy = false;   // (RX_VK_DESC_SLOTGEN: the samplers' generation is read before the first handle,
+    desc_samp_seen = sampler_registrations_generation();   // (so one registered during the build still forces the next rebuild)
+    desc_destroy_seen = texture_destroy_generation();      // (an eviction retires views behind the slots' backs: it bumps only this)
     draw_sampled().clear();
     dump_written().clear();
     dump_inputs().clear();
@@ -2436,6 +2539,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 const size_t first = dw().views.size();
                 for (uint32_t k = 0; k < d.count; k++) {
                     const uint32_t handle = handle_of(s, st, d, k);
+                    desc_fp_note(handle);   // (RX_VK_DESC_SLOTGEN)
                     nvn_tex t;
                     nvn_view v;
                     bool has_view = false;
@@ -2468,6 +2572,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 static const bool all_stages = getenv("RX_VK_HANDLE_POINTER_ALL") != nullptr;
                 const uint32_t handle = ((all_stages || st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) && handle_is_storage_pointer(info, d, k))
                                             ? 0u : handle_of(s, st, d, k);
+                desc_fp_note(handle);   // (RX_VK_DESC_SLOTGEN)
                 Texture* tex = nullptr;
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex)
                                           : VK_NULL_HANDLE;
@@ -2508,6 +2613,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
             const VkImageViewType vt = view_type(d.type);
             for (uint32_t k = 0; k < d.count; k++) {
                 const uint32_t handle = handle_of(s, st, d, k);
+                desc_fp_note(handle);   // (RX_VK_DESC_SLOTGEN)
                 Texture* tex = nullptr;
                 uint32_t level = 0;
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Storage, image_format(d.format), &tex, &level)
@@ -2956,6 +3062,23 @@ thread_local bool work_since_barrier = false;   // (GPU work recorded since the 
 thread_local bool last_desc_valid = false;
 thread_local const Program* last_desc_prog = nullptr;
 thread_local uint64_t last_desc_bind = 0, last_desc_reg = 0, last_desc_ub = 0;
+// (RX_VK_DESC_SLOTGEN: the versions of the slots the last build resolved, the samplers' generation it saw, and whether it
+// sampled an unregistered slot; the same draw keeps its descriptors while none of those moved)
+TLS_OBJECT(last_desc_fp, std::vector<uint64_t>)
+thread_local bool last_desc_fp_dummy = false;
+thread_local uint64_t last_desc_samp = 0, last_desc_destroy = 0;
+int64_t st_desc_slotgen_saves;   // (reuses the global registrations' generation check would have rebuilt for)
+/// (RX_VK_DESC_SLOTGEN) Whether every slot the last build resolved still holds what it did: no registration since touched a
+/// slot this draw samples, so its descriptors stand through the streaming's churn. A build that sampled an unregistered slot
+/// keeps the old check: a registration is the only thing that could make such a handle resolve, and no slot version moved.
+bool desc_slots_kept(uint64_t reg_gen) {
+    if (last_desc_samp != sampler_registrations_generation()) return false;
+    if (last_desc_destroy != texture_destroy_generation()) return false;   // (an eviction sweep: destroy_later retires the
+    if (last_desc_fp_dummy && last_desc_reg != reg_gen) return false;      // (views without bumping any slot, so they alone stay silent)
+    for (const uint64_t e : last_desc_fp())
+        if (texture_slot_version((int)(e & 0xFFFFF)) != (uint32_t)(e >> 20)) return false;
+    return true;
+}
 thread_local VkPipeline last_pipeline = VK_NULL_HANDLE;
 struct LastVb { VkBuffer b[16]; VkDeviceSize o[16], z[16], s[16]; };
 thread_local LastVb last_vb;
@@ -2997,7 +3120,11 @@ Targets targets(NvnState& s) {
         at.color[i] = tex, at.color_view[i] = view, at.color_format[i] = f;
         const uint32_t level = image_level(tex, view_level(v));
         at.color_level[i] = level, at.color_layer[i] = v ? view_layer(v) : 0;
-        const uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
+        uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
+        // (a raw view of a compressed target is one texel a block: its extent in blocks. The texels' 64 x 64 over the 16 x 16
+        // view of OoT's noise volumes put the render area past the attachment)
+        const auto bc = [](VkFormat x) { return x >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && x <= VK_FORMAT_BC7_SRGB_BLOCK; };
+        if (bc(tex->format) && !bc(f)) w = (w + 3) / 4, h = (h + 3) / 4;
         at.width = at.width ? std::min(at.width, w) : w;
         at.height = at.height ? std::min(at.height, h) : h;
         at.samples = tex->samples;
@@ -4765,19 +4892,29 @@ bool mesh_args_ready() {
         void* mapped = nullptr;
         if (!create_buffer((uint64_t)kMeshArgs * 16,
                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true,
-                           mesh_args_buffer, mesh_args_alloc, &mapped) || !mapped)
+                           mesh_args_buffer, mesh_args_alloc, &mapped))
             return false;
+        const auto discard = [] {
+            destroy_buffer(mesh_args_buffer, mesh_args_alloc);
+            mesh_args_buffer = VK_NULL_HANDLE;
+            mesh_args_alloc = nullptr;
+            mesh_args_words = nullptr;
+            mesh_args_address = 0;
+            return false;
+        };
+        if (!mapped) return discard();
         uint32_t* w = (uint32_t*)mapped;
         mesh_args_words = w;
         for (uint32_t i = 0; i < kMeshArgs; i++) w[i * 4] = 0, w[i * 4 + 1] = 1, w[i * 4 + 2] = 1, w[i * 4 + 3] = 0;
         VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
         da.buffer = mesh_args_buffer;
         mesh_args_address = vkGetBufferDeviceAddress(dev.device, &da);
-        return mesh_args_address != 0;
+        if (!mesh_args_address) return discard();
+        return true;
     }();
     return ok;
 }
-uint32_t mesh_args_take(uint32_t n) {   // (n entries of the ring, never entry 0)
+uint32_t mesh_args_take(uint32_t n) {   // (n entries of the ring, never entry 0; n below kMeshArgs: % 0 otherwise)
     static std::atomic<uint32_t> next{1};
     const uint32_t at = next.fetch_add(n) % (kMeshArgs - n);
     return at + 1;
@@ -4831,13 +4968,24 @@ bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
     const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     if (!create_buffer(records, usage, false, f.records, f.records_mem, &mapped)) return false;
+    bool payload_created = false;
+    const auto failed = [&] {
+        // No draw has received these buffers yet. Only free allocations whose creation succeeded.
+        if (payload_created) destroy_buffer(f.payload, f.payload_mem);
+        destroy_buffer(f.records, f.records_mem);
+        f.records = f.payload = VK_NULL_HANDLE;
+        f.records_mem = f.payload_mem = nullptr;
+        f.records_address = f.payload_address = 0;
+        return false;
+    };
     f.records_address = fallback_buffer_address(f.records);
     if (p.fallback_task) {
         const uint64_t payload = capacity * 4 + capacity * (uint64_t)p.fallback_payload_words * 4;
-        if (!create_buffer(payload, usage, false, f.payload, f.payload_mem, &mapped)) return false;
+        if (!create_buffer(payload, usage, false, f.payload, f.payload_mem, &mapped)) return failed();
+        payload_created = true;
         f.payload_address = fallback_buffer_address(f.payload);
     }
-    if (!f.records_address) return false;
+    if (!f.records_address || (p.fallback_task && !f.payload_address)) return failed();
     f.ok = true;
     out = &f;
     return true;
@@ -4845,8 +4993,14 @@ bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
 
 bool fallback_compute_pipelines(Program& p) {
     static std::mutex mu;
+    // (the programs whose compute pipeline the driver refused or faulted on, by key and variant: not tried again. Each try
+    // was one more driver fault, on every draw of the program: 12,160 faults for one program in a Kokiri Forest run on
+    // RADV, the frame down to 2-3 fps (#1001); on a GTX 1070 the replay stopped presenting after the first one. Left out,
+    // the program costs its draws, as the first failure already did)
+    static std::set<std::pair<uint64_t, uint64_t>> failed;
     std::lock_guard lk(mu);
     if (!p.fallback_compute.empty()) return true;
+    if (failed.count({p.key, p.variant})) return false;
     std::vector<VkPipeline> made(p.stages.size(), VK_NULL_HANDLE);
     bool any = false;
     for (size_t i = 0; i < p.stages.size(); i++) {
@@ -4862,8 +5016,10 @@ bool fallback_compute_pipelines(Program& p) {
         ci.stage = si;
         ci.layout = p.layout;
         if (guarded_compute(pcache, &ci, &made[i]) != VK_SUCCESS) {
+            failed.insert({p.key, p.variant});
             static std::atomic<int> told{0};
-            if (told++ < 2) logf("vk: fallback: the compute pipeline of %016llx could not be made", (unsigned long long)p.key);
+            if (told++ < 8)
+                logf("vk: fallback: the compute pipeline of %016llx could not be made: its draws are left out", (unsigned long long)p.key);
             return false;
         }
         pcache_built_since_save++;
@@ -4878,6 +5034,11 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     if (d.count_addr) {   // (more than one draw in the records: each its own dispatch, not one)
         static std::atomic<int> told{0};
         if (told++ < 2) logf("vk: fallback: a mesh draw with a count buffer is left out (issue 640)");
+        return false;
+    }
+    if (dw().prog != &p) {   // (the descriptors built are another program's: draw() rebuilds them for a fallback draw)
+        static std::atomic<int> told{0};
+        if (told++ < 2) logf("vk: fallback: the descriptors built are not %016llx's: its draw is left out", (unsigned long long)p.key);
         return false;
     }
     FallbackBuffers* f = nullptr;
@@ -4971,10 +5132,10 @@ void bind_index(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkInd
 }
 
 /// (hookshot, a diagnostic for NVIDIA DLSS's motion: vk_dlss.cpp) RX_VK_DLSS_TRACE=<frames>: every that many frames, one frame's
-/// draws into targets at least 640 wide, logged: the program, its targets' formats, the geometry and the uniform buffers
+/// draws into targets of a size DLSS can take as the scene (dlss_scene_size), logged: the program, its targets' formats, the geometry and the uniform buffers
 static void dlss_trace_draw(const NvnState& s, const Program& p, const DrawArgs& d, const Targets& at) {
     static const int every = getenv("RX_VK_DLSS_TRACE") ? atoi(getenv("RX_VK_DLSS_TRACE")) : 0;
-    if (every <= 0 || at.width < 640) return;
+    if (every <= 0 || !dlss_scene_size(at.width, at.height)) return;
     const uint64_t f = texture_frame_no();
     if (f % (uint64_t)every != (uint64_t)every / 2) return;
     char line[3072];
@@ -5010,8 +5171,8 @@ static void dlss_trace_draw(const NvnState& s, const Program& p, const DrawArgs&
 /// (and 5, RGBA8), the joints at 6 (and 7, RGBA16UI or RGBA8UI), the bone palette in the vertex stage's uniform buffer 6 (NVN's
 /// binding 3: 3 x 4 matrices, a whole number of them) and the object's origin in its buffer 4 (binding 1, at 0x40)
 static void dlss_skin_check(const NvnState& s, const Program& p, const DrawArgs& d, const Targets& at) {
-    if (d.mesh || !d.indexed || d.indirect || d.instances != 1 || !at.n || !at.color[0] || !at.depth || at.width < 640 ||
-        at.color_format[0] != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || s.nvattr < 7 || !dlss_wanted())
+    if (d.mesh || !d.indexed || d.indirect || d.instances != 1 || !at.n || !at.color[0] || !at.depth ||
+        !dlss_scene_size(at.width, at.height) || at.color_format[0] != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || s.nvattr < 7 || !dlss_wanted())
         return;
     const auto attr = [&](int i) { return *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]); };
     const nvn_va_st pos = attr(0);
@@ -5087,15 +5248,25 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         SKIP_HERE();
     }
     if (skip_live(cp->key)) return;   // (EvilOOT, RX_VK_SKIP_FILE)
-    {   // (hookshot, RX_VK_SKIP_PROG: draws too, their native code keys logged once; =-: none. By default OoT's 53509044401d78d2, 128
-        // draws of a full-screen pass over two 64^3 volumes, once, while the game loads: on about half the first starts the GPU stalled in
-        // them for Windows' two seconds and the device was lost, a black screen with the frame counter over it. Its shaders are straight-line
-        // sampling code and the cause is still open. It was taken off this list once after a few clean runs: it had not gone. 0 lost
-        // of 8 first starts without it, against 7 of 14 with it)
+    {   // (hookshot, RX_VK_SKIP_PROG=<key prefix,...>: draws too, their native code keys logged once; =-: none)
+        // (OoT's 53509044401d78d2, by default only while its targets have no view: 128 draws, once while an area loads, that render
+        // the slices of two 64^3 BC4 noise volumes through raw RGBA16UI views. Those views were not made (no attachment usage) and
+        // the pass ran over no target at the texels' 64 x 64: on about half the first starts the device was lost (7 of 14), and it
+        // was left out always. Left out, the volumes stayed zero and the foliage's LOD crossfade left trees bare at mid distance
+        // (#1151). Where the driver takes the usage (vk_texture.cpp) the views are made and the pass is sized in blocks
+        // (targets()); it runs there, and is still left out where they are not)
+        static const bool default_list = !getenv("RX_VK_SKIP_PROG");
+        if (default_list && cp->key == 0x53509044401d78d2ull && !at.n) {
+            static std::atomic<int> told{0};
+            if (told++ < 2)
+                logf("vk: draws of program %016llx left out: its targets have no view (RX_VK_SKIP_PROG=- runs them anyway)",
+                     (unsigned long long)cp->key);
+            return;
+        }
         // (the list parsed once into key prefixes: it was a snprintf and a string compare on every draw)
         static const std::vector<std::pair<uint64_t, uint64_t>> skip_keys = [] {   // (value, mask) of each prefix
             std::vector<std::pair<uint64_t, uint64_t>> v;
-            const char* list = !getenv("RX_VK_SKIP_PROG") ? "53509044401d78d2" : strcmp(getenv("RX_VK_SKIP_PROG"), "-") ? getenv("RX_VK_SKIP_PROG") : "";
+            const char* list = getenv("RX_VK_SKIP_PROG") && strcmp(getenv("RX_VK_SKIP_PROG"), "-") ? getenv("RX_VK_SKIP_PROG") : "";
             for (const char* q = list; *q;) {
                 const char* e = q;
                 while (*e && *e != ',') e++;
@@ -5227,8 +5398,15 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // when none changed since the last draw, the set it pushed or bound stands)
     const uint64_t reg_gen = registrations_generation(), ub_gen = ub_generation();
     static const bool no_reuse = getenv("RX_VK_NO_DESC_REUSE") != nullptr;   // (A/B: every draw builds its own)
+    const bool slotgen = desc_slotgen_on();
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
-                           last_desc_reg == reg_gen && last_desc_ub == ub_gen;
+                           last_desc_ub == ub_gen && (slotgen ? desc_slots_kept(reg_gen) : last_desc_reg == reg_gen) &&
+                           (!p.fallback || dw().prog == &p);
+    if (p.fallback && !same_desc && dw().prog != &p && last_desc_valid && last_desc_prog == &p) {
+        static std::atomic<int> told{0};
+        if (told++ < 3) logf("vk: fallback: %016llx's descriptors built again after a dispatch", (unsigned long long)p.key);
+    }
+    if (same_desc && slotgen && last_desc_reg != reg_gen) st_desc_slotgen_saves++;   // (the global check would have rebuilt)
     if (!same_desc) {
         PROF_HOT(PROF_DESC);
         FINE_N(FC_BUILDS, 1);
@@ -5267,7 +5445,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // draw has no stride of its own: its entry is NVN's 16 bytes, taken as 8 the first was never copied)
     static const bool mesh_rewrite = getenv("RX_VK_MESH_ARGS") && atoi(getenv("RX_VK_MESH_ARGS")) != 0;   // (sharkiix version: off, as upstream)
     if (mesh_rewrite && d.mesh && d.indirect) {   // (out of the pass: a copy cannot be made in one)
-        const uint32_t n = (uint32_t)std::clamp(d.max, 1, (int)kMeshArgs), stride = d.stride ? (uint32_t)d.stride : 16u;
+        const uint32_t n = (uint32_t)std::clamp(d.max, 1, (int)kMeshArgs - 1), stride = d.stride ? (uint32_t)d.stride : 16u;
         BufferRef src = gpu_buffer_bind(d.indirect, (uint64_t)n * stride, false);
         if (!src) SKIP_HERE();
         if (mesh_args_ready()) {
@@ -5353,6 +5531,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
         last_desc_valid = true, last_desc_prog = &p, last_desc_bind = s.bind_gen, last_desc_reg = reg_gen;
         last_desc_ub = ub_gen;
+        if (slotgen)   // (RX_VK_DESC_SLOTGEN: what its handles resolved; the next such draw may keep it through other slots' churn)
+            last_desc_fp() = desc_fp(), last_desc_fp_dummy = desc_fp_dummy, last_desc_samp = desc_samp_seen,
+            last_desc_destroy = desc_destroy_seen;
     } else {
         st_desc_reused++;
     }
@@ -5493,15 +5674,18 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (d.indirect) {
             BufferRef cnt = d.count_addr ? gpu_buffer_bind(d.count_addr, 4, false) : BufferRef{};
             if (mesh_conv_buf) {   // (EvilOOT: the records as {count, 1, 1}, mesh_indirect_convert)
+                // (hookshot: as many records as mesh_indirect_convert wrote, not the game's maximum)
+                const uint32_t conv_n = (uint32_t)std::clamp(d.max, 1, 4096);
                 if (cnt && vkCmdDrawMeshTasksIndirectCountEXT)
-                    vkCmdDrawMeshTasksIndirectCountEXT(cmd, mesh_conv_buf, mesh_conv_off, cnt.buffer, cnt.offset, d.max, 12);
+                    vkCmdDrawMeshTasksIndirectCountEXT(cmd, mesh_conv_buf, mesh_conv_off, cnt.buffer, cnt.offset, conv_n, 12);
                 else
-                    vkCmdDrawMeshTasksIndirectEXT(cmd, mesh_conv_buf, mesh_conv_off, std::max(d.max, 1), 12);
+                    vkCmdDrawMeshTasksIndirectEXT(cmd, mesh_conv_buf, mesh_conv_off, conv_n, 12);
                 mesh_conv_buf = VK_NULL_HANDLE;
                 st_mesh++;
                 st_draws++, pass().draws++;
                 return;
             }
+            if (d.max < 0 || d.stride < 0) SKIP_HERE();   // (hookshot: the game's ints; a negative count was ~4e9 draws)
             if (!mesh_args.buffer) {
                 mesh_args = gpu_buffer_bind(d.indirect, (uint64_t)std::max(d.max, 1) * std::max(d.stride, 12), false);
                 if (!mesh_args) SKIP_HERE();
@@ -5594,6 +5778,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     if (d.indexed && d.itype == 0 && !dev.index_uint8) SKIP_HERE();
     if (d.prim == NVN_DRAW_PRIMITIVE_QUADS) {   // (quads as two triangles each: indices made in the stream)
         if (d.indirect || d.count < 4) SKIP_HERE();
+        if (d.count > (1 << 24)) SKIP_HERE();   // (hookshot: 4M quads at most; the game's count sized host vectors of up to 16 GB)
         const uint32_t quads = (uint32_t)d.count / 4, unit = d.itype == 0 ? 1 : d.itype == 1 ? 2 : 4;
         std::vector<uint32_t> src(d.indexed ? (size_t)quads * 4 : 0);
         if (d.indexed) {
@@ -5622,18 +5807,22 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         return;
     }
     if (d.indirect) {
-        BufferRef args = gpu_buffer_bind(d.indirect, (uint64_t)std::max(d.max, 1) * std::max(d.stride, 16), false);
+        // (hookshot) the records the draw reads, at the stride it reads them with (20 for indexed draws), all bound; a
+        // negative count or stride from the game is no draw
+        if (d.max < 0 || d.stride < 0) SKIP_HERE();
+        const int ind_stride = std::max(d.stride, d.indexed ? 20 : 16);
+        BufferRef args = gpu_buffer_bind(d.indirect, (uint64_t)std::max(d.max, 1) * (uint64_t)ind_stride, false);
         BufferRef cnt = d.count_addr ? gpu_buffer_bind(d.count_addr, 4, false) : BufferRef{};
         if (!args) SKIP_HERE();
         if (d.indexed) {
             BufferRef ib = gpu_buffer_bind(d.ibuf, 4, false);
             if (!ib) SKIP_HERE();
             bind_index(cmd, ib.buffer, ib.offset, itype);
-            if (cnt) vkCmdDrawIndexedIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, d.max, std::max(d.stride, 20));
-            else vkCmdDrawIndexedIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), std::max(d.stride, 20));
+            if (cnt) vkCmdDrawIndexedIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, std::max(d.max, 1), ind_stride);
+            else vkCmdDrawIndexedIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), ind_stride);
         } else {
-            if (cnt) vkCmdDrawIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, d.max, std::max(d.stride, 16));
-            else vkCmdDrawIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), std::max(d.stride, 16));
+            if (cnt) vkCmdDrawIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, std::max(d.max, 1), ind_stride);
+            else vkCmdDrawIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), ind_stride);
         }
     } else if (d.indexed) {
         const uint32_t unit = d.itype == 0 ? 1 : d.itype == 1 ? 2 : 4;
@@ -5998,6 +6187,10 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
     // (bounded when the history is last frame's or so: a pause of the TAAU, a menu, starts again unbounded)
     const uint64_t now_frame = texture_frame_no();
     size[2] = temporal && !no_clamp && hist_frame && now_frame - hist_frame <= 3 ? 1u : 0u;
+    // (the gameplay stand-in's edges: FXAA in the shader. RX_VK_TAAU_FXAA=0: the plain linear upscale as before; 2: the
+    // pixels it changed drawn red)
+    static const int fxaa = getenv("RX_VK_TAAU_FXAA") ? atoi(getenv("RX_VK_TAAU_FXAA")) : 1;
+    if (temporal && fxaa) size[2] |= fxaa == 2 ? 6u : 2u;
     hist_frame = now_frame;
     const VkDescriptorImageInfo in_info{linear, input_view, VK_IMAGE_LAYOUT_GENERAL};
     const VkDescriptorImageInfo out_info{VK_NULL_HANDLE, output_view, VK_IMAGE_LAYOUT_GENERAL};
@@ -6086,6 +6279,124 @@ std::string prepared_path() {
     std::string path(exe, exe_n);
     return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepared.bin";
 }
+// (hookshot) What the last prepare here was made for, in hookshot_prepared.bin: the translator (program_cache_stamp), and since the
+// seed grows apart from it (4221050d: networks, the movie upscaler, the particle sets, 19 compute programs more) the seed it went
+// through (hookshot_shaders.bin), by a hash of its contents. By the translator alone, a folder prepared before such an update never
+// prepared the new programs: each was translated in play when first met, 200-400 ms apiece. The seed is 500 MB and more: its hash is
+// taken again only when its size or write time is not the recorded one, and a hash that is still the same records the new time.
+// A write time says nothing of a write that came within its resolution of the one recorded (whole seconds from libstdc++'s
+// std::filesystem on Windows, 2 s on FAT, a timer tick at best): as git does for its index, the shortcut is only taken for a seed
+// written well before the record was (2 s); one written closer to it is hashed
+namespace {
+struct PreparedFor {
+    uint64_t stamp = 0, seed_hash = 0, seed_size = 0;
+    int64_t seed_time = 0, recorded_at = 0;   // (nanoseconds, of the file system's clock: libstdc++'s counts from 2174, below 0)
+    bool timed = false;   // (recorded_at read: records of four words had none)
+};
+constexpr int64_t kSeedTimeSlack = 2'000'000'000;
+enum class PrepareWhy { None, First, Translator, Seed };
+/// The seed's size and write time, in nanoseconds (false: there is none). On Windows from the file's FILETIME (100 ns): what
+/// std::filesystem gives there can be whole seconds
+bool seed_file_id(const std::string& path, uint64_t* size, int64_t* time) {
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &a) || (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    *size = (uint64_t)a.nFileSizeHigh << 32 | a.nFileSizeLow;
+    *time = (int64_t)((uint64_t)a.ftLastWriteTime.dwHighDateTime << 32 | a.ftLastWriteTime.dwLowDateTime) * 100;
+#else
+    std::error_code ec;
+    const auto fsize = std::filesystem::file_size(path, ec);
+    if (ec) return false;
+    const auto ftime = std::filesystem::last_write_time(path, ec);
+    if (ec) return false;
+    *size = (uint64_t)fsize;
+    *time = (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(ftime.time_since_epoch()).count();
+#endif
+    return true;
+}
+/// Now, on the clock seed_file_id's times are of
+int64_t file_clock_now() {
+#ifdef _WIN32
+    FILETIME t;
+    GetSystemTimeAsFileTime(&t);
+    return (int64_t)((uint64_t)t.dwHighDateTime << 32 | t.dwLowDateTime) * 100;
+#else
+    return (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::filesystem::file_time_type::clock::now().time_since_epoch()).count();
+#endif
+}
+/// The seed's contents, hashed four words at a time: ~0.1 s for its 540 MB read from memory, 0.3-0.6 s from the disk (a byte at a
+/// time, as hash_bytes, 0.45 s from memory). Only after the file was written again
+bool seed_file_hash(const std::string& path, uint64_t* out) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    constexpr uint64_t p1 = 0x9E3779B185EBCA87ull, p2 = 0xC2B2AE3D27D4EB4Full;
+    const auto mix = [](uint64_t h, uint64_t w) {
+        h += w * p2;
+        return ((h << 31) | (h >> 33)) * p1;
+    };
+    uint64_t lane[4] = {p1 + p2, p2, 0, 0 - p1}, total = 0, tail = 0xCBF29CE484222325ull;
+    std::vector<uint8_t> buf(1 << 20);   // (a multiple of 32: only the last read leaves bytes over)
+    for (size_t n; (n = fread(buf.data(), 1, buf.size(), f)) > 0;) {
+        total += n;
+        size_t at = 0;
+        for (; at + 32 <= n; at += 32) {
+            uint64_t w[4];
+            std::memcpy(w, buf.data() + at, 32);
+            for (int k = 0; k < 4; k++) lane[k] = mix(lane[k], w[k]);
+        }
+        for (; at < n; at++) tail = (tail ^ buf[at]) * 1099511628211ull;
+    }
+    const bool ok = !ferror(f);
+    fclose(f);
+    uint64_t h = total * p1 ^ tail;
+    for (const uint64_t l : lane) h = mix(h ^ mix(0, l), p1);
+    *out = h;
+    return ok;
+}
+/// The record: 0 none, 1 the translator alone (written before the seed was), 2 both. A record without the time it was written
+/// at (four words) never takes the shortcut: its seed is hashed, and the record written again with it
+int prepared_read(const std::string& path, PreparedFor* had) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return 0;
+    uint64_t r[5]{};
+    const size_t n = fread(r, 8, 5, f);
+    fclose(f);
+    had->stamp = r[0], had->seed_hash = r[1], had->seed_size = r[2], had->seed_time = (int64_t)r[3];
+    had->recorded_at = (int64_t)r[4], had->timed = n == 5;
+    return n >= 4 ? 2 : n >= 1 ? 1 : 0;
+}
+void prepared_write(const std::string& path, const PreparedFor& now) {
+    const uint64_t r[5] = {now.stamp, now.seed_hash, now.seed_size, (uint64_t)now.seed_time, (uint64_t)file_clock_now()};
+    if (FILE* f = fopen(path.c_str(), "wb")) fwrite(r, 8, 5, f), fclose(f);
+}
+/// Whether to prepare (and why), and what for: *now, written once the prepare is done. No seed: the translator alone, as before.
+/// *hash_ms: how long the seed's hash took (0: not taken)
+PrepareWhy prepare_check(const std::string& path, const std::string& seed, uint64_t stamp, PreparedFor* now, double* hash_ms) {
+    *hash_ms = 0;
+    PreparedFor had;
+    const int read = prepared_read(path, &had);
+    now->stamp = stamp;
+    const bool have_seed = seed_file_id(seed, &now->seed_size, &now->seed_time);
+    bool same_seed = !have_seed;
+    if (have_seed && read == 2 && had.seed_size == now->seed_size && had.seed_time == now->seed_time &&
+        had.timed && had.seed_time < had.recorded_at - kSeedTimeSlack) {
+        now->seed_hash = had.seed_hash, same_seed = true;   // (not read again)
+    } else if (have_seed) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool hashed = seed_file_hash(seed, &now->seed_hash);
+        *hash_ms = std::max(1e-3, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        same_seed = hashed && read == 2 && had.seed_hash == now->seed_hash &&
+                    had.seed_size == now->seed_size;
+        // (rewritten as it was, by a build: the new time kept, so the next start does not hash it again; a seed written just
+        // before the record is hashed again until a record is written 2 s after it)
+        if (same_seed && had.stamp == stamp) prepared_write(path, *now);
+    }
+    if (!read) return PrepareWhy::First;
+    if (had.stamp != stamp) return PrepareWhy::Translator;
+    return same_seed ? PrepareWhy::None : PrepareWhy::Seed;
+}
+} // namespace
 /// (hookshot) An update: every shader was prepared once here, for another translator. Each release changes the translator, and every
 /// update then held the game's start for the whole seed again (116k variants, minutes on most PCs: "shaders need to be prepared every
 /// update"). With RX_VK_PREPARE_BACKGROUND=1 only what the notes name is built before the game (precompile_run), the rest in play
@@ -6107,16 +6418,21 @@ bool prepare_is_update() {
 bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::string path = prepared_path();
-    const uint64_t stamp = program_cache_stamp();
-    if (FILE* f = fopen(path.c_str(), "rb")) {
-        uint64_t have = 0;
-        const bool same = fread(&have, 8, 1, f) == 1 && have == stamp;
-        fclose(f);
-        if (same && !getenv("RX_VK_PREPARE_AGAIN")) {
-            if (getenv("RX_VK_SEED_CHECK")) seed_open();
-            return false;
-        }
+    PreparedFor prepared_for;
+    double hash_ms = 0;
+    const PrepareWhy why = prepare_check(path, seed_path(), program_cache_stamp(), &prepared_for, &hash_ms);
+    if (hash_ms > 0)
+        logf("vk: the shader list was hashed (%.0f MB in %.0f ms): written since the last check, or too close to it to go by its time",
+             prepared_for.seed_size / 1048576.0, hash_ms);
+    if (why == PrepareWhy::None && !getenv("RX_VK_PREPARE_AGAIN")) {
+        if (getenv("RX_VK_SEED_CHECK")) seed_open();
+        return false;
     }
+    // (the translator is the same: what the program cache keeps stays, and seed_translate and seed_compute leave it out. The
+    // programs the seed has gained are what is made)
+    if (why == PrepareWhy::Seed)
+        logf("vk: the game's shader list (hookshot_shaders.bin) is not the one the shaders were prepared from: preparing again "
+             "(only the programs not kept yet)");
     const size_t programs = seed_open();
     if (!programs) return false;
     const size_t total = programs * 3;   // (each program for float, one and two integer bone inputs)
@@ -6139,6 +6455,19 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
     blank->nvattr = 16;
     pcache_init();   // (once, here: the workers below build compute pipelines into it)
     std::atomic<size_t> next{0}, done{0}, made{0}, libs{0}, variants{0}, asking{0}, capped{0};
+    // (hookshot) The compute programs first: each is its texture variants, up to 64 translations and as many driver compiles, seconds
+    // to tens of seconds on one worker, where a graphics program is a few milliseconds. In the seed's order they were spread over its
+    // second half, the last of them the seed's very last program: the other workers ran out of work and waited on the last few
+    // (~20 s of a ~165 s prepare with fewer and fewer CPUs busy, 12 workers on a 24-thread PC). Taken first, the graphics programs
+    // fill in behind them
+    std::vector<uint32_t> order(programs);
+    {
+        size_t at = 0;
+        for (size_t k = 0; k < programs; k++)
+            if (seed_is_compute(k)) order[at++] = (uint32_t)k;
+        for (size_t k = 0; k < programs; k++)
+            if (!seed_is_compute(k)) order[at++] = (uint32_t)k;
+    }
     // (hookshot) compute pipelines too, for the driver's own cache: built in play they stopped the game while the driver compiled
     // them, seconds each for the culling programs (53caac5f: 6.5 s, 41 s inlined), which looked like a hang
     const auto warm_compute = [&](Program& p) {
@@ -6171,15 +6500,16 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
             if (prepare_stopped()) return;
             const size_t i = next++;
             if (i >= total) return;
-            if (seed_is_compute(i / 3)) {   // (hookshot) a compute program with each of its texture variants, each warmed
+            const size_t k = order[i / 3];
+            if (seed_is_compute(k)) {   // (hookshot) a compute program with each of its texture variants, each warmed
                 if (i % 3 == 0) {
-                    const SeedVariants v = seed_compute(i / 3, 64, warm_compute);
+                    const SeedVariants v = seed_compute(k, 64, warm_compute);
                     made += v.variants != 0, variants += v.variants, asking += v.variants > 1, capped += v.capped && v.variants;
                 }
                 done++;
                 continue;
             }
-            if (std::unique_ptr<Program> p = seed_program(i / 3, (int)(i % 3))) {
+            if (std::unique_ptr<Program> p = seed_program(k, (int)(i % 3))) {
                 if (!p->failed) made++;
                 if (!p->failed && warm && !p->compute) {
                     ensure_layout(*p);
@@ -6223,7 +6553,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
          "texture variants, %zu at the limit) in %.1f s", programs, background ? " in play" : "", made.load(), (long long)failed, libs.load(), variants.load(),
          asking.load(), capped.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     if (!background) remove(warming.c_str());
-    if (FILE* f = fopen(path.c_str(), "wb")) fwrite(&stamp, 8, 1, f), fclose(f);
+    prepared_write(path, prepared_for);
     return true;
 }
 /// (hookshot) An update (prepare_is_update): the seed is prepared in play, behind the game, too late for the precompile; the pipelines
@@ -6900,6 +7230,9 @@ void draw_records_log(uint64_t lo, uint64_t hi) {
 }
 int64_t draw_desc_reused() {
     return st_desc_reused;
+}
+int64_t draw_slotgen_saves() {   // (RX_VK_DESC_SLOTGEN: of those, what the global registrations' generation check would have rebuilt)
+    return st_desc_slotgen_saves;
 }
 
 void pipeline_cache_save(bool force) {
