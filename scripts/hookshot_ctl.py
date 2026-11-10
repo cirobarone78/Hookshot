@@ -27,7 +27,9 @@ The socket defaults to $HOS_CONTROL. Plain lines by default, --json for the repl
 import argparse
 import json
 import os
+import re
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -140,17 +142,22 @@ class Bridge:
                 return msg
 
 
+def plain_text(text):
+    """Text from the game for a terminal: its control characters (an escape sequence in a log line) shown as '?'"""
+    return "".join("?" if ord(ch) < 0x20 or 0x7f <= ord(ch) < 0xa0 else ch for ch in str(text))
+
+
 def when(t):
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) if t else "-"
 
 
 def saves_text(r):
-    lines = ["%s  (account.sav %s, option.sav %s)" % (r["path"], "yes" if r["account"] else "no",
+    lines = ["%s  (account.sav %s, option.sav %s)" % (plain_text(r["path"]), "yes" if r["account"] else "no",
                                                         "yes" if r["option"] else "no")]
     for sl in r["slots"]:
-        lines.append("slot_%s  %s%s" % (sl["slot"], when(sl["mtime"]), "  (newest)" if sl["newest"] else ""))
+        lines.append("slot_%s  %s%s" % (plain_text(sl["slot"]), when(sl["mtime"]), "  (newest)" if sl["newest"] else ""))
         for f in sorted(sl["files"], key=lambda f: f["name"]):
-            lines.append("    %-14s %9d  %s" % (f["name"], f["size"], when(f["mtime"])))
+            lines.append("    %-14s %9d  %s" % (plain_text(f["name"]), f["size"], when(f["mtime"])))
     return "\n".join(lines)
 
 
@@ -158,23 +165,29 @@ def slots_text(r):
     rows = ["   slot  last written          progress   caption  scene"]
     for sl in r["slots"]:
         size = {f["name"]: f["size"] for f in sl["files"]}
-        rows.append("%s  %-4s  %-19s %9s %9s  %s" % ("*" if sl["newest"] else " ", sl["slot"], when(sl["mtime"]),
+        rows.append("%s  %-4s  %-19s %9s %9s  %s" % ("*" if sl["newest"] else " ", plain_text(sl["slot"]), when(sl["mtime"]),
                                                    size.get("progress.sav", "-"), size.get("caption.sav", "-"),
-                                                   sl.get("caption", {}).get("scene", "")))
+                                                   plain_text(sl.get("caption", {}).get("scene", ""))))
     rows.append("(* the newest: the one Continue loads)")
     return "\n".join(rows)
 
 
 def write_thumbs(r, folder):
-    """Each slot's file-select picture, as the JPEG caption.sav holds, read from the save folder (this PC's)"""
+    """Each slot's file-select picture, as the JPEG caption.sav holds, read from the save folder (this PC's). What the game
+    says is checked first: this client may run outside a sandbox the game is in, so a slot's name is only digits, the
+    picture a bounded slice of that slot's caption.sav, and nothing is written outside folder"""
     os.makedirs(folder, exist_ok=True)
     for sl in r["slots"]:
         th = sl.get("caption", {}).get("thumbnail")
         if not th:
             continue
-        with open(os.path.join(r["path"], "slot_" + sl["slot"], "caption.sav"), "rb") as f:
-            f.seek(th["offset"])
-            data = f.read(th["size"])
+        slot, off, size = sl.get("slot"), th.get("offset"), th.get("size")
+        if not (isinstance(slot, str) and re.fullmatch(r"[0-9]{1,3}", slot) and isinstance(off, int) and
+                isinstance(size, int) and 0 <= off < (1 << 24) and 0 < size <= (4 << 20)):
+            raise Failed("slots --thumbs: the game's reply does not look like a save listing: %r" % (sl,), 1)
+        with open(os.path.join(r["path"], "slot_" + slot, "caption.sav"), "rb") as f:
+            f.seek(off)
+            data = f.read(size)
         if data[:2] == b"\xff\xd8":
             with open(os.path.join(folder, "slot_%s.jpg" % sl["slot"]), "wb") as out:
                 out.write(data)
@@ -268,7 +281,8 @@ def run(a):
             if a.action == "get":
                 r = check(b.request("option_get", name=a.name))
                 rows = [r["option"]] if "option" in r else r["options"]
-                show(a, r, lambda r: "\n".join("%-28s %4d  %s" % (o["key"], o["value"], o["text"]) for o in rows))
+                show(a, r, lambda r: "\n".join("%-28s %4d  %s%s" % (o["key"], o["value"], plain_text(o["text"]),
+                                                                    "  (restart)" if o.get("restart") else "") for o in rows))
             else:
                 if a.value is None:
                     raise Failed("option set NAME VALUE", 2)
@@ -336,7 +350,7 @@ def run(a):
                 if a.json:
                     print(json.dumps(msg), flush=True)
                 elif msg["event"] == "log":
-                    print("log    %s" % msg["line"], flush=True)
+                    print("log    %s" % plain_text(msg["line"]), flush=True)
                 elif msg["event"] == "state":
                     print("state  frame %d: %s -> %s" % (msg["frame"], msg["from"], msg["state"]), flush=True)
                 elif msg["event"] == "present":
@@ -360,13 +374,25 @@ def slot_name(text):
     return "slot_%02d" % int(t)
 
 
+def plain_tree(path):
+    """Refused (Failed) when path or anything under it is a link or not a plain file or folder: a save from elsewhere could
+    hold a link to one of this user's files, which the copy would read and the game then write through"""
+    for top, dirs, files in os.walk(path):
+        for n in [top] + [os.path.join(top, d) for d in dirs] + [os.path.join(top, f) for f in files]:
+            st = os.lstat(n)
+            if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+                raise Failed("--save: %s is a link or not a plain file: refused" % n, 2)
+
+
 def copy_save(src, data, slot=None):
     """A save folder (account.sav, option.sav, slot_NN/) copied to where the game reads it in the data folder; with slot,
-    that slot alone (so Continue loads it). The source is only read. Returns the destination"""
+    that slot alone (so Continue loads it). The source is only read, and holds plain files and folders only (no links).
+    Returns the destination"""
     import shutil
     src = os.path.abspath(src)
-    if not os.path.isdir(src):
+    if os.path.islink(src) or not os.path.isdir(src):
         raise Failed("--save: %s is not a folder" % src, 2)
+    plain_tree(src)
     names = os.listdir(src)
     slots = sorted(n for n in names if n.startswith("slot_") and os.path.isdir(os.path.join(src, n)))
     if not slots or not ({"account.sav", "option.sav"} & set(names)):
@@ -384,9 +410,9 @@ def copy_save(src, data, slot=None):
         p = os.path.join(src, n)
         if n.startswith("slot_") and os.path.isdir(p):
             if slot is None or n == slot:
-                shutil.copytree(p, os.path.join(dest, n))
+                shutil.copytree(p, os.path.join(dest, n), symlinks=True)   # (none: plain_tree; never followed)
         elif os.path.isfile(p):
-            shutil.copy2(p, os.path.join(dest, n))
+            shutil.copy2(p, os.path.join(dest, n), follow_symlinks=False)
     return dest
 
 

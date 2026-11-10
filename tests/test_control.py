@@ -23,8 +23,10 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
     windows = os.name == "nt"
-    # (Linux: a short folder, a Unix socket's path is at most 107 bytes. Windows: the pipes are named after the process)
-    with tempfile.TemporaryDirectory(prefix="ctl-", dir=None if windows or not os.path.isdir("/tmp") else "/tmp") as tmp:
+    # (Linux: a short folder, a Unix socket's path is at most 107 bytes: the temporary folder ($TMPDIR) when it is short
+    # enough, else /tmp. Windows: the pipes are named after the process)
+    short = windows or len(tempfile.gettempdir()) <= 48 or not os.path.isdir("/tmp")
+    with tempfile.TemporaryDirectory(prefix="ctl-", dir=None if short else "/tmp") as tmp:
         exe = os.path.join(tmp, "control_test.exe" if windows else "control_test")
         libs = ["-ladvapi32"] if windows else ["-lpthread", "-lm"]
         subprocess.run([a.cc, "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",

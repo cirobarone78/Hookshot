@@ -333,6 +333,23 @@ class HookshotCtl(unittest.TestCase):
             m.copy_save(src, os.path.join(self.dir, "d-all"))
         after = sorted((dp, fn, os.stat(os.path.join(dp, fn)).st_mtime_ns) for dp, _, fns in os.walk(src) for fn in fns)
         self.assertEqual(before, after)   # (the source only read)
+        if not WINDOWS:   # (a link in a save from elsewhere: refused, never followed into this user's files)
+            linked = os.path.join(self.dir, "src-linked")
+            import shutil
+            shutil.copytree(src, linked)
+            secret = os.path.join(self.dir, "secret.txt")
+            with open(secret, "w") as f:
+                f.write("not a save")
+            os.remove(os.path.join(linked, "slot_03", "progress.sav"))
+            os.symlink(secret, os.path.join(linked, "slot_03", "progress.sav"))
+            with self.assertRaisesRegex(m.Failed, "is a link or not a plain file"):
+                m.copy_save(linked, os.path.join(self.dir, "d-link"), "03")
+            self.assertFalse(os.path.exists(os.path.join(self.dir, "d-link")))
+        # (the thumbnails: what the game says is checked; a slot name that is a path is refused)
+        bad = {"path": self.dir, "slots": [{"slot": "../../x", "caption": {"thumbnail": {"offset": 0, "size": 4}}}]}
+        with self.assertRaisesRegex(m.Failed, "does not look like a save listing"):
+            m.write_thumbs(bad, os.path.join(self.dir, "thumbs-bad"))
+        self.assertEqual(m.plain_text("a\x1b[2Jb\tc"), "a?[2Jb?c")
         if not WINDOWS:   # (launch --save: the copy in the run folder's own data folder, which the game is given)
             run = os.path.join(self.dir, "run-save")
             r = ctl("--json", "launch", self.game, "--run", run, "--headless", "--save", src, "--slot", "03",

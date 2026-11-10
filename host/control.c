@@ -1291,6 +1291,7 @@ static void cmd_mem(int ci, const JDoc *d, int req, const char *id, const char *
             addrs[nr] = mem_u64(d, k, "addr", &bad);
             sizes[nr] = mem_u64(d, k, "size", &bad);
             if (bad) return reply_error(c, id, "bad_request", "each range: addr and size");
+            if (sizes[nr] > CTL_MEM_CAP) return reply_error(c, id, "bad_request", "at most %u bytes a request", CTL_MEM_CAP);   /* (no sum wraps) */
             total += sizes[nr];
             nr++;
         }
@@ -1502,9 +1503,10 @@ static void request(int ci, const char *line, size_t len) {
         if (idn) {
             Buf b = {0};
             j_write(&b, &d, j_index(&d, idn));
-            if (!b.failed && b.n < sizeof id) memcpy(id, b.p, b.n + 1);
+            const int fits = !b.failed && b.n < 200;   /* (kept short: it goes back in every reply and event line) */
+            if (fits) memcpy(id, b.p, b.n + 1);
             buf_free(&b);
-            if (b.n >= sizeof id) return reply_error(c, "null", "bad_request", "id: too long (at most 200 characters)");
+            if (!fits) return reply_error(c, "null", "bad_request", "id: too long (at most 200 characters as JSON)");
         }
     }
     if (d.n[req].type != J_OBJ) return reply_error(c, id, "bad_request", "a request is a JSON object");
@@ -1521,6 +1523,9 @@ static void request(int ci, const char *line, size_t len) {
     else if (!strcmp(cmd, "subscribe")) cmd_subscribe(ci, &d, req, id);
     else if (!strcmp(cmd, "unsubscribe")) {
         c->sub_on = 0;
+        int any_log = 0;
+        for (int i = 0; i < CTL_CONNS; i++) any_log |= G.conns[i].used && G.conns[i].sub_on && G.conns[i].sub_log;
+        G.log_wanted = any_log;
         reply_ok(c, id);
     } else if (!strcmp(cmd, "quit")) cmd_quit(ci, id);
     else if (!strncmp(cmd, "mem_", 4) || !strcmp(cmd, "symbols")) cmd_mem(ci, &d, req, id, cmd);
@@ -1613,11 +1618,30 @@ static void pending_tick(int64_t now) {
 #ifndef _WIN32
 static int listen_fd = -1;
 
+/* The socket's folder: this user's, and writable by no one else (no other user can put a file, a link or a socket of their
+   own where the bridge binds, unlinks a stale socket or writes shots by a relative path). 0 when it is not (logged) */
+static int folder_private(const char *path) {
+    char dir[1100];
+    snprintf(dir, sizeof dir, "%s", path);
+    char *slash = strrchr(dir, '/');
+    if (!slash) snprintf(dir, sizeof dir, ".");
+    else if (slash == dir) dir[1] = 0;   /* ("/x.sock": the root) */
+    else *slash = 0;
+    struct stat st;
+    if (stat(dir, &st) || !S_ISDIR(st.st_mode))
+        return ctl_log("control: %s: the socket's folder %s is not there", path, dir), 0;
+    if (st.st_uid != getuid() || (st.st_mode & (S_IWGRP | S_IWOTH)))
+        return ctl_log("control: %s: the socket's folder %s must be this user's and writable by no one else (mode %03o): "
+                       "use a folder of your own, as hookshot_ctl.py launch makes (0700, in $XDG_RUNTIME_DIR)",
+                       path, dir, (unsigned)(st.st_mode & 0777)), 0;
+    return 1;
+}
 static int transport_open(const char *path) {
     struct sockaddr_un a;
     memset(&a, 0, sizeof a);
     a.sun_family = AF_UNIX;
     if (strlen(path) >= sizeof a.sun_path) return ctl_log("control: %s: the socket's path is too long", path), 0;
+    if (!folder_private(path)) return 0;
     strcpy(a.sun_path, path);
     struct stat st;
     if (!lstat(path, &st)) {

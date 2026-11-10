@@ -33,19 +33,39 @@ answers, then prints the socket's path.
 - **This user only.** The socket is created with mode 0600 (the umask is set around `bind` too), and a client whose
   `SO_PEERCRED` user differs from the game's is turned away. The pipe's DACL grants the current user alone.
   `FILE_FLAG_FIRST_PIPE_INSTANCE` keeps another process from owning the name first.
+- **A folder of this user's.** The socket's folder has to be owned by the game's user and writable by no one else
+  (not a shared `/tmp`): otherwise the bridge stays off and the log says why. Another user could otherwise put a link
+  or a socket of theirs where the bridge binds, removes a stale socket, or writes a shot by a relative path.
+  `hookshot_ctl.py launch` makes such a folder (0700, in `$XDG_RUNTIME_DIR`). The path is always a file system path:
+  there is no abstract socket name.
 - **Nothing in the way is replaced.** A file at the path that is not a socket is left alone and the bridge stays off. A
   socket that a live game answers on is left alone too. A stale one, left by a game that ended, is removed.
 - **Guest memory is a second opt-in.** It is off unless `HOS_CONTROL_MEM` is set, apart from `HOS_CONTROL`:
   `HOS_CONTROL_MEM=ro` allows reads, `rw` allows reads and writes (aliases: `r`/`read` for `ro`, `readwrite` for `rw`;
   case does not matter; any other value logs once and leaves it off). See [Guest memory](#guest-memory).
-- **What a client can do.** Anything the player can do with a controller and the Insert menu. It can also write a PNG to
-  any path the game's user can write, and it can end the game.
+- **What a client can do.** Anything the player can do with a controller and the Insert menu's settings (not its debug
+  tools). It can also write a PNG to any path the game's user can write, list the save folder, and end the game.
+- **Bounded messages.** A request line is at most 64 KB (longer: `too_long`, and the rest of the line is skipped); an
+  `id` at most 200 characters as JSON; at most 8 clients, 64 requests waiting, 256 inputs queued, 8 memory requests of
+  1 MB each. Replies a client does not read are dropped with the client once 8 MB wait.
 - **The game never waits for a client.** The bridge's own thread does all the socket I/O. The controller's read takes
   one short lock that the bridge never holds over I/O. A client that sends nonsense gets errors. A client that stops
   reading is dropped once 8 MB waits for it, and one that goes away mid-command has its presses let go.
 
-Under a Landlock sandbox of the game's process, the bridge has to start before the restriction (it starts with the
-game). The socket's folder must stay writable for shots taken there.
+**The client trusts the game no further than it must.** `hookshot_ctl.py` may run outside a sandbox the game is in, so
+what it does with the game's replies is checked: `slots --thumbs` takes only digit slot names and a bounded slice of
+that slot's `caption.sav`, and plain output shows control characters from the game (a log line's escape sequences) as
+`?`. `launch --save` refuses a save folder that holds links or anything but plain files and folders: a save from
+someone else could hold a link to one of this user's files, which the copy would read and the game then write through.
+
+**With a Landlock sandbox of the game's process** (an open proposal, #882): the bridge's socket is made before the
+restriction (it starts with the game), so the sandbox need not allow making sockets. The bridge's thread is started
+before the restriction too, so it is covered only where the restriction covers every thread at once (Landlock ABI 8,
+`LANDLOCK_RESTRICT_SELF_TSYNC`); on an older kernel it would stay outside the sandbox, like the window's main thread
+there, and a game taken over could act through it. If both land, start the bridge after the restriction (with its
+folder allowed) or keep it off under the sandbox without ABI 8. The other way round there is nothing to gain: a client
+already runs as the game's user outside the sandbox, so reaching the game through the bridge gives it nothing it did not
+have. The socket's folder must stay writable for shots taken there.
 
 ## Protocol
 
@@ -86,8 +106,9 @@ Match replies by `id`. Lines with an `"event"` key and no `"ok"` key are subscri
 
 A frame is one present of the game's own; frames made by frame generation do not count. An input starts at the first
 controller read after its request arrives, plus `at` frames, and is held for `frames` frames. The game reads the
-controller once a frame, so `"frames": 8` is 8 game frames. The bridge's buttons are added to the player's. Its sticks
-replace the player's on the axes they set. `"exclusive": true` keeps the player's own pad, keyboard and mouse out from
+controller once a frame, so `"frames": 8` is 8 game frames. The bridge's buttons are added to the player's. On the
+axes it sets, its sticks replace a script's (`HOS_INPUT_SCRIPT`); the player's own pad, keys and mouse still count after
+it, the larger deflection winning, unless the input is exclusive. `"exclusive": true` keeps the player's own pad, keyboard and mouse out from
 the request until the input ends (compare `HOS_INPUT_EXCLUSIVE`).
 
 Buttons use the names `HOS_INPUT_SCRIPT` uses: `A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN`. The stick

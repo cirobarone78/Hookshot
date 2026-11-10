@@ -485,6 +485,18 @@ int main(int argc, char **argv) {
     CHECK(f && fgets(line, sizeof line, f) && !strcmp(line, "keep"));
     fclose(f);
     puts("PASS: an existing file that is not a socket is left alone");
+    {   /* a folder others can write to (a shared /tmp) is refused: another user could put a link or a socket of theirs there */
+        char shared[1100];
+        snprintf(shared, sizeof shared, "%s/shared", argv[1]);
+        CHECK(mkdir(shared, 0700) == 0 && chmod(shared, 0777) == 0);
+        snprintf(sock_path, sizeof sock_path, "%s/control.sock", shared);
+        CHECK(!hos_control_serve(sock_path, &game));
+        struct stat st;
+        CHECK(lstat(sock_path, &st) != 0);   /* (nothing made there) */
+        CHECK(chmod(shared, 0730) == 0);   /* (group-writable: refused too) */
+        CHECK(!hos_control_serve(sock_path, &game));
+        puts("PASS: a socket folder others can write to is refused");
+    }
 #endif
 
     transport_name(argv[1], "game");
@@ -528,6 +540,15 @@ int main(int argc, char **argv) {
     CHECK(strstr(line, "\"error\":\"bad_request\""));
     say(c, "\n   \r\n");   /* (empty lines: nothing) */
     ask(c, "{\"id\":\"tab\\t\\u00e9\",\"cmd\":\"status\"}\n", "\"tab\\t\xc3\xa9\"", line, sizeof line, 2000);
+    {   /* an id longer than 200 characters as JSON: refused (it was taken as null) */
+        char big[400];
+        memset(big, 'x', 260);
+        big[260] = 0;
+        char req[600];
+        snprintf(req, sizeof req, "{\"id\":\"%s\",\"cmd\":\"status\"}\n", big);
+        ask(c, req, "null", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"error\":\"bad_request\"") && strstr(line, "id: too long"));
+    }
     puts("PASS: malformed JSON, unknown commands, bad arguments: errors, the connection kept");
 
     {   /* a line past 64 KB: refused, and the next request is served */

@@ -60,7 +60,7 @@ uint64_t hos_region_floor(void) { return region_floor; }
 enum { HOS_MEM_IMAGE = 1, HOS_MEM_SYSTEM, HOS_MEM_HEAP, HOS_MEM_REGION };
 int hos_mem_region(uint64_t addr, uint64_t size) {
     uint64_t end;
-    if (!size || __builtin_add_overflow(addr, size, &end)) return 0;
+    if (!size || __builtin_add_overflow(addr, size, &end) || !hos_guest_range(addr, size)) return 0;   /* (the window first) */
     if (addr >= hos_image_base && end <= hos_image_end) return HOS_MEM_IMAGE;
     int cls = 0;
     LOCK();
