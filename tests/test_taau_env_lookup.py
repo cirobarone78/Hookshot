@@ -49,7 +49,11 @@ struct Info { std::vector<Desc> texture_descriptors, image_descriptors; };
 struct Stage { Info info; };
 struct NvnState {};
 struct Program { uint64_t key; std::vector<Stage> stages; };
-struct Texture { int format=VK_FORMAT_B10G11R11_UFLOAT_PACK32; };
+struct Texture { int format=VK_FORMAT_B10G11R11_UFLOAT_PACK32, written_as=0; };
+static std::vector<const Texture*> sampled;
+static std::vector<const Texture*>& draw_sampled() { return sampled; }
+static int stub_calls;
+static bool upscale_stub(VkCommandBuffer,const NvnState&,uint64_t){++stub_calls;return true;}
 static Texture texture;
 static struct { bool push_descriptor=false; } dev;
 static bool vkCmdPushDescriptorSetKHR=true;
@@ -127,6 +131,8 @@ int main(int argc,char** argv){
         accepted(configured_keys?configured_keys:"fd029a317a9a4b94",true);
         configured_keys="later diagnostic override";accepted(configured_keys,false);
         configured_keys=nullptr;accepted("fd029a317a9a4b94",true);
+        Texture scene;scene.written_as=scene.format;sampled={&texture,&scene};int prior=upscale_calls;
+        check(taau_stand_in(19,state,program) && stub_calls==1 && upscale_calls==prior,"an input rendered as B10G11R11 goes to upscale_stub, not the RGB9E5 decode");
     }
     printf("%s failures=%u eligible=%d\n",argv[1],failures,upscale_calls);
     return failures?1:0;

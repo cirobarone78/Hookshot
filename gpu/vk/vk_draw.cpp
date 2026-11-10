@@ -3058,7 +3058,11 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 uint32_t level = 0;
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Storage, image_format(d.format), &tex, &level)
                                           : VK_NULL_HANDLE;
-                if (view && tex && d.is_written) { ParLock lk; texture_written(tex, "a storage image of a draw"); }
+                if (view && tex && d.is_written) {
+                    ParLock lk;
+                    texture_written(tex, "a storage image of a draw");
+                    tex->written_as = VK_FORMAT_UNDEFINED;   // (a shader's store: bits of any format of its class)
+                }
                 if (view && tex) draw_sampled().push_back(tex);
                 if (log_img_wanted(p.key)) {
                     static std::atomic<int> told{0};
@@ -3665,6 +3669,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
         pass().tex[i] = at.color[i], pass().level[i] = at.color_level[i], pass().layer[i] = at.color_layer[i];
         texture_written(at.color[i], "a pass's colour target");
         texture_rendered(at.color[i]);
+        if (at.color[i]) at.color[i]->written_as = at.color_format[i];
     }
     for (int i = at.n; i < 8; i++) pass().color[i] = VK_NULL_HANDLE;
     VkRenderingAttachmentInfo da{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -6661,7 +6666,10 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     // Failed upscales can receive RGB9E5 bits in a shared R11 image, including the 75% gameplay TAAU.
     // Match the observed base-level 2D case only; other fallbacks keep their existing blit.
     const bool gameplay_taau = key == 0xfd029a317a9a4b94ull;
-    if ((!gameplay_network(key) || gameplay_taau) && in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
+    // (hookshot) Only where a shader stored them: an input a pass rendered in its own format holds that format's bits, whatever
+    // the game samples it as (Iris Xe at 50%: the scene's B10G11R11 read as RGB9E5, a black picture under the HUD)
+    const bool rendered_as_is = src->written_as == src->format;
+    if (!rendered_as_is && (!gameplay_network(key) || gameplay_taau) && in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
         src->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && dst->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 &&
         (fd.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) &&
         src->type == VK_IMAGE_TYPE_2D && dst->type == VK_IMAGE_TYPE_2D && src->depth == 1 && dst->depth == 1 &&
@@ -6696,7 +6704,7 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
             }
         }
     }
-    if (gameplay_taau && in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
+    if (gameplay_taau && !rendered_as_is && in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
         src->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && dst->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
         static std::atomic<bool> warned_gameplay_upscale{false};
         if (!warned_gameplay_upscale.exchange(true, std::memory_order_relaxed))
@@ -6966,6 +6974,11 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (!handle) return false;
     texture_view_of(handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
     if (!out || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return false;
+    // (hookshot) An input the scene's passes rendered as B10G11R11 holds no RGB9E5 bits, though the network samples it as
+    // that (Iris Xe at 75%: a black room). upscale_stub takes it as it is, as at the other shares
+    for (const Texture* t : draw_sampled())
+        if (t != out && t->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && t->written_as == t->format)
+            return upscale_stub(cmd, s, p.key);
     const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
     return typed_upscale(cmd, dw().imgs[0].imageView, dw().imgs[ntex].imageView, out, level, p.key, keys, true);
 }

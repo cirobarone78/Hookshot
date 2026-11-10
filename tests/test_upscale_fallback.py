@@ -96,6 +96,7 @@ struct Texture {
     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     bool bc = false;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    VkFormat written_as = VK_FORMAT_UNDEFINED;
 };
 Texture src, dst;
 nvn_tex source, destination;
@@ -210,6 +211,12 @@ int main(int argc, char **argv) {
         src.levels = 2;
     if (mode == "swizzle")
         source.d.swizzle_r = 4;
+    // (a pass rendered the input in its own B10G11R11 format, as Iris Xe's 50% scene: its bits are not RGB9E5)
+    if (mode == "rendered" || mode == "fd-rendered")
+        src.written_as = src.format;
+    // (a pass rendered it through a view of another format of its class: those bits may be RGB9E5)
+    if (mode == "rendered-other")
+        src.written_as = VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
     if (mode.compare(0, 2, "fd") == 0)
         key = 0xfd029a317a9a4b94ull;
     if (mode == "9dc")
@@ -230,13 +237,19 @@ int main(int argc, char **argv) {
     state.tex[5][0] = 1;
     state.img[5][0] = 2;
     assert(upscale_stub((VkCommandBuffer)5, state, key));
-    if (mode == "captured" || mode == "fd") {
+    if (mode == "captured" || mode == "fd" || mode == "rendered-other") {
         if (typed_calls != 1 || views != 2 || blits != 0) {
             puts("RED: RGB9E5 input still used physical-format blit");
             return 7;
         }
         assert(writes == 1);
         assert(gameplay_logs == (mode == "fd" ? 1u : 0u) && gameplay_warnings == 0);
+    } else if (mode == "rendered" || mode == "fd-rendered") {
+        if (typed_calls != 0 || views != 0 || blits != 1) {
+            puts("RED: an input rendered as B10G11R11 was still read as RGB9E5");
+            return 8;
+        }
+        assert(writes == 1 && gameplay_logs == 0 && gameplay_warnings == 0);
     } else if (mode == "movie") {
         assert(movie_calls == 1 && typed_calls == 0 && blits == 0 && writes == 1);
     } else if (mode == "pipeline-failure" || mode == "fd-pipeline-failure") {
@@ -281,7 +294,7 @@ def main():
                  'fd-view', 'fd-pipeline-failure', 'fd-no-storage', 'fd-no-e5-sample',
                  'fd-no-e5-linear', 'fd-null-input-view', 'fd-null-output-view', '9dc',
                  'pipeline-failure', 'no-storage', 'no-e5-sample', 'no-e5-linear',
-                 'null-input-view', 'null-output-view')
+                 'null-input-view', 'null-output-view', 'rendered', 'fd-rendered', 'rendered-other')
         for case in cases:
             subprocess.run([str(exe), case], env=env, check=True)
 
