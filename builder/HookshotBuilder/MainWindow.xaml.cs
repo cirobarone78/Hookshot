@@ -200,7 +200,11 @@ public partial class MainWindow : Window
         LaunchPlay.IsEnabled = File.Exists(GameExe(folder));
         profileUser = Profiles.UserDir(folder);
         ProfileNote.Text = "";   // (what the last action did; empty until then)
-        ShowProfiles(Profiles.Chosen(folder, SavedProfile()));
+        ProfileRowsCancel(null, null);
+        // (a game built before profiles plays the default profile's saves whichever is chosen: no profiles for it)
+        var withProfiles = Profiles.Supported(folder);
+        ProfileRow.Visibility = withProfiles ? Visibility.Visible : Visibility.Collapsed;
+        if (withProfiles) ShowProfiles(Profiles.Chosen(folder, SavedProfile()));
         ShowPage(LaunchPage);
         latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag();
         updateTarget = latestTag ?? Tools.Find()?.Version;   // (GitHub's newest, else this builder's own)
@@ -304,6 +308,8 @@ public partial class MainWindow : Window
     {
         ProfileMenu.IsOpen = false;
         ProfileNameRow.Visibility = Visibility.Collapsed;
+        if (ProfileSaveRow.Visibility == Visibility.Visible) ProfileNote.Text = "";   // (its question)
+        ProfileSaveRow.Visibility = Visibility.Collapsed;
     }
 
     void ShowNameRow(string? id, string name, string button)
@@ -386,30 +392,99 @@ public partial class MainWindow : Window
 
     void ProfileExportClick(object sender, RoutedEventArgs e) => CopyProfileSaves("export");
 
+    /// One user's save in an emulator's folder, as scripts\oot_saves.py saves lists them: Id goes to --profile, Label is shown
+    sealed record EmulatorSave(string Id, string Path, string Label);
+    sealed record ScriptResult(int Code, string Output, string Error);
+    string savesCommand = "", savesFolder = "";   // (the copy the user row waits for)
+    List<EmulatorSave> savesFound = new();
+
     /// import: an emulator's save (or a save's folder) into the profile; export: the profile's save to an emulator. The copy is
     /// scripts\oot_saves.py's (docs/saves.md), with the profile's save folder as Hookshot's side: it copies only the save's
-    /// files, refuses while a game runs and backs up the side it overwrites, to save-backups here
-    void CopyProfileSaves(string command)
+    /// files, refuses while a game runs and backs up the side it overwrites, to save-backups here. An emulator keeps a save
+    /// for each of its users: with several, the user row asks whose, passed on as --profile
+    async void CopyProfileSaves(string command)
     {
         ProfileRowsCancel(null, null);
         var p = CurrentProfile;
-        var saves = Profiles.SaveDir(profileUser, p.Id);
-        var backups = System.IO.Path.Combine(profileUser, "save-backups");
         var import = command == "import";
-        if (!import && !Directory.Exists(saves))
+        if (!import && !Directory.Exists(Profiles.SaveDir(profileUser, p.Id)))
         {
             MessageBox.Show(this, $"{p.Name} has no saves yet: nothing to export.", "Hookshot");
             return;
         }
         if (PickFolder(import ? "The save to import: its folder, or an emulator's data or save folder"
                               : "Where the save goes: an emulator's data or save folder (start the game there once and save first)") is not { } chosen) return;
-        var ask = import ? $"Import the save in {chosen} into the profile {p.Name}?\n\nThe profile's saves now, if it has any, are copied to {backups} first."
-                         : $"Export {p.Name}'s save to {chosen}?\n\nThe save there is copied to {backups} first.";
+        if (await RunOotSaves("saves", "--from", chosen) is not { } listed) return;
+        if (listed.Code != 0)
+        {
+            ShowScriptError(listed);
+            return;
+        }
+        List<EmulatorSave>? found = null;
+        try { found = System.Text.Json.JsonSerializer.Deserialize<List<EmulatorSave>>(listed.Output, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }); }
+        catch (System.Text.Json.JsonException) { }
+        if (found is not { Count: > 0 })
+        {
+            MessageBox.Show(this, "The save copier (scripts\\oot_saves.py) did not say which saves the folder has.", "Hookshot");
+            return;
+        }
+        if (found.Count == 1)
+        {
+            await FinishCopy(command, chosen, found[0]);
+            return;
+        }
+        (savesCommand, savesFolder, savesFound) = (command, chosen, found);
+        ProfileSaveBox.ItemsSource = found.Select(s => s.Label).ToList();
+        ProfileSaveBox.SelectedIndex = 0;
+        ProfileSaveOk.Content = import ? "Import" : "Export";
+        ProfileSaveRow.Visibility = Visibility.Visible;
+        ProfileNote.Text = $"This folder has saves of {found.Count} users of the emulator. " +
+                           (import ? "Choose the one to import." : "Choose the one the export replaces.");
+        ProfileSaveBox.Focus();
+    }
+
+    async void ProfileSaveOkClick(object sender, RoutedEventArgs e)
+    {
+        var save = savesFound[Math.Clamp(ProfileSaveBox.SelectedIndex, 0, savesFound.Count - 1)];
+        ProfileRowsCancel(null, null);
+        ProfileNote.Text = "";
+        await FinishCopy(savesCommand, savesFolder, save);
+    }
+
+    async Task FinishCopy(string command, string chosen, EmulatorSave save)
+    {
+        var p = CurrentProfile;
+        var import = command == "import";
+        var backups = System.IO.Path.Combine(profileUser, "save-backups");
+        var ask = import ? $"Import the save in {save.Path} into the profile {p.Name}?\n\nThe profile's saves now, if it has any, are copied to {backups} first."
+                         : $"Export {p.Name}'s save to {save.Path}?\n\nThe save there is copied to {backups} first.";
         if (MessageBox.Show(this, ask, "Hookshot", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+        if (await RunOotSaves(command, import ? "--from" : "--to", chosen, "--profile", save.Id, "--hookshot",
+                              Profiles.SaveDir(profileUser, p.Id), "--backup-dir", backups) is not { } copied) return;
+        if (copied.Code != 0)
+        {
+            ShowScriptError(copied);
+            return;
+        }
+        var done = copied.Output.Trim().Split('\n')[^1].Trim();   // (where the backup went)
+        if (done.StartsWith("Done.")) done = done[5..].Trim();
+        ProfileNote.Text = (import ? $"Imported into {p.Name}." : $"Exported from {p.Name}.") + (done.Length > 0 ? " " + done : "");
+    }
+
+    void ShowScriptError(ScriptResult r)
+    {
+        var text = r.Error.Trim();
+        MessageBox.Show(this, text.StartsWith("error: ") ? text[7..] : text.Length > 0 ? text : "The copy failed.", "Hookshot");
+    }
+
+    /// scripts\oot_saves.py with these arguments, in the builder's Python, without holding up the window (the profile row and
+    /// Play wait for it). null: it did not start, and the user was told why
+    async Task<ScriptResult?> RunOotSaves(params string[] args)
+    {
         if (Tools.Find() is not { } tools)
         {
             MessageBox.Show(this, "The builder's tools are missing, and with them the save copier (scripts\\oot_saves.py). Install Hookshot Builder again.", "Hookshot");
-            return;
+            return null;
         }
         var si = new ProcessStartInfo(tools.Python)
         {
@@ -417,26 +492,28 @@ public partial class MainWindow : Window
             StandardOutputEncoding = System.Text.Encoding.UTF8, StandardErrorEncoding = System.Text.Encoding.UTF8,
         };
         foreach (var a in tools.PythonArgs ?? Array.Empty<string>()) si.ArgumentList.Add(a);
-        foreach (var a in new[] { "-I", "-X", "utf8", System.IO.Path.Combine(tools.Root, "scripts", "oot_saves.py"), command,
-                                  import ? "--from" : "--to", chosen, "--hookshot", saves, "--backup-dir", backups })
+        foreach (var a in new[] { "-I", "-X", "utf8", System.IO.Path.Combine(tools.Root, "scripts", "oot_saves.py") }.Concat(args))
             si.ArgumentList.Add(a);
+        var play = LaunchPlay.IsEnabled;
+        ProfileRow.IsEnabled = LaunchPlay.IsEnabled = false;
         try
         {
             using var proc = Process.Start(si)!;
-            var err = proc.StandardError.ReadToEndAsync();
-            var lines = proc.StandardOutput.ReadToEnd().Trim().Split('\n');
-            proc.WaitForExit();
-            if (proc.ExitCode != 0)
-            {
-                var text = err.Result.Trim();
-                MessageBox.Show(this, text.StartsWith("error: ") ? text[7..] : text.Length > 0 ? text : "The copy failed.", "Hookshot");
-                return;
-            }
-            var done = lines[^1].Trim();   // (where the backup went)
-            if (done.StartsWith("Done.")) done = done[5..].Trim();
-            ProfileNote.Text = (import ? $"Imported into {p.Name}." : $"Exported from {p.Name}.") + (done.Length > 0 ? " " + done : "");
+            var output = proc.StandardOutput.ReadToEndAsync();
+            var error = proc.StandardError.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+            return new ScriptResult(proc.ExitCode, await output, await error);
         }
-        catch (System.ComponentModel.Win32Exception x) { MessageBox.Show(this, $"Python did not start ({tools.Python}): {x.Message}", "Hookshot"); }
+        catch (System.ComponentModel.Win32Exception x)
+        {
+            MessageBox.Show(this, $"Python did not start ({tools.Python}): {x.Message}", "Hookshot");
+            return null;
+        }
+        finally
+        {
+            ProfileRow.IsEnabled = true;
+            LaunchPlay.IsEnabled = play;
+        }
     }
 
     // ---- what the player chose last time (BuilderSettings.cs): builder-settings.json beside the versions ----
@@ -1261,7 +1338,7 @@ public partial class MainWindow : Window
     /// starts is shown and can be changed (Profiles.cs)
     void Play(object sender, RoutedEventArgs e)
     {
-        if (Profiles.Load(Profiles.UserDir(finished)).Count > 1)
+        if (Profiles.Supported(finished) && Profiles.Load(Profiles.UserDir(finished)).Count > 1)
         {
             ShowLauncher(finished);
             return;

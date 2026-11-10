@@ -164,11 +164,12 @@ or removes it. Removing a profile does not delete its saves: they are moved to `
 profile; **Export** copies the profile's save to an emulator. Choose the emulator's data folder, a portable `user`
 folder, or the save folder itself. The copy is the one [Using a save from an emulator](docs/saves.md) describes
 (`scripts/oot_saves.py`): only the save's files are copied, nothing is copied while a game or emulator runs, and the
-save being replaced is copied to `save-backups` first. When the emulator has saves for several of its users, choose
-that user's save folder.
+save being replaced is copied to `save-backups` first. When the folder has saves of several of the emulator's users,
+the launcher asks whose save to import (or which one an export replaces).
 
 The default profile, first on the list and marked "(default)", has the saves from before profiles; it is called
-"Player" until you rename it. The game plays it when it is started without the launcher, so it cannot be removed. Profiles are kept in `profiles.txt` in the saves folder (the `user` folder in the game folder on Windows,
+"Player" until you rename it. The game plays it when it is started without the launcher, so it cannot be removed. A game
+folder built before profiles came shows no **Profile** choice: build it again (**Update**) to get it. Profiles are kept in `profiles.txt` in the saves folder (the `user` folder in the game folder on Windows,
 `~/.local/share/hookshot` on Linux); a profile's saves are `save/<its id>`.
 
 ### Where the files go

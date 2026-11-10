@@ -6,6 +6,7 @@ python -I -B tests/test_oot_saves.py
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -159,6 +160,27 @@ class Discovery(Case):
         self.assertEqual(self.backup_dirs(), [])
         code, out, err = self.run_main("export", "lichii", "--profile", other.lower())
         self.assertEqual(code, 0, err)
+
+    def test_saves_lists_each_user_for_the_launchers(self):
+        # (Hookshot's launchers ask whose save when an emulator folder has several users', and pass the id as --profile)
+        other = "11111111111111111111111111111111"
+        make_save(eden_save(self.data / "eden", other), b"O", slots=("slot_00", "slot_01", "slot_02"))
+        eden = str(self.data / "eden")
+        code, out, err = self.run_main("saves", "--from", eden)
+        self.assertEqual(code, 0, err)
+        found = json.loads(out)
+        self.assertEqual([s["id"] for s in found], sorted([PROFILE, other]))
+        by_id = {s["id"]: s for s in found}
+        self.assertEqual(by_id[other]["path"], str(eden_save(self.data / "eden", other)))
+        self.assertTrue(by_id[other]["label"].startswith(other + ": 3 slots, last saved "), by_id[other]["label"])
+        self.assertTrue(by_id[PROFILE]["label"].startswith(PROFILE + ": 1 slot, "), by_id[PROFILE]["label"])
+        new = self.data / "hookshot" / "save" / ("5a3c9e1f0b7d2468" + "0" * 15 + "2")
+        code, out, err = self.run_main("import", "--from", eden, "--profile", other, "--hookshot", str(new))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tree(new), tree(eden_save(self.data / "eden", other)))
+        code, out, err = self.run_main("saves", "--from", str(self.tmp / "nothing-here"))
+        self.assertEqual(code, 1)
+        self.assertIn("no folder at", err)
 
     def test_list(self):
         make_save(self.home / "Games" / "Ocarina" / "profile" / "save" / ACCOUNT, b"NX")
@@ -361,6 +383,15 @@ class Copy(Case):
         self.assertEqual(code, 1)
         self.assertIn("as it was before", err)
         self.assertEqual(tree(self.hs), before)
+
+    def test_failed_copy_into_a_new_launcher_profile_leaves_no_folder(self):
+        # (an empty save folder would read to the game as a save that exists)
+        new = self.data / "hookshot" / "save" / ("5a3c9e1f0b7d2468" + "0" * 15 + "2")
+        with mock.patch.object(oot.shutil, "copy2", mock.Mock(side_effect=OSError("disk full"))):
+            code, out, err = self.run_main("import", "lichii", "--hookshot", str(new))
+        self.assertEqual(code, 1)
+        self.assertIn("as it was before", err)
+        self.assertFalse(new.exists())
 
 
 class NX2navi(Case):

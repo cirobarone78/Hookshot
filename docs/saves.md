@@ -60,7 +60,8 @@ Eden's save path, under that data folder: `nand/user/save/0000000000000000/<prof
 The launcher's **Manage** menu imports a save into the chosen profile and exports the profile's save
 ([profiles](../readme.md#profiles-and-saves-from-emulators)). It runs the script below with `--hookshot` set to that
 profile's save folder and `--backup-dir` to `save-backups` in Hookshot's saves folder; a new profile's empty save folder
-is filled by an import.
+is filled by an import. When the chosen folder has saves of several of the emulator's users, the launcher asks whose:
+`saves --from <folder>` lists them (as JSON), and the one chosen is passed on as `--profile`.
 
 ## Copy with the script
 

@@ -281,7 +281,7 @@
                      HorizontalAlignment="Center" Margin="0,16,0,0"/>
           <!-- the profiles (Profiles.cs): the one Play starts, right above Play, with New profile after it. What changes the chosen
                profile is wanted rarely: it is in the Manage menu, out of Play's way, with Remove last and apart -->
-          <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,28,0,0">
+          <StackPanel x:Name="ProfileRow" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,28,0,0">
             <TextBlock Style="{StaticResource Note}" Text="Profile" VerticalAlignment="Center" Margin="0,0,10,0"/>
             <ComboBox x:Name="ProfileBox" Style="{StaticResource Choice}" Width="220" AutomationProperties.Name="Profile"
                       SelectionChanged="ProfileChanged"/>
@@ -312,6 +312,12 @@
             <TextBox x:Name="ProfileName" Style="{StaticResource Path}" Width="260" MaxLength="32" AutomationProperties.Name="Profile name"
                      KeyDown="ProfileNameKey"/>
             <Button x:Name="ProfileNameOk" Style="{StaticResource Quiet}" Content="Add" Margin="10,0,0,0" Click="ProfileNameOkClick"/>
+            <Button Style="{StaticResource LinkButton}" Content="Cancel" Margin="14,0,0,0" VerticalAlignment="Center" Click="ProfileRowsCancel"/>
+          </StackPanel>
+          <!-- (an emulator's folder with saves of several of its users: whose to import, or which the export replaces) -->
+          <StackPanel x:Name="ProfileSaveRow" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0" Visibility="Collapsed">
+            <ComboBox x:Name="ProfileSaveBox" Style="{StaticResource Choice}" Width="460" AutomationProperties.Name="Emulator user's save"/>
+            <Button x:Name="ProfileSaveOk" Style="{StaticResource Quiet}" Content="Import" Margin="10,0,0,0" Click="ProfileSaveOkClick"/>
             <Button Style="{StaticResource LinkButton}" Content="Cancel" Margin="14,0,0,0" VerticalAlignment="Center" Click="ProfileRowsCancel"/>
           </StackPanel>
           <TextBlock x:Name="ProfileNote" Style="{StaticResource Note}" HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="700"

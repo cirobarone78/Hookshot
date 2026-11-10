@@ -37,6 +37,17 @@ def user_dir(folder, environ=os.environ):
     return beside
 
 
+def supported(folder):
+    """Whether the game in folder plays the launcher's profile: nx2/make_game.py writes profiles=1 into its
+    hookshot_version.txt. A game built before profiles ignores HOOKSHOT_PROFILE and plays the default profile's saves,
+    whichever profile is chosen, so the launcher offers none for it."""
+    try:
+        with open(os.path.join(folder, "hookshot_version.txt"), encoding="utf-8") as f:
+            return any(line.strip() == "profiles=1" for line in f)
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def shown_name(uid, name):
     """the name the profile list shows: the default profile says it is, whatever it is called, so that it is clear why it
     cannot be removed"""

@@ -6,6 +6,7 @@ files, so a copy is all it takes.
     python -I scripts/oot_saves.py export <name>  [--profile ID] [--keep-settings] [--dry-run] [--force]
     python -I scripts/oot_saves.py import --from DIR   (a save from any folder into Hookshot)
     python -I scripts/oot_saves.py export --to DIR     (Hookshot's save into any folder)
+    python -I scripts/oot_saves.py saves --from DIR    (the saves in DIR, one per emulator user, as JSON: for --profile)
 
 import copies into Hookshot, export copies out of it. <name> is one of EMULATORS below: lichii, frizti, orchid,
 pokedinner, eden, eglantine or nx2navi (to-lichii and to-hookshot still work: they are export lichii and import
@@ -23,6 +24,7 @@ import argparse
 import collections
 import contextlib
 import datetime
+import json
 import os
 import re
 import shutil
@@ -379,7 +381,8 @@ def copy_saves(src, dst, backup, keep_settings, dry_run):
 
 
 def restore(dst, backup):
-    """puts the target back as the backup has it (None: as it was before, when there was no save: no slots)"""
+    """puts the target back as the backup has it (None: as it was before, when there was no save: no folder, which the copy
+    made. An empty save folder left behind would read to the game as a save that exists)"""
     for s in slots(dst):
         shutil.rmtree(os.path.join(dst, s), ignore_errors=True)
     for s in slots(backup) if backup else []:
@@ -390,6 +393,9 @@ def restore(dst, backup):
         else:
             with contextlib.suppress(OSError):
                 os.remove(os.path.join(dst, f))
+    if not backup:
+        with contextlib.suppress(OSError):
+            os.rmdir(dst)
 
 
 def program_named(name):
@@ -400,9 +406,29 @@ def program_named(name):
                % (name, ", ".join(p.name for p in EMULATORS)))
 
 
+def saves_in(folder):
+    """[{id, path, label}]: the saves in folder, one per user of the emulator, as import --from and export --to find them.
+    What Hookshot's launchers let the player choose from when there are several, to pass as --profile (pick refuses to
+    choose). label says what the player sees: the id, the slots and when the newest was saved."""
+    _, found = locate(FOLDER, folder, "--from")
+    out = []
+    for k in sorted(found):
+        names = slots(found[k])
+        times = [os.path.getmtime(p) for p in (os.path.join(found[k], s, "progress.sav") for s in names) if os.path.isfile(p)]
+        when = ", last saved %s" % datetime.datetime.fromtimestamp(max(times)).strftime("%Y-%m-%d %H:%M") if times else ""
+        out.append({"id": k, "path": found[k],
+                    "label": "%s: %d slot%s%s" % (k, len(names), "" if len(names) == 1 else "s", when)})
+    return out
+
+
 def run(args):
     if args.command == "list":
         list_all(args)
+        return
+    if args.command == "saves":
+        if not args.folder:
+            raise Fail("saves of what folder? Name it with --from <folder>")
+        print(json.dumps(saves_in(args.folder), ensure_ascii=False))
         return
     other = program_named(args.name) if args.name else FOLDER
     if other is FOLDER and not args.folder:
@@ -437,8 +463,9 @@ def run(args):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], prog="oot_saves.py")
-    p.add_argument("command", choices=["list", "import", "export", "to-lichii", "to-hookshot"],
-                   help="import: into Hookshot; export: out of Hookshot; to-lichii, to-hookshot: export/import lichii")
+    p.add_argument("command", choices=["list", "saves", "import", "export", "to-lichii", "to-hookshot"],
+                   help="import: into Hookshot; export: out of Hookshot; to-lichii, to-hookshot: export/import lichii; "
+                        "saves: the saves in --from's folder, one per user, as JSON")
     p.add_argument("name", nargs="?", help="the emulator: %s" % ", ".join(e.name for e in EMULATORS))
     p.add_argument("--from", dest="from_dir", metavar="DIR", help="import from this folder (a save, or one to search)")
     p.add_argument("--to", dest="to_dir", metavar="DIR", help="export to this folder (a save, or one to search)")

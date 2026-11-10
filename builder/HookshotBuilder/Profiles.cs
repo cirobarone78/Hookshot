@@ -26,6 +26,16 @@ public static class Profiles
     /// The folder the game keeps its saves in when the launcher starts it: user in the game folder
     public static string UserDir(string folder) => Path.Combine(folder, "user");
 
+    /// Whether the game in folder plays the launcher's profile: nx2/make_game.py writes profiles=1 into its hookshot_version.txt.
+    /// A game built before profiles ignores HOOKSHOT_PROFILE and plays the default profile's saves, whichever profile is chosen,
+    /// so the launcher offers none for it.
+    public static bool Supported(string folder)
+    {
+        try { return File.ReadLines(Path.Combine(folder, "hookshot_version.txt")).Any(l => l.Trim() == "profiles=1"); }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
+
     /// The name the profile list shows: the default profile says it is, whatever it is called, so that it is clear why it
     /// cannot be removed
     public static string ShownName(Profile p) => p.Id == Default ? $"{p.Name} (default)" : p.Name;

@@ -387,7 +387,8 @@ class Builder(tk.Tk):
         ttk.Label(f, text=folder, wraplength=self.px(560)).pack(anchor="w", **self.pad)
         self.launch_status = tk.StringVar(value="Checking for updates...")
         ttk.Label(f, textvariable=self.launch_status, wraplength=self.px(560)).pack(anchor="w", **self.pad)
-        self.show_profile_row(f, folder)
+        if profiles.supported(folder):   # (a game built before profiles plays the default profile's saves whichever is chosen)
+            self.show_profile_row(f, folder)
         # (Play on the right, the default (Enter); Update joins it on its left when there is one. The game folder, rarely
         # wanted, on the left)
         buttons = ttk.Frame(f)
@@ -498,6 +499,41 @@ class Builder(tk.Tk):
             return self.profile_error("There are no saves yet: the game makes %s at its first start." % self.user)
         subprocess.Popen(["xdg-open", path])
 
+    def choose_emulator_save(self, found, command):
+        """which of the emulator's users' saves to import or export (oot_saves.saves_in's list): the one chosen, or None"""
+        box = tk.Toplevel(self)
+        box.title("Hookshot")
+        box.transient(self)
+        f = ttk.Frame(box, padding=self.px(12))
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="This folder has saves of %d users of the emulator. %s" % (
+            len(found), "Which one do you import?" if command == "import" else "Which one does the export replace?"),
+            wraplength=self.px(480)).pack(anchor="w", pady=(0, self.px(8)))
+        rows = tk.Listbox(f, height=min(len(found), 8), width=72, exportselection=False)
+        rows.pack(fill="both", expand=True)
+        for save in found:
+            rows.insert("end", save["label"])
+        rows.selection_set(0)
+        chosen = []
+
+        def done(ok):
+            if ok and rows.curselection():
+                chosen.append(found[rows.curselection()[0]])
+            box.destroy()
+        buttons = ttk.Frame(f)
+        buttons.pack(fill="x", pady=(self.px(10), 0))
+        ttk.Button(buttons, text="Import" if command == "import" else "Export", default="active",
+                   command=lambda: done(True)).pack(side="right", padx=self.px(4))
+        ttk.Button(buttons, text="Cancel", command=lambda: done(False)).pack(side="right", padx=self.px(4))
+        rows.bind("<Double-Button-1>", lambda event: done(True))
+        box.bind("<Return>", lambda event: done(True))
+        box.bind("<Escape>", lambda event: done(False))
+        box.protocol("WM_DELETE_WINDOW", lambda: done(False))
+        rows.focus_set()
+        box.grab_set()
+        self.wait_window(box)
+        return chosen[0] if chosen else None
+
     def copy_profile_saves(self, command):
         """import: an emulator's save (or a save's folder) into the profile; export: the profile's save to an emulator. The
         copy is scripts/oot_saves.py's, with the profile's save folder as Hookshot's side: it copies only the save's files,
@@ -512,15 +548,23 @@ class Builder(tk.Tk):
         chosen = filedialog.askdirectory(parent=self, initialdir=os.path.expanduser("~"), title=what)
         if not chosen:
             return
+        # (an emulator keeps a save for each of its users: with several, the player says whose, passed on as --profile)
+        try:
+            found = oot_saves.saves_in(chosen)
+        except oot_saves.Fail as error:
+            return self.profile_error(error)
+        save = found[0] if len(found) == 1 else self.choose_emulator_save(found, command)
+        if save is None:
+            return
         ask = ("Import the save in %s into the profile %s?\n\nThe profile's saves now, if it has any, are copied to %s first."
-               % (chosen, name, backups)) if command == "import" else \
-              ("Export %s's save to %s?\n\nThe save there is copied to %s first." % (name, chosen, backups))
+               % (save["path"], name, backups)) if command == "import" else \
+              ("Export %s's save to %s?\n\nThe save there is copied to %s first." % (name, save["path"], backups))
         if not messagebox.askyesno("Hookshot", ask, parent=self):
             return
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = oot_saves.main([command, "--from" if command == "import" else "--to", chosen, "--hookshot", saves,
-                                   "--backup-dir", backups])
+            code = oot_saves.main([command, "--from" if command == "import" else "--to", chosen, "--profile", save["id"],
+                                   "--hookshot", saves, "--backup-dir", backups])
         if code:
             return self.profile_error(err.getvalue().strip().removeprefix("error: ") or "The copy failed.")
         done = (out.getvalue().strip().splitlines() or [""])[-1].removeprefix("Done.").strip()   # (where the backup went)
@@ -787,7 +831,7 @@ class Builder(tk.Tk):
     def play_or_choose(self, folder):
         """Play from the builder's pages: at once with one profile; with more, the launcher's page first, where the profile
         Play starts is shown and can be changed"""
-        if len(profiles.load(profiles.user_dir(folder))) > 1:
+        if profiles.supported(folder) and len(profiles.load(profiles.user_dir(folder))) > 1:
             self.launch_folder, self.build_button = folder, None
             self.show_launch(folder)
         else:

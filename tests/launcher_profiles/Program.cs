@@ -64,6 +64,14 @@ static class Program
         var user = Profiles.UserDir(game);
         Require(user == Path.Combine(game, "user"), "The saves are not in the game folder's user folder.");
 
+        // profiles only for a game that plays them: nx2/make_game.py's profiles=1 in hookshot_version.txt
+        Require(!Profiles.Supported(game), "A game folder with no hookshot_version.txt was taken to play profiles.");
+        Directory.CreateDirectory(game);
+        File.WriteAllText(Path.Combine(game, "hookshot_version.txt"), "version=v2.0.13\n");
+        Require(!Profiles.Supported(game), "A game built before profiles was taken to play them.");
+        File.WriteAllText(Path.Combine(game, "hookshot_version.txt"), "profiles=1\nversion=v2.1.0\n");
+        Require(Profiles.Supported(game), "A game that plays profiles was not taken to.");
+
         // the default profile is the user every build had (host/nn_applet.c)
         var first = Profiles.Load(user);
         Require(first.Count == 1 && first[0] == new Profiles.Profile(Profiles.Default, "Player"), "The default profile is not Player.");

@@ -1,8 +1,8 @@
 /* (hookshot) The update offer: at start, the latest release on GitHub is asked for (a few seconds at most, nothing when offline), and
    when it is not the release this game folder was built with, the player is asked whether to update. Yes starts the Hookshot Builder
    that made the folder (hookshot_version.txt, written by nx2/make_game.py) with --update: it downloads the new release and builds the
-   folder again from the game files the folder keeps, and the game closes. A folder with no hookshot_version.txt (built from the
-   repository, or before updates came in) is never asked about. HOOKSHOT_NO_UPDATE_CHECK=1 (hookshot_env.txt) turns it off */
+   folder again from the game files the folder keeps, and the game closes. A folder whose hookshot_version.txt has no version line, or
+   that has none (built from the repository, or before updates came in), is never asked about. HOOKSHOT_NO_UPDATE_CHECK=1 (hookshot_env.txt) turns it off */
 #if defined(_WIN32) || defined(__linux__)
 #include <ctype.h>
 #include <string.h>

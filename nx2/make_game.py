@@ -1509,8 +1509,12 @@ def main(a=None):
                 tag = f.readline().strip()
             if tag:
                 break
-    if tag:
-        with open(os.path.join(out, "hookshot_version.txt"), "w", encoding="utf-8", newline="\n") as f:
+    # (profiles=1: this game plays the launcher's profile, HOOKSHOT_PROFILE (host/nn_applet.c). The launchers offer profiles only
+    # then: a game built before them plays the default profile's saves whichever is chosen. builder/linux/profiles.py, Profiles.cs.
+    # Written by a build from the repository too; it has no version line, so its game never offers an update)
+    with open(os.path.join(out, "hookshot_version.txt"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("profiles=1\n")
+        if tag:
             f.write("version=%s\n" % tag)
             if os.environ.get("HOOKSHOT_BUILDER_EXE"):
                 f.write("builder=%s\n" % os.environ["HOOKSHOT_BUILDER_EXE"])

@@ -8,7 +8,9 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -113,6 +115,74 @@ class ProfileTests(unittest.TestCase):
                          "/home/p/.local/share/hookshot")
         (game / "user" / "save").mkdir(parents=True)   # (saves the game could not move: hos_main.c keeps using them)
         self.assertEqual(profiles.user_dir(str(game), {"HOME": "/home/p"}), str(game / "user"))
+
+
+class SupportTests(unittest.TestCase):
+    """Profiles only for a game that plays them: a game built before them ignores HOOKSHOT_PROFILE and plays the default
+    profile's saves whichever is chosen"""
+
+    def test_only_a_game_marked_by_make_game_plays_profiles(self):
+        with tempfile.TemporaryDirectory() as game:
+            self.assertFalse(profiles.supported(game))
+            version = Path(game) / "hookshot_version.txt"
+            version.write_text("version=v2.0.13\nbuilder=/x/AppRun\n", encoding="utf-8")
+            self.assertFalse(profiles.supported(game))
+            version.write_text("profiles=1\nversion=v2.1.0\n", encoding="utf-8")
+            self.assertTrue(profiles.supported(game))
+
+    def test_make_game_marks_every_build(self):
+        # (a build from the repository has no release tag, and plays profiles all the same)
+        source = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
+        start = source.index('"hookshot_version.txt"), "w"')
+        block = source[start:source.index("\n    # ", start)]
+        self.assertIn('f.write("profiles=1\\n")', block)
+        self.assertLess(block.index('f.write("profiles=1\\n")'), block.index("if tag:"))
+
+
+def load_builder():
+    """builder/linux/hookshot_builder.py with a stand-in for tkinter (no display here)"""
+    for name in ("tkinter", "tkinter.filedialog", "tkinter.messagebox", "tkinter.ttk"):
+        sys.modules.setdefault(name, types.ModuleType(name))
+    tk = sys.modules["tkinter"]
+    tk.Tk = getattr(tk, "Tk", type("Tk", (), {}))
+    tk.filedialog, tk.messagebox, tk.ttk = (sys.modules["tkinter." + n] for n in ("filedialog", "messagebox", "ttk"))
+    spec = importlib.util.spec_from_file_location("hookshot_builder_profiles", ROOT / "builder" / "linux" / "hookshot_builder.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class LauncherCopyTests(unittest.TestCase):
+    """The Linux launcher's Import from an emulator folder with saves of several of its users: it asks whose, and passes that
+    user on to scripts/oot_saves.py as --profile (oot_saves refuses to choose)"""
+
+    def test_import_asks_whose_save_and_passes_it_on(self):
+        builder = load_builder()
+        oot = builder.oot_saves
+        with tempfile.TemporaryDirectory() as tmp:
+            user = os.path.join(tmp, "hookshot")
+            uid = profiles.add(user, "Link")
+            emulator = Path(tmp) / "eden"
+            users = ["11111111111111111111111111111111", "22222222222222222222222222222222"]
+            for n, who in enumerate(users):
+                save(emulator / "nand" / "user" / "save" / oot.NO_ACCOUNT / who / oot.TITLE, slots=n + 1, marker=who)
+            asked, errors, notes = [], [], []
+
+            def choose(found, command):
+                asked.append([s["id"] for s in found])
+                return found[1]
+            launcher = types.SimpleNamespace(user=user, current_profile=lambda: (uid, "Link"), profile_error=errors.append,
+                                             choose_emulator_save=choose, profile_note=types.SimpleNamespace(set=notes.append))
+            with mock.patch.object(builder.filedialog, "askdirectory", lambda **k: str(emulator), create=True), \
+                    mock.patch.object(builder.messagebox, "askyesno", lambda *a, **k: True, create=True), \
+                    mock.patch.object(oot, "running_games", return_value=[]):
+                builder.Builder.copy_profile_saves(launcher, "import")
+            self.assertEqual(errors, [])
+            self.assertEqual(asked, [users])
+            saves = Path(profiles.save_dir(user, uid))
+            self.assertEqual((saves / "account.sav").read_text(), users[1])
+            self.assertEqual(sorted(p.name for p in saves.iterdir() if p.name.startswith("slot_")), ["slot_00", "slot_01"])
+            self.assertTrue(notes and notes[-1].startswith("Imported into Link."), notes)
 
 
 if __name__ == "__main__":
