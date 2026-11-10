@@ -44,6 +44,7 @@
 #include "vk_antilag.h"
 #include "upscaler_rows.h"
 #include "menu_restart.h"
+#include "vk_menu_i18n.h"
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
 #endif
@@ -256,6 +257,17 @@ const char* hn_dlss_model(int v, int variant) {
     if (variant == 1) return unused;
     if (variant == 2) return env;
     return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
+}
+/// The Game language row (opts.game_lang): language.txt's language, written when it changes; the game reads it at its start
+const char* tx_game_lang(int v) { return i18n::game_lang_name(v); }
+/// The Menu language row (opts.menu_lang): Auto, then each language by its own name (vk_menu_i18n.h)
+const char* tx_menu_lang(int v) {
+    if (v <= 0) return "Auto (game's language)";
+    return i18n::lang_name(v - 1);
+}
+const char* hn_menu_lang(int v, int variant) {
+    if (variant > 0) return nullptr;
+    return v <= 0 ? "Follows the game's language (language.txt in the game folder)." : "The language of this menu.";
 }
 const char* tx_percent(int v) {
     static char b[8];
@@ -668,6 +680,10 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
+    {TAB_GAMEPLAY, "Game language", &opts.game_lang, 0, i18n::game_lang_count() - 1, 1, tx_game_lang,
+     "The game's own language, its text. Applies after a restart.", nullptr, true, true},
+    {TAB_GAMEPLAY, "Menu language", &opts.menu_lang, 0, i18n::lang_count(), 1, tx_menu_lang, "The language of this menu.",
+     hn_menu_lang, false, true},
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
@@ -935,6 +951,7 @@ void restart_init() {
     static bool done = false;
     if (done) return;
     done = true;
+    opts.game_lang = i18n::game_lang_index();   // (language.txt's, the language the game started in)
     for (int i = 0; i < kRows; i++) {
         restart_slot[i] = rows[i].restart && rows[i].value ? restart_state.add(*rows[i].value) : -1;
         if (restart_slot[i] >= 0) restart_names[restart_slot[i]] = rows[i].name;
@@ -962,8 +979,14 @@ bool restart_ask() {
     restart_values(now);
     return app_window() && restart_state.ask(now);
 }
+/// The rows' names in the menu's language, for the restart line and question
+const char* const* tr_names() {
+    static const char* t[mr::kMax];
+    for (int i = 0; i < restart_state.n; i++) t[i] = i18n::tr(restart_names[i]);
+    return t;
+}
 std::string restart_list(const char* last) {
-    return mr::names(restart_names, restart_state.n, restart_pending(), ", ", last);
+    return mr::names(tr_names(), restart_state.n, restart_pending(), ", ", last);
 }
 int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 
@@ -1142,7 +1165,7 @@ void save() {
     }
     if (FILE* f = fopen(ini_path().c_str(), "w")) {
         for (const Row& r : rows)
-            if (r.value) fprintf(f, "%s=%d\n", ini_key(r), *r.value);
+            if (r.value && r.value != &opts.game_lang) fprintf(f, "%s=%d\n", ini_key(r), *r.value);   // (language.txt's)
         if (!mic_want.empty()) fprintf(f, "microphone_device=%s\n", mic_want.c_str());   // (hookshot: also while it is unplugged)
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on)
@@ -1180,6 +1203,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         apply_preset(*r.value);
     } else {
         *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
+        if (r.value == &opts.game_lang) i18n::set_game_language(*r.value);   // (language.txt: the game's next start)
         // (another Upscaler: the Render resolution moves to the nearest of its steps, DLSS's modes or the game's)
         if (r.value == &opts.dlss) opts.resolution = ur::snap(upscaler(), opts.resolution);
         if (!r.preset_exempt) {   // (the controls, the window and the counter are not the preset's)
@@ -1545,8 +1569,12 @@ std::string restart_line(ui::Ctx& c, float px, float width) {
         int named = 0, more = 0;
         for (int i = 0; i < restart_state.n; i++)
             if ((all >> i) & 1) (named < keep ? (shown |= 1u << i, named++) : more++);
-        line = "Restart needed: " + mr::names(restart_names, restart_state.n, shown);
-        if (more) line += (named ? " and " : "") + std::to_string(more) + (named ? " more" : more > 1 ? " settings" : " setting");
+        const char* names[mr::kMax];
+        for (int i = 0; i < restart_state.n; i++) names[i] = i18n::tr(restart_names[i]);
+        line = i18n::tr("Restart needed: ") + mr::names(names, restart_state.n, shown);
+        if (more)
+            line += std::string(named ? i18n::tr(" and ") : "") + std::to_string(more) +
+                    i18n::tr(named ? " more" : more > 1 ? " settings" : " setting");
         if (ui::size_of(c.f.strong, px, line.c_str()).x <= width) break;
     }
     return line;
@@ -2189,7 +2217,7 @@ void draw_ask(ui::Ctx& c) {
     c.d->AddRectFilledMultiColor(p, ImVec2(q.x, p.y + hb), ui::kBannerTop, ui::kBannerTop, ui::kBanner, ui::kBanner);
     c.d->AddRectFilled(ImVec2(p.x, p.y + hb - 3 * s), ImVec2(q.x, p.y + hb), ui::kBannerEdge);
     ui::text_mid_centre(c, c.f.heading, 23 * s, (p.x + q.x) * 0.5f, p.y + hb * 0.5f, ui::kBannerInk, "Restart Needed");
-    const std::string ask = "Restart to apply " + restart_list(" and ") + "?";
+    const std::string ask = i18n::tr("Restart to apply ") + restart_list(i18n::tr(" and ")) + "?";
     ui::para(c, c.f.body, 19 * s, ImVec2(p.x + 28 * s, p.y + 64 * s), ui::kInk, ask.c_str(), W - 56 * s);
     ui::text_mid(c, c.f.body, 16 * s, p.x + 28 * s, p.y + 124 * s, ui::kSoft, "Progress since your last save is lost.");
     const float bw = 210 * s, bh = 46 * s, gap = 24 * s, by = p.y + 160 * s, x0 = (p.x + q.x) * 0.5f - bw - gap * 0.5f;
@@ -2400,7 +2428,7 @@ void menu_init() {
             if (!eq) continue;
             *eq = 0;
             for (Row& r : rows) {
-                if (!r.value || strcmp(line, ini_key(r))) continue;
+                if (!r.value || r.value == &opts.game_lang || strcmp(line, ini_key(r))) continue;
                 const int v = atoi(eq + 1);
                 *r.value = r.value == &opts.output_res ? output_choice(v) : std::min(std::max(v, r.lo), r.hi);
             }

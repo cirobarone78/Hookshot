@@ -279,6 +279,8 @@ HDR peak brightness show only while HDR is on.
 | | Game speed | Per frame, Real time | Real time |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Microphone | Off, Default, or each microphone by name | Default |
+| | Game language | The game's 16 languages, each by its own name (after a restart) | The one built with |
+| | Menu language | Auto (the game's language), or English, Português (Brasil), Español (Latinoamérica), Español (España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文, 繁體中文 | Auto |
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
 | | Mouse sensitivity | 0.10 to 5.00 | 1.00 |
@@ -350,6 +352,12 @@ HDR peak brightness show only while HDR is on.
   once. A chosen microphone that is unplugged stays chosen (shown as not connected): Default stands in until it is
   back. On Linux (SDL2) two microphones with the same name cannot be told apart: the first is used. Windows must allow desktop apps to use the microphone
   (Settings, Privacy & security, Microphone). `HOS_MIC_LOG=1` logs what the game reads, a line a second.
+- **Game language** is the game's own text, `language.txt` in the game folder: the row writes it, and the game reads it at
+  its next start. **Menu language** is this menu's: Auto follows the game's language (English (UK) and French (Canada)
+  take English and French). The translations are machine-made and want checking by speakers of each language: each is
+  one line in `gpu/vk/menu_i18n.h`. Place and item names stay English for now. Japanese, Chinese and Korean letters come
+  from the game's own fonts for them, with Windows' (Yu Gothic, Microsoft YaHei, Microsoft JhengHei, Malgun Gothic) or
+  Linux's Noto CJK where a game font lacks one.
 - **Controller in background:** On keeps the controller working while another window has the focus. The keyboard and
   mouse still need the game's window.
 - **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in

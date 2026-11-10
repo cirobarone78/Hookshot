@@ -72,6 +72,8 @@ int step(int, int v, int dir) { return v + dir; }
 int snap(int, int v) { return v; }
 }
 namespace mr { constexpr int kMax = 8; }
+/* (the Game language row's hook in set_row: language.txt, not written here) */
+namespace i18n { inline void set_game_language(int) {} }
 void restart_values(int*) {}
 struct { void note(const int*) {} } restart_state;
 %(is_slider)s
