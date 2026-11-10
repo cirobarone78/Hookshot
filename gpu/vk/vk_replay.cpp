@@ -30,6 +30,7 @@
 #include <unordered_set>
 
 #include "vk_temporal.h"
+#include "vk_dlssg.h"   // (NVIDIA DLSS Frame Generation through Streamline)
 #include "vk_fsr3_inputs.h"   // (the camera jitter while AMD FSR 3.1 upscales)
 #include "status_line.h"
 #include "vk_reflex.h"
@@ -3714,6 +3715,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         present_defer_into->swapchain = dev.swapchain;
         return;
     }
+    dlssg_before_present(src != VK_NULL_HANDLE);   // (hookshot: DLSS Frame Generation on for this present or not, vk_dlssg.cpp)
     present_out(index, qk);
 }
 
@@ -3722,6 +3724,7 @@ bool present_commit(const PendingPresent& p) {
     std::lock_guard lk(present_image_mu);
     std::unique_lock qk(dev.present_mu);
     if (p.swapchain != dev.swapchain) return false;   // (made again since the copy: that image is gone)
+    dlssg_before_present(true);   // (hookshot: a deferred present is the display thread's, which DLSS Frame Generation keeps off)
     present_out(p.index, qk);
     return true;
 }

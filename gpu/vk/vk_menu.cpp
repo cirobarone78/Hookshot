@@ -37,6 +37,7 @@
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_dlss.h"
+#include "vk_dlssg.h"     // (the DLSS Frame Gen row: whether NVIDIA Streamline runs)
 #include "../../host/hos_wide_size.h"   // (the widescreen picture's size, as host/hos_main.c works it out)
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
@@ -630,6 +631,29 @@ const char* hn_framegen(int v, int variant) {
              : v == 5 ? "Four made frames" : v == 6 ? "Five made frames" : v == 7 ? "Six made frames" : "Seven made frames");
     return b[std::clamp(v, 2, 8)];
 }
+const char* tx_dlssg(int v) {
+    static const char* t[] = {"Off", "2x", "3x", "4x"};
+    return t[std::clamp(v, 0, 3)];
+}
+/// DLSS Frame Gen: on the value, or why it does not run when it is set (it starts with the game: vk_dlssg.cpp). The row is
+/// shown only in a build with Streamline, on an NVIDIA GPU (row_shown)
+const char* hn_dlssg(int v, int variant) {
+    static const char* const t[] = {"The game's own frames (and Frame generation's, when it is on).",
+                                    "One frame made by NVIDIA between each two of the game's.",
+                                    "Two frames made by NVIDIA between each two of the game's.",
+                                    "Three frames made by NVIDIA between each two of the game's."};
+    // (variant 1 on: why it is not running, DLSSG_LATER to DLSSG_FAILED)
+    static const char* const why[] = {
+        "Not running yet: it starts with the game, after a restart.",
+        "Not running: NVIDIA Streamline's files are not beside hookshot.exe (see the readme).",
+        "Not running: sl.interposer.dll beside hookshot.exe has no valid NVIDIA signature.",
+        "Not running: NVIDIA Streamline did not start, or this GPU or driver has no DLSS Frame Generation (hookshot_log.txt "
+        "and sl.log say why).",
+    };
+    if (variant < 0) variant = v > 0 && dlssg_why() >= DLSSG_LATER ? (int)dlssg_why() - DLSSG_LATER + 1 : 0;
+    if (variant == 0) return t[std::clamp(v, 0, 3)];
+    return variant <= (int)(sizeof why / sizeof why[0]) ? why[variant - 1] : nullptr;
+}
 MENU_HINTS(hn_pace, 0, "As soon as it is ready.", "At an even interval: less stutter, at up to one frame of delay.")
 const char* tx_vsync(int v) {
     static const char* const t[] = {"Auto", "On", "Off"};
@@ -718,8 +742,8 @@ MENU_HINTS(hn_prompts, 0,
            "Those of the first controller, from its name (SDL's). The Switch's when it has none, as with XInput alone.")
 
 Row rows[] = {
-    // Graphics (Reflex, Anti-Lag 2, the Upscaler and the DLSS model only where they run here; HDR's paper white and peak
-    // brightness only with HDR on: row_shown)
+    // Graphics (Reflex, Anti-Lag 2, DLSS Frame Gen, the Upscaler and the DLSS model only where they run here; HDR's paper
+    // white and peak brightness only with HDR on: row_shown)
     {TAB_GRAPHICS, "Quality preset", &opts.preset, 0, 5, 1, tx_preset,
      "Sets the scaling rows and memory limits for a GPU with that much memory. The Upscaler and Frame generation stay yours.",
      hn_preset},
@@ -730,6 +754,12 @@ Row rows[] = {
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts.", hn_framegen, false, true},
+    {TAB_GRAPHICS, "DLSS Frame Gen", &opts.dlssg, 0, 3, 1, tx_dlssg,
+     "NVIDIA DLSS Frame Generation, with NVIDIA Reflex: frames made by NVIDIA between the game's own, on RTX 40 and 50 GPUs. "
+     "Needs DLSS, DLAA or FSR 4 as the Upscaler, and takes the place of Frame generation. The frames shown are held just below "
+     "the display's refresh, and so the game's own rate to that divided by the multiple (about 39 fps at 4x on 165 Hz); DLAA at "
+     "a 4K output can be too much even for an RTX 4080. Applies after a restart.",
+     hn_dlssg, true, true},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
     {TAB_GRAPHICS, "V-Sync", &opts.vsync, 0, 2, 1, tx_vsync,
      "Whether a frame waits for the display's refresh before it is shown. Changes at once.", hn_vsync, false, true},
@@ -1120,14 +1150,14 @@ std::string restart_list(const char* last) {
 int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 
 /// A row on its tab: the debug tools only with them on; a row for what this PC cannot run not at all (Reflex and Anti-Lag 2
-/// only where the driver has them, the Upscaler only where more than the game's own runs, the DLSS model only where DLSS
-/// runs); HDR's paper white and peak brightness only with HDR on. A row that comes or goes moves those after it: the
+/// only where the driver has them, DLSS Frame Gen only in a build with Streamline on an NVIDIA GPU, the Upscaler only where
+/// more than the game's own runs, the DLSS model only where DLSS runs); HDR's paper white and peak brightness only with HDR on. A row that comes or goes moves those after it: the
 /// selection is a place on its tab (tab_selected), so a row hidden after the selected one leaves the selection where it is,
 /// and menu_tick brings back one past the end
 bool row_shown(int i) {
     const int* v = rows[i].value;
     return (rows[i].cheat < 0 || cheats_on()) && (v != &opts.reflex || reflex_available()) &&
-           (v != &opts.antilag || antilag_available()) &&
+           (v != &opts.antilag || antilag_available()) && (v != &opts.dlssg || dlssg_available()) &&
            (v != &opts.dlss || ur::upscaler_shown(upscalers_available())) &&
            (v != &opts.dlss_model || ur::model_shown(dlss_why() == DLSS_OK)) &&
            ((v != &opts.hdr_white && v != &opts.hdr_peak) || opts.hdr != 0);
@@ -1182,6 +1212,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
     if (r.value == &opts.handheld) return "handheld_profile";   // (the Profile row; host/nn_applet.c reads it at the start)
     if (r.value == &opts.mesh_mode) return "mesh_shaders";   // (gpu/vk/vk_main.cpp reads it as the device is made)
+    if (r.value == &opts.dlssg) return "dlss_frame_gen";   // (gpu/vk/vk_dlssg.cpp saved_dlssg reads it before Vulkan starts)
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -2887,6 +2918,9 @@ void menu_init() {
     if (opts.preset > 0) opts.budget = opts.preset;   // (a file from before memory_budget: its preset's)
     sync_preset_budgets(opts.budget);
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) opts.framegen = std::min(std::max(atoi(e), 2), 8);
+    // (DLSS Frame Gen for one run: vk_dlssg.cpp's saved_dlssg read it too, to start Streamline before Vulkan; here the row,
+    // which turns the made frames on and off, gets it as well)
+    if (const char* e = getenv("RX_VK_DLSSG")) opts.dlssg = std::clamp(atoi(e), 0, 3);
     if (const char* e = getenv("RX_VK_PACE")) opts.pace = atoi(e) != 0;
     if (const char* e = getenv("RX_VK_UPSCALE"))
         for (Row& r : rows)
@@ -3546,8 +3580,10 @@ void menu_tick() {
         double shown = 0, game = 0;
         if (fps_take(now, shown_frames.load(), game_frames.load(), &next, &last_shown, &last_game, &shown, &game)) {
             snprintf(fps_text, sizeof fps_text, "%.0f", shown);
-            fps_rate_now = opts.framegen >= 1 ? game : shown;   // (the game's own against its cap, with frame generation too)
-            if (opts.framegen >= 1) snprintf(fps_sub, sizeof fps_sub, "game %.0f", game);
+            // (DLSS Frame Generation's made frames are counted in shown too: vk_dlssg.cpp dlssg_before_present)
+            const bool made = opts.framegen >= 1 || (opts.dlssg >= 1 && dlssg_active());
+            fps_rate_now = made ? game : shown;   // (the game's own against its cap, with frame generation too)
+            if (made) snprintf(fps_sub, sizeof fps_sub, "game %.0f", game);
             else fps_sub[0] = 0;
         }
         static int64_t texts_next = 0;   // (the lines past the number: four times a second, each over the last half second)

@@ -30,6 +30,7 @@
 
 #include "dlss_checks.h"
 #include "upscaler_rows.h"
+#include "vk_dlssg.h"   // (whether NVIDIA Streamline started NGX first: ngx_init's log)
 #include "vk_menu.h"
 #include "vk_paths.h"
 #include "vk_temporal.h"
@@ -252,14 +253,23 @@ bool ngx_init() {
                     loadable |= dlss_checks::ascii(fs::canonical(f.path(), real).native()) && !real;
 #endif
                 }
+        // (0xbad00004, NVSDK_NGX_Result_FAIL_FeatureNotFound, while NVIDIA Streamline runs (DLSS Frame Gen, vk_dlssg.cpp): NGX
+        // did not find the runtime, though one is there. NGX keeps the folders of its first start in the process, which is
+        // Streamline's then, and vk_dlssg.cpp names these folders to it too: a folder NGX was not told of, not the GPU)
+        const bool not_found = (unsigned)init == (unsigned)NVSDK_NGX_Result_FAIL_FeatureNotFound && dlssg_active();
         if (needs_driver) logf("vk: NVIDIA DLSS: needs NVIDIA's driver %u.%u or newer", major, minor);
         else if (!runtime) logf("vk: NVIDIA DLSS: not available: no %s in %s (scripts/ngx_sdk.py fetches it)", kRuntime, where.c_str());
         else if (!loadable)
             logf("vk: NVIDIA DLSS: not available: %s is only in folders whose path is not all ASCII (%s), and NVIDIA's NGX on "
                  "Linux loads it only from one that is: put it in $XDG_DATA_HOME/hookshot/ngx, or RX_VK_DLSS_DIR=<an ASCII folder>",
                  kRuntime, where.c_str());
+        else if (not_found)
+            logf("vk: NVIDIA DLSS: not available: NGX did not find %s (%#x, feature not found), though it is in %s: NVIDIA "
+                 "Streamline (DLSS Frame Gen) started NGX first, and NGX looks only in the folders that start named",
+                 kRuntime, (unsigned)init, where.c_str());
         else logf("vk: NVIDIA DLSS: not available on this GPU (%#x): DLSS needs an NVIDIA RTX GPU", (unsigned)init);
-        g_why = needs_driver ? DLSS_NEEDS_DRIVER : !runtime ? DLSS_NO_RUNTIME : !loadable ? DLSS_RUNTIME_NOT_ASCII : DLSS_NEEDS_RTX;
+        g_why = needs_driver ? DLSS_NEEDS_DRIVER : !runtime ? DLSS_NO_RUNTIME : !loadable ? DLSS_RUNTIME_NOT_ASCII
+              : not_found ? DLSS_NO_RUNTIME : DLSS_NEEDS_RTX;
         return false;
     }
     if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_AllocateParameters(&s.params)) || !s.params) return false;

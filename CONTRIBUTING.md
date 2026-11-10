@@ -123,6 +123,29 @@ Never share a game folder built with the SDK. A change to the pinned release upd
 `scripts/ngx_sdk.py` (and `tests/test_ngx_sdk.py`), and the release named in the builder's license text
 (`builder/HookshotBuilder/MainWindow.xaml.cs`).
 
+### NVIDIA DLSS Frame Generation (optional, Windows)
+
+DLSS Frame Generation (`gpu/vk/vk_dlssg.cpp`) is built in only with NVIDIA's Streamline SDK, which is NVIDIA's, under
+NVIDIA's licenses, and is never committed, bundled or uploaded, the same as the DLSS SDK above. Streamline's binaries are
+only in its release zip, so `scripts/sl_sdk.py` downloads that zip of one pinned release (it prints NVIDIA's notice and needs
+`--accept-nvidia-license` or a typed yes), checks it and every file it takes out against their SHA-256s, and deletes it.
+Then build with `HOOKSHOT_SL_SDK=<sdk folder>`:
+
+```powershell
+python -I scripts/sl_sdk.py C:\path\sl-sdk     # headers, licenses, the runtime in bin\x64
+$env:HOOKSHOT_SL_SDK = "C:\path\sl-sdk"
+python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot-dlssg"
+```
+
+Only `vk_dlssg.cpp` sees Streamline's headers, and `hookshot_vk.dll` links nothing of Streamline's (only Windows'
+`wintrust` and `crypt32`, for the check of `sl.interposer.dll`'s signature). `make_game.py` copies the runtime
+(`sl.interposer.dll`, `sl.common.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`, `sl.pcl.dll`, `nvngx_dlssg.dll`,
+`NvLowLatencyVk.dll`) beside `hookshot.exe`, where the game loads it from at the start. Streamline has no Linux runtime:
+on Linux, `HOOKSHOT_SL_SDK` counts only for a Windows build (`RX_TARGET=windows`). A change to the pinned release updates
+the zip's and the files' SHA-256s in `scripts/sl_sdk.py` (and `tests/test_sl_sdk.py`). The Hookshot Builder has no tick for
+it yet; one needs the same license text the DLSS tick shows (`builder/HookshotBuilder/MainWindow.xaml.cs`), naming
+Streamline's licenses and the release.
+
 ### Hookshot Builder
 
 The builder is a .NET 8 WPF app. Open `builder/HookshotBuilder.sln` in Visual Studio 2022 with the .NET desktop

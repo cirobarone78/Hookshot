@@ -207,6 +207,26 @@ NGX_MSVC_RT = "vk_ngx_msvc_rt.cpp"
 FSR = os.environ.get("HOOKSHOT_FSR", "") == "1"
 
 
+def sl_sdk(sdk, linux):
+    """HOOKSHOT_SL_SDK as the build takes it: the folder when it has Streamline's headers and the build is Windows', else ""
+    (and why, said)"""
+    if sdk and linux:
+        print("build: HOOKSHOT_SL_SDK is for the Windows game only (NVIDIA Streamline has no Linux runtime): built without "
+              "NVIDIA DLSS Frame Generation", flush=True)
+        return ""
+    if sdk and not os.path.isfile(os.path.join(sdk, "include", "sl.h")):
+        print("build: HOOKSHOT_SL_SDK=%s has no include/sl.h (scripts/sl_sdk.py fetches it): built without NVIDIA DLSS Frame "
+              "Generation" % sdk, flush=True)
+        return ""
+    return sdk
+
+
+# HOOKSHOT_SL_SDK=<folder>: the Vulkan back end with NVIDIA DLSS Frame Generation (gpu/vk/vk_dlssg.cpp), from NVIDIA
+# Streamline's SDK fetched into that folder by scripts/sl_sdk.py (its include/; never committed, NVIDIA's licenses). Streamline's
+# DLLs are not linked: loaded at run time from beside hookshot.exe, where nx2/make_game.py copies them. Off without it.
+SL_SDK = sl_sdk(os.environ.get("HOOKSHOT_SL_SDK", ""), LINUX)
+
+
 def ngx_link(sdk, mingw):
     """What hookshot_vk.dll's link adds for NVIDIA DLSS on Windows: NVIDIA's library and the registry calls it makes; with
     llvm-mingw, not Microsoft's C++ runtime it names (libcpmt: vk_ngx_msvc_rt.cpp has what it needs of it, and the other
@@ -937,6 +957,12 @@ def main():
         fsr_flags = ["-DHOOKSHOT_FSR", "-I" + os.path.join(kit.HERE, "..", "third_party", "fidelityfx")] if FSR else []
         if FSR:
             print("the Vulkan back end: with AMD FSR 4 (AMD's FSR API headers, third_party/fidelityfx)", flush=True)
+        # (NVIDIA DLSS Frame Generation, a Windows build's option: scripts/sl_sdk.py. Only vk_dlssg.cpp sees Streamline's
+        # headers; without them it is the stubs that say DLSS Frame Generation is not there)
+        sl_flags = ["-DHOOKSHOT_SL", "-I" + os.path.join(SL_SDK, "include")] if SL_SDK and not LINUX else []
+        sl_deps = tree_headers(os.path.join(SL_SDK, "include")) if sl_flags else b""
+        if sl_flags:
+            print("the Vulkan back end: with NVIDIA DLSS Frame Generation (NVIDIA Streamline's SDK in %s)" % SL_SDK, flush=True)
         # (Eden's recompiler and sirit see only their own headers: a change to the back end's vk_*.h does not
         # rebuild their ~500 files; the back end itself depends on everything, suyu's texture decoders included)
         vk_lib_deps = tree_headers(os.path.join(vk, "eden"), os.path.join(vk, "sirit"), os.path.join(vk, "compat"),
@@ -976,9 +1002,11 @@ def main():
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
                             (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
-                            (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []),
+                            (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []) +
+                            (sl_flags if os.path.basename(src) == "vk_dlssg.cpp" else []),
                             vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
                             (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
+                            (sl_deps if os.path.basename(src) == "vk_dlssg.cpp" else b"") +
                             (imgui_deps if os.path.basename(src) in imgui_users else b"")))
         if NGX_SDK and not LINUX and toolchain.mingw():
             # (llvm-mingw: NVIDIA's static library was built with Microsoft's compiler for its static runtime (/MT). What it asks
@@ -1145,6 +1173,8 @@ def main():
         else:
             link = [cc] + toolchain.native_target() + toolchain.native_link() + \
                 ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else []) + ngx_link(NGX_SDK, toolchain.mingw())
+            # (NVIDIA DLSS Frame Generation: Streamline's sl_security.h checks sl.interposer.dll's signature with WinTrust)
+            link += ["-lwintrust", "-lcrypt32"] if SL_SDK else []
         r = subprocess.run(link, capture_output=True, text=True)
         if r.returncode:
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})

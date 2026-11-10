@@ -13,6 +13,8 @@
 // What the markers stand for is approximate: OoT simulates on its main thread and renders on its presentation thread, and the
 // replay records the GPU work as the game submits it; the sleep holds the presentation thread, which the main thread waits for.
 // With frame generation on, presents come from the display thread: Reflex is not used then.
+// With NVIDIA DLSS Frame Generation (vk_dlssg.cpp) NVIDIA Streamline's own Reflex runs instead: the hooks below hand it the
+// frame's markers and its sleep.
 //
 // RX_VK_REFLEX_LOG=1: every 300 frames with Reflex on, the driver's own timings (vkGetLatencyTimingsNV) averaged in the log:
 // simulation start to present end, and to the GPU's end of rendering.
@@ -24,6 +26,7 @@
 #include <cstring>
 #include <mutex>
 
+#include "vk_dlssg.h"   // (Streamline's Reflex while DLSS Frame Generation runs)
 #include "vk_framegen.h"
 #include "vk_menu.h"
 #include "vk_work.h"   // (last: RX_VK_RECORDER=defer drains before the latency-sleep wait; =thread does not need to, the driver signals it)
@@ -63,10 +66,10 @@ int wanted_mode() {
 }
 
 /// With r.mu held: the row on, the extension and its feature, a swapchain made with latency mode, and no frame generation (its
-/// own display thread)
+/// own display thread; DLSS Frame Generation's Reflex is Streamline's)
 bool on() {
     Reflex& r = rx();
-    return r.ready && r.swapchain && r.latency && wanted_mode() > 0 && !framegen_on();
+    return r.ready && r.swapchain && r.latency && wanted_mode() > 0 && !framegen_on() && !dlssg_active();
 }
 
 void mark(VkLatencyMarkerNV m) {
@@ -196,7 +199,10 @@ void reflex_swapchain_destroyed() {
     r.mode = -1;
 }
 
+// While NVIDIA Streamline runs DLSS Frame Generation (vk_dlssg.cpp) its Reflex takes the frame's markers and its sleep: DLSS
+// Frame Generation works only with Streamline's own Reflex, and this file's is off then (on())
 void reflex_present_begins() {
+    if (dlssg_active()) return dlssg_marker(DLSSG_SIM_END), dlssg_marker(DLSSG_SUBMIT_START);
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
     if (!on() || !r.frame_marked) return;
@@ -205,6 +211,7 @@ void reflex_present_begins() {
 }
 
 void reflex_submit_ends() {
+    if (dlssg_active()) return dlssg_marker(DLSSG_SUBMIT_END);
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
     if (!on()) return;
@@ -212,6 +219,7 @@ void reflex_submit_ends() {
 }
 
 const void* reflex_present_id(const void* next) {
+    if (dlssg_active()) return dlssg_marker(DLSSG_PRESENT_START), next;
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
     if (!on() || !r.frame_marked) return next;
@@ -221,6 +229,7 @@ const void* reflex_present_id(const void* next) {
 }
 
 void reflex_presented() {
+    if (dlssg_active()) return dlssg_marker(DLSSG_PRESENT_END);
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
     if (!on()) return;
@@ -228,6 +237,7 @@ void reflex_presented() {
 }
 
 void reflex_sleep() {
+    if (dlssg_active()) return dlssg_sleep();
     Reflex& r = rx();
     uint64_t generation, value;
     {

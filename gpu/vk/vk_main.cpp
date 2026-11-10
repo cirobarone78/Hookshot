@@ -21,6 +21,7 @@
 #include "gpu_choice.h"
 #include "vk_menu.h"
 #include "vk_dlss.h"
+#include "vk_dlssg.h"
 #include "vk_fsr4.h"
 #include "vk_reflex.h"
 #include "vk_antilag.h"
@@ -38,13 +39,18 @@ VKX_DEVICE3(VKX_DEFINE)
 static PFN_vkGetInstanceProcAddr get_instance_proc;
 
 bool load_global() {
+    // (hookshot: NVIDIA DLSS Frame Generation, vk_dlssg.cpp) with its row set, NVIDIA Streamline's loader in place of
+    // vulkan-1.dll's: it hooks the instance, the device, the swapchain and the present, and gives vulkan-1.dll's own for the rest
+    get_instance_proc = mkwvk::dlssg_load();
+    if (!get_instance_proc) {
 #ifdef _WIN32   // (hookshot: the loader from System32 only, not from the current folder or PATH)
-    HMODULE m = LoadLibraryExA("vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        HMODULE m = LoadLibraryExA("vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
 #else
-    HMODULE m = LoadLibraryA("vulkan-1.dll");   // (linux: libvulkan.so.1, host/posix/win32_posix.c)
+        HMODULE m = LoadLibraryA("vulkan-1.dll");   // (linux: libvulkan.so.1, host/posix/win32_posix.c)
 #endif
-    if (!m) return false;
-    get_instance_proc = (PFN_vkGetInstanceProcAddr)(void*)GetProcAddress(m, "vkGetInstanceProcAddr");
+        if (!m) return false;
+        get_instance_proc = (PFN_vkGetInstanceProcAddr)(void*)GetProcAddress(m, "vkGetInstanceProcAddr");
+    }
     if (!get_instance_proc) return false;
 #define VKX_LOAD(f) f = (PFN_##f)get_instance_proc(nullptr, #f);
     VKX_GLOBAL(VKX_LOAD)
@@ -1071,9 +1077,11 @@ MkwVkRenderer table;
 } // namespace
 } // namespace mkwvk
 
-// (hookshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process): while the
-// shaders are prepared, their workers are stopped and what they made is kept first (10 s at most: a driver can take longer on one
-// pipeline). Looked up by name, so an executable and a back end of different versions still close
+// (hookshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process; the Insert
+// menu's Quit and Restart close it the same way): while the shaders are prepared, their workers are stopped and what they made
+// is kept first (10 s at most: a driver can take longer on one pipeline). Then NVIDIA Streamline, when DLSS Frame Generation
+// runs, is shut down (vk_dlssg.cpp dlssg_shutdown: last, as it holds the presents and the queue until the process ends).
+// Looked up by name, so an executable and a back end of different versions still close
 extern "C"
 #ifdef _WIN32
 __declspec(dllexport)
@@ -1083,10 +1091,12 @@ __attribute__((visibility("default")))
 void mkwvk_close_asked(void) {
     using namespace mkwvk;
     pipeline_cache_close();   // (in play: the pipelines made since the last save, kept for the next start)
-    if (!prep_running.load() || prepare_stopped()) return;
-    logf("vk: the window was closed while the shaders were prepared: stopping, what is done is kept");
-    prepare_stop();
-    if (WaitForSingleObject(prep_ended, 10000) != WAIT_OBJECT_0) logf("vk: the preparation did not stop within 10 s: closing anyway");
+    if (prep_running.load() && !prepare_stopped()) {
+        logf("vk: the window was closed while the shaders were prepared: stopping, what is done is kept");
+        prepare_stop();
+        if (WaitForSingleObject(prep_ended, 10000) != WAIT_OBJECT_0) logf("vk: the preparation did not stop within 10 s: closing anyway");
+    }
+    dlssg_shutdown();
 }
 
 extern "C"

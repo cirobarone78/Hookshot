@@ -20,6 +20,7 @@
 #include <cmath>
 
 #include "vk_framegen.h"
+#include "vk_dlssg.h"   // (NVIDIA DLSS Frame Generation: this one off while it runs)
 #include "vk_fsr3_inputs.h"   // (AMD FSR 3.1 frame interpolation's depth and motion)
 #include "vk_fsr3fi.h"
 #include "vk_menu.h"
@@ -506,7 +507,8 @@ bool framegen_wanted(int menu_value, int allow) {
 
 bool framegen_on() {
     static const int allow = !getenv("RX_VK_FRAMEGEN") || atoi(getenv("RX_VK_FRAMEGEN")) != 0;
-    return framegen_wanted(opts.framegen, allow) && !dev.offscreen && !fg.failed;
+    // (hookshot: off while NVIDIA Streamline runs DLSS Frame Generation, vk_dlssg.cpp: it makes the frames then)
+    return framegen_wanted(opts.framegen, allow) && !dev.offscreen && !fg.failed && !dlssg_active();
 }
 
 // Ultrawide's menus (the Insert menu's Ultrawide menus): which of nx2/oot_wide.py's keep-list screens keep the whole picture, told

@@ -37,3 +37,7 @@ build-linux/
 
 # ---- NVIDIA's DLSS SDK (scripts/ngx_sdk.py): NVIDIA's files, never committed ----
 ngx-sdk/
+
+# ---- NVIDIA Streamline's SDK (scripts/sl_sdk.py, DLSS Frame Generation): NVIDIA's files, never committed ----
+sl-sdk/
+streamline-sdk-v*.zip*

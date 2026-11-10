@@ -60,6 +60,12 @@ struct Reflex {
 struct {int device=1;}dev;
 Reflex& rx(){return state;}
 bool framegen_on(){return fg;}
+// (vk_dlssg.cpp: while NVIDIA Streamline runs DLSS Frame Generation its Reflex takes the markers and the sleep)
+enum DlssgMarker {DLSSG_SIM_START,DLSSG_SIM_END,DLSSG_SUBMIT_START,DLSSG_SUBMIT_END,DLSSG_PRESENT_START,DLSSG_PRESENT_END};
+bool dlssg=false;int dlssg_marks=0,dlssg_sleeps=0;unsigned dlssg_seen=0;
+bool dlssg_active(){return dlssg;}
+void dlssg_marker(DlssgMarker m){++dlssg_marks;dlssg_seen|=1u<<m;}
+void dlssg_sleep(){++dlssg_sleeps;}
 int wanted_mode(){return wanted;}
 void apply_mode(){if(!state.swapchain)invalid=true;++modes;}
 void log_timings(){}
@@ -83,6 +89,7 @@ int vkWaitSemaphores(int,const VkSemaphoreWaitInfo* wait,uint64_t){
 void reset(){
     state.swapchain=42;state.swapchain_generation=0;state.ready=state.latency=state.latency_next=state.frame_marked=true;
     state.wake_value=0;state.id=1;state.mode=1;markers=sleeps=modes=0;invalid=fg=false;wanted=1;before_lock=nullptr;action=Keep;
+    dlssg=false;dlssg_marks=dlssg_sleeps=0;dlssg_seen=0;
 }
 void retire_before_lock(){reflex_swapchain_destroyed();}
 int main(){
@@ -101,7 +108,13 @@ int main(){
     reset();action=ReuseHandle;reflex_sleep();action=Keep;reflex_sleep();if(invalid||markers!=2||!state.frame_marked)return 9;
     reset();reflex_present_begins();reflex_submit_ends();reflex_present_id(nullptr);reflex_presented();
     if(invalid||markers!=5)return 10;
-    std::puts("PASS: Reflex retirement before locks and across waits, reused handles, stable wait targets and recovery");
+    // DLSS Frame Generation: every hook goes to Streamline's Reflex, none of this file's markers, sleeps or present ids
+    reset();dlssg=true;reflex_present_begins();reflex_submit_ends();int pid=1;
+    if(reflex_present_id(&pid)!=&pid)return 11;
+    reflex_presented();reflex_sleep();
+    if(invalid||markers||sleeps||modes||dlssg_marks!=5||dlssg_sleeps!=1||dlssg_seen!=0x3e)return 12;
+    std::puts("PASS: Reflex retirement before locks and across waits, reused handles, stable wait targets and recovery; "
+              "Streamline's Reflex with DLSS Frame Generation");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='reflex-swapchain-') as tmp:

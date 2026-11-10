@@ -49,6 +49,7 @@ class ShaderStampCacheTests(unittest.TestCase):
             "gpu/vk/vk_api.h": "struct Api {};\n",
             "gpu/vk/vk_dlss.cpp": "int dlss;\n",
             "gpu/vk/vk_fsr4.cpp": "int fsr;\n",
+            "gpu/vk/vk_dlssg.cpp": "int dlssg;\n",
             "gpu/vk/vk_ngx_msvc_rt.cpp": "int msvc_rt;\n",
             "host/mingw_msvc_shims.c": "int shims;\n",
             "gpu/vk/eden/translate.cpp": "int translator;\n",
@@ -89,7 +90,7 @@ class ShaderStampCacheTests(unittest.TestCase):
             path.write_bytes(text.encode())
         self.code = production_code(BUILD_SCRIPT)
 
-    def jobs(self, linux, version="fixture", release=False, ngx="", mingw="llvm-mingw", fsr=False):
+    def jobs(self, linux, version="fixture", release=False, ngx="", mingw="llvm-mingw", fsr=False, sl=""):
         namespace = {
             "os": os, "hashlib": hashlib,
             "GPU": str(self.root / "gpu"), "POSIX": str(self.root / "host/posix"), "HOST": str(self.root / "host"),
@@ -110,6 +111,7 @@ class ShaderStampCacheTests(unittest.TestCase):
             "NGX_SDK": ngx,   # ("": no NVIDIA NGX SDK, vk_dlss.cpp built without DLSS, as by default)
             "NGX_MSVC_RT": "vk_ngx_msvc_rt.cpp",
             "FSR": fsr,   # (HOOKSHOT_FSR=1: vk_fsr4.cpp built with AMD FSR 4)
+            "SL_SDK": sl,   # (HOOKSHOT_SL_SDK: vk_dlssg.cpp built with NVIDIA Streamline, DLSS Frame Generation)
         }
         with mock.patch.dict(os.environ, {"RX_RELEASE": "1"} if release else {}, clear=True), warnings.catch_warnings():
             # The production key/header helpers use short-lived open(...).read() expressions.
@@ -214,6 +216,44 @@ class ShaderStampCacheTests(unittest.TestCase):
                 self.assertEqual(set(fsr), set(plain))   # (no other files: AMD's headers alone, nothing linked)
                 self.assertEqual({n for n, j in fsr.items() if "-DHOOKSHOT_FSR" in j["flags"]}, {"gpu/vk/vk_fsr4.cpp"})
                 self.assertEqual(self.changed(plain, fsr), {"gpu/vk/vk_fsr4.cpp"})
+
+    def test_sl_sdk_reaches_only_vk_dlssg_and_only_on_windows(self):
+        sdk = self.root / "sl-sdk"
+        (sdk / "include").mkdir(parents=True)
+        (sdk / "include" / "sl.h").write_bytes(b"// streamline\n")
+        for linux in (False, True):
+            with self.subTest(linux=linux):
+                plain = self.jobs(linux)
+                self.assertFalse([n for n, j in plain.items() if "-DHOOKSHOT_SL" in j["flags"]])
+                with mock.patch("builtins.print"):
+                    sl = self.jobs(linux, sl=str(sdk))
+                self.assertEqual(set(sl), set(plain))   # (no other files: Streamline's headers alone, its DLLs never linked)
+                self.assertEqual({n for n, j in sl.items() if "-DHOOKSHOT_SL" in j["flags"]},
+                                 set() if linux else {"gpu/vk/vk_dlssg.cpp"})
+                self.assertEqual(self.changed(plain, sl), set() if linux else {"gpu/vk/vk_dlssg.cpp"})
+        with mock.patch("builtins.print"):
+            before = self.jobs(False, sl=str(sdk))
+            (sdk / "include" / "sl.h").write_bytes(b"// streamline, another release\n")
+            self.assertEqual(self.changed(before, self.jobs(False, sl=str(sdk))), {"gpu/vk/vk_dlssg.cpp"})
+
+
+class SlSdkTests(unittest.TestCase):
+    """nx2/build.py's HOOKSHOT_SL_SDK: taken for the Windows game when it has Streamline's headers, never for Linux's"""
+    def test_headers_and_windows_only(self):
+        tree = ast.parse(BUILD_SCRIPT.read_text(encoding="utf-8"), filename=str(BUILD_SCRIPT))
+        functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "sl_sdk"]
+        self.assertEqual(len(functions), 1)
+        ns = {"os": os}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), str(BUILD_SCRIPT), "exec"), ns)
+        with tempfile.TemporaryDirectory(prefix="hookshot-sl-") as folder, mock.patch("builtins.print"):
+            self.assertEqual(ns["sl_sdk"]("", False), "")
+            self.assertEqual(ns["sl_sdk"](folder, False), "")   # (no include/sl.h)
+            os.mkdir(os.path.join(folder, "include"))
+            open(os.path.join(folder, "include", "sl.h"), "w").close()
+            self.assertEqual(ns["sl_sdk"](folder, False), folder)
+            self.assertEqual(ns["sl_sdk"](folder, True), "")   # (Streamline has no Linux runtime)
+        source = BUILD_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('link += ["-lwintrust", "-lcrypt32"] if SL_SDK else []', source)
 
 
 class NgxSdkTests(unittest.TestCase):

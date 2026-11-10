@@ -28,6 +28,7 @@ constexpr uint32_t FG_COPY_COMP_SPV[] = {0}, FG_LUMA_COMP_SPV[] = {0}, FG_FLOW_C
                    FG_MEDIAN_COMP_SPV[] = {0}, FG_SYNTH_COMP_SPV[] = {0}, FG_SCALE_COMP_SPV[] = {0};
 /* ACTUAL_STRUCTS */
 int multiplier() { return opts.framegen; }
+bool dlssg_active() { return false; }   // (vk_dlssg.cpp: NVIDIA DLSS Frame Generation not running)
 int display_refresh_mhz() { return 60000; }
 void logf(const char*, ...) {}
 struct Object { char kind; uint64_t parent; };

@@ -341,6 +341,9 @@ HDR peak brightness show only while HDR is on.
   show artifacts. The renderer's own interpolation makes the frames; at 2x, AMD FSR 3.1's frame interpolation can make
   it instead with `RX_VK_FSR_FG=1` (below: it moves the HUD with the scene, so it is not the default). **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
   the frames that frame generation shows, so it has no effect while Frame generation is Off.
+- **DLSS Frame Gen** (a Windows game built with NVIDIA Streamline, on an NVIDIA GPU: below) makes the frames with NVIDIA
+  DLSS Frame Generation instead, 2x to 4x, with NVIDIA Reflex. It needs DLSS, DLAA or FSR 4 as the Upscaler, and turning
+  it on or off takes a restart.
 - **Game frame rate cap** limits the frames the game renders. With a cap of 60 and Frame generation at 2x, the output
   can reach 120 FPS. Choose **Auto** in Frame generation to target the display's refresh rate instead of a fixed multiplier.
   A cap **past 60 is experimental**: the game keeps real time, but some cutscenes and bosses still count frames and can
@@ -698,6 +701,42 @@ With `RX_VK_DLSS_LOG=1` NGX's own lines go there too (`ngx:`). Some of them look
 `failed to load NGXCore: 126` (twice) is NVIDIA's library looking for `_nvngx.dll` and `nvngx.dll` beside the game, which
 are not there on purpose, before it loads the driver's; `Feature ... failed to load from cache` is NGX finding no model
 of its own downloads (`C:\ProgramData\NVIDIA\NGX\models`) before it uses the game folder's `nvngx_dlss.dll`.
+
+</details>
+
+<details>
+<summary>NVIDIA DLSS Frame Generation (optional, Windows, NVIDIA Streamline under NVIDIA's licenses)</summary>
+
+A Windows game built with NVIDIA's Streamline SDK offers **DLSS Frame Gen** in the Graphics tab on NVIDIA GPUs (`2x` to
+`4x`; `dlss_frame_gen=` in `hookshot_options.ini`, 0 to 3, `RX_VK_DLSSG=0..3` for one run): NVIDIA DLSS Frame Generation
+makes the frames between the game's own, on RTX 40 and 50 cards, with Streamline's NVIDIA Reflex. It takes its depth and
+motion from the same frame chain as DLSS and FSR 4, so it needs one of them (DLSS, DLAA, FSR 4 or its Native AA) as the
+Upscaler, and it takes the place of **Frame generation** and the renderer's own Reflex while it runs. Streamline has to see
+the game's Vulkan device made, so the row is read at the start: changing it takes a restart. The Insert menu turns
+the made frames off while it is open.
+
+NVIDIA's files are NVIDIA's, under NVIDIA's licenses (Streamline's `license.txt`, the NVIDIA RTX SDKs license for DLSS
+Frame Generation, NVIDIA's for Reflex). Hookshot never includes or redistributes them: each build downloads them for itself,
+and only after you accept them. Never share a game folder built with them.
+
+- **The command line:** `python -I scripts/sl_sdk.py <sdk folder>` asks you to accept NVIDIA's licenses (or pass
+  `--accept-nvidia-license`), downloads Streamline's release zip (v2.14.16, 276 MB) and takes out the headers, the licenses
+  and the runtime, each checked against its SHA-256. Then build with `HOOKSHOT_SL_SDK=<sdk folder>` (`make_game.py
+  --fetch-sl-sdk --accept-nvidia-license` fetches it first): `make_game.py` copies the runtime beside the game's exe
+  (`bin\hookshot.exe`): `sl.interposer.dll`, `sl.common.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`, `sl.pcl.dll`,
+  `nvngx_dlssg.dll` and `NvLowLatencyVk.dll`. The game loads `sl.interposer.dll` only with NVIDIA's valid signature.
+- **The Hookshot Builder** has no tick for it yet.
+
+With it on, the log's `vk: Streamline` and `vk: DLSS Frame Gen` lines say whether it started, why not when it did not
+(the row's help says so too), and every 10 seconds how many frames reached the display and how many of them were the
+game's; Streamline's own log is `sl.log` in the game folder. With the NVIDIA app's DLSS override on, Streamline uses
+NVIDIA's own plugins from `C:\ProgramData\NVIDIA\NGX\models` in place of the ones beside `hookshot.exe` (the log says
+so). DLSS's runtime stays in the game folder's `ngx` folder: Streamline starts NGX first, and is told the same folders.
+Streamline is shut down when the game closes or restarts. Streamline's Reflex holds the frames shown just below the
+display's refresh, as NVIDIA's driver does with G-SYNC (116 at 120 Hz; `RX_VK_DLSSG_CAP=0` leaves that out). Streamline
+does not support VSync with frame generation on Vulkan, but the driver's own (the NVIDIA app's Vertical sync) works with
+it; DLSS's Frame Warp is not available on Vulkan. Tested on an RTX 5080 with G-SYNC at 120 Hz and the NVIDIA app's VSync:
+116 fps shown, 58 of the game's, on v2.0.13.
 
 </details>
 

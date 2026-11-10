@@ -42,6 +42,7 @@ import threading
 import time
 import sys
 import tempfile
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -1403,6 +1404,57 @@ def place_ngx_runtime(out):
     return dst
 
 
+def sl_script():
+    """scripts/sl_sdk.py: NVIDIA Streamline's SDK, its file table and the runtime's files"""
+    path = os.path.join(ROOT, "scripts", "sl_sdk.py")
+    if not os.path.isfile(path):   # (a builder that does not carry scripts/)
+        fail("NVIDIA DLSS Frame Generation (HOOKSHOT_SL_SDK) needs %s, which this builder does not carry: its renderer is built "
+             "without it. Unset HOOKSHOT_SL_SDK, or build Hookshot from source for it." % path)
+    spec = importlib.util.spec_from_file_location("sl_sdk", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def fetch_sl_sdk(a):
+    """--fetch-sl-sdk: NVIDIA Streamline's SDK into HOOKSHOT_SL_SDK before the build, once NVIDIA's licenses were accepted
+    (--accept-nvidia-license). The release zip is downloaded only when a file is missing or not the file expected"""
+    sdk = os.environ.get("HOOKSHOT_SL_SDK", "")
+    if not sdk:
+        fail("--fetch-sl-sdk needs HOOKSHOT_SL_SDK, the folder NVIDIA Streamline's SDK goes into.")
+    if LINUX:
+        fail("NVIDIA DLSS Frame Generation is for the Windows game only (RX_TARGET=windows on Linux).")
+    if not a.accept_nvidia_license:
+        fail("NVIDIA DLSS Frame Generation needs NVIDIA's licenses accepted first (--accept-nvidia-license).")
+    sl = sl_script()
+    print(sl.NOTICE, flush=True)
+    print("NVIDIA's licenses accepted: getting NVIDIA Streamline's SDK into %s" % sdk, flush=True)
+    try:
+        sl.fetch(sdk, say=lambda line: print(line, flush=True))
+    except (OSError, ValueError, zipfile.BadZipFile) as e:
+        fail("NVIDIA Streamline's SDK could not be downloaded (%s). Check the connection and build again, or unset "
+             "HOOKSHOT_SL_SDK." % e)
+
+
+def place_sl_runtime(game_dir):
+    """(NVIDIA DLSS Frame Generation) a Windows game built with Streamline's SDK (HOOKSHOT_SL_SDK, as nx2/build.py takes it)
+    gets Streamline's runtime beside hookshot.exe, where gpu/vk/vk_dlssg.cpp loads it from. Returns the files placed"""
+    if LINUX:
+        return []
+    sl = sl_script()
+    sdk = os.environ.get("HOOKSHOT_SL_SDK", "")
+    if not sdk or not (sl.headers(sdk) and all(os.path.isfile(f) for f in sl.runtime(sdk))):
+        # (a folder built with DLSS Frame Generation before and rebuilt without it loses NVIDIA's runtime too)
+        for name in sl.runtime_names():
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(game_dir, name))
+        return []
+    placed = sl.install_runtime(sdk, game_dir)
+    print("NVIDIA DLSS Frame Generation: Streamline's runtime beside hookshot.exe in %s (NVIDIA's, under NVIDIA's licenses: "
+          "never share this game folder)" % game_dir, flush=True)
+    return placed
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--nup")
@@ -1424,7 +1476,11 @@ def parse_args():
     p.add_argument("--log", metavar="FILE", help="also save build output to a UTF-8 file (replaces the file if it exists)")
     # (NVIDIA DLSS, off unless asked: NVIDIA's SDK into HOOKSHOT_NGX_SDK first, under NVIDIA's license. scripts/ngx_sdk.py)
     p.add_argument("--fetch-ngx-sdk", action="store_true", help="download NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build")
-    p.add_argument("--accept-nvidia-license", action="store_true", help="NVIDIA's DLSS SDK license, accepted (with --fetch-ngx-sdk)")
+    p.add_argument("--accept-nvidia-license", action="store_true",
+                   help="NVIDIA's licenses accepted, for each fetch asked for: with --fetch-ngx-sdk the DLSS SDK's license; with "
+                        "--fetch-sl-sdk Streamline's license.txt and those of DLSS Frame Generation and Reflex it comes with")
+    # (NVIDIA DLSS Frame Generation, off unless asked: NVIDIA Streamline's SDK into HOOKSHOT_SL_SDK first. scripts/sl_sdk.py)
+    p.add_argument("--fetch-sl-sdk", action="store_true", help="download NVIDIA Streamline's SDK into HOOKSHOT_SL_SDK before the build")
     # (AMD FSR 4, off unless asked: nothing is downloaded. gpu/vk/vk_fsr4.cpp)
     p.add_argument("--fsr", action="store_true", help="build with AMD FSR 4 (AMD's DLLs are not included: see the readme)")
     p.add_argument("--no-fsr", action="store_true", help="with --update: build without AMD FSR 4 even if the folder had it")
@@ -1565,6 +1621,8 @@ def main(a=None):
     drop_stale_objects(work)
     if getattr(a, "fetch_ngx_sdk", False):
         fetch_ngx_sdk(a)
+    if getattr(a, "fetch_sl_sdk", False):
+        fetch_sl_sdk(a)
     # (AMD FSR 4: the build's switch for nx2/build.py, and the folder's mark for the next --update)
     if fsr_wanted(a, out):
         os.environ["HOOKSHOT_FSR"] = "1"
@@ -1843,6 +1901,7 @@ def main(a=None):
     place_ngx_runtime(out)
     if fsr_wanted(a, out) and getattr(a, "fetch_fsr_runtime", False):
         place_fsr_runtime(out)
+    place_sl_runtime(game_dir)
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
     if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
