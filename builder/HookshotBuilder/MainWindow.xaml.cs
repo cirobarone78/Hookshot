@@ -1336,11 +1336,11 @@ public partial class MainWindow : Window
     void OpenFolder(object sender, RoutedEventArgs e) =>
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{finished}\"") { UseShellExecute = true });
 
-    /// Play from the builder's pages: at once with one profile; with more, the launcher's page first, where the profile Play
-    /// starts is shown and can be changed (Profiles.cs)
+    /// Play from the builder's pages: the launcher's page first, where the profile Play starts is shown and profiles are made and
+    /// changed (the builder's own pages have none of that: Profiles.cs). A game built before profiles: at once
     void Play(object sender, RoutedEventArgs e)
     {
-        if (Profiles.Supported(finished) && Profiles.Load(Profiles.UserDir(finished)).Count > 1)
+        if (Profiles.Supported(finished))
         {
             ShowLauncher(finished);
             return;

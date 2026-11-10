@@ -152,6 +152,23 @@ def load_builder():
     return module
 
 
+class BuilderPlayTests(unittest.TestCase):
+    """The builder's Play: the launcher's page, where profiles are made, even with one profile; a game built before them
+    starts at once"""
+
+    def test_play_opens_the_launcher_page_for_a_game_that_plays_profiles(self):
+        builder = load_builder()
+        with tempfile.TemporaryDirectory() as game:
+            done = []
+            window = types.SimpleNamespace(show_launch=lambda folder: done.append(("launcher", folder)),
+                                           play_and_close=lambda folder: done.append(("play", folder)))
+            builder.Builder.play_or_choose(window, game)
+            Path(game, "hookshot_version.txt").write_text("profiles=1\nversion=v2.1.0\n", encoding="utf-8")
+            builder.Builder.play_or_choose(window, game)
+            self.assertEqual(done, [("play", game), ("launcher", game)])
+            self.assertEqual(window.launch_folder, game)
+
+
 class LauncherCopyTests(unittest.TestCase):
     """The Linux launcher's Import from an emulator folder with saves of several of its users: it asks whose, and passes that
     user on to scripts/oot_saves.py as --profile (oot_saves refuses to choose)"""

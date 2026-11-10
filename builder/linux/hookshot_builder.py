@@ -834,9 +834,9 @@ class Builder(tk.Tk):
             self.error = "Build cancelled. You can start again from the same folder."
 
     def play_or_choose(self, folder):
-        """Play from the builder's pages: at once with one profile; with more, the launcher's page first, where the profile
-        Play starts is shown and can be changed"""
-        if profiles.supported(folder) and len(profiles.load(profiles.user_dir(folder))) > 1:
+        """Play from the builder's pages: the launcher's page first, where the profile Play starts is shown and profiles are
+        made and changed (the builder's own pages have none of that). A game built before profiles: at once"""
+        if profiles.supported(folder):
             self.launch_folder, self.build_button = folder, None
             self.show_launch(folder)
         else:

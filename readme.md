@@ -155,9 +155,9 @@ with `--update <game folder>`.
 
 ### Profiles, and saves from emulators
 
-The launcher (`hookshot.exe` on Windows, `hookshot` on Linux) has a **Profile** choice above **Play**. Each profile has
-saves of its own; **Play** starts the game with the one chosen. **New profile** makes one, which starts at an empty
-file select. **Manage** renames the chosen profile, imports a save into it, exports its save, opens its save folder,
+The launcher (`hookshot.exe` on Windows, `hookshot` on Linux; the builder's **Play** opens it too) has a **Profile**
+choice above **Play**. Each profile has saves of its own; **Play** starts the game with the one chosen. **New profile**
+makes one, which starts at an empty file select. **Manage** renames the chosen profile, imports a save into it, exports its save, opens its save folder,
 or removes it. Removing a profile does not delete its saves: they are moved to `save-backups` in the saves folder.
 
 **Import a save** copies a save from an emulator (or a save's own folder: `account.sav` and `slot_*`) into the chosen
