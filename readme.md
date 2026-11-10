@@ -615,6 +615,11 @@ in `hookshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to 
   set it in the environment or a `HOS_ENV_FILE` file; `hookshot_env.txt` takes no paths.) Without them the Upscaler row
   says so and offers the rest. On Linux, a Vulkan FSR 4 library (`amd_fidelityfx_upscaler_vk.so`, such as fsr4-vk's)
   takes their place.
+- **Or fetched for you (Windows):** `make_game.py --fsr --fetch-fsr-runtime` downloads those two DLLs and AMD's license
+  from AMD's FidelityFX SDK repository at the v2.4.0 tag, checks each against its SHA-256, and puts them in the game
+  folder (`HOOKSHOT_FFX_SDK=<folder>` keeps them between builds, default `work\ffx-sdk`). `python -I scripts/ffx_sdk.py
+  --game <game folder>` does the same for a game built already. They are AMD's, under AMD's FSR SDK license
+  (`LICENSE-AMD-FSR-SDK.md` beside them).
 
 The log's `vk: AMD FSR 4:` lines say which of AMD's upscalers it found for the card and which it uses (the newest FSR 4;
 never an older FSR in its place), and why not when it did not start. Tested on an RX 6700 XT (RDNA 2).
