@@ -1319,12 +1319,16 @@ def ffx_folder():
     return os.environ.get("HOOKSHOT_FFX_SDK") or os.path.join(ROOT, "work", "ffx-sdk")
 
 
-def fetch_fsr_runtime():
-    """--fetch-fsr-runtime (with --fsr, Windows): AMD's signed FSR SDK 2.4 Vulkan runtime (scripts/ffx_sdk.py) into
-    ffx_folder() before the build, each file checked against its SHA-256; only what is missing or not the file expected is
-    downloaded. Off unless asked: a build with --fsr alone downloads nothing"""
+def fetch_fsr_runtime(a):
+    """--fetch-fsr-runtime (with --fsr, Windows; the Hookshot Builder's AMD FSR 4 tick): AMD's signed FSR SDK 2.4 Vulkan
+    runtime (scripts/ffx_sdk.py) into ffx_folder() before the build, once AMD's license was accepted (--accept-amd-license:
+    the builder asked first, as for NVIDIA's), each file checked against its SHA-256; only what is missing or not the file
+    expected is downloaded. Off unless asked: a build with --fsr alone downloads nothing"""
+    if not getattr(a, "accept_amd_license", False):
+        fail("AMD FSR 4 needs AMD's license accepted first (--accept-amd-license).")
     ffx = ffx_script()
     print(ffx.NOTICE, flush=True)
+    print("AMD's license accepted: getting AMD's FSR runtime into %s" % ffx_folder(), flush=True)
     try:
         ffx.fetch(ffx_folder(), say=lambda line: print(line, flush=True))
     except (OSError, ValueError) as e:
@@ -1393,6 +1397,7 @@ def parse_args():
     p.add_argument("--no-fsr", action="store_true", help="with --update: build without AMD FSR 4 even if the folder had it")
     p.add_argument("--fetch-fsr-runtime", action="store_true",
                    help="with --fsr (Windows): download AMD's FSR runtime (scripts/ffx_sdk.py) and put it in the game folder")
+    p.add_argument("--accept-amd-license", action="store_true", help="AMD's FSR SDK license, accepted (with --fetch-fsr-runtime)")
     a = p.parse_args()
     if a.prepare:   # (first: a bad --game below is said as RecompLauncher's "error" line)
         global PREPARE
@@ -1462,7 +1467,7 @@ def main(a=None):
     if fsr_wanted(a, out):
         os.environ["HOOKSHOT_FSR"] = "1"
         if getattr(a, "fetch_fsr_runtime", False) and not LINUX:
-            fetch_fsr_runtime()
+            fetch_fsr_runtime(a)
         elif getattr(a, "fetch_fsr_runtime", False):
             print("--fetch-fsr-runtime: AMD publishes this runtime for Windows only; on Linux see the readme "
                   "(amd_fidelityfx_upscaler_vk.so)", flush=True)

@@ -8,8 +8,9 @@ repository at one pinned release, each file checked against its SHA-256, into <f
 gpu/vk/vk_fsr4.cpp looks for them in RX_VK_FSR_DIR, beside the executable, then in the game folder. Windows only: AMD
 publishes the runtime for Windows alone (Linux takes a Vulkan FSR 4 library of its own: the readme).
 
-Usage:  python -I scripts/ffx_sdk.py [--game <game folder>] [<folder>]
+Usage:  python -I scripts/ffx_sdk.py [--accept-amd-license] [--game <game folder>] [<folder>]
   <folder>: default work/ffx-sdk
+  --accept-amd-license: AMD's license, accepted (without it: asked, and nothing is downloaded without a yes)
   --game: the runtime copied into <game folder> too (nx2/make_game.py --fetch-fsr-runtime does the same for the folder it
           builds)
 """
@@ -23,7 +24,8 @@ import urllib.request
 COMMIT = "7539ae8b6568ad29ed78a753404351daf3b5cca7"   # (tag v2.4.0: FSR 4.1.2, FSR 3.1.6)
 BASE = "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/" + COMMIT
 # AMD's license for these files, at the pinned commit (it grants installing, copying and redistributing them in binary form,
-# with its notices kept and no reverse engineering; it asks for no acceptance step)
+# with its notices kept and no reverse engineering). It asks for no acceptance step; one is asked all the same, as for
+# NVIDIA's (scripts/ngx_sdk.py): one rule for both, and nobody gets AMD's files without having seen the terms
 LICENSE_URL = ("https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/" + COMMIT +
                "/Kits/FidelityFX/docs/license.md")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -120,13 +122,30 @@ def install(folder, game_ffx, say=print):
     return game_ffx
 
 
+def accepted(flag, ask=input, interactive=None):
+    """AMD's license, accepted: the flag, or a typed yes when there is someone to ask (as scripts/ngx_sdk.py's)"""
+    if flag:
+        return True
+    if not (sys.stdin.isatty() if interactive is None else interactive):
+        return False
+    try:
+        return ask("Do you accept AMD's license? Type yes to go on: ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("folder", nargs="?")
     p.add_argument("--game", help="a game folder: the runtime into it")
+    p.add_argument("--accept-amd-license", action="store_true")
     a = p.parse_args(argv)
     folder = os.path.abspath(a.folder or os.path.join(ROOT, "work", "ffx-sdk"))
     print(NOTICE, flush=True)
+    if not accepted(a.accept_amd_license):
+        print("ffx-sdk: AMD's license was not accepted (--accept-amd-license, or yes when asked): nothing downloaded",
+              file=sys.stderr, flush=True)
+        return 2
     try:
         fetch(folder)
     except (OSError, ValueError) as e:

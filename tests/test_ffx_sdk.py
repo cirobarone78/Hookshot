@@ -1,4 +1,5 @@
-"""scripts/ffx_sdk.py: its file table, the SHA-256 checks, the retries and the copy into a game folder, without the network.
+"""scripts/ffx_sdk.py: its file table, the SHA-256 checks, the retries, the copy into a game folder and AMD's license accepted
+first (here, in make_game.py and in the Windows Builder), without the network.
 
 Run with: python -I tests/test_ffx_sdk.py
 """
@@ -7,6 +8,7 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest import mock
@@ -130,6 +132,78 @@ class MakeGameTests(unittest.TestCase):
                 self.assertEqual(placed, game)
                 for _, _, name in ffx_sdk.FILES:
                     self.assertTrue(os.path.isfile(os.path.join(game, name)), name)
+
+
+def load_make_game():
+    spec = importlib.util.spec_from_file_location("make_game_ffx_license_under_test", ROOT / "nx2" / "make_game.py")
+    make_game = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(make_game)
+    return make_game
+
+
+class LicenseTests(unittest.TestCase):
+    """AMD's license accepted before anything of AMD's is downloaded: --accept-amd-license, as NVIDIA's for DLSS"""
+    def test_accepted(self):
+        self.assertTrue(ffx_sdk.accepted(True, interactive=False))
+        self.assertFalse(ffx_sdk.accepted(False, interactive=False))   # (no one to ask: no)
+        self.assertTrue(ffx_sdk.accepted(False, ask=lambda _: " Yes ", interactive=True))
+        self.assertFalse(ffx_sdk.accepted(False, ask=lambda _: "no", interactive=True))
+
+        def eof(_):
+            raise EOFError
+        self.assertFalse(ffx_sdk.accepted(False, ask=eof, interactive=True))
+
+    def test_script_downloads_nothing_unaccepted(self):
+        with mock.patch.object(ffx_sdk, "fetch", side_effect=AssertionError("downloaded without the license")), \
+                mock.patch.object(ffx_sdk, "accepted", return_value=False), \
+                mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", io.StringIO()) as err:
+            self.assertEqual(ffx_sdk.main(["--game", "unused"]), 2)
+        self.assertIn("--accept-amd-license", err.getvalue())
+
+    def test_make_game_fails_before_any_download(self):
+        make_game = load_make_game()
+        ffx = mock.Mock()
+        with mock.patch.object(make_game, "ffx_script", return_value=ffx), \
+                mock.patch.object(make_game, "say") as said, self.assertRaises(SystemExit):
+            make_game.fetch_fsr_runtime(SimpleNamespace(fetch_fsr_runtime=True, accept_amd_license=False))
+        ffx.fetch.assert_not_called()
+        self.assertIn("AMD FSR 4 needs AMD's license accepted first (--accept-amd-license).", str(said.call_args))
+
+    def test_make_game_fetches_once_accepted(self):
+        make_game = load_make_game()
+        ffx = mock.Mock(NOTICE="notice")
+        with mock.patch.object(make_game, "ffx_script", return_value=ffx), mock.patch("sys.stdout", io.StringIO()):
+            make_game.fetch_fsr_runtime(SimpleNamespace(fetch_fsr_runtime=True, accept_amd_license=True))
+        ffx.fetch.assert_called_once()
+
+
+class BuilderTests(unittest.TestCase):
+    """The Windows Hookshot Builder: the AMD FSR 4 tick shows AMD's license, stays only on yes, and only then adds the flag
+    pair (as the NVIDIA DLSS tick does with NVIDIA's)"""
+    def setUp(self):
+        folder = ROOT / "builder" / "HookshotBuilder"
+        self.code = (folder / "MainWindow.xaml.cs").read_text(encoding="utf-8")
+        self.xaml = (folder / "MainWindow.xaml").read_text(encoding="utf-8")
+
+    def test_tick_shows_the_license(self):
+        self.assertRegex(self.xaml, r'x:Name="FsrTick"[^>]*Click="FsrChanged"')
+        start = self.code.index("void FsrChanged(")
+        body = self.code[start:self.code.index("\n    }", start)]
+        self.assertIn("MessageBox.Show(this, FsrLicense", body)
+        self.assertRegex(body, r"fsrLicense = MessageBox\.Show\(this, FsrLicense[^;]*==\s*MessageBoxResult\.Yes;")
+        self.assertIn("if (!fsrLicense) FsrTick.IsChecked = false;", body)
+        start = self.code.index("const string FsrLicense")
+        text = self.code[start:self.code.index(";", start)]
+        self.assertIn(ffx_sdk.LICENSE_URL, text)
+        self.assertIn("Do you accept AMD's license?", text)
+
+    def test_flags_only_with_the_tick(self):
+        pair = '"--fetch-fsr-runtime", "--accept-amd-license"'
+        self.assertEqual(self.code.count(pair), 1)
+        line = next(l for l in self.code.splitlines() if pair in l)
+        self.assertTrue(line.strip().startswith("if (fsr && "), line)
+        self.assertIn("fsr: FsrTick.IsChecked == true && fsrLicense", self.code)   # (Build: the tick, AMD's license accepted)
+        self.assertIn("fsr ? Storage.FfxSdk : null", self.code)      # (AMD's runtime kept in the builder's folder)
 
 
 if __name__ == "__main__":
