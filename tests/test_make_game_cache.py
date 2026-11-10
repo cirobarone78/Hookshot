@@ -9,6 +9,7 @@ import io
 import os
 import shutil
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import unittest
@@ -23,10 +24,6 @@ spec.loader.exec_module(make_game)
 
 class Prepared(Exception):
     """Stop at the first lift request, before compiling or reading any game."""
-
-
-class ExtractionFailed(Exception):
-    pass
 
 
 def module_bytes(supported=True, payload=b"new authored module"):
@@ -86,7 +83,9 @@ class NupCacheTests(unittest.TestCase):
                 (target / "exefs").mkdir(parents=True)
                 (target / "exefs" / "main").write_bytes(module_bytes(supported=supported))
                 if failure:
-                    raise failure
+                    (target / "romfs").mkdir()
+                    (target / "romfs" / "asset.txt.part").write_bytes(b"incomplete authored asset")
+                    make_game.fail(failure)
                 if include_romfs:
                     (target / "romfs").mkdir()
                     (target / "romfs" / "asset.txt").write_bytes(b"new authored assets")
@@ -185,10 +184,14 @@ class NupCacheTests(unittest.TestCase):
 
     def test_failed_extraction_preserves_the_previous_cache_and_save(self):
         before = self.cache()
-        with self.assertRaises(ExtractionFailed):
-            self.run_to_lift(self.new_nup, failure=ExtractionFailed())
+        failure = "nup.py stopped (exit status 1): OSError: [Errno 28] No space left on device"
+        with self.assertRaises(SystemExit) as result:
+            self.run_to_lift(self.new_nup, failure=failure)
+        self.assertEqual(result.exception.code, 1)
+        self.assertIn("@@error " + failure, self.output)
         self.assertEqual(self.extractions, [self.new_nup])
         self.assertEqual(self.cache(), before)
+        self.assertFalse((self.out / ".game").exists())
 
     def test_unsupported_build_preserves_the_previous_cache_and_save(self):
         before = self.cache()
@@ -198,6 +201,7 @@ class NupCacheTests(unittest.TestCase):
         self.assertEqual(result.exception.code, 1)
         self.assertIn("This is build 01234567. Hookshot supports build %s." % make_game.BUILD_ID, self.output)
         self.assertEqual(self.cache(), before)
+        self.assertFalse((self.out / ".game").exists())
 
     def test_missing_romfs_preserves_the_previous_cache_and_save(self):
         before = self.cache()
@@ -207,6 +211,7 @@ class NupCacheTests(unittest.TestCase):
         self.assertEqual(result.exception.code, 1)
         self.assertIn("The package did not contain a romfs folder.", self.output)
         self.assertEqual(self.cache(), before)
+        self.assertFalse((self.out / ".game").exists())
 
     def test_reparse_cache_is_rejected_before_extraction_or_replacement(self):
         before = self.cache()
@@ -231,6 +236,50 @@ class NupCacheTests(unittest.TestCase):
         self.assertEqual(result.exception.code, 1)
         self.assertEqual(self.extractions, [])
         self.assertEqual(self.cache(), before)
+
+
+class RomfsCopyTests(unittest.TestCase):
+    def test_interrupted_cross_volume_copy_can_be_retried(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-romfs-copy-") as folder:
+            src, dst = Path(folder) / "source", Path(folder) / "destination"
+            src.mkdir()
+            dst.mkdir()
+            payload = b"complete authored asset"
+            (src / "asset.bin").write_bytes(payload)
+            (src / "existing.bin").write_bytes(b"source asset")
+            (dst / "existing.bin").write_bytes(b"existing destination asset")
+
+            def run_out_of_space(source, target):
+                Path(target).write_bytes(Path(source).read_bytes()[:4])
+                raise OSError(errno.ENOSPC, "authored disk-full failure")
+
+            with mock.patch.object(make_game.os, "link", side_effect=OSError(errno.EXDEV, "different volumes")), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with mock.patch.object(make_game.shutil, "copy2", side_effect=run_out_of_space):
+                    with self.assertRaises(OSError) as failure:
+                        make_game.link_or_copy(src, dst)
+                self.assertEqual(failure.exception.errno, errno.ENOSPC)
+                self.assertEqual({p.name for p in dst.iterdir()}, {"existing.bin"})
+                make_game.link_or_copy(src, dst)
+
+            self.assertEqual((dst / "asset.bin").read_bytes(), payload)
+            self.assertEqual((dst / "existing.bin").read_bytes(), b"existing destination asset")
+            self.assertEqual({p.name for p in dst.iterdir()}, {"asset.bin", "existing.bin"})
+
+    def test_failed_replacement_removes_the_staged_read_only_copy(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-romfs-replace-") as folder:
+            src, dst = Path(folder) / "source", Path(folder) / "destination"
+            src.mkdir()
+            source = src / "asset.bin"
+            source.write_bytes(b"authored read-only asset")
+            source.chmod(stat.S_IREAD)
+            with mock.patch.object(make_game.os, "link", side_effect=OSError(errno.EXDEV, "different volumes")), \
+                    mock.patch.object(make_game.os, "replace", side_effect=PermissionError("authored replacement failure")):
+                with self.assertRaisesRegex(PermissionError, "authored replacement failure"):
+                    make_game.link_or_copy(src, dst)
+            self.assertEqual(list(dst.iterdir()), [])
+            self.assertEqual(source.read_bytes(), b"authored read-only asset")
+            self.assertFalse(source.stat().st_mode & stat.S_IWRITE)
 
 
 if __name__ == "__main__":

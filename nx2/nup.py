@@ -19,6 +19,7 @@ file: its size field is then the size of the file, not of the frame (seen on rtl
 A file that is itself zstd in the game (the romfs .zs files) is not one of those: its frame's content is larger than the file.
 """
 import argparse
+from contextlib import suppress
 import hashlib
 import os
 import re
@@ -417,9 +418,17 @@ def extract(nup, t, out, only=None, quiet=False):
             if os.path.exists(dst) and os.path.getsize(dst) == r[2]:
                 continue          # (re-runs pick up where they stopped)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            with open(dst + ".part", "wb") as g:
-                nup.copy_to(r, g, rel)
-            os.replace(dst + ".part", dst)
+            temporary = dst + ".part"
+            g = open(temporary, "wb")
+            try:
+                with g:
+                    nup.copy_to(r, g, rel)
+                os.replace(temporary, dst)
+            except BaseException:
+                # Free the failed member's space without hiding the extraction error.
+                with suppress(OSError):
+                    os.unlink(temporary)
+                raise
             total += r[2]
             n += 1
             if not quiet and n % 5000 == 0:
@@ -544,7 +553,14 @@ def main():
             print("  (%d romfs files with two different sizes)" % same)
     if a.extract:
         t = pick_title(nup, a.title)
-        free = shutil.disk_usage(os.path.dirname(os.path.abspath(a.extract)) or ".").free
+        # Measure the destination volume, including an existing mount or junction.
+        folder = os.path.realpath(a.extract)
+        while not os.path.isdir(folder):
+            parent = os.path.dirname(folder)
+            if parent == folder:
+                break
+            folder = parent
+        free = shutil.disk_usage(folder).free
         print("extracting title %d (v%d) to %s (%.0f GB free)" % (t["index"], t["version"], a.extract, free / 1e9))
         n, total = extract(nup, t, a.extract, a.only)
         print("done: %d files written, %.2f GB" % (n, total / 1e9))
