@@ -1004,24 +1004,29 @@ static void setting_json(Buf *b, const HosControlSetting *s) {
     buf_str(b, s->name);
     buf_puts(b, ",\"tab\":");
     buf_str(b, s->tab);
-    buf_printf(b, ",\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"text\":", s->value, s->lo, s->hi, s->step);
+    buf_printf(b, ",\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"restart\":%s,\"fixed\":%s,\"text\":", s->value, s->lo,
+               s->hi, s->step, s->restart ? "true" : "false", s->fixed ? "true" : "false");
     buf_str(b, s->text);
     buf_puts(b, "}");
 }
-static int name_match(const char *want, const HosControlSetting *s) {
-    char a[64], k[64];
+/* a name as a client gives it (the ini key, or the row's name; any case, ' ' or '-' for '_') against a row */
+static void name_norm(char *out, size_t cap, const char *in) {
     size_t n = 0;
-    for (const char *p = want; *p && n + 1 < sizeof a; p++) a[n++] = *p == ' ' || *p == '-' ? '_' : (char)tolower((unsigned char)*p);
-    a[n] = 0;
-    n = 0;
-    for (const char *p = s->name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower((unsigned char)*p);
-    k[n] = 0;
-    return !strcmp(a, s->key) || !strcmp(a, k);
+    for (const char *p = in; *p && n + 1 < cap; p++) out[n++] = *p == ' ' || *p == '-' ? '_' : (char)tolower((unsigned char)*p);
+    out[n] = 0;
 }
+static int name_match(const char *want, const HosControlSetting *s) {
+    char a[64], k[64], key[64];
+    name_norm(a, sizeof a, want);
+    name_norm(k, sizeof k, s->name);
+    name_norm(key, sizeof key, s->key);
+    return !strcmp(a, key) || !strcmp(a, k);
+}
+/* the row a name means, listed now (the key is what setting_set takes: rows come and go, an index is no name). 0: none */
 static int setting_find(const char *name, HosControlSetting *out) {
-    for (int i = 0; G.game->setting && G.game->setting(i, out); i++)
-        if (name_match(name, out)) return i;
-    return -1;
+    for (int i = 0; i < 512 && G.game->setting && G.game->setting(i, out); i++)
+        if (name_match(name, out)) return 1;
+    return 0;
 }
 static void cmd_option_get(int ci, const JDoc *d, int req, const char *id) {
     Conn *c = &G.conns[ci];
@@ -1030,14 +1035,14 @@ static void cmd_option_get(int ci, const JDoc *d, int req, const char *id) {
     if (!G.game->setting || !G.game->setting(0, &s)) return reply_error(c, id, "unavailable", "no Insert menu (the Vulkan renderer has not started)");
     Buf b = {0};
     if (name) {
-        if (setting_find(name, &s) < 0) return buf_free(&b), reply_error(c, id, "not_found", "no setting %s", name);
+        if (!setting_find(name, &s)) return reply_error(c, id, "not_found", "no setting %.100s", name);
         reply_start(&b, id, 1);
         buf_puts(&b, ",\"option\":");
         setting_json(&b, &s);
     } else {
         reply_start(&b, id, 1);
         buf_puts(&b, ",\"options\":[");
-        for (int i = 0; G.game->setting(i, &s); i++) {
+        for (int i = 0; i < 512 && G.game->setting(i, &s); i++) {
             if (i) buf_puts(&b, ",");
             setting_json(&b, &s);
         }
@@ -1051,19 +1056,20 @@ static void cmd_option_set(int ci, const JDoc *d, int req, const char *id) {
     const JNode *v = j_get(d, req, "value");
     if (!name || !v || (v->type != J_NUM && v->type != J_TRUE && v->type != J_FALSE))
         return reply_error(c, id, "bad_request", "option_set: name, and value (a number, or true or false)");
-    HosControlSetting s;
+    if (v->type == J_NUM && (v->num < -1e9 || v->num > 1e9)) return reply_error(c, id, "bad_request", "value: out of range");
+    HosControlSetting s, now;
     if (!G.game->setting || !G.game->setting(0, &s)) return reply_error(c, id, "unavailable", "no Insert menu (the Vulkan renderer has not started)");
-    const int index = setting_find(name, &s);
-    if (index < 0) return reply_error(c, id, "not_found", "no setting %s", name);
+    if (!setting_find(name, &s)) return reply_error(c, id, "not_found", "no setting %.100s", name);
     const int value = v->type == J_NUM ? (int)lround(v->num) : v->type == J_TRUE;
-    if (!G.game->setting_set || !G.game->setting_set(index, value)) return reply_error(c, id, "failed", "not set");
-    const int before = s.value;
-    G.game->setting(index, &s);
-    ctl_log("control: setting %s %d -> %d", s.key, before, s.value);
+    memset(&now, 0, sizeof now);
+    const int r = G.game->setting_set ? G.game->setting_set(s.key, value, &now) : 0;
+    if (r < 0) return reply_error(c, id, "failed", "%s: nothing to choose on this PC (the menu shows it greyed)", s.key);
+    if (r == 0) return reply_error(c, id, "not_found", "no setting %.100s (gone meanwhile)", name);
+    ctl_log("control: setting %s %d -> %d", now.key, s.value, now.value);
     Buf b = {0};
     reply_start(&b, id, 1);
-    buf_printf(&b, ",\"was\":%d,\"option\":", before);
-    setting_json(&b, &s);
+    buf_printf(&b, ",\"was\":%d,\"option\":", s.value);
+    setting_json(&b, &now);
     reply_end(c, &b);
 }
 
@@ -1971,8 +1977,8 @@ extern volatile int64_t hos_present_count;   /* (display.c, posix/display_sdl.c:
 const char *rx_describe(void);
 int rx_control_frame_info(int64_t *presents, int64_t *draws, int *width, int *height);
 int rx_control_shot(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
-int rx_control_setting(int index, HosControlSetting *out);   /* (MkwVkSetting: the same fields) */
-int rx_control_setting_set(int index, int value);
+int rx_control_setting(int index, HosControlSetting *out);   /* (rx_backend.c: MkwVkSetting's fields) */
+int rx_control_setting_set(const char *key, int value, HosControlSetting *out);
 int hos_mem_region(uint64_t addr, uint64_t size);           /* (hos_mem.c) */
 uint8_t *hos_guest_base(void);                              /* (rx_backend.c) */
 void hos_mark_written(const void *p, uint64_t n);          /* (hos_mem.c: the GPU mirror picks the pages up) */

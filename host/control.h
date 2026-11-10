@@ -22,6 +22,7 @@ extern volatile int hos_control_on;
 typedef struct HosControlSetting {
     char key[32], name[48], text[64], tab[16];
     int value, lo, hi, step;
+    int restart, fixed;   /* applies at the next start; nothing to choose on this PC */
 } HosControlSetting;
 
 /* The game as the bridge sees it: control.c's own for the game, a fake one in tests/control_test.c */
@@ -31,8 +32,10 @@ typedef struct HosControlGame {
     int (*frame_info)(int64_t *replayed, int64_t *draws, int *width, int *height);
     /* a PNG of the first present after `after`; done(ctx, present, ok) from any thread. 0: not taken */
     int (*shot)(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
-    int (*setting)(int index, HosControlSetting *out);   /* 0 past the last */
-    int (*setting_set)(int index, int value);
+    int (*setting)(int index, HosControlSetting *out);   /* the index-th settings row, to list them: 0 past the last */
+    /* the row whose hookshot_options.ini key is key set to value as the menu sets it, out the row after it: 1 set, 0 no such
+       row, -1 nothing to choose on this PC (out the row as it is) */
+    int (*setting_set)(const char *key, int value, HosControlSetting *out);
     /* guest memory, when a level is on (host/control.c reads HOS_CONTROL_MEM). region: 0 when [addr, addr + size) is not
        wholly in mapped guest memory (hos_mem_region's class otherwise). read/write copy between guest memory and a host
        buffer; write also marks the pages so the GPU mirror picks them up. Both are called on the game thread, at a

@@ -103,19 +103,25 @@ static int fake_shot(const char *path, int64_t after, void (*done)(void *, int64
     start_thread(shot_thread, s);
     return 1;
 }
-static HosControlSetting settings[2] = {
-    {"text_speed", "Text speed", "Normal", "gameplay", 0, 0, 3, 1},
-    {"fps_counter", "FPS counter", "Off", "gameplay", 0, 0, 1, 1}};
+static HosControlSetting settings[3] = {
+    {"text_speed", "Text speed", "Normal", "gameplay", 0, 0, 3, 1, 0, 0},
+    {"fps_counter", "FPS counter", "Off", "gameplay", 0, 0, 1, 1, 0, 0},
+    {"upscaling", "Upscaler", "Off", "graphics", 0, 0, 2, 1, 1, 1}};   /* (fixed: nothing to choose here) */
 static int fake_setting(int i, HosControlSetting *out) {
-    if (i < 0 || i >= 2) return 0;
+    if (i < 0 || i >= 3) return 0;
     *out = settings[i];
     return 1;
 }
-static int fake_setting_set(int i, int v) {
-    if (i < 0 || i >= 2) return 0;
-    settings[i].value = v < settings[i].lo ? settings[i].lo : v > settings[i].hi ? settings[i].hi : v;
-    snprintf(settings[i].text, sizeof settings[i].text, "v%d", settings[i].value);
-    return 1;
+static int fake_setting_set(const char *key, int v, HosControlSetting *out) {   /* (by key, as the menu's menu_setting_set) */
+    for (int i = 0; i < 3; i++) {
+        if (strcmp(settings[i].key, key)) continue;
+        if (settings[i].fixed) return *out = settings[i], -1;
+        settings[i].value = v < settings[i].lo ? settings[i].lo : v > settings[i].hi ? settings[i].hi : v;
+        snprintf(settings[i].text, sizeof settings[i].text, "v%d", settings[i].value);
+        *out = settings[i];
+        return 1;
+    }
+    return 0;
 }
 static void fake_log(const char *line) {
     if (getenv("CONTROL_TEST_VERBOSE")) fprintf(stderr, "log: %s\n", line);
@@ -645,7 +651,13 @@ int main(int argc, char **argv) {
     CHECK(strstr(line, "\"option\":{\"key\":\"text_speed\"") && strstr(line, "\"value\":3"));
     ask(c, "{\"id\":25,\"cmd\":\"option_set\",\"name\":\"nope\",\"value\":1}\n", "25", line, sizeof line, 2000);
     CHECK(strstr(line, "\"error\":\"not_found\""));
-    puts("PASS: option_get and option_set by key or name");
+    ask(c, "{\"id\":26,\"cmd\":\"option_set\",\"name\":\"Upscaler\",\"value\":1}\n", "26", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"failed\"") && strstr(line, "nothing to choose"));
+    ask(c, "{\"id\":27,\"cmd\":\"option_get\",\"name\":\"upscaling\"}\n", "27", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"restart\":true") && strstr(line, "\"fixed\":true"));
+    ask(c, "{\"id\":28,\"cmd\":\"option_set\",\"name\":\"text_speed\",\"value\":1e300}\n", "28", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"bad_request\""));
+    puts("PASS: option_get and option_set by key or name; a fixed row refused; a value out of range");
 
     {   /* saves: none before the game opens them; then the folder, newest slot first, caption.sav's fields when its
            layout is the game's */
