@@ -199,6 +199,11 @@ def package(a):
             print("%d prebuilt third_party files from %s" % (n, os.path.basename(tp)))
     else:
         print("no setup list: the package has no play profile and no prebuilt third_party files")
+    # the repository the release is from, for the Builder's updater and the game's update check (nx2/version.py)
+    if a.repository:
+        with open(os.path.join(tools, "repository.txt"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(a.repository.strip() + "\n")
+        print("repository: %s" % a.repository.strip())
     print("package folder: %s" % out)
     return 0
 
@@ -221,6 +226,7 @@ def main():
     s.add_argument("--publish", required=True)
     s.add_argument("--setup", required=True)
     s.add_argument("--list")
+    s.add_argument("--repository", help="owner/name the release is from, into tools/repository.txt (nx2/version.py)")
     a = p.parse_args()
     return {"previous": previous, "profile": profile, "llvm-mingw": llvm_mingw, "package": package}[a.cmd](a)
 
