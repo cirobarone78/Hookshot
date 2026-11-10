@@ -26,7 +26,8 @@ enum { HOS_OPT_DLSS_JITTER_W = 24, HOS_OPT_DLSS_JITTER_H, HOS_OPT_DLSS_JITTER_PH
 /* (hookshot) the Insert menu's HDR set to Native (host/nn_vi.c QueryDisplayHdrStatus and QueryDisplayHdrPaperWhite): whether
    the game is told its display is HDR10 (the swapchain is one), and the peak and paper white it is told, in nits */
 /* (HOS_OPT_DISCORD, 43: the Insert menu's Discord status row, host/discord_rpc.c: 1 on) */
-enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE, HOS_OPT_DISCORD };
+/* (HOS_OPT_VOLUME, 44: the Insert menu's Volume row, host/nn_audio.c: the game's sound in percent, 0 to 100) */
+enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE, HOS_OPT_DISCORD, HOS_OPT_VOLUME };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face

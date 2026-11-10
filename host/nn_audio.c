@@ -15,7 +15,7 @@
    HOS_AUDIO_DUMP=<file.wav>: also write what is played (checking without speakers); HOS_AUDIO=0: silence;
    HOS_AUDIO_DEVICE=<n>: that waveOut device first; HOS_AUDIO_MUTE=1: the device fed at volume 0 (test runs);
    HOS_AUDIO_CHANNELS=2 or 6: stereo or 5.1 whatever the default output has and the Insert menu's Audio output say
-   (see au_speakers). */
+   (see au_speakers). The Insert menu's Volume scales what is played (see au_volume_gain). */
 #include "hos.h"
 #include <math.h>
 #include <stdio.h>
@@ -33,6 +33,9 @@
 #include "hos_sdl.h"
 #endif
 #include "hos_paths.h"   /* (the game folder: hookshot_options.ini, au_menu_output) */
+#include "../gpu/vk/vk_api.h"   /* (HOS_OPT_VOLUME) */
+
+int rx_option(int id, int otherwise);   /* (rx_backend.c: the Insert menu's rows; otherwise before the renderer is up) */
 
 void hos_system_event_init(uint64_t key, int autoclear);
 void hos_system_event_signal(uint64_t key);
@@ -454,6 +457,28 @@ static int mix_depth(int i, int guard) {   /* how many sub mixes lie between thi
     return 1 + mix_depth(mixes[i].dest, guard + 1);
 }
 
+/* (hookshot) The Insert menu's Volume (0 to 100 percent) as a gain on what is played, after the game's own mix and the
+   limiter: on a curve, the square of the share, so each step of the row sounds about as large as the last (50% is
+   -12 dB, 25% -24 dB) and 0 is silence. Asked once a frame; the frame ramps from the last frame's gain to the new one,
+   as the game's own volume changes do, so a held arrow key does not click. */
+static float au_volume_gain(int percent) {
+    if (percent <= 0) return 0.0f;
+    if (percent >= 100) return 1.0f;
+    const float s = percent / 100.0f;
+    return s * s;
+}
+static float au_volume_last = -1.0f;   /* (the gain the last frame ended with; -1 before the first) */
+static void au_volume_apply(float out[][FRAME], int nch, int percent) {
+    const float to = au_volume_gain(percent), from = au_volume_last < 0 ? to : au_volume_last;
+    au_volume_last = to;
+    if (from == 1.0f && to == 1.0f) return;   /* (the game's own: nothing to do) */
+    const float step = (to - from) / FRAME;
+    for (int i = 0; i < FRAME; i++) {
+        const float g = from + step * (i + 1);
+        for (int ch = 0; ch < nch; ch++) out[ch][i] *= g;
+    }
+}
+
 static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the device's 2 or 6 channels */
     for (int m = 0; m < MAX_MIXES; m++)
         if (mixes[m].used) {
@@ -575,6 +600,7 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
             lim_env = want < lim_env ? want : lim_env + (want - lim_env) * 0.0004f;
             for (int ch = 0; ch < nch; ch++) out[ch][i] *= lim_in * lim_env * lim_out;
         }
+    au_volume_apply(out, nch, rx_option(HOS_OPT_VOLUME, 100));
     for (int i = 0; i < FRAME; i++)
         for (int ch = 0; ch < nch; ch++) {
             float a = out[ch][i] * 32767.0f;

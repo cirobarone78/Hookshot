@@ -437,6 +437,8 @@ const char* hn_mic(int v, int variant) {
     return missing ? "Not plugged in: Default stands in until it is back." : "This microphone, by its name. A change applies at once.";
 }
 const char* tx_rumble(int v) { return v ? tx_percent(v) : "Off"; }
+// (hookshot) Volume: the game's sound in percent, 0 silent
+const char* tx_volume(int v) { return v > 0 ? tx_percent(v) : "Muted"; }
 // (hookshot) Menu size: how large the overlays are drawn (vk_ui.h unit); Auto is Large in fullscreen at 1080 lines and up while
 // a controller is the menu's input, else Medium
 bool pad_last = false;   // (a controller was the menu's last input: its buttons in the prompts)
@@ -645,6 +647,8 @@ Row rows[] = {
      hn_speed},
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear.", hn_text_speed},
+    {TAB_GAMEPLAY, "Volume", &opts.volume, 0, 100, 5, tx_volume,
+     "How loud the game's music and sounds are. 100% is the game's own; a change applies at once.", nullptr, false, true},
     {TAB_GAMEPLAY, "Audio output", &opts.audio_output, 0, 2, 1, tx_audio_output,
      "The speakers the game mixes its sound for. Applies after a restart.", hn_audio_output, true, true},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
@@ -937,9 +941,9 @@ constexpr int64_t kMarqueeStep = 150000000LL, kMarqueeRest = 1200000000LL;   // 
 int hover_tab = -1;
 int drag_row = -1;
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
-bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
+bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.volume || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
 /// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
-bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
+bool stops_at_ends(const Row& r) { return r.value == &opts.volume || r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
 int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
 std::string ini_path() {

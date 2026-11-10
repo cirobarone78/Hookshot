@@ -56,6 +56,7 @@ struct Options {
     int preset = 0;       // quality preset: 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+)
     int vram_mb = 0;      // dynamic texture cache budget limit in MB
     int mirror_mb = 0;    // staging mirror limit in MB
+    int volume = 100;     // (hookshot) the game's sound in percent: 0 silent to 100 the game's own (host/nn_audio.c)
     int audio_output = 0; // (hookshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1; read once, at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
     int discord = 1;   // (hookshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
     int debug_tools = 0;   // (hookshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on

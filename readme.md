@@ -267,6 +267,7 @@ choices and starts the game again, so progress since your last save is lost.
 | | Menu size | Auto, Small, Medium, Large | Auto |
 | | Game speed | Per frame, Real time | Real time |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
+| | Volume | Muted, 5% to 100%, in steps of 5 | 100% |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
 | | Microphone | Off, Default, or each microphone by name | Default |
 | Controls | Controller in background | Off, On | Off |
@@ -326,6 +327,8 @@ choices and starts the game again, so progress since your last save is lost.
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed
   down to 15 fps.
 - **FPS counter** shows in the top right corner. With frame generation on, it also shows the game's own rate.
+- **Volume** is how loud the game's music and sounds are: 100% is the game's own, Muted silences it. A change
+  applies at once.
 - **Audio output** is the speakers the game mixes its sound for. Auto is 5.1 when your default output device has 5.1
   or more speakers, else stereo; Stereo or 5.1 chooses one whatever the device has (5.1 on stereo speakers is mixed
   down). For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses stereo or 5.1 and wins over the menu.
