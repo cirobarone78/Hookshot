@@ -15,11 +15,12 @@ static struct {
     /* window */
     void *CreateWindow, *SetWindowPosition, *SetWindowFullscreen, *SetRelativeMouseMode, *GetPrimaryDisplay,
         *GetDesktopDisplayMode, *Vulkan_CreateSurface, *PixelSize, *GetKeyboardState, *GetMouseState, *WaitEventTimeout,
-        *PollEvent, *GetWindowSize, *LoadPNG, *SetWindowIcon, *DestroySurface;
+        *PollEvent, *GetWindowSize, *LoadPNG, *SetWindowIcon, *DestroySurface, *GetWindowDisplay, *GetCurrentDisplayMode;
     /* sound */
     void *OpenAudioDevice, *PauseAudioDevice, *OpenAudioDeviceStream, *ResumeAudioStreamDevice, *PutAudioStreamData;
     /* controllers */
     void *PadOpen, *PadClose, *PadConnected, *PadsUpdate, *PadButton, *PadAxis, *PadName, *PadRumble;
+    void *PadType, *PadEffect;   /* (optional: HD rumble, host/pad_sdl.c) */
     void *PadHasSensor, *PadSensorEnable, *PadSensorData;   /* (motion: optional, NULL in an SDL without them) */
     void *GetGamepads, *GetGamepadID, *Free;   /* (SDL3) */
     void *NumJoysticks, *IsGameController, *DeviceInstanceID, *GetJoystick, *JoystickInstanceID;   /* (SDL2) */
@@ -32,7 +33,11 @@ static HMODULE load_one(const char *dll) {   /* beside the executable, else the 
     while (n && path[n - 1] != '\\' && path[n - 1] != '/') n--;
     snprintf(path + n, sizeof path - n, "%s", dll);
     HMODULE m = LoadLibraryA(path);
+#ifdef _WIN32   /* (hookshot: else the system's, not the current folder's or PATH's) */
+    return m ? m : LoadLibraryExA(dll, NULL, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+#else
     return m ? m : LoadLibraryA(dll);
+#endif
 }
 static int get_all(HMODULE m, int three) {
 #define GET(field, name) if (!(*(FARPROC *)&f.field = GetProcAddress(m, name))) { hos_log("sdl: SDL%d has no %s", three ? 3 : 2, name); return 0; }
@@ -59,6 +64,9 @@ static int get_all(HMODULE m, int three) {
     GET2(PadAxis, "SDL_GetGamepadAxis", "SDL_GameControllerGetAxis");
     GET2(PadName, "SDL_GetGamepadName", "SDL_GameControllerName");
     GET2(PadRumble, "SDL_RumbleGamepad", "SDL_GameControllerRumble");
+    /* (SDL2 2.0.12 and 2.0.16 on, SDL3 3.2 on: without them every pad keeps the motor rumble) */
+    *(FARPROC *)&f.PadType = GetProcAddress(m, three ? "SDL_GetGamepadType" : "SDL_GameControllerGetType");
+    *(FARPROC *)&f.PadEffect = GetProcAddress(m, three ? "SDL_SendGamepadEffect" : "SDL_GameControllerSendEffect");
     /* (motion sensors: SDL 2.0.14 on and every SDL3; without them the pads still play, with no gyro) */
     *(FARPROC *)&f.PadHasSensor = GetProcAddress(m, three ? "SDL_GamepadHasSensor" : "SDL_GameControllerHasSensor");
     *(FARPROC *)&f.PadSensorEnable = GetProcAddress(m, three ? "SDL_SetGamepadSensorEnabled" : "SDL_GameControllerSetSensorEnabled");
@@ -75,7 +83,11 @@ static int get_all(HMODULE m, int three) {
         *(FARPROC *)&f.LoadPNG = GetProcAddress(m, "SDL_LoadPNG");   /* (3.4 on: the icon, when there) */
         *(FARPROC *)&f.SetWindowIcon = GetProcAddress(m, "SDL_SetWindowIcon");
         *(FARPROC *)&f.DestroySurface = GetProcAddress(m, "SDL_DestroySurface");
+        *(FARPROC *)&f.GetWindowDisplay = GetProcAddress(m, "SDL_GetDisplayForWindow");   /* (the refresh: hos_sdl_refresh_mhz) */
+        *(FARPROC *)&f.GetCurrentDisplayMode = GetProcAddress(m, "SDL_GetCurrentDisplayMode");
     } else {
+        *(FARPROC *)&f.GetWindowDisplay = GetProcAddress(m, "SDL_GetWindowDisplayIndex");   /* (the refresh: hos_sdl_refresh_mhz) */
+        *(FARPROC *)&f.GetCurrentDisplayMode = GetProcAddress(m, "SDL_GetCurrentDisplayMode");
         GET(OpenAudioDevice, "SDL_OpenAudioDevice");
         GET(PauseAudioDevice, "SDL_PauseAudioDevice");
         GET(NumJoysticks, "SDL_NumJoysticks");
@@ -166,6 +178,20 @@ int hos_sdl_desktop_size(int *width, int *height) {
     if (CALL(int (*)(int, void *), GetDesktopDisplayMode)(0, &m)) return 0;
     *width = m.w, *height = m.h;
     return 1;
+}
+int hos_sdl_refresh_mhz(void *window) {
+    if (!window || !f.GetWindowDisplay || !f.GetCurrentDisplayMode) return 0;
+    float hz = 0;
+    if (version == 3) {   /* (SDL_DisplayMode: refresh_rate, a float, at 20) */
+        const uint32_t id = CALL(uint32_t (*)(void *), GetWindowDisplay)(window);
+        const uint8_t *m = id ? CALL(const uint8_t *(*)(uint32_t), GetCurrentDisplayMode)(id) : NULL;
+        if (m) memcpy(&hz, m + 20, 4);
+    } else {
+        const int index = CALL(int (*)(void *), GetWindowDisplay)(window);
+        struct { uint32_t format; int w, h, refresh_rate; void *driverdata; } m;
+        if (index >= 0 && CALL(int (*)(int, void *), GetCurrentDisplayMode)(index, &m) == 0) hz = (float)m.refresh_rate;
+    }
+    return hz > 1 && hz < 1000 ? (int)(hz * 1000 + 0.5f) : 0;
 }
 int hos_sdl_vulkan_surface(void *window, void *instance, void *surface_out) {
     return version == 3 ? CALL(_Bool (*)(void *, void *, const void *, void *), Vulkan_CreateSurface)(window, instance, NULL, surface_out)
@@ -307,7 +333,8 @@ static void pull2(void *p, uint8_t *out, int len) {   /* (SDL2: a device callbac
 int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user, uint8_t *out, int len), void *user) {
     if (!hos_sdl_load()) return 0;
     const uint16_t format = s16 ? 0x8010 /* S16LE */ : 0x8120 /* F32LE */;   /* (both's numbers) */
-    if (version == 3) hos_sdl_hint("SDL_AUDIO_DEVICE_SAMPLE_FRAMES", "512");   /* (SDL2's device buffer below) */
+    const char *env_samples = getenv("SDL_AUDIO_DEVICE_SAMPLE_FRAMES");
+    if (version == 3 && !env_samples) hos_sdl_hint("SDL_AUDIO_DEVICE_SAMPLE_FRAMES", "480");   /* (SDL2's device buffer below) */
     if (!hos_sdl_init(HOS_SDL_AUDIO)) return 0;
     Pull *p = (Pull *)calloc(1, sizeof *p);
     p->pull = pull, p->user = user, p->frame = channels * (s16 ? 2 : 4);
@@ -329,7 +356,8 @@ int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user,
         void *userdata;
     } want, have;
     memset(&want, 0, sizeof want);
-    want.freq = freq, want.format = format, want.channels = (uint8_t)channels, want.samples = 512;
+    want.freq = freq, want.format = format, want.channels = (uint8_t)channels;
+    want.samples = (uint16_t)(env_samples && atoi(env_samples) > 0 ? atoi(env_samples) : 512);   /* (SDL2 asks for a power of two) */
     want.callback = pull2, want.userdata = p;
     /* (no changes allowed: SDL converts to what the device wants) */
     const uint32_t dev = CALL(uint32_t (*)(const char *, int, const void *, void *, int), OpenAudioDevice)(NULL, 0, &want, &have, 0);
@@ -570,6 +598,13 @@ int32_t hos_sdl_pad_id(void *pad) {
 void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms) {
     if (version == 3) CALL(_Bool (*)(void *, uint16_t, uint16_t, uint32_t), PadRumble)(pad, low, high, ms);
     else CALL(int (*)(void *, uint16_t, uint16_t, uint32_t), PadRumble)(pad, low, high, ms);
+}
+int hos_sdl_pad_type(void *pad) { return f.PadType ? CALL(int (*)(void *), PadType)(pad) : 0; }
+int hos_sdl_pad_has_effect(void) { return f.PadEffect != NULL; }
+int hos_sdl_pad_effect(void *pad, const void *data, int size) {
+    if (!f.PadEffect) return 0;
+    if (version == 3) return CALL(_Bool (*)(void *, const void *, int), PadEffect)(pad, data, size);
+    return CALL(int (*)(void *, const void *, int), PadEffect)(pad, data, size) == 0;
 }
 /* (motion) type: HOS_SDL_SENSOR_ACCEL or _GYRO, the same numbers in both */
 int hos_sdl_pad_has_sensor(void *pad, int type) {

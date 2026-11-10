@@ -7,7 +7,9 @@ module+offset frames, leaf first. Frames in hookshot_vk.dll / hookshot.exe are n
 
 Prints the functions by inclusive share (in the stack at all) and by self share (the leaf), and the leaf modules.
 """
-import bisect, collections, os, re, sys
+import bisect, collections, itertools, os, re, stat, sys
+from contextlib import ExitStack
+from tempfile import TemporaryFile
 
 BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "work", "sa", "build")
 
@@ -15,10 +17,11 @@ BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def load_map(path, base):
     syms = []
     pat = re.compile(r"^\s*0001:[0-9a-f]+\s+(\S+)\s+([0-9a-f]{16})\s", re.I)
-    for line in open(path, encoding="utf-8", errors="replace"):
-        m = pat.match(line)
-        if m:
-            syms.append((int(m.group(2), 16) - base, m.group(1)))
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = pat.match(line)
+            if m:
+                syms.append((int(m.group(2), 16) - base, m.group(1)))
     syms.sort()
     return [a for a, _ in syms], [n for _, n in syms]
 
@@ -30,6 +33,30 @@ def demangle(n):
         return "%s::%s" % (m.group(2), m.group(1)) if m.group(2) else m.group(1)
     m = re.match(r"\?\?\$?([^@]+)@", n)
     return m.group(1) if m else n
+
+
+def profile_lines(path, skip):
+    """Keep the old line-based slice without holding the capture in memory."""
+    with open(path, encoding="utf-8", errors="replace") as f, ExitStack() as files:
+        start = 0
+        if skip:
+            # Windows can report a pipe as seekable, even though it cannot be replayed.
+            if stat.S_ISREG(os.fstat(f.fileno()).st_mode) and f.seekable():
+                count = sum(1 for _ in f)
+            else:
+                # A pipe can only be read once. Save its lines on disk to keep memory bounded.
+                spool = files.enter_context(TemporaryFile(mode="w+t", encoding="utf-8", newline="\n"))
+                count = 0
+                for count, line in enumerate(f, 1):
+                    spool.write(line)
+                f = spool
+            start = int(count * skip)
+            if start < 0:
+                start = max(0, count + start)
+            else:
+                start = min(start, count)
+            f.seek(0)
+        yield from itertools.islice(f, start, None)
 
 
 def main():
@@ -55,9 +82,7 @@ def main():
 
     incl, self_, leafmod = collections.Counter(), collections.Counter(), collections.Counter()
     n = 0
-    lines = open(path, encoding="utf-8", errors="replace").readlines()
-    lines = lines[int(len(lines) * skip):]
-    for line in lines:
+    for line in profile_lines(path, skip):
         frames = line.strip().split(";")
         if not frames or not frames[0]:
             continue
