@@ -56,11 +56,15 @@ $("$(dirname "$0")/release_files.sh" table nightly)"
     gh release upload nightly --clobber "$@"
     new=()
     for f in "$@"; do new+=("$(basename "$f")"); done
-    # (the AppImage and its .zsync of an older commit, once this run has uploaded the new ones)
+    # (the AppImage and its .zsync, or the RecompLauncher zip, of an older commit, once this run has uploaded the new ones)
     gh release view nightly --json assets --jq '.assets[].name' | while read -r old; do
-        [[ $old == Hookshot-*-x86_64.AppImage || $old == Hookshot-*-x86_64.AppImage.zsync ]] || continue
+        case $old in
+            Hookshot-*-x86_64.AppImage | Hookshot-*-x86_64.AppImage.zsync) want="Hookshot-.*-x86_64\\.AppImage${old##*.AppImage}" ;;
+            Hookshot-*-Windows-x64.zip) want='Hookshot-.*-Windows-x64\.zip' ;;
+            *) continue ;;
+        esac
         printf '%s\n' "${new[@]}" | grep -qxF "$old" && continue
-        printf '%s\n' "${new[@]}" | grep -qx "Hookshot-.*-x86_64\\.AppImage${old##*.AppImage}" || continue
+        printf '%s\n' "${new[@]}" | grep -qx "$want" || continue
         gh release delete-asset nightly "$old" --yes
     done
     "$(dirname "$0")/release_files.sh" finish nightly "${RELEASE_SUMS_OUT:-}"
