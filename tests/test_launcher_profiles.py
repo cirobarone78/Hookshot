@@ -1,18 +1,24 @@
-"""The Linux launcher's profiles (builder/linux/profiles.py): each one has saves of its own, and a save from an emulator is
-imported into one without losing the saves it had.
+"""The Linux launcher's profiles (builder/linux/profiles.py): each one has saves of its own, which scripts/oot_saves.py
+imports from and exports to an emulator.
 
 python -I -B tests/test_launcher_profiles.py
 """
+import contextlib
 import importlib.util
+import io
 import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("launcher_profiles", ROOT / "builder" / "linux" / "profiles.py")
 profiles = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(profiles)
+spec = importlib.util.spec_from_file_location("oot_saves", ROOT / "scripts" / "oot_saves.py")
+oot_saves = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(oot_saves)
 
 
 def save(folder, slots=2, marker="a"):
@@ -69,34 +75,25 @@ class ProfileTests(unittest.TestCase):
         save(Path(self.user) / "save" / uid)   # (a folder left over: a new profile does not take it)
         self.assertNotEqual(profiles.add(self.user, "Again"), uid)
 
-    def test_an_emulators_save_folder_lists_one_save_for_each_of_its_users(self):
-        emu = self.root / "2026-11-09 save"
-        users = emu / "0000000000000000"
-        first = save(users / "45EB517681BCEAF4B834E0FA511E3212" / "0400486024DEC000", slots=6)
-        second = save(users / "533C42419DD767B01211726DADA4670A" / "0400486024DEC000", slots=6)
-        save(users / "45EB517681BCEAF4B834E0FA511E3212" / "0400C3F00006E000" / "Play")   # (another game's)
-        os.utime(first / "slot_00" / "progress.sav", (2e9, 2e9))
-        self.assertEqual(profiles.find_saves(str(emu)), [str(first), str(second)])
-        self.assertEqual(profiles.find_saves(str(second)), [str(second)])
-        self.assertEqual(profiles.find_saves(str(self.root / "nothing")), [])
-        self.assertTrue(profiles.describe(str(first), str(emu)).startswith(
-            "0000000000000000/45EB517681BCEAF4B834E0FA511E3212/0400486024DEC000  (6 save slots, last saved "))
-
-    def test_an_import_replaces_the_profiles_saves_and_keeps_the_old_ones(self):
+    def test_a_profiles_saves_go_in_and_out_through_oot_saves(self):
+        # (the launchers' Import and Export: scripts/oot_saves.py with --hookshot the profile's save folder)
         uid = profiles.add(self.user, "Link")
-        own = save(Path(self.user) / "save" / uid, slots=1, marker="old")
-        source = save(self.root / "emu" / "0400486024DEC000", slots=3, marker="new")
-        moved = profiles.import_save(str(source), self.user, uid)
-        self.assertEqual((own / "slot_02" / "progress.sav").read_text(), "new")
-        self.assertEqual((Path(moved) / "slot_00" / "progress.sav").read_text(), "old")
-        self.assertTrue((source / "account.sav").exists())   # (the source is copied, not moved)
-        self.assertFalse(os.path.exists(str(own) + ".importing"))
-        other = profiles.add(self.user, "Zelda")
-        self.assertIsNone(profiles.import_save(str(source), self.user, other))   # (no saves before: nothing to keep)
-        with self.assertRaises(ValueError):
-            profiles.import_save(str(own), self.user, uid)
-        with self.assertRaises(ValueError):
-            profiles.import_save(str(self.root), self.user, uid)
+        source = save(self.root / "emu" / "nand" / "user" / "save" / "0000000000000000" / "45EB517681BCEAF4B834E0FA511E3212"
+                      / "0400486024DEC000", slots=3, marker="new")
+        backups = os.path.join(self.user, "save-backups")
+        out = io.StringIO()
+        with mock.patch.object(oot_saves, "running_games", return_value=[]), contextlib.redirect_stdout(out):
+            self.assertEqual(oot_saves.main(["import", "--from", str(self.root / "emu"), "--hookshot",
+                                             profiles.save_dir(self.user, uid), "--backup-dir", backups]), 0)
+            own = Path(profiles.save_dir(self.user, uid))
+            self.assertEqual((own / "slot_02" / "progress.sav").read_text(), "new")   # (a new profile: its folder is made)
+            (own / "slot_00" / "progress.sav").write_text("played")
+            self.assertEqual(oot_saves.main(["export", "--to", str(self.root / "emu"), "--hookshot", str(own),
+                                             "--backup-dir", backups]), 0)
+        self.assertEqual((source / "slot_00" / "progress.sav").read_text(), "played")
+        (backup,) = os.listdir(backups)   # (the emulator's save before the export)
+        self.assertEqual(Path(backups, backup, "slot_00", "progress.sav").read_text(), "new")
+        self.assertEqual(profiles.load(self.user)[1], (uid, "Link"))
 
     def test_open_save_folder_shows_the_profiles_saves_and_makes_no_folder(self):
         uid = profiles.add(self.user, "Link")

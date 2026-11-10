@@ -260,8 +260,6 @@ public partial class MainWindow : Window
     string profileUser = "";
     List<Profiles.Profile> profileList = new();
     string? renaming;   // (the name row renames this profile; null: it adds one)
-    List<string> saveChoices = new();
-    string saveChosenFolder = "";
     bool fillingProfiles;
 
     void ShowProfiles(string id)
@@ -282,6 +280,7 @@ public partial class MainWindow : Window
         var p = CurrentProfile;
         MenuRename.Content = $"Rename {p.Name}…";
         MenuImport.Content = $"Import a save into {p.Name}…";
+        MenuExport.Content = $"Export {p.Name}'s save…";
         MenuFolder.Content = $"Open {p.Name}'s save folder";
         MenuRemove.Content = p.Id == Profiles.Default ? "The default profile cannot be removed" : $"Remove {p.Name}…";
         MenuRemove.IsEnabled = p.Id != Profiles.Default;
@@ -305,7 +304,6 @@ public partial class MainWindow : Window
     {
         ProfileMenu.IsOpen = false;
         ProfileNameRow.Visibility = Visibility.Collapsed;
-        SaveChoiceRow.Visibility = Visibility.Collapsed;
     }
 
     void ShowNameRow(string? id, string name, string button)
@@ -342,7 +340,7 @@ public partial class MainWindow : Window
             else
             {
                 ShowProfiles(Profiles.Add(profileUser, ProfileName.Text));
-                ProfileNote.Text = $"{CurrentProfile.Name} has no saves yet: the game starts at an empty file select. Import save… brings one in.";
+                ProfileNote.Text = $"{CurrentProfile.Name} has no saves yet: the game starts at an empty file select. Manage, Import a save brings one in.";
             }
             ProfileRowsCancel(null, null);
         }
@@ -356,6 +354,12 @@ public partial class MainWindow : Window
         if (p.Id == Profiles.Default)
         {
             MessageBox.Show(this, $"{p.Name} is the default profile and cannot be removed: the game plays it when it is started without the launcher.", "Hookshot");
+            return;
+        }
+        // (the game still running on these saves writes them out again at its next save)
+        if (Process.GetProcessesByName("hookshot").Length > 0)
+        {
+            MessageBox.Show(this, "Close Hookshot first: the game, still running, can write the saves again.", "Hookshot");
             return;
         }
         var backups = System.IO.Path.Combine(profileUser, "save-backups");
@@ -378,51 +382,61 @@ public partial class MainWindow : Window
         else MessageBox.Show(this, $"There are no saves yet: the game makes {profileUser} at its first start.", "Hookshot");
     }
 
-    void ProfileImportClick(object sender, RoutedEventArgs e)
+    void ProfileImportClick(object sender, RoutedEventArgs e) => CopyProfileSaves("import");
+
+    void ProfileExportClick(object sender, RoutedEventArgs e) => CopyProfileSaves("export");
+
+    /// import: an emulator's save (or a save's folder) into the profile; export: the profile's save to an emulator. The copy is
+    /// scripts\oot_saves.py's (docs/saves.md), with the profile's save folder as Hookshot's side: it copies only the save's
+    /// files, refuses while a game runs and backs up the side it overwrites, to save-backups here
+    void CopyProfileSaves(string command)
     {
         ProfileRowsCancel(null, null);
-        if (PickFolder("The save to import: its folder, or an emulator's save folder") is not { } chosen) return;
-        var found = Profiles.FindSaves(chosen);
-        if (found.Count == 0)
-        {
-            MessageBox.Show(this, $"No save of Ocarina of Time in {chosen}.\n\nChoose the folder with account.sav, option.sav and slot_00 to " +
-                                  "slot_05 in it, or an emulator's save folder.", "Hookshot");
-            return;
-        }
-        if (found.Count == 1)
-        {
-            ImportSave(found[0], chosen);
-            return;
-        }
-        // (an emulator's save folder: one save for each of its users. The row asks which)
-        saveChoices = found;
-        saveChosenFolder = chosen;
-        SaveChoiceText.Text = $"{chosen} has {found.Count} saves of the game. Which one goes into {CurrentProfile.Name}?";
-        SaveChoice.ItemsSource = found.Select(f => Profiles.Describe(f, chosen)).ToList();
-        SaveChoice.SelectedIndex = 0;
-        SaveChoiceRow.Visibility = Visibility.Visible;
-    }
-
-    void SaveChoiceOkClick(object sender, RoutedEventArgs e)
-    {
-        var i = SaveChoice.SelectedIndex;
-        ProfileRowsCancel(null, null);
-        if (i >= 0 && i < saveChoices.Count) ImportSave(saveChoices[i], saveChosenFolder);
-    }
-
-    void ImportSave(string source, string chosen)
-    {
         var p = CurrentProfile;
+        var saves = Profiles.SaveDir(profileUser, p.Id);
         var backups = System.IO.Path.Combine(profileUser, "save-backups");
-        if (MessageBox.Show(this, $"Import this save into the profile {p.Name}?\n\n{Profiles.Describe(source, chosen)}\n\n" +
-                                  $"The profile's saves now, if it has any, are moved to {backups} first.", "Hookshot",
-                            MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+        var import = command == "import";
+        if (!import && !Directory.Exists(saves))
+        {
+            MessageBox.Show(this, $"{p.Name} has no saves yet: nothing to export.", "Hookshot");
+            return;
+        }
+        if (PickFolder(import ? "The save to import: its folder, or an emulator's data or save folder"
+                              : "Where the save goes: an emulator's data or save folder (start the game there once and save first)") is not { } chosen) return;
+        var ask = import ? $"Import the save in {chosen} into the profile {p.Name}?\n\nThe profile's saves now, if it has any, are copied to {backups} first."
+                         : $"Export {p.Name}'s save to {chosen}?\n\nThe save there is copied to {backups} first.";
+        if (MessageBox.Show(this, ask, "Hookshot", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+        if (Tools.Find() is not { } tools)
+        {
+            MessageBox.Show(this, "The builder's tools are missing, and with them the save copier (scripts\\oot_saves.py). Install Hookshot Builder again.", "Hookshot");
+            return;
+        }
+        var si = new ProcessStartInfo(tools.Python)
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding = System.Text.Encoding.UTF8, StandardErrorEncoding = System.Text.Encoding.UTF8,
+        };
+        foreach (var a in tools.PythonArgs ?? Array.Empty<string>()) si.ArgumentList.Add(a);
+        foreach (var a in new[] { "-I", "-X", "utf8", System.IO.Path.Combine(tools.Root, "scripts", "oot_saves.py"), command,
+                                  import ? "--from" : "--to", chosen, "--hookshot", saves, "--backup-dir", backups })
+            si.ArgumentList.Add(a);
         try
         {
-            var moved = Profiles.Import(source, profileUser, p.Id);
-            ProfileNote.Text = $"Imported into {p.Name}." + (moved != null ? $" Its saves before are in {moved}" : "");
+            using var proc = Process.Start(si)!;
+            var err = proc.StandardError.ReadToEndAsync();
+            var lines = proc.StandardOutput.ReadToEnd().Trim().Split('\n');
+            proc.WaitForExit();
+            if (proc.ExitCode != 0)
+            {
+                var text = err.Result.Trim();
+                MessageBox.Show(this, text.StartsWith("error: ") ? text[7..] : text.Length > 0 ? text : "The copy failed.", "Hookshot");
+                return;
+            }
+            var done = lines[^1].Trim();   // (where the backup went)
+            if (done.StartsWith("Done.")) done = done[5..].Trim();
+            ProfileNote.Text = (import ? $"Imported into {p.Name}." : $"Exported from {p.Name}.") + (done.Length > 0 ? " " + done : "");
         }
-        catch (Exception x) when (x is IOException or UnauthorizedAccessException or ArgumentException) { ProfileError(x); }
+        catch (System.ComponentModel.Win32Exception x) { MessageBox.Show(this, $"Python did not start ({tools.Python}): {x.Message}", "Hookshot"); }
     }
 
     // ---- what the player chose last time (BuilderSettings.cs): builder-settings.json beside the versions ----

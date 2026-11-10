@@ -27,6 +27,28 @@ value_of() {
     printf '%s\n' "$value"
 }
 
+# The folder the game keeps its saves in, as builder/linux/profiles.py's user_dir finds it: user beside the game while it
+# holds something, else $XDG_DATA_HOME/hookshot or ~/.local/share/hookshot
+user_dir() {
+    if [ -n "$(ls -A "$1/user" 2>/dev/null)" ]; then
+        printf '%s\n' "$1/user"
+        return
+    fi
+    case ${XDG_DATA_HOME:-} in /*) printf '%s\n' "$XDG_DATA_HOME/hookshot"; return ;; esac
+    case ${HOME:-} in /*) printf '%s\n' "$HOME/.local/share/hookshot"; return ;; esac
+    printf '%s\n' "$1/user"
+}
+
+# whether the profile $1 is on the launcher's list, profiles.txt in the user folder $2 (ids in any case, as profiles.py reads them)
+listed() {
+    [ -f "$2/profiles.txt" ] || return 1
+    want=$(printf '%s' "$1" | tr 'A-F' 'a-f')
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ "$(printf '%s' "${line%% *}" | tr 'A-F' 'a-f')" = "$want" ] && return 0
+    done < "$2/profiles.txt"
+    return 1
+}
+
 ready() {
     [ -n "${1:-}" ] && [ -f "$1/image.bin" ] && { [ -x "$1/bin/hookshot" ] || [ -f "$1/hookshot" ]; }
 }
@@ -53,6 +75,12 @@ if ! ready "$folder"; then
         fi
     fi
     exit 1
+fi
+
+# (a profile removed since it was chosen is not played: the game would start it on an empty save folder of its own. The
+# default profile, as the launcher's Play does)
+if [ -n "$profile" ] && ! listed "$profile" "$(user_dir "$folder")"; then
+    profile=
 fi
 
 # The AppImage runtime and the builder put their own libraries on the search path. The game loads

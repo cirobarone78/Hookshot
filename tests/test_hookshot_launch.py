@@ -78,10 +78,25 @@ class LaunchTests(unittest.TestCase):
             game(folder)
             ini = root / "builder.ini"
             profile = "5a3c9e1f0b7d24680000000000000002"
+            data = root / "data"
+            (data / "hookshot").mkdir(parents=True)
+            (data / "hookshot" / "profiles.txt").write_text("# list\n%s Link\n" % profile.upper(), encoding="utf-8")
             ini.write_text("out=%s\nprofile=%s\n" % (folder, profile), encoding="utf-8")
-            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), HOOKSHOT_PROFILE="stale"),
+            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), HOOKSHOT_PROFILE="stale",
+                                                             XDG_DATA_HOME=str(data)),
                                  text=True, capture_output=True, check=False)
             self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertIn("HOOKSHOT_PROFILE=%s" % profile, ran.stdout.splitlines())
+            # (removed from the list since: the default profile, not an empty save folder of the removed one)
+            (data / "hookshot" / "profiles.txt").write_text("# list\n", encoding="utf-8")
+            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), XDG_DATA_HOME=str(data)),
+                                 text=True, capture_output=True, check=False)
+            self.assertIn("HOOKSHOT_PROFILE=UNSET", ran.stdout.splitlines())
+            # (a user folder beside the game, which the game has not moved yet, is the one with the list)
+            (folder / "user").mkdir()
+            (folder / "user" / "profiles.txt").write_text("%s Link\n" % profile, encoding="utf-8")
+            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), XDG_DATA_HOME=str(data)),
+                                 text=True, capture_output=True, check=False)
             self.assertIn("HOOKSHOT_PROFILE=%s" % profile, ran.stdout.splitlines())
             ini.write_text("out=%s\n" % folder, encoding="utf-8")
             ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), HOOKSHOT_PROFILE="stale"),

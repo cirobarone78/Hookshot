@@ -153,17 +153,19 @@ with `--update <game folder>`.
 
 </details>
 
-### Profiles and imported saves
+### Profiles, and saves from emulators
 
 The launcher (`hookshot.exe` on Windows, `hookshot` on Linux) has a **Profile** choice above **Play**. Each profile has
 saves of its own; **Play** starts the game with the one chosen. **New profile** makes one, which starts at an empty
-file select. **Manage** renames the chosen profile, imports a save into it, opens its save folder, or removes it.
-Removing a profile does not delete its saves: they are moved to `save-backups` in the saves folder.
+file select. **Manage** renames the chosen profile, imports a save into it, exports its save, opens its save folder,
+or removes it. Removing a profile does not delete its saves: they are moved to `save-backups` in the saves folder.
 
-**Import a save** copies a save from a console or an emulator into the chosen profile. Choose the save's folder (the
-one with `account.sav`, `option.sav` and `slot_00` to `slot_05` in it) or an emulator's whole save folder; when it
-holds saves of several users, the launcher asks which one. The source is only read. The profile's saves before the
-import are moved to `save-backups` first.
+**Import a save** copies a save from an emulator (or a save's own folder: `account.sav` and `slot_*`) into the chosen
+profile; **Export** copies the profile's save to an emulator. Choose the emulator's data folder, a portable `user`
+folder, or the save folder itself. The copy is the one [Using a save from an emulator](docs/saves.md) describes
+(`scripts/oot_saves.py`): only the save's files are copied, nothing is copied while a game or emulator runs, and the
+save being replaced is copied to `save-backups` first. When the emulator has saves for several of its users, choose
+that user's save folder.
 
 The default profile, first on the list and marked "(default)", has the saves from before profiles; it is called
 "Player" until you rename it. The game plays it when it is started without the launcher, so it cannot be removed. Profiles are kept in `profiles.txt` in the saves folder (the `user` folder in the game folder on Windows,

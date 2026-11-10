@@ -55,6 +55,13 @@ Eden's save path, under that data folder: `nand/user/save/0000000000000000/<prof
 - Not listed: Ryujinx and its forks (Ryubing, ...) do not run Switch 2 games. Any other program that keeps these files
   works through `--from`/`--to` with the folder that holds them.
 
+## Copy from Hookshot's launcher
+
+The launcher's **Manage** menu imports a save into the chosen profile and exports the profile's save
+([profiles](../readme.md#profiles-and-saves-from-emulators)). It runs the script below with `--hookshot` set to that
+profile's save folder and `--backup-dir` to `save-backups` in Hookshot's saves folder; a new profile's empty save folder
+is filled by an import.
+
 ## Copy with the script
 
 `scripts/oot_saves.py` (Python 3, nothing to install) copies the slots, `account.sav` and `option.sav` one way, after

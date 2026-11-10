@@ -10,18 +10,16 @@ namespace HookshotBuilder;
 // every build had before profiles, so its saves stay where they were. The list is profiles.txt in the user folder, one
 // "<id> <name>" a line. An id is 32 hex digits, the save folder's name (host/nn_fs.c).
 //
-// A save from a console or an emulator is imported into a profile: the folder of the game's save data (account.sav,
-// option.sav, slot_00 ... slot_05) is copied over the profile's. The profile's saves before it are kept in
-// save-backups\<id>-<time> in the user folder. Removing a profile moves its saves there too: nothing is deleted.
+// A profile's saves are imported from and exported to the emulators by scripts\oot_saves.py (docs/saves.md), with its
+// --hookshot naming the profile's save folder (SaveDir). Removing a profile moves its saves to save-backups\<id>-<time> in
+// the user folder: nothing is deleted.
 public static class Profiles
 {
     public const string Default = "5a3c9e1f0b7d24680000000000000001";   // (the uid host/nn_applet.c always had)
     const string Prefix = "5a3c9e1f0b7d2468";
-    const string Title = "0400486024dec000";   // (the game's program id: an emulator keeps its saves in a folder of that name)
     const string ListName = "profiles.txt";
     public const int NameMax = 32;
     static readonly Regex Id = new("^[0-9a-f]{32}$");
-    static readonly Regex Slot = new("^slot_[0-9]{2}$", RegexOptions.IgnoreCase);
 
     public sealed record Profile(string Id, string Name);
 
@@ -115,15 +113,18 @@ public static class Profiles
         Store(user, list.Select(p => p.Id == id ? p with { Name = clean } : p));
     }
 
+    /// The profile's saves: save\<id>, as host/nn_fs.c names it
+    public static string SaveDir(string user, string id) => Path.Combine(user, "save", id);
+
     /// The folder "Open save folder" shows: the profile's saves, or the nearest folder above them that is there. None is
     /// made: an empty save folder would read to the game as a save that exists.
     public static string? FolderToShow(string user, string id) =>
-        new[] { Path.Combine(user, "save", id), Path.Combine(user, "save"), user }.FirstOrDefault(Directory.Exists);
+        new[] { SaveDir(user, id), Path.Combine(user, "save"), user }.FirstOrDefault(Directory.Exists);
 
     /// Moves the profile's save folder to save-backups; returns where, or null when there were no saves
     static string? Backup(string user, string id)
     {
-        var saves = Path.Combine(user, "save", id);
+        var saves = SaveDir(user, id);
         if (!Directory.Exists(saves)) return null;
         if (!Directory.EnumerateFileSystemEntries(saves).Any())
         {
@@ -146,112 +147,6 @@ public static class Profiles
             throw new ArgumentException("The default profile cannot be removed: the game plays it when it is started without the launcher.");
         var moved = Backup(user, id);
         Store(user, Load(user).Where(p => p.Id != id));
-        return moved;
-    }
-
-    /// A folder of the game's save data: account.sav, option.sav or slot_NN in it
-    public static bool IsSave(string path)
-    {
-        try
-        {
-            foreach (var e in Directory.EnumerateFileSystemEntries(path))
-            {
-                var name = Path.GetFileName(e);
-                if (name.Equals("account.sav", StringComparison.OrdinalIgnoreCase) || name.Equals("option.sav", StringComparison.OrdinalIgnoreCase)
-                    || (Slot.IsMatch(name) && Directory.Exists(e)))
-                    return true;
-            }
-        }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-        return false;
-    }
-
-    /// The game's save folders in what the player chose: the save folder itself, or an emulator's save folder
-    /// (save\0000000000000000\(user)\0400486024DEC000), one for each user it has. The newest first.
-    public static List<string> FindSaves(string path, int depth = 6)
-    {
-        if (IsSave(path)) return new List<string> { path };
-        var found = new List<string>();
-        void Walk(string dir, int level)
-        {
-            IEnumerable<string> subs;
-            try { subs = Directory.EnumerateDirectories(dir).ToList(); }
-            catch (IOException) { return; }
-            catch (UnauthorizedAccessException) { return; }
-            foreach (var sub in subs)
-            {
-                if (new DirectoryInfo(sub).LinkTarget != null) continue;
-                if (Path.GetFileName(sub).Equals(Title, StringComparison.OrdinalIgnoreCase) && IsSave(sub)) found.Add(sub);
-                else if (level + 1 < depth) Walk(sub, level + 1);
-            }
-        }
-        Walk(path, 0);
-        return found.OrderByDescending(LastSaved).ToList();
-    }
-
-    public static DateTime LastSaved(string path)
-    {
-        var newest = DateTime.MinValue;
-        try
-        {
-            foreach (var f in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
-                if (File.GetLastWriteTime(f) is var t && t > newest) newest = t;
-        }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-        return newest;
-    }
-
-    /// One line for a save folder: where it is under the folder the player chose, how many save slots, when last saved
-    public static string Describe(string path, string chosen)
-    {
-        var where = Path.GetRelativePath(chosen, path);
-        if (where == ".") where = Path.GetFileName(Path.TrimEndingDirectorySeparator(path)) is { Length: > 0 } n ? n : path;
-        var slots = 0;
-        try
-        {
-            slots = Directory.EnumerateDirectories(path).Count(d => Slot.IsMatch(Path.GetFileName(d)) && Directory.EnumerateFileSystemEntries(d).Any());
-        }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-        var saved = LastSaved(path);
-        var when = saved == DateTime.MinValue ? "never" : saved.ToString("yyyy-MM-dd HH:mm");
-        return $"{where}  ({slots} save slot{(slots == 1 ? "" : "s")}, last saved {when})";
-    }
-
-    static void CopyTree(string from, string to)
-    {
-        Directory.CreateDirectory(to);
-        foreach (var f in Directory.EnumerateFiles(from)) File.Copy(f, Path.Combine(to, Path.GetFileName(f)));
-        foreach (var d in Directory.EnumerateDirectories(from)) CopyTree(d, Path.Combine(to, Path.GetFileName(d)));
-    }
-
-    static bool Within(string path, string root) =>
-        path.Equals(root, StringComparison.OrdinalIgnoreCase) ||
-        path.StartsWith(root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
-
-    /// Copies the save folder src over the profile's saves. The profile's saves before it go to save-backups: returns where,
-    /// or null when it had none. A failed copy leaves the profile's saves as they were.
-    public static string? Import(string src, string user, string id)
-    {
-        if (!IsSave(src))
-            throw new ArgumentException($"{src} has none of the game's save files (account.sav, option.sav, slot_00 ...).");
-        var saves = Path.Combine(user, "save", id);
-        var fullSrc = Path.GetFullPath(src);
-        var fullSaves = Path.GetFullPath(saves);
-        if (Within(fullSrc, fullSaves) || Within(fullSaves, fullSrc)) throw new ArgumentException("These are the profile's own saves.");
-        Directory.CreateDirectory(Path.GetDirectoryName(saves)!);
-        var staging = saves + ".importing";
-        if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
-        try { CopyTree(src, staging); }
-        catch
-        {
-            try { Directory.Delete(staging, recursive: true); } catch (Exception) { }
-            throw;
-        }
-        var moved = Backup(user, id);
-        Directory.Move(staging, saves);
         return moved;
     }
 }

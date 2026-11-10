@@ -1,5 +1,5 @@
-// The Windows launcher's profiles (builder/HookshotBuilder/Profiles.cs): each one has saves of its own, a save from an
-// emulator is imported into one without losing the saves it had, and profiles.txt reads as the Linux launcher writes it
+// The Windows launcher's profiles (builder/HookshotBuilder/Profiles.cs): each one has saves of its own, a removed one keeps
+// them, and profiles.txt reads as the Linux launcher writes it
 // (builder/linux/profiles.py, tests/test_launcher_profiles.py).
 //
 //     dotnet run --project tests/launcher_profiles/LauncherProfilesTests.csproj
@@ -111,30 +111,7 @@ static class Program
         Save(Path.Combine(user, "save", "5a3c9e1f0b7d24680000000000000002"));
         Require(Profiles.Add(user, "Again") == "5a3c9e1f0b7d24680000000000000003", "A new profile took a folder that has saves.");
 
-        // an emulator's save folder lists one save for each of its users, the newest first
-        var emu = Path.Combine(root, "2026-11-09 save");
-        var users = Path.Combine(emu, "0000000000000000");
-        var older = Save(Path.Combine(users, "45EB517681BCEAF4B834E0FA511E3212", "0400486024DEC000"), slots: 6);
-        var newer = Save(Path.Combine(users, "533C42419DD767B01211726DADA4670A", "0400486024DEC000"), slots: 6, marker: "new");
-        Save(Path.Combine(users, "45EB517681BCEAF4B834E0FA511E3212", "0400C3F00006E000", "Play"));   // (another game's)
-        foreach (var f in Directory.EnumerateFiles(older, "*", SearchOption.AllDirectories)) File.SetLastWriteTime(f, new DateTime(2026, 11, 8, 22, 25, 0));
-        var found = Profiles.FindSaves(emu);
-        Require(found.SequenceEqual(new[] { newer, older }), "The emulator's two saves were not found, newest first.");
-        Require(Profiles.FindSaves(newer).SequenceEqual(new[] { newer }), "A save folder chosen itself was not found.");
-        Require(Profiles.FindSaves(Path.Combine(root, "nothing")).Count == 0, "A save was found where there is none.");
-        var line = Profiles.Describe(older, emu);
-        Require(line == Path.Combine("0000000000000000", "45EB517681BCEAF4B834E0FA511E3212", "0400486024DEC000") +
-                        "  (6 save slots, last saved 2026-11-08 22:25)", "The save's line reads: " + line);
-
-        // an import replaces the profile's saves and keeps the old ones; the source is only read
-        var own = Save(Path.Combine(user, "save", a), slots: 1, marker: "old");
-        moved = Profiles.Import(newer, user, a);
-        Require(File.ReadAllText(Path.Combine(own, "slot_05", "progress.sav")) == "new", "The import did not bring the save in.");
-        Require(moved != null && File.ReadAllText(Path.Combine(moved, "slot_00", "progress.sav")) == "old", "The profile's saves before were not kept.");
-        Require(File.Exists(Path.Combine(newer, "account.sav")), "The import moved the source.");
-        Require(!Directory.Exists(own + ".importing"), "The import left its staging folder.");
-        Require(Profiles.Import(newer, user, b) == null, "A profile with no saves kept a backup.");
-        Throws<ArgumentException>(() => Profiles.Import(own, user, a), "A profile's own saves were imported into it.");
-        Throws<ArgumentException>(() => Profiles.Import(root, user, a), "A folder with no save was imported.");
+        // the folder Import and Export give scripts\oot_saves.py as Hookshot's side (--hookshot)
+        Require(Profiles.SaveDir(user, b) == Path.Combine(user, "save", b), "The profile's save folder is not save\\<id>.");
     }
 }

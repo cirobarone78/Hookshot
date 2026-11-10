@@ -8,6 +8,8 @@ with the compiler, sysroot and libraries it brings in the environment.
                                             release is out
     hookshot_builder.py --update <folder>   download the new release (only parts that changed) and build the folder again
 """
+import contextlib
+import io
 import os
 import queue
 import re
@@ -25,8 +27,10 @@ ROOT = os.environ.get("HOOKSHOT_TOOLS") or os.path.dirname(os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
 sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import linux_update  # noqa: E402  (the release check and the part download)
-import profiles  # noqa: E402  (the launcher's profiles and save import)
+import profiles  # noqa: E402  (the launcher's profiles)
+import oot_saves  # noqa: E402  (a profile's saves in and out: the copy docs/saves.md describes)
 import make_game  # noqa: E402  (LANGUAGES, BUILD_ID)
 import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
 
@@ -418,7 +422,8 @@ class Builder(tk.Tk):
         menu = self.profile_menu
         menu.delete(0, "end")
         menu.add_command(label="Rename %s..." % name, command=self.rename_profile)
-        menu.add_command(label="Import a save into %s..." % name, command=self.import_profile_save)
+        menu.add_command(label="Import a save into %s..." % name, command=lambda: self.copy_profile_saves("import"))
+        menu.add_command(label="Export %s's save..." % name, command=lambda: self.copy_profile_saves("export"))
         menu.add_command(label="Open %s's save folder" % name, command=self.open_profile_folder)
         menu.add_separator()
         if uid == profiles.DEFAULT:
@@ -455,7 +460,7 @@ class Builder(tk.Tk):
         except (OSError, ValueError) as error:
             return self.profile_error(error)
         self.show_profiles(uid)
-        self.profile_note.set("%s has no saves yet: the game starts at an empty file select. Import save... brings one in."
+        self.profile_note.set("%s has no saves yet: the game starts at an empty file select. Manage, Import a save brings one in."
                               % profiles.clean_name(name))
 
     def rename_profile(self):
@@ -475,6 +480,8 @@ class Builder(tk.Tk):
         if uid == profiles.DEFAULT:
             return self.profile_error("%s is the default profile and cannot be removed: the game plays it when it is started "
                                       "without the launcher." % name)
+        if "Hookshot" in oot_saves.running_games():   # (the game still running on these saves writes them out again)
+            return self.profile_error("Close Hookshot first: the game, still running, can write the saves again.")
         if not messagebox.askyesno("Hookshot", "Remove the profile %s?\n\nIts saves are not deleted: they are moved to %s."
                                    % (name, os.path.join(self.user, "save-backups")), parent=self):
             return
@@ -491,55 +498,34 @@ class Builder(tk.Tk):
             return self.profile_error("There are no saves yet: the game makes %s at its first start." % self.user)
         subprocess.Popen(["xdg-open", path])
 
-    def import_profile_save(self):
-        chosen = filedialog.askdirectory(parent=self, initialdir=os.path.expanduser("~"),
-                                         title="The save to import: its folder, or an emulator's save folder")
+    def copy_profile_saves(self, command):
+        """import: an emulator's save (or a save's folder) into the profile; export: the profile's save to an emulator. The
+        copy is scripts/oot_saves.py's, with the profile's save folder as Hookshot's side: it copies only the save's files,
+        refuses while a game runs and backs up the side it overwrites, to save-backups here"""
+        uid, name = self.current_profile()
+        saves = profiles.save_dir(self.user, uid)
+        backups = os.path.join(self.user, "save-backups")
+        if command == "export" and not os.path.isdir(saves):
+            return self.profile_error("%s has no saves yet: nothing to export." % name)
+        what = "The save to import: its folder, or an emulator's data or save folder" if command == "import" else \
+            "Where the save goes: an emulator's data or save folder (start the game there once and save first)"
+        chosen = filedialog.askdirectory(parent=self, initialdir=os.path.expanduser("~"), title=what)
         if not chosen:
             return
-        found = profiles.find_saves(chosen)
-        if not found:
-            return self.profile_error("No save of Ocarina of Time in %s.\n\nChoose the folder with account.sav, option.sav and "
-                                      "slot_00 to slot_05 in it, or an emulator's save folder." % chosen)
-        source = found[0] if len(found) == 1 else self.choose_save(found, chosen)
-        if not source:
+        ask = ("Import the save in %s into the profile %s?\n\nThe profile's saves now, if it has any, are copied to %s first."
+               % (chosen, name, backups)) if command == "import" else \
+              ("Export %s's save to %s?\n\nThe save there is copied to %s first." % (name, chosen, backups))
+        if not messagebox.askyesno("Hookshot", ask, parent=self):
             return
-        uid, name = self.current_profile()
-        if not messagebox.askyesno("Hookshot", "Import this save into the profile %s?\n\n%s\n\nThe profile's saves now, if it "
-                                   "has any, are moved to %s first." % (name, profiles.describe(source, chosen),
-                                                                        os.path.join(self.user, "save-backups")), parent=self):
-            return
-        try:
-            moved = profiles.import_save(source, self.user, uid)
-        except (OSError, ValueError) as error:
-            return self.profile_error(error)
-        self.profile_note.set("Imported into %s.%s" % (name, " Its saves before are in %s" % moved if moved else ""))
-
-    def choose_save(self, found, chosen):
-        """the save to import when the folder has more than one (an emulator's, one for each of its users)"""
-        win = tk.Toplevel(self)
-        win.title("Choose a save")
-        win.transient(self)
-        ttk.Label(win, text="%s has %d saves of the game. Which one?" % (chosen, len(found)), wraplength=self.px(560)).pack(
-            anchor="w", **self.pad)
-        lines = tk.Listbox(win, height=min(len(found), 8), width=90, exportselection=False)
-        for path in found:
-            lines.insert("end", profiles.describe(path, chosen))
-        lines.selection_set(0)
-        lines.pack(fill="both", expand=True, **self.pad)
-        picked = []
-
-        def done(ok):
-            if ok and lines.curselection():
-                picked.append(found[lines.curselection()[0]])
-            win.destroy()
-        buttons = ttk.Frame(win)
-        buttons.pack(anchor="e", **self.pad)
-        ttk.Button(buttons, text="Import", command=lambda: done(True)).pack(side="right", padx=self.px(4))
-        ttk.Button(buttons, text="Cancel", command=lambda: done(False)).pack(side="right", padx=self.px(4))
-        lines.bind("<Double-Button-1>", lambda event: done(True))
-        win.grab_set()
-        self.wait_window(win)
-        return picked[0] if picked else None
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = oot_saves.main([command, "--from" if command == "import" else "--to", chosen, "--hookshot", saves,
+                                   "--backup-dir", backups])
+        if code:
+            return self.profile_error(err.getvalue().strip().removeprefix("error: ") or "The copy failed.")
+        done = (out.getvalue().strip().splitlines() or [""])[-1].removeprefix("Done.").strip()   # (where the backup went)
+        self.profile_note.set("%s %s.%s" % ("Imported into" if command == "import" else "Exported from", name,
+                                            " " + done if done else ""))
 
     def begin_update(self, folder=None):
         if folder is not None:

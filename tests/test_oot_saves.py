@@ -324,6 +324,44 @@ class Copy(Case):
         self.assertEqual(code, 1)
         self.assertEqual(tree(self.li), before)
 
+    def test_into_a_new_launcher_profile(self):
+        # (a profile Hookshot's launcher added has no save folder yet: an import makes it; an export from it has nothing)
+        new = self.data / "hookshot" / "save" / ("5a3c9e1f0b7d2468" + "0" * 15 + "2")
+        code, out, err = self.run_main("import", "lichii", "--hookshot", str(new))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tree(new), tree(self.li))
+        self.assertEqual(self.backup_dirs(), [])
+        other = new.parent / ("5a3c9e1f0b7d2468" + "0" * 15 + "3")
+        code, out, err = self.run_main("export", "lichii", "--hookshot", str(other))
+        self.assertEqual(code, 1)
+        self.assertFalse(other.exists())
+        code, out, err = self.run_main("import", "lichii", "--hookshot", str(self.tmp / "save-not" / UID))
+        self.assertEqual(code, 1)   # (only a folder of Hookshot's layout, save/<id>, may be one that has no save)
+
+    def test_empty_file_refused(self):
+        (self.li / "slot_00" / "progress.sav").write_bytes(b"")
+        before = tree(self.hs)
+        code, out, err = self.run_main("import", "lichii")
+        self.assertEqual(code, 1)
+        self.assertIn("is empty", err)
+        self.assertEqual(tree(self.hs), before)
+
+    def test_failed_copy_puts_the_target_back(self):
+        before = tree(self.hs)
+        real = oot.shutil.copy2
+        calls = []
+
+        def fail_once(*a, **k):   # (the first loose file, after the slots were replaced)
+            calls.append(a)
+            if len(calls) == 1:
+                raise OSError("disk full")
+            return real(*a, **k)
+        with mock.patch.object(oot.shutil, "copy2", fail_once):
+            code, out, err = self.run_main("import", "lichii")
+        self.assertEqual(code, 1)
+        self.assertIn("as it was before", err)
+        self.assertEqual(tree(self.hs), before)
+
 
 class NX2navi(Case):
     def setUp(self):
@@ -396,7 +434,8 @@ class Guard(Case):
     def test_linux_processes_and_appimages(self):
         real = self.real()
         procs = {"10": ("orchid", "/opt/orchid/orchid"), "11": ("AppRun", "/home/x/eglantine-linux-x86_64.AppImage"),
-                 "12": ("ocarina", "./ocarina"), "13": ("bash", "/bin/bash")}
+                 "12": ("ocarina", "./ocarina"), "13": ("bash", "/bin/bash"),
+                 "14": ("Hookshot-2.0.1", "/home/x/Hookshot-2.0.11-x86_64.AppImage")}
 
         def fake_open(path, *a, **k):
             pid, what = path.split("/")[2:4]
@@ -406,7 +445,11 @@ class Guard(Case):
         with mock.patch.object(real, "WINDOWS", False), \
              mock.patch.object(real.os, "listdir", return_value=list(procs) + ["self"]), \
              mock.patch("builtins.open", fake_open):
-            self.assertEqual(real.running_games(), ["NX2navi", "Orchid", "PokeDinner or Eglantine"])
+            with mock.patch.dict(os.environ, {"APPIMAGE": ""}):
+                self.assertEqual(real.running_games(), ["Hookshot", "NX2navi", "Orchid", "PokeDinner or Eglantine"])
+            # (Hookshot's launcher runs this from its AppImage: that AppImage's runtime is not a game)
+            with mock.patch.dict(os.environ, {"APPIMAGE": "/tmp/.mount/../home/x/Hookshot-2.0.11-x86_64.AppImage"}):
+                self.assertEqual(real.running_games(), ["NX2navi", "Orchid", "PokeDinner or Eglantine"])
 
 
 if __name__ == "__main__":

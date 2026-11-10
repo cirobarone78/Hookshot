@@ -46,6 +46,8 @@ printf '%s
 ' "$VERSION" > "$T/VERSION"   # (no git history in here: nx2/version.py reads the release name from it)
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
 cp -a builder/linux "$T/builder/"
+mkdir -p "$T/scripts"
+cp -a scripts/oot_saves.py "$T/scripts/"   # (the launcher's save Import and Export: builder/linux/hookshot_builder.py)
 cp -a gpu/render/*.h "$T/gpu/render/"
 # (every gpu/vk header the host's sources include: v2.0.6 shipped without oot_cheat_items.h and no Linux build finished, issue 990.
 # tests/test_appimage_headers.py checks that this covers what host/ includes)

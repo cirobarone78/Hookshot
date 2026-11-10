@@ -13,13 +13,15 @@ lichii). --from/--to name the other side's folder instead of where it is looked 
 with account.sav and slot_*), or a folder above it (an emulator's data folder, a portable user folder, NX2navi's game
 folder), which is searched for the game's saves. --hookshot DIR does the same for Hookshot's side: its data folder
 (Linux: $XDG_DATA_HOME/hookshot, default ~/.local/share/hookshot) or, on Windows, its game folder (the one with
-image.bin and user\\), which has to be given there. The side being overwritten is copied first to
+image.bin and user\\), which has to be given there; or one profile's save folder in it (save/<id>), which an import fills
+even before it holds a save (a new profile of Hookshot's launcher). The side being overwritten is copied first to
 <backup>/<import or export>-<name>-<YYYYmmdd-HHMMSS> (Linux: $XDG_DATA_HOME/oot-save-backups, Windows:
 %LOCALAPPDATA%\\Hookshot\\oot-save-backups; --backup-dir changes it). Close every game first: --force skips that check.
 Standard library only; the guide is docs/saves.md.
 """
 import argparse
 import collections
+import contextlib
 import datetime
 import os
 import re
@@ -211,6 +213,9 @@ def running_games():
                 names.add(known[image[:-4]])
         return sorted(names)
     appimage = re.compile(r"^(%s)[-_.].*\.appimage$" % "|".join(map(re.escape, known)))
+    # (the AppImage this runs from, when the Hookshot launcher in it runs this script: its runtime is a process named after
+    # it, the launcher's own, not a game)
+    own = os.path.basename(os.environ.get("APPIMAGE", "")).lower()
     for pid in filter(str.isdigit, os.listdir("/proc")):
         try:
             with open("/proc/%s/cmdline" % pid, "rb") as f:
@@ -218,6 +223,8 @@ def running_games():
             with open("/proc/%s/comm" % pid, encoding="utf-8", errors="replace") as f:
                 comm = f.read().strip()
         except OSError:
+            continue
+        if own and os.path.basename(argv0).lower() == own:
             continue
         for candidate in (comm, os.path.basename(argv0)):
             low = candidate.lower()
@@ -292,6 +299,31 @@ def refuse_links(path):
                 raise Fail("%s is a link: a save holds only files and folders, so nothing was copied" % os.path.join(root, n))
 
 
+def empty_files(path):
+    """the save's files of no bytes: a save cut short (a copy that failed, a full disk) that would replace a good one"""
+    out = []
+    for f in ("account.sav", "option.sav"):
+        if os.path.isfile(os.path.join(path, f)) and os.path.getsize(os.path.join(path, f)) == 0:
+            out.append(os.path.join(path, f))
+    for s in slots(path):
+        for root, _dirs, files in os.walk(os.path.join(path, s)):
+            out += [os.path.join(root, n) for n in files if os.path.getsize(os.path.join(root, n)) == 0]
+    return out
+
+
+def new_profile(path):
+    """{id: path} when path is one profile's save folder of Hookshot's layout (save/<32 hex digits>) holding no save yet,
+    which may not be there yet either: a profile the launcher added (builder/linux/profiles.py,
+    builder/HookshotBuilder/Profiles.cs). An import fills it. None otherwise."""
+    norm = os.path.normpath(os.path.abspath(path))
+    name = os.path.basename(norm)
+    if os.path.basename(os.path.dirname(norm)).lower() != "save" or not re.fullmatch("[0-9a-fA-F]{32}", name):
+        return None
+    if os.path.isdir(norm) and find_saves(norm):
+        return None
+    return {name: norm}
+
+
 def copy_saves(src, dst, backup, keep_settings, dry_run):
     target_path = os.path.normcase(os.path.realpath(dst))
     backup_path = os.path.normcase(os.path.realpath(backup))
@@ -309,10 +341,17 @@ def copy_saves(src, dst, backup, keep_settings, dry_run):
     for f in ("account.sav", "option.sav"):
         if os.path.lexists(os.path.join(src, f)):
             refuse_links(os.path.join(src, f))
+    empty = empty_files(src)
+    if empty:
+        raise Fail("%s is empty: the save is not whole, so nothing was copied" % empty[0])
     files = [f for f in ("account.sav", "option.sav") if os.path.isfile(os.path.join(src, f))]
     if keep_settings and "option.sav" in files:
         files.remove("option.sav")
-    print("%s %s -> %s" % ("Would back up" if dry_run else "Backing up", dst, backup))
+    had = os.path.isdir(dst)
+    if had:
+        print("%s %s -> %s" % ("Would back up" if dry_run else "Backing up", dst, backup))
+    else:
+        print("%s holds no save yet: nothing to back up" % dst)
     print("%s %d slot(s) (%s) and %s from %s to %s" % ("Would copy" if dry_run else "Copying", len(names), ", ".join(names),
           ", ".join(files) or "no loose files", src, dst))
     if keep_settings:
@@ -320,15 +359,37 @@ def copy_saves(src, dst, backup, keep_settings, dry_run):
     if dry_run:
         print("Dry run: nothing was changed")
         return
-    os.makedirs(os.path.dirname(backup), exist_ok=True)
-    shutil.copytree(dst, backup)
+    if had:
+        os.makedirs(os.path.dirname(backup), exist_ok=True)
+        shutil.copytree(dst, backup)
+    else:
+        os.makedirs(dst)
+    try:
+        for s in slots(dst):
+            shutil.rmtree(os.path.join(dst, s))
+        for s in names:   # (links were refused above; copied as links, never followed, all the same)
+            shutil.copytree(os.path.join(src, s), os.path.join(dst, s), symlinks=True)
+        for f in files:
+            shutil.copy2(os.path.join(src, f), os.path.join(dst, f), follow_symlinks=False)
+    except OSError as e:
+        # (a copy cut short leaves a save of two halves: the target goes back to what it was, from the backup)
+        restore(dst, backup if had else None)
+        raise Fail("the copy failed (%s): %s is as it was before" % (e, dst))
+    print("Done. Backup of the old %s in %s" % (dst, backup) if had else "Done.")
+
+
+def restore(dst, backup):
+    """puts the target back as the backup has it (None: as it was before, when there was no save: no slots)"""
     for s in slots(dst):
-        shutil.rmtree(os.path.join(dst, s))
-    for s in names:   # (links were refused above; copied as links, never followed, all the same)
-        shutil.copytree(os.path.join(src, s), os.path.join(dst, s), symlinks=True)
-    for f in files:
-        shutil.copy2(os.path.join(src, f), os.path.join(dst, f), follow_symlinks=False)
-    print("Done. Backup of the old %s in %s" % (dst, backup))
+        shutil.rmtree(os.path.join(dst, s), ignore_errors=True)
+    for s in slots(backup) if backup else []:
+        shutil.copytree(os.path.join(backup, s), os.path.join(dst, s), symlinks=True)
+    for f in ("account.sav", "option.sav"):
+        if backup and os.path.isfile(os.path.join(backup, f)):
+            shutil.copy2(os.path.join(backup, f), os.path.join(dst, f), follow_symlinks=False)
+        else:
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(dst, f))
 
 
 def program_named(name):
@@ -348,7 +409,7 @@ def run(args):
         raise Fail("%s what? Name the emulator (%s) or the folder (%s <folder>)"
                    % (args.command, ", ".join(p.name for p in EMULATORS), "--from" if args.command == "import" else "--to"))
     flag = "--from" if args.command == "import" else "--to"
-    _, hs = locate(HOOKSHOT, args.hookshot, "--hookshot")
+    hs = args.command == "import" and args.hookshot and new_profile(args.hookshot) or locate(HOOKSHOT, args.hookshot, "--hookshot")[1]
     _, em = locate(other, args.folder, flag)
     hs_id, hs_path = pick(hs, "Hookshot", "--hookshot <the user id folder>")
     em_id, em_path = pick(em, other.display, "--profile <id>", args.profile)

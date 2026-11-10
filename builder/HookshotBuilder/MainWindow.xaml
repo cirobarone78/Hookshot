@@ -301,6 +301,7 @@
               <StackPanel>
                 <Button x:Name="MenuRename" Style="{StaticResource MenuRow}" Click="ProfileRenameClick"/>
                 <Button x:Name="MenuImport" Style="{StaticResource MenuRow}" Click="ProfileImportClick"/>
+                <Button x:Name="MenuExport" Style="{StaticResource MenuRow}" Click="ProfileExportClick"/>
                 <Button x:Name="MenuFolder" Style="{StaticResource MenuRow}" Click="ProfileFolderClick"/>
                 <Border Height="1" Background="{StaticResource Line}" Margin="6,4"/>
                 <Button x:Name="MenuRemove" Style="{StaticResource MenuRow}" Foreground="{StaticResource Bad}" Click="ProfileRemoveClick"/>
@@ -312,14 +313,6 @@
                      KeyDown="ProfileNameKey"/>
             <Button x:Name="ProfileNameOk" Style="{StaticResource Quiet}" Content="Add" Margin="10,0,0,0" Click="ProfileNameOkClick"/>
             <Button Style="{StaticResource LinkButton}" Content="Cancel" Margin="14,0,0,0" VerticalAlignment="Center" Click="ProfileRowsCancel"/>
-          </StackPanel>
-          <StackPanel x:Name="SaveChoiceRow" HorizontalAlignment="Center" Margin="0,10,0,0" Visibility="Collapsed">
-            <TextBlock x:Name="SaveChoiceText" Style="{StaticResource Note}" HorizontalAlignment="Center" Margin="0,0,0,8"/>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-              <ComboBox x:Name="SaveChoice" Style="{StaticResource Choice}" Width="560" AutomationProperties.Name="Save to import"/>
-              <Button Style="{StaticResource Quiet}" Content="Import" Margin="10,0,0,0" Click="SaveChoiceOkClick"/>
-              <Button Style="{StaticResource LinkButton}" Content="Cancel" Margin="14,0,0,0" VerticalAlignment="Center" Click="ProfileRowsCancel"/>
-            </StackPanel>
           </StackPanel>
           <TextBlock x:Name="ProfileNote" Style="{StaticResource Note}" HorizontalAlignment="Center" TextAlignment="Center" MaxWidth="700"
                      Margin="0,10,0,0"/>
