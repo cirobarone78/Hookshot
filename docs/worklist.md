@@ -31,6 +31,7 @@ Agents may add and re-score rows; a person reviews the change like any other PR.
 | 1.2 | Link keeps playing a jump animation in dialogue after the Gohma fight (gameplay fine): cutscenes and dialogue run at the frame rate above a 60 cap since #1612 (v2.0.13); work-around: cap at 60 | S2 | 1.0 | 0.4 | | #1742 (#1726 closed into it); #bug-reporting "My link is jumping forever" |
 | 1.2 | Ground looks smeared, without detail: Kokiri Forest / Lost Woods, and also Dodongo's Cave and Hyrule Field on RX 9070 XT (driver 26.10.2, 1440p, no mods; log received, clears after a restart) | S2 | 1.0 | 0.4 | | #bug-reporting "Ground design is not loading properly" |
 | 1.2 | Trees float above the ground (Kakariko, Hyrule Field): reported as already fixed, check which change and that it shipped | S2 | 1.0 | 0.4 | | tracker #994 |
+| 1.0 | Source CI cannot compile the sampler-admission and draw-stream fixtures after production helper dependencies changed; restore the mock API and extract the actual helper | S3 | 1.0 | 1.0 | monsterlag | Both CI platforms fail; local compiler reproduces missing `vkDestroyDescriptorPool` and `stream_insert`; test-only repair in progress |
 | 0.6 | Zora's Domain textures missing in the adult timeline (points to VRAM pressure, not the dump) | S2 | 0.3 | 0.7 | | #bug-reporting "Zora Domain textures missing?" |
 | 0.5 | Sacred Forest Meadow fairy fountain grotto: floor and walls invisible (RTX 2070 Super) | S2 | 0.4 | 0.4 | | #bug-reporting thread |
 | 0.4 | Voices in the wrong language | S3 | 1.0 | 0.4 | | #1460 (needs a save past Gohma) |
