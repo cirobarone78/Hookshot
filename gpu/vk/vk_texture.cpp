@@ -1657,6 +1657,23 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
             vkGetPhysicalDeviceImageFormatProperties(dev.physical, x.format, x.type, VK_IMAGE_TILING_OPTIMAL,
                 x.usage, flags, &limits) == VK_SUCCESS)
             x.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        // (and colour attachment views, raw too: OoT renders the slices of two 64^3 BC4 noise volumes as RGBA16UI targets, one
+        // texel a block (53509044401d78d2, while an area loads). Without the usage those views were not made, the volumes
+        // stayed zero, and the foliage's dithered LOD crossfade, which reads them, left trees bare at mid distance, #1151.
+        // 3D images take the usage on the driver's word for the 2D one: the query does not cover 2D_ARRAY_COMPATIBLE's
+        // per-slice attachment views)
+        if (format_props(raw).optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) {
+            // (asked with the flags a 3D image is made with below; a refused image is made again without the usage)
+            const VkImageCreateFlags asked = flags | (x.type != VK_IMAGE_TYPE_3D ? 0u
+                : VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT | (dev.view_2d_of_3d ? VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT : 0u));
+            const VkResult r = vkGetPhysicalDeviceImageFormatProperties(dev.physical, x.format, x.type, VK_IMAGE_TILING_OPTIMAL,
+                x.usage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, asked, &limits);
+            if (r == VK_SUCCESS || x.type == VK_IMAGE_TYPE_3D) x.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            static int told;
+            if (r != VK_SUCCESS && told++ < 4)
+                logf("vk: BC image %ux%ux%u (vk %d) as a raw colour attachment: the driver says %d%s", x.width, x.height, x.depth,
+                     (int)x.format, (int)r, x.type == VK_IMAGE_TYPE_3D ? " (3D: taken)" : "");
+        }
     }
     if (x.type == VK_IMAGE_TYPE_2D && x.layers >= 6 && x.width == x.height && x.samples == VK_SAMPLE_COUNT_1_BIT)
         flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, x.cube = true;
@@ -1710,6 +1727,10 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
              x.sparse_req.imageMipTailFirstLod, (unsigned long long)(x.sparse_req.imageMipTailSize >> 10),
              x.sparse_req.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT ? ", one for all layers" : " a layer");
     } else if (!create_image(ci, x.image, x.allocation) &&
+               // (a compressed image refused: made again without its raw attachment usage, then without its raw storage
+               // usage, as #1332 does; its raw views are then not made, as before)
+               !((ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && is_bc(x.format) &&
+                 (ci.usage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, x.usage = ci.usage, create_image(ci, x.image, x.allocation))) &&
                !((ci.usage & VK_IMAGE_USAGE_STORAGE_BIT) && (is_bc(x.format) || is_astc(x.format)) &&
                  (ci.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT, x.usage = ci.usage, create_image(ci, x.image, x.allocation)))) {
         static int logged;
@@ -2403,47 +2424,68 @@ bool readback_submit_wait() {
     }
     return vkWaitForFences(dev.device, 1, &rb_fence, VK_TRUE, 5000000000ull) == VK_SUCCESS;
 }
-/// The image's levels and layers read back, swizzled as the storage lays them out, and written into its memory
-bool flush_texture(Texture& t, uint64_t clip_lo, uint64_t clip_hi) {
+/// A texture's write-back: its image's levels and layers read back, swizzled as the storage lays them out, and written into
+/// its memory within [clip_lo, clip_hi). The GPU half (flush_record) goes into rb_cmd, the CPU half (flush_finish) runs once
+/// the read-back completed: flush_textures does a batch of them with one submission and one wait. Each wait drains the
+/// queue, and the retirement sweep wrote back hundreds one by one at a scene load (seconds of stall)
+struct Flush {
+    Texture* t;
+    uint64_t clip_lo, clip_hi;
     struct Part { uint32_t level, layer; uint64_t at, n; LevelGeo g; };
     std::vector<Part> parts;
     uint64_t total = 0;
+    VkBuffer buf = VK_NULL_HANDLE;
+    VmaAllocation alloc = nullptr;
+    void* map = nullptr;
+    bool ok = false;
+};
+// (cached host memory, which the CPU reads: the sequential-write kind is write-combined, or VRAM behind the BAR, and every read
+// of it by the unswizzle goes over PCIe uncached. RX_VK_FLUSH_UNCACHED=1: as before)
+bool flush_uncached() {
+    static const bool uncached = getenv("RX_VK_FLUSH_UNCACHED") != nullptr;
+    return uncached;
+}
+/// The copies of f's image into a staging buffer of its own, recorded into rb_cmd (begun by the caller); false: nothing recorded
+bool flush_record(Flush& f) {
+    Texture& t = *f.t;
     const uint32_t layers = t.type == VK_IMAGE_TYPE_3D ? 1 : t.layers;
     for (uint32_t level = 0; level < t.levels; level++) {
         const LevelGeo g = level_geo(t, level);
         for (uint32_t layer = 0; layer < layers; layer++) {
             const uint64_t n = (uint64_t)g.tw * g.th * g.td * (uint64_t)t.bpb;
-            parts.push_back({level, layer, total, n, g});
-            total += (n + 15) & ~15ull;
+            f.parts.push_back({level, layer, f.total, n, g});
+            f.total += (n + 15) & ~15ull;
         }
     }
-    if (!total) return false;
-    VkBuffer buf = VK_NULL_HANDLE;
-    VmaAllocation alloc = nullptr;
-    void* map = nullptr;
-    // (cached host memory, which the CPU reads: the sequential-write kind is write-combined, or VRAM behind the BAR, and every read
-    // of it by the unswizzle below goes over PCIe uncached. RX_VK_FLUSH_UNCACHED=1: as before)
-    static const bool uncached = getenv("RX_VK_FLUSH_UNCACHED") != nullptr;
-    if (!(uncached ? create_buffer(total, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, buf, alloc, &map)
-                   : create_buffer_cached(total, VK_BUFFER_USAGE_TRANSFER_DST_BIT, buf, alloc, &map)) || !map)
-        return false;
-    bool ok = readback_begin();
-    if (ok) {
-        full_barrier(rb_cmd);   // (after what the submissions before wrote)
-        std::vector<VkBufferImageCopy> c;
-        for (const Part& p : parts) {
-            VkBufferImageCopy r{};
-            r.bufferOffset = p.at;
-            r.bufferRowLength = p.g.tw * (uint32_t)t.block_w;
-            r.bufferImageHeight = p.g.th * (uint32_t)t.block_h;
-            r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, p.level, t.type == VK_IMAGE_TYPE_3D ? 0 : p.layer, 1};
-            r.imageExtent = {p.g.w, p.g.h, p.g.d};
-            c.push_back(r);
-        }
-        vkCmdCopyImageToBuffer(rb_cmd, t.image, VK_IMAGE_LAYOUT_GENERAL, buf, (uint32_t)c.size(), c.data());
-        ok = readback_submit_wait();
-        if (ok && !uncached) invalidate_mapped(alloc, total);
+    if (!f.total) return f.ok = false;
+    if (!(flush_uncached() ? create_buffer(f.total, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, f.buf, f.alloc, &f.map)
+                           : create_buffer_cached(f.total, VK_BUFFER_USAGE_TRANSFER_DST_BIT, f.buf, f.alloc, &f.map)) || !f.map) {
+        if (f.buf) destroy_buffer(f.buf, f.alloc);
+        f.buf = VK_NULL_HANDLE, f.alloc = nullptr, f.map = nullptr;
+        return f.ok = false;
     }
+    std::vector<VkBufferImageCopy> c;
+    for (const Flush::Part& p : f.parts) {
+        VkBufferImageCopy r{};
+        r.bufferOffset = p.at;
+        r.bufferRowLength = p.g.tw * (uint32_t)t.block_w;
+        r.bufferImageHeight = p.g.th * (uint32_t)t.block_h;
+        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, p.level, t.type == VK_IMAGE_TYPE_3D ? 0 : p.layer, 1};
+        r.imageExtent = {p.g.w, p.g.h, p.g.d};
+        c.push_back(r);
+    }
+    vkCmdCopyImageToBuffer(rb_cmd, t.image, VK_IMAGE_LAYOUT_GENERAL, f.buf, (uint32_t)c.size(), c.data());
+    return f.ok = true;
+}
+/// The CPU half, once the batch's read-back completed (gpu_ok) or failed: the texels into the texture's memory, the buffer freed
+bool flush_finish(Flush& f, bool gpu_ok) {
+    using Part = Flush::Part;
+    Texture& t = *f.t;
+    const uint64_t clip_lo = f.clip_lo, clip_hi = f.clip_hi, total = f.total;
+    const std::vector<Part>& parts = f.parts;
+    void* map = f.map;
+    bool ok = f.ok && gpu_ok;
+    if (ok && !flush_uncached()) invalidate_mapped(f.alloc, total);
     if (ok && total <= 64) {   // (RX_VK_LOG_TINY_FLUSH=1: the values of tiny ones, 400 lines: a 1 x 1 luminance)
         static const bool log_tiny = getenv("RX_VK_LOG_TINY_FLUSH") != nullptr;
         static int logged;
@@ -2501,7 +2543,7 @@ bool flush_texture(Texture& t, uint64_t clip_lo, uint64_t clip_hi) {
             }
         }
         log_kept();
-        destroy_buffer(buf, alloc);
+        if (f.buf) destroy_buffer(f.buf, f.alloc);
         return ok;
     }
     if (ok) {
@@ -2519,8 +2561,43 @@ bool flush_texture(Texture& t, uint64_t clip_lo, uint64_t clip_hi) {
         }
         log_kept();
     }
-    destroy_buffer(buf, alloc);
+    if (f.buf) destroy_buffer(f.buf, f.alloc);
     return ok;
+}
+/// A batch of write-backs: one submission and one wait for all of them
+void flush_textures(std::vector<Flush>& fs) {
+    bool any = false;
+    if (readback_begin()) {
+        full_barrier(rb_cmd);   // (after what the submissions before wrote)
+        for (Flush& f : fs) any |= flush_record(f);
+    } else {
+        for (Flush& f : fs) f.ok = false;
+    }
+    const bool gpu_ok = any && readback_submit_wait();
+    if (any && !gpu_ok) {
+        // (the read-back did not complete: its 5 s wait, which also covers what queue_flush_locked just submitted, or a submit
+        // that failed. The copies may still be writing into the staging buffers, so they are not freed here: they go the way a
+        // destroyed image does, once a submission made after this one is done. The batch's write-backs are lost, as a single
+        // one's was before)
+        static int logged;
+        if (logged++ < 8)
+            logf("vk: a batch of %zu texture write-backs did not complete in time: not written back, its staging buffers kept "
+                 "until the GPU is past them", fs.size());
+        for (Flush& f : fs)
+            if (f.buf) {
+                Dead d{rec_value + 1, VK_NULL_HANDLE, nullptr, {}, {}};
+                d.buffer = f.buf, d.buffer_alloc = f.alloc;
+                dead.push_back(std::move(d));
+                f.buf = VK_NULL_HANDLE, f.alloc = nullptr, f.map = nullptr;
+            }
+    }
+    for (Flush& f : fs) f.ok = flush_finish(f, gpu_ok);
+}
+bool flush_texture(Texture& t, uint64_t clip_lo, uint64_t clip_hi) {
+    std::vector<Flush> one;
+    one.push_back(Flush{&t, clip_lo, clip_hi});
+    flush_textures(one);
+    return one[0].ok;
 }
 } // namespace
 
@@ -3224,8 +3301,15 @@ void texture_frame(uint64_t completed) {
     const uint64_t need_unused = sweep ? std::max<uint64_t>(120, min_unused) : min_unused;
     const uint64_t need_dead = dead_targets ? std::min(need_unused, dead_min_unused) : need_unused;
     static uint64_t n_dead, b_dead, dead_logged_at;
+    // (hookshot) the textures to go are chosen first and destroyed after; the write-backs among them go to the GPU in a few
+    // batches (flush_textures), not one submission and one wait each: a sweep of 500 at a scene load stalled for seconds
+    struct Evict { Texture* tex; bool flush, shifted; };
+    std::vector<Evict> evict;
+    uint64_t pending_bytes = 0;   // (chosen below, their bytes not yet off total_bytes)
     for (auto& [last, tex] : order) {
-        if ((!sweep && total_bytes <= budget / 8 * 7) || frame_no - last < need_dead) break;
+        // (total_bytes can have drifted below the textures' sum (destroy_later clamps it): the chosen ones' bytes past it mean the
+        // budget is met, not a wrapped difference that never is)
+        if ((!sweep && (pending_bytes >= total_bytes || total_bytes - pending_bytes <= budget / 8 * 7)) || frame_no - last < need_dead) break;
         const bool shifted = drawn_over_shifted(tex);
         if (frame_no - last < need_unused && !shifted) continue;   // (younger: only a dead transient target goes)
         if (tex->last_value > completed) continue;
@@ -3285,12 +3369,34 @@ void texture_frame(uint64_t completed) {
         // tiled pattern over the Deku Tree's planks and Hyrule Field's path, with a 16 GB card's textures at the 6 GB budget
         // (issue 386). RX_VK_EVICT_NO_FLUSH=1: not written back, as before)
         static const bool no_flush = getenv("RX_VK_EVICT_NO_FLUSH") != nullptr;
-        if (!no_flush && !overwritten && tex->gpu_written && !tex->released && flushable(*tex) &&
-            flush_texture(*tex, tex->gpu, tex->gpu + tex->guest_size)) {
-            static std::atomic<int64_t> flushed{0};
-            if (++flushed % 50 == 1) logf("vk: textures the GPU drew, written back into their memory before eviction: %lld so far", (long long)flushed.load());
+        evict.push_back({tex, !no_flush && !overwritten && tex->gpu_written && !tex->released && flushable(*tex), shifted});
+        pending_bytes += tex->bytes + tex->pad;
+    }
+    {   // (the write-backs: batches of up to 64 textures or ~512 MB of staging memory, each one submission and one wait)
+        std::vector<Flush> batch;
+        uint64_t batch_bytes = 0;
+        const auto run = [&] {
+            if (batch.empty()) return;
+            flush_textures(batch);
+            for (const Flush& f : batch)
+                if (f.ok) {
+                    static std::atomic<int64_t> flushed{0};
+                    if (++flushed % 50 == 1) logf("vk: textures the GPU drew, written back into their memory before eviction: %lld so far", (long long)flushed.load());
+                }
+            batch.clear();
+            batch_bytes = 0;
+        };
+        for (const Evict& e : evict) {
+            if (!e.flush) continue;
+            batch.push_back(Flush{e.tex, e.tex->gpu, e.tex->gpu + e.tex->guest_size});
+            batch_bytes += e.tex->guest_size;   // (what its staging buffer holds: the texels as the storage lays them out)
+            if (batch.size() >= 64 || batch_bytes >= (512ull << 20)) run();
         }
-        if (shifted) n_dead++, b_dead += tex->bytes;
+        run();
+    }
+    for (const Evict& e : evict) {   // (and each one's bookkeeping and its end, as before)
+        Texture* tex = e.tex;
+        if (e.shifted) n_dead++, b_dead += tex->bytes;
         watch_tex(tex, "evicted");
         if (!tex->gpu_written && tex->uploaded && !remade_skip_old()) {   // (above: made again, it is uploaded from memory)
             std::lock_guard lk(from_memory_mu);
@@ -3384,6 +3490,21 @@ uint64_t texture_bytes() {
 }
 void texture_stats(int64_t* uploads, int64_t* astc_gpu, int64_t* bytes_uploaded) {
     *uploads = st_uploads, *astc_gpu = st_astc, *bytes_uploaded = st_bytes;
+}
+
+bool texels_fit(const nvn_tex* t, const NVNcopyRegion* r, uint64_t row, uint64_t avail) {
+    if (!t || !r) return false;
+    int bw = 1, bh = 1;
+    const int bpb = nvn_block_size(t->d.format, &bw, &bh);
+    if (bpb <= 0) return true;   // (texture_read_texels copies nothing)
+    const uint64_t w = (uint64_t)((std::max(0, r->width) + bw - 1) / bw), h = (uint64_t)((std::max(0, r->height) + bh - 1) / bh);
+    const uint64_t dd = (uint64_t)std::max(1, r->depth);
+    if (!w || !h) return true;
+    const uint64_t pitch = row ? row : w * bpb;
+    uint64_t image = 0, a = 0, b = 0, n = 0;
+    return !__builtin_mul_overflow(pitch, h, &image) && !__builtin_mul_overflow(dd - 1, image, &a) &&
+           !__builtin_mul_overflow(h - 1, pitch, &b) && !__builtin_add_overflow(a, b, &n) &&
+           !__builtin_add_overflow(n, w * bpb, &n) && n <= avail;
 }
 
 /// ReadTexels / WriteTexels: the CPU's copy of a region in guest memory (block linear, the Switch 2 GOB swizzle).
