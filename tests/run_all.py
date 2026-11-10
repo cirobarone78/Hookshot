@@ -26,6 +26,7 @@ OS = "windows" if WINDOWS else "linux"
 # Arguments some tests need. {name} is a tool or folder found below (find_tools); a check whose tools are missing is
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
+    "tests/test_fs_path_utf8.py": ["--cc", "gcc"],
     "tests/test_setup_tar_diagnostics.py": ["--cc", "gcc"],
     "tests/test_display_startup_failure.py": ["--cxx", "{cxx}"],
     "tests/test_frame_wait_bounds.py": ["--cxx", "{cxx}"],
@@ -117,6 +118,7 @@ MODULES = {
 
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
 SKIP = {
+    "tests/test_fs_path_utf8.py": ({"linux"}, "native Windows filesystem conversion APIs"),
     "tests/test_precompile_compute_guard.py": ({"linux"}, "Windows structured exceptions"),
     # (the game: these run the lifted code of a real dump against Unicorn)
     "nx2/test_insn.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
