@@ -978,23 +978,29 @@ def seed_pipelines(out):
     print("the shipped pipeline list: %d KB, built before the first title" % (os.path.getsize(seed) >> 10), flush=True)
 
 
-def ship_state_list(out):
-    """The pipeline state list made from play of the game on the development PC (assets/pipeline_states.bin.xz: each
-    pipeline's stage code keys, vertex and target formats and draw state; hashes and state only, no game code), unpacked as the
-    folder's hookshot_pipeline_states_shipped.bin: the first start's shader preparation builds those pipelines before the
-    title, from the player's own shaders (hookshot_shaders.bin), instead of compiling each when it is first drawn. Good for
-    any build, and optional: a list that is missing or does not read is left out with a line saying so (the release checks
-    stop on it: nx2/pipeline_states.py --check)"""
+def ship_state_list(out, work=None):
+    """Unpack the bundled pipeline state list, with an optional override from --work.
+
+    Shader preparation builds these states before the title from the player's own shaders.
+    A missing or unreadable local list falls back to the list bundled with the Builder.
+    """
     import pipeline_states
-    src = os.path.join(ROOT, *pipeline_states.SHIPPED)
     dst = os.path.join(out, "hookshot_pipeline_states_shipped.bin")
-    if not os.path.isfile(src):
-        return
-    try:
-        data = pipeline_states.load(src)
-        n = len(pipeline_states.parse(data, src, strict=True))
-    except (OSError, SystemExit) as e:
-        print("the shipped pipeline state list was left out: %s" % e, flush=True)
+    sources = [os.path.join(ROOT, *pipeline_states.SHIPPED)]
+    if work is not None:
+        sources.insert(0, os.path.join(work, "pipeline_states.bin"))
+    for src in sources:
+        if not os.path.isfile(src):
+            continue
+        try:
+            data = pipeline_states.load(src)
+            n = len(pipeline_states.parse(data, src, strict=True))
+        except (OSError, SystemExit) as e:
+            print("the pipeline state list was left out: %s" % e, flush=True)
+            continue
+        if n:
+            break
+    else:
         return
     try:
         with open(dst, "rb") as f:
@@ -1698,7 +1704,7 @@ def main(a=None):
     if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
         copy_writable(icon, os.path.join(out, "hookshot.png"))   # (a second build overwrites the first's)
     seed_pipelines(out)
-    ship_state_list(out)
+    ship_state_list(out, work)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:
         f.write("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n%s\n\n" % a.language)

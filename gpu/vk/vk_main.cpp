@@ -851,7 +851,7 @@ bool started_up() {
         printf("@@stage shaders Preparing shaders\n");
         fflush(stdout);
         part = 0;
-        const bool prepared = prepare_run(progress, false);
+        const bool prepared = prepare_run(progress, false, true);
         part = 1;
         if (prepared) predict_run(progress);
         part = 2;
