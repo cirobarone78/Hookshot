@@ -1667,9 +1667,8 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
     if (!has_global_memory) {
         return;
     }
-    // (hookshot)
-    static const bool no_mesh{std::getenv("RX_VK_FOLLOW_MESH") == nullptr};
-    g_follow_stage = program.stage == Stage::Compute || (!no_mesh && (program.stage == Stage::Task || program.stage == Stage::Mesh));
+    // (hookshot: compute only; the task and mesh stages were tried for the foliage, which it did not bring back)
+    g_follow_stage = program.stage == Stage::Compute;
     // (geometry stages only: with the fragment stage too, the sky drew black rectangles and the lighting went too bright at the castle)
     g_graphics_stage = program.stage != Stage::Compute && program.stage != Stage::Fragment;
     g_origins.clear();   // (EvilOOT: Origins' walk, kept per program)

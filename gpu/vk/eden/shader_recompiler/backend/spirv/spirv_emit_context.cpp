@@ -533,9 +533,6 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
         // (hookshot) the draw's first task workgroup, read through a pushed address (EmitIsbeRead)
         if (!Sirit::ValidId(U64)) { AddCapability(spv::Capability::Int64); U64 = Name(TypeInt(64, false), "u64"); }
         wants_mesh_first = true;
-        if (getenv("RX_VK_FOLLOW_MESH") && !getenv("RX_VK_NO_FOLLOW") && program.info.uses_global_memory) {
-            wants_guest_pages = true;   // (the block is made once: with the page table's member if the stage will want it)
-        }
         AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
         AddExtension("SPV_KHR_physical_storage_buffer");
         SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
@@ -1080,16 +1077,14 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     const int gp_level{gp_test ? atoi(gp_test) : 3};
     // (the culling; a graphics stage with it hung the renderer at a load. RX_VK_NO_FOLLOW: none of it, as before)
     static const bool no_follow{getenv("RX_VK_NO_FOLLOW") != nullptr};
-    // (RX_VK_FOLLOW_MESH=1: the task and mesh stages too. Tried for the foliage, which it did not bring back: off)
-    static const bool no_mesh{getenv("RX_VK_FOLLOW_MESH") == nullptr};
+    // (not the task and mesh stages: tried for the foliage, which it did not bring back)
     // (EvilOOT: vertex and fragment stages too, as the fallback only: an access no bound buffer holds read 0 there (Kokiri's
     // pond came out grey, not green). The pointer pass leaves graphics stages as they were, so what was found before still is,
     // and the menus' text stays. Not where the stage has the render area's push block: a stage has one push block.
     // RX_VK_FOLLOW_GRAPHICS=0: off)
     static const bool graphics{!getenv("RX_VK_FOLLOW_GRAPHICS") || atoi(getenv("RX_VK_FOLLOW_GRAPHICS")) != 0};
     const bool graphics_stage{stage == Stage::VertexB || stage == Stage::Fragment};
-    const bool follow_pointers{(stage == Stage::Compute || (!no_mesh && (stage == Stage::Task || stage == Stage::Mesh)) ||
-                                (graphics && graphics_stage && !info.uses_render_area)) && !no_follow};
+    const bool follow_pointers{(stage == Stage::Compute || (graphics && graphics_stage && !info.uses_render_area)) && !no_follow};
     Id ptr_u64{};
     if (follow_pointers) {
         wants_guest_pages = true;

@@ -107,9 +107,10 @@ HLE(_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE) {
    interval's vsyncs (1: 60 fps, 2: 30) after the last present, so the game runs at the display's rate.
    HOS_NO_PACING=1: as fast as it can. */
 static volatile int present_interval = 1;
-/* (hookshot) HOS_FPS_MAX=<61-240>: the frame rate cap past the console's 60 (opt-in, a test): the display pacing's interval, the game's
-   own limiter (+0xfc) and the vsync event go up to it, and the game's time step is the frames' own time (realtime_step), so the game is
-   not sped up. Unset or 60: 60, as on the console */
+/* (hookshot) The frame rate cap past the console's 60, the Insert menu's Game frame rate cap (frame_rate_cap=): the display pacing's
+   interval, the game's own limiter (+0xfc) and the vsync event go up to it, and the game's time step is the frames' own time
+   (realtime_step), so the game is not sped up. HOS_FPS_MAX=<61-240> goes over the row for a run, with any number (a 75 or 100 Hz
+   screen) where the row has steps. Unset or 60: 60, as on the console */
 int hos_ini_option(const char *key, int otherwise);   /* (nn_applet.c) */
 static int fps_max(void) {
     static int v = -1;

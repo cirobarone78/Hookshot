@@ -31,8 +31,8 @@
 #include <vector>
 
 #include "shader_recompiler/backend/spirv/mma_layout.h"
-#include "shader_recompiler/ir_opt/oot_visual_workaround.h"
 #include "shader_recompiler/ir_opt/passes.h"
+#include "shader_recompiler/ir_opt/fragment_output_guard.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/environment.h"
@@ -936,21 +936,6 @@ void dump_ir(const Program& p, const char* stage, const Shader::IR::Program& pro
 }
 
 /// Translates a program variant's stages into p (on a worker for graphics programs: s and the codes are copies)
-// (hookshot) ir_opt/oot_visual_workaround.h, on the game's programs
-void oot_visual(Shader::IR::Program& program, uint64_t key) {
-    // (EvilOOT, 11-07: off unless RX_VK_OOT_VISUAL=1. With the foliage culling, the pointer reads and the first GPU work right, the
-    // game's own fog is the soft haze with sun shafts of the console's picture at Kokiri's rock; the 0.08 factor was tuned against
-    // the white wall those bugs made, and thinned every scene's fog)
-    static const bool on = getenv("RX_VK_OOT_VISUAL") && atoi(getenv("RX_VK_OOT_VISUAL")) != 0;
-    if (!on) return;
-    static const float fog = getenv("RX_VK_OOT_FOG") ? (float)atof(getenv("RX_VK_OOT_FOG")) : 0.08f;   // (0.25, Orchid's, left a white forest once the game no longer lost its start)
-    // (1: the game's own exposure. 0.65 was for the washed-out outdoors before shaders followed pointers; with the lighting right it
-    // made scenes too dark, issue 103)
-    static const float exposure = getenv("RX_VK_OOT_EXPOSURE") ? (float)atof(getenv("RX_VK_OOT_EXPOSURE")) : 1.0f;
-    if (const size_t n = Shader::Optimization::ApplyOotVisualWorkaround(program, fog, exposure))
-        logf("vk: OoT visual workaround: %s program %016llx, %zu edits", program.stage == Shader::Stage::Compute ? "fog" : "exposure",
-             (unsigned long long)key, n);
-}
 
 // (hookshot) RX_VK_MESH_NOCULL=<task shader code key prefixes,...>, off unless set. OoT's meshlet
 // culling task shader walks every cell of a coarse depth grid its meshlet covers, reading four words a cell from c3 by a
@@ -1096,7 +1081,7 @@ uint64_t disk_stamp() {
     add(abi, sizeof abi);
     {   // (the translation's per-GPU settings, set by coopmat_init at device creation: AMD/Intel's invariant positions, the colour
         // NaN guard, the matrix layout measured on this device. Without them a cache made on one GPU was used on another (a laptop's
-        // integrated and dedicated GPUs), and RX_VK_NO_INVARIANT / RX_VK_NO_NAN_GUARD did nothing for programs already cached)
+        // integrated and dedicated GPUs), and RX_VK_NO_INVARIANT / RX_VK_NAN_GUARD did nothing for programs already cached)
         using namespace Shader::Backend::SPIRV;
         const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (mma_software ? 4u : 0u);
         add(&flags, sizeof flags);
@@ -1111,7 +1096,7 @@ uint64_t disk_stamp() {
     // and the miss log's buffer and block counters (RX_VK_MISS_LOG, RX_VK_BLOCK_PROBE): without them a switch did nothing for
     // the programs already cached. tests/test_program_stamp_knobs.py checks the translator's switches against this list)
     for (char** e = _environ; e && *e; e++)
-        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS",
+        for (const char* pre : {"RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_MARKERS",
                                 "RX_VK_NO_CBUF_LOAD_RULE", "RX_VK_PTR_SPLIT_FALLBACK", "RX_VK_ALL_GLOBAL_PROGS", "RX_VK_NO_EXTREGS", "RX_VK_NO_DRAW_PARAMS", "RX_VK_MISS_LOG", "RX_VK_BLOCK_PROBE", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
     return h;
@@ -1547,7 +1532,6 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             } reset_table;
             auto t = translate(env, false);
             questions += env.texture_questions;
-            oot_visual(t->program, csc->key);
             Shader::RuntimeInfo rt{};
             dump_ir(p, "compute", t->program);   // (before the SPIR-V: the programs it fails on are the ones to read)
             if (getenv("RX_VK_IR"))
@@ -1634,12 +1618,10 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                 Env fs_env{s, *fsc, Shader::Stage::Fragment};
                 auto fs = translate(fs_env, true);
                 questions += fs_env.texture_questions;
-                oot_visual(fs->program, fsc->key);
                 Shader::RuntimeInfo frt{};
                 frt.previous_stage_stores = vs->program.info.stores;
                 for (int i = 0; i < 8; i++) frt.color_output_types[i] = static_cast<Shader::AttributeType>(color_types[i]);
-                static const bool nan_guard = !getenv("RX_VK_NAN_GUARD") || atoi(getenv("RX_VK_NAN_GUARD")) != 0;
-                if (nan_guard) {
+                if (Shader::Backend::SPIRV::frag_nan_guard) {   // (RX_VK_NAN_GUARD=0: off, vk_coopmat.cpp coopmat_init)
                     uint32_t float_targets = 0;
                     for (int i = 0; i < 8; i++)
                         if (frt.color_output_types[i] == Shader::AttributeType::Float) float_targets |= 1u << i;

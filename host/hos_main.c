@@ -350,11 +350,11 @@ static const char *saves_dir(const char *beside) {
    HOS_ENV_FILE=<path> reads that file instead: a scripted or A/B test run brings its own switches and leaves the
    player's hookshot_env.txt as it is.
    (hookshot) hookshot_env.txt is a file players pass around, so it sets only the game's own switches (RX_, HOS_,
-   HOOKSHOT_, EDEN_, NVN_, TOTK_ and SDL_ names), never HOS_ENV_FILE or SDL's library override, and no value that is a
+   HOOKSHOT_, EDEN_, NVN_ and SDL_ names), never HOS_ENV_FILE or SDL's library override, and no value that is a
    path but RX_VK_DLSS_DIR's: the system's variables (the Vulkan loader's layers, PATH and the like) can load code, and
    the dump switches write files where they name. The file HOS_ENV_FILE names sets anything. */
 static int env_line_allowed(const char *name, const char *value) {
-    static const char *const prefixes[] = {"RX_", "HOS_", "HOOKSHOT_", "EDEN_", "NVN_", "TOTK_", "SDL_"};
+    static const char *const prefixes[] = {"RX_", "HOS_", "HOOKSHOT_", "EDEN_", "NVN_", "SDL_"};
     int ok = 0;
     for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++) ok |= !strncmp(name, prefixes[i], strlen(prefixes[i]));
     if (!ok || !strcmp(name, "HOS_ENV_FILE") || !strcmp(name, "SDL_DYNAMIC_API")) return 0;
@@ -1220,10 +1220,6 @@ void hos_oot_free_view(Ctx *c, uint64_t view) {
 float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
 /* (nx2/oot_wide.py) read by the widescreen patches in the game's code; 0: the game's own 16:9 */
 volatile uint64_t hos_wide_out, hos_wide_scene;
-/* (nx2/oot_native_resolution.py) mode 1's scene base scale 1.0 instead of 0.8: Resolution 100% (host/nn_vi.c keeps it current),
-   HOS_SCENE_NATIVE=0/1 over it */
-volatile int hos_native_scene;
-volatile int hos_fix_res;   /* (nx2/oot_native_resolution.py's cached-scale refresh: HOS_FIX_RES=1; #849's fixed-scale patch does it by default) */
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
 volatile uint32_t hos_wide_keep_mask = 0xf;   /* (nx2/oot_wide.py KEEP_VTABLES: the screens that keep the whole picture, a bit each; MkwVkHost.wide_menus) */
 /* (nx2/oot_occlusion.py) read by the game's code where it decides to make occlusion queries: 1, none (HOOKSHOT_OCCLUSION_OFF=1) */
@@ -1476,8 +1472,6 @@ static int game_main(int argc, char **argv) {
                     char line[80];
                     while (fgets(line, sizeof line, o)) {
                         if (!strncmp(line, "ultrawide=", 10)) on = atoi(line + 10) != 0;
-                        /* (the game sizes its scene before the menu is up: Resolution 100% read here too) */
-                        /* (resolution=1 no longer raises the scene: #849 makes a fixed Resolution reach the 3D; HOS_SCENE_NATIVE=1 below) */
                     }
                     fclose(o);
                 }
@@ -1485,9 +1479,6 @@ static int game_main(int argc, char **argv) {
             const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
             if (on && sh > 0) want = (float)sw / (float)sh;
         }
-        if (getenv("HOS_SCENE_NATIVE")) hos_native_scene = atoi(getenv("HOS_SCENE_NATIVE")) != 0;
-        if (getenv("HOS_FIX_RES")) hos_fix_res = atoi(getenv("HOS_FIX_RES")) != 0;
-        if (hos_native_scene) hos_log("boot: HOS_SCENE_NATIVE=1: the scene's base scale 1.0 (the game's 0.8 otherwise)");
         extern volatile uint64_t hos_wide_out, hos_wide_scene;
         extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
         const double game = 16.0 / 9.0;

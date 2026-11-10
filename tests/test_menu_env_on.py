@@ -6,7 +6,7 @@ file wrote its 0 as the off default it then was) and sampler_cache (off by defau
 
 - no file: the default; a file without the line: the default;
 - options_version 3 with descriptor_reuse=0: on (the old default, moved); 4 with 0: off (chosen); 4 with 1: on;
-- RX_VK_DESC_SLOTGEN over all of it.
+- RX_VK_DESC_REUSE over all of it.
 
 python -I -B tests/test_menu_env_on.py [--cxx clang++]
 """
@@ -42,7 +42,7 @@ static DWORD game_module_path(char *path, DWORD size) { return snprintf(path, si
 BODY
 int main(int argc, char **argv) {
     if (argc != 3) return 2;
-    const bool reuse = menu_env_on("RX_VK_DESC_SLOTGEN", "descriptor_reuse", true, 4);
+    const bool reuse = menu_env_on("RX_VK_DESC_REUSE", "descriptor_reuse", true, 4);
     const bool sampler = menu_env_on("RX_VK_SAMPLER_CACHE", "sampler_cache");
     if (reuse != (atoi(argv[1]) != 0) || sampler != (atoi(argv[2]) != 0)) {
         fprintf(stderr, "FAIL: descriptor_reuse %d (want %s), sampler_cache %d (want %s)\n", reuse, argv[1], sampler, argv[2]);
@@ -52,7 +52,7 @@ int main(int argc, char **argv) {
 }
 """
 
-# (hookshot_options.ini's text or None for no file, RX_VK_DESC_SLOTGEN or None, descriptor reuse, sampler cache)
+# (hookshot_options.ini's text or None for no file, RX_VK_DESC_REUSE or None, descriptor reuse, sampler cache)
 CASES = (
     (None, None, 1, 0),
     ("output_res=1\noptions_version=4\n", None, 1, 0),
@@ -84,10 +84,10 @@ def main():
             if text is not None:
                 ini.write_text(text, encoding="ascii")
             env = os.environ.copy()
-            env.pop("RX_VK_DESC_SLOTGEN", None)
+            env.pop("RX_VK_DESC_REUSE", None)
             env.pop("RX_VK_SAMPLER_CACHE", None)
             if env_value is not None:
-                env["RX_VK_DESC_SLOTGEN"] = env_value
+                env["RX_VK_DESC_REUSE"] = env_value
             subprocess.run([str(exe), str(reuse), str(sampler)], cwd=work, env=env, check=True)
     print("PASS: Descriptor reuse on by default and for options files before version 4; a version 4 choice and the "
           "environment kept; Sampler cache unchanged")

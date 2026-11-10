@@ -68,7 +68,7 @@
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/host_translate_info.h"
-#include "shader_recompiler/ir_opt/oot_visual_workaround.h"
+#include "shader_recompiler/ir_opt/fragment_output_guard.h"
 #include "shader_recompiler/object_pool.h"
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/program_header.h"
@@ -515,16 +515,6 @@ Shader::HostTranslateInfo host_info() {   // (live: vk_shader.cpp:508)
     return h;
 }
 
-/// (live: vk_shader.cpp:805 oot_visual; off unless RX_VK_OOT_VISUAL is set, which is also what the cache stamp sees)
-void oot_visual(Shader::IR::Program& program, uint64_t key) {
-    static const bool on = std::getenv("RX_VK_OOT_VISUAL") && std::atoi(std::getenv("RX_VK_OOT_VISUAL")) != 0;
-    if (!on) return;
-    static const float fog = std::getenv("RX_VK_OOT_FOG") ? static_cast<float>(std::atof(std::getenv("RX_VK_OOT_FOG"))) : 0.08f;
-    static const float exposure =
-        std::getenv("RX_VK_OOT_EXPOSURE") ? static_cast<float>(std::atof(std::getenv("RX_VK_OOT_EXPOSURE"))) : 1.0f;
-    Shader::Optimization::ApplyOotVisualWorkaround(program, fog, exposure);
-    (void)key;
-}
 
 struct Translation {
     Shader::ObjectPool<Shader::IR::Inst> insts;
@@ -708,9 +698,11 @@ uint64_t disk_stamp(uint64_t translator_stamp, uint32_t depth) {   // (live: vk_
     // sit where `environ` puts them -- the same position a run of this build sees. A multi-variable environment
     // whose allowlist entries are in another order is a different stamp, as it is live.)
     for (char** e = environ; e && *e; e++) {
-        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK",
-                                "RX_VK_GP", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH",
-                                "EDEN_"})
+        for (const char* pre : {"RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK",
+                                "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH",
+                                "RX_VK_NO_INVARIANT", "RX_VK_MARKERS", "RX_VK_NO_CBUF_LOAD_RULE",
+                                "RX_VK_PTR_SPLIT_FALLBACK", "RX_VK_ALL_GLOBAL_PROGS", "RX_VK_NO_EXTREGS", "RX_VK_NO_DRAW_PARAMS",
+                                "RX_VK_MISS_LOG", "RX_VK_BLOCK_PROBE", "EDEN_"})
             if (!std::strncmp(*e, pre, std::strlen(pre))) add(*e, std::strlen(*e));
     }
     return h;
@@ -1215,7 +1207,6 @@ int run_translate(const Options& o) {
             try {
                 auto tr = translate(env, false);
                 t.questions = env.texture_questions;
-                oot_visual(tr->program, by_stage[5]->key);
                 Shader::RuntimeInfo rt{};
                 StageResult sr;
                 sr.info = tr->program.info;
@@ -1463,7 +1454,6 @@ int run_translate(const Options& o) {
                             if (fs->program.info.loads.Generic(i) && !mesh_t->program.info.stores.Generic(i))
                                 frt.point_coord_generics.set(i);
                     for (int i = 0; i < 8; i++) frt.color_output_types[i] = static_cast<Shader::AttributeType>(no_types[i]);
-                    oot_visual(fs->program, by_stage[1]->key);
                     uint32_t float_targets = 0;
                     for (int i = 0; i < 8; i++)
                         if (frt.color_output_types[i] == Shader::AttributeType::Float) float_targets |= 1u << i;
@@ -1502,7 +1492,6 @@ int run_translate(const Options& o) {
                     OfflineEnv fenv{*by_stage[1], Shader::Stage::Fragment};
                     auto ft = translate(fenv, true);
                     questions += fenv.texture_questions;
-                    oot_visual(ft->program, by_stage[1]->key);
                     Shader::RuntimeInfo frt{};
                     frt.previous_stage_stores = t->program.info.stores;
                     for (int i = 0; i < 8; i++) frt.color_output_types[i] = static_cast<Shader::AttributeType>(no_types[i]);

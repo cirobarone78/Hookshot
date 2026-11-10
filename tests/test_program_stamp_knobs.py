@@ -2,7 +2,7 @@
 
 hookshot_programs.bin keeps translated programs; vk_shader.cpp disk_stamp hashes the environment variables whose names
 start with one of its prefixes, so changing one translates the programs again. A switch that changes the translation but
-is left out of the list does nothing for the programs already cached (RX_VK_NO_INVARIANT and RX_VK_NO_NAN_GUARD were
+is left out of the list does nothing for the programs already cached (RX_VK_NO_INVARIANT and the NaN guard were
 such a case once; RX_VK_NO_CBUF_LOAD_RULE, RX_VK_PTR_SPLIT_FALLBACK and others were until this check). Read every
 RX_VK_ name the translator (gpu/vk/eden/shader_recompiler) reads, and the translation's own switches in vk_shader.cpp,
 and check each against the stamp's list. No game or GPU is needed.
@@ -63,6 +63,13 @@ def main():
     if missing:
         raise SystemExit("switches that change the translation but not the program cache's stamp (vk_shader.cpp disk_stamp):\n" +
                          "\n".join("  %s (%s)" % m for m in missing))
+    # (nx2/bake_ds computes the same stamp offline: its copy of the list is the live one)
+    bake = (args.source / "nx2" / "bake_ds" / "bake_ds.cpp").read_text(encoding="utf-8")
+    bake_loop = bake[bake.index("for (char** e = environ;"):]
+    bake_prefixes = re.findall(r'"([A-Z0-9_]+)"', bake_loop[:bake_loop.index("add(*e")])
+    if bake_prefixes != prefixes:
+        raise SystemExit("nx2/bake_ds/bake_ds.cpp's stamp list differs from vk_shader.cpp disk_stamp's:\n  bake_ds %s\n  live    %s"
+                         % (bake_prefixes, prefixes))
     stale = [name for name in LOG_ONLY if name not in names]
     if stale:
         raise SystemExit("LOG_ONLY names a switch the translator no longer reads: " + ", ".join(stale))

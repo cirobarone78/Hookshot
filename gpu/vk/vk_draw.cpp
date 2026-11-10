@@ -2383,6 +2383,7 @@ thread_local bool grid_patch_want = false;
 thread_local uint64_t grid_patch_at = UINT64_MAX;
 thread_local VkBuffer grid_patch_buf = VK_NULL_HANDLE;   // (the stream c0 went to: PR 585's streams can move on)
 
+int desc_reuse_level();   // (below: RX_VK_DESC_REUSE and the Descriptor reuse row)
 VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_t index) {
     VkDescriptorBufferInfo bi{VK_NULL_HANDLE, 0, VK_WHOLE_SIZE};
     const uint64_t align = std::max<uint64_t>(dev.props.limits.minUniformBufferOffsetAlignment, 16);
@@ -2405,7 +2406,7 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
             return {cur->stream, at, n};
         }
         const bool grid_same = st.nvn_stage != 5 || !std::memcmp(c.grid, s.grid, sizeof c.grid);
-        static const bool no_bank_cache = getenv("RX_VK_NO_DESC_REUSE") != nullptr;   // (A/B: filled every time)
+        static const bool no_bank_cache = desc_reuse_level() == 0;   // (RX_VK_DESC_REUSE=0: filled every time)
         // (hookshot) a graphics stage's c2 is made from its textures, samplers and images, its c0 from its storage buffers: it stands while
         // those do, whatever else was bound (a uniform buffer for each draw). RX_VK_BANK_GEN_OFF=1: while nothing at all was bound anew)
         static const bool stage_gen_off = getenv("RX_VK_BANK_GEN_OFF") != nullptr;
@@ -2580,19 +2581,27 @@ bool menu_env_on(const char* env_name, const char* ini_key_name, bool def = fals
     if (v < 0 || version < since) return def;
     return v != 0;
 }
-/// (hookshot) the Descriptor reuse row / RX_VK_DESC_SLOTGEN=1: a draw keeps its descriptors through registrations of the
-/// texture slots it does not sample. What it does sample is checked by slot version, and the samplers by their
-/// registrations' generation, instead of the global one every registration moves. Its ready line is like the frame interpolation's.
-bool desc_slotgen_on() {
-    static int on = -1;
-    if (on < 0) {
-        on = menu_env_on("RX_VK_DESC_SLOTGEN", "descriptor_reuse", true, 4);   // (on by default since options_version 4)
-        if (on)
+/// (hookshot) How far a draw keeps the descriptors (and the banks) of the draw before it, one switch for the three it had:
+///   2  the Descriptor reuse row's On (the default since options_version 4): kept through registrations of the texture slots
+///      it does not sample. What it does sample is checked by slot version, and the samplers by their registrations'
+///      generation, instead of the global one every registration moves
+///   1  the row's Off: kept while no registration at all was made since
+///   0  never: every draw builds its own and fills its banks (an A/B against the reuse itself)
+/// RX_VK_DESC_REUSE=0/1/2 goes over the row for a run (it replaces RX_VK_DESC_SLOTGEN, RX_VK_NO_DESC_REUSE and
+/// RX_VK_DESC_REUSE_DGEN, which turned off the texture-destroy check of issue 1126 and is gone)
+int desc_reuse_level() {
+    static int level = -1;
+    if (level < 0) {
+        const char* e = getenv("RX_VK_DESC_REUSE");
+        level = e ? std::clamp(atoi(e), 0, 2) : menu_env_on("RX_VK_DESC_REUSE", "descriptor_reuse", true, 4) ? 2 : 1;
+        if (level == 2)
             logf("vk: descriptor slotgen ready: draws keep their descriptors through the registrations of slots they do not "
                  "sample (menu: Descriptor reuse)");
+        if (level == 0) logf("vk: RX_VK_DESC_REUSE=0: every draw builds its own descriptors");
     }
-    return on;
+    return level;
 }
+bool desc_slotgen_on() { return desc_reuse_level() == 2; }
 /// (hookshot) the Sampler cache row / RX_VK_SAMPLER_CACHE=1: what a sampler id holds is kept next to its version on the replay
 /// thread, so resolving an id that was not registered anew takes no lock (the registrations' mutex contends with the texture streaming)
 bool sampler_cache_on() {
@@ -2603,7 +2612,7 @@ bool sampler_cache_on() {
     }
     return on;
 }
-// (RX_VK_DESC_SLOTGEN) What the descriptors being built read of the registrations: the version of every slot whose handle they
+// (Descriptor reuse) What the descriptors being built read of the registrations: the version of every slot whose handle they
 // resolved. The next draw of the same bindings keeps them while none of those versions moved. A handle read as 0 is noted: of a
 // slot that is not registered, only a registration (the global generation) can tell us that it is one now.
 TLS_OBJECT(desc_fp, std::vector<uint64_t>)   // ((version << 20 | slot), a handle read)
@@ -2697,7 +2706,7 @@ bool table_track_open(int logged, int seen, int unlimited) {
 void build_descriptors(const NvnState& s, const Program& p) {
     dw().reset();
     dw().prog = &p;
-    desc_fp().clear(), desc_fp_dummy = false;   // (RX_VK_DESC_SLOTGEN: the samplers' generation is read before the first handle,
+    desc_fp().clear(), desc_fp_dummy = false;   // (Descriptor reuse: the samplers' generation is read before the first handle,
     desc_samp_seen = sampler_registrations_generation();   // (so one registered during the build still forces the next rebuild)
     desc_destroy_seen = texture_destroy_generation();      // (an eviction retires views behind the slots' backs: it bumps only this)
     draw_sampled().clear();
@@ -2977,7 +2986,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 const size_t first = dw().views.size();
                 for (uint32_t k = 0; k < d.count; k++) {
                     const uint32_t handle = handle_of(s, st, d, k);
-                    desc_fp_note(handle);   // (RX_VK_DESC_SLOTGEN)
+                    desc_fp_note(handle);   // (Descriptor reuse)
                     nvn_tex t;
                     nvn_view v;
                     bool has_view = false;
@@ -3010,7 +3019,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 static const bool all_stages = getenv("RX_VK_HANDLE_POINTER_ALL") != nullptr;
                 const uint32_t handle = ((all_stages || st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) && handle_is_storage_pointer(info, d, k))
                                             ? 0u : handle_of(s, st, d, k);
-                desc_fp_note(handle);   // (RX_VK_DESC_SLOTGEN)
+                desc_fp_note(handle);   // (Descriptor reuse)
                 Texture* tex = nullptr;
                 upload_defer_ok = st.vk_stage != VK_SHADER_STAGE_COMPUTE_BIT;   // (a draw's: its new ASTC textures may wait a frame)
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex)
@@ -3053,7 +3062,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
             const VkImageViewType vt = view_type(d.type);
             for (uint32_t k = 0; k < d.count; k++) {
                 const uint32_t handle = handle_of(s, st, d, k);
-                desc_fp_note(handle);   // (RX_VK_DESC_SLOTGEN)
+                desc_fp_note(handle);   // (Descriptor reuse)
                 Texture* tex = nullptr;
                 uint32_t level = 0;
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Storage, image_format(d.format), &tex, &level)
@@ -3529,13 +3538,13 @@ thread_local bool work_since_barrier = false;   // (GPU work recorded since the 
 thread_local bool last_desc_valid = false;
 thread_local const Program* last_desc_prog = nullptr;
 thread_local uint64_t last_desc_bind = 0, last_desc_reg = 0, last_desc_ub = 0, last_desc_dgen = 0;
-// (RX_VK_DESC_SLOTGEN: the versions of the slots the last build resolved, the samplers' generation it saw, and whether it
+// (Descriptor reuse: the versions of the slots the last build resolved, the samplers' generation it saw, and whether it
 // sampled an unregistered slot; the same draw keeps its descriptors while none of those moved)
 TLS_OBJECT(last_desc_fp, std::vector<uint64_t>)
 thread_local bool last_desc_fp_dummy = false;
 thread_local uint64_t last_desc_samp = 0, last_desc_destroy = 0;
 int64_t st_desc_slotgen_saves;   // (reuses the global registrations' generation check would have rebuilt for)
-/// (RX_VK_DESC_SLOTGEN) Whether every slot the last build resolved still holds what it did: no registration since touched a
+/// (Descriptor reuse) Whether every slot the last build resolved still holds what it did: no registration since touched a
 /// slot this draw samples, so its descriptors stand through the streaming's churn. A build that sampled an unregistered slot
 /// keeps the old check: a registration is the only thing that could make such a handle resolve, and no slot version moved.
 bool desc_slots_kept(uint64_t reg_gen) {
@@ -6027,11 +6036,10 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // (hookshot) and no texture went since (texture_destroy_generation: an image evicted, or made again at another size or format,
     // in the same recording): the set it pushed or bound named that texture's old views, which go once the GPU is past the texture's
     // last use, a use the reused set no longer counted. The draws after it sampled freed memory, whatever the driver put there next:
-    // plants and fences glowing white on a Legion Go S, which RX_VK_NO_DESC_REUSE=1 took away (issue 1126). RX_VK_DESC_REUSE_DGEN=0: as before
+    // plants and fences glowing white on a Legion Go S, which RX_VK_DESC_REUSE=0 took away (issue 1126)
     const uint64_t reg_gen = registrations_generation(), ub_gen = ub_generation();
-    static const bool no_reuse = getenv("RX_VK_NO_DESC_REUSE") != nullptr;   // (A/B: every draw builds its own)
-    static const bool dgen_off = getenv("RX_VK_DESC_REUSE_DGEN") && atoi(getenv("RX_VK_DESC_REUSE_DGEN")) == 0;
-    const uint64_t dgen = dgen_off ? 0 : texture_destroy_generation();
+    static const bool no_reuse = desc_reuse_level() == 0;   // (RX_VK_DESC_REUSE=0: every draw builds its own)
+    const uint64_t dgen = texture_destroy_generation();
     // (hookshot, issue 640: a mesh fallback draw also pushes the writes at the compute bind point, for its task and mesh
     // dispatches, so they must be its own. A dispatch since its last draw built the compute program's over them: pushed
     // with the fallback's layout, its task and mesh stages read another program's buffers, and descriptors the push left
@@ -6170,7 +6178,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
         last_desc_valid = true, last_desc_prog = &p, last_desc_bind = s.bind_gen, last_desc_reg = reg_gen;
         last_desc_ub = ub_gen, last_desc_dgen = dgen;
-        if (slotgen)   // (RX_VK_DESC_SLOTGEN: what its handles resolved; the next such draw may keep it through other slots' churn)
+        if (slotgen)   // (Descriptor reuse: what its handles resolved; the next such draw may keep it through other slots' churn)
             last_desc_fp() = desc_fp(), last_desc_fp_dummy = desc_fp_dummy, last_desc_samp = desc_samp_seen,
             last_desc_destroy = desc_destroy_seen;
     } else {
@@ -8171,7 +8179,7 @@ void draw_records_log(uint64_t lo, uint64_t hi) {
 int64_t draw_desc_reused() {
     return st_desc_reused;
 }
-int64_t draw_slotgen_saves() {   // (RX_VK_DESC_SLOTGEN: of those, what the global registrations' generation check would have rebuilt)
+int64_t draw_slotgen_saves() {   // (Descriptor reuse: of those, what the global registrations' generation check would have rebuilt)
     return st_desc_slotgen_saves;
 }
 
