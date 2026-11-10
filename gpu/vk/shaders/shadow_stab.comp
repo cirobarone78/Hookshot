@@ -3,9 +3,9 @@
 // scene's size) evened out over frames: the pass offsets each pixel's shadow lookup by a normal it reconstructs from a
 // gather of neighbouring depths, and on grass blades and leaf edges those neighbours flip between the blade and the
 // ground behind it with the camera's sub-pixel shift each frame: thin streaks flickering over sunlit ground, which the
-// console's TAAU network averages away. This pass's last result (`prev`) is blended in, bounded by the 3x3
-// neighbourhood of the mask this frame (no trail where a shadow really moves). mode 0: the blend into `next`; mode 1:
-// `next`'s G and B written back into the mask (a separate dispatch: the blend reads the mask's neighbours).
+// console's TAAU network averages away. This pass's last result (`prev`) is blended in, unbounded by default (radius
+// r > 0 bounds it by the mask's (2r+1)^2 neighbourhood this frame; 3x3 kept nothing). mode 0: the blend into `next`;
+// mode 1: `next`'s G and B written back into the mask (a separate dispatch: the blend reads the mask's neighbours).
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0, rgba8) uniform image2D mask;
 layout(binding = 1, rgba8) uniform readonly image2D prev;
