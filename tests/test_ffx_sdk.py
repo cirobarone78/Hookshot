@@ -83,6 +83,23 @@ class FetchTests(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(tmp, ffx_sdk.FILES[0][2] + ".part")))
             self.assertFalse(ffx_sdk.complete(tmp))
 
+    def test_players_dlls_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ffx_sdk, "FILES", fake_table(self.data)), \
+                mock.patch.object(ffx_sdk, "DLLS", [n for _, _, n in fake_table(self.data) if n.endswith(".dll")]):
+            ffx_sdk.fetch(os.path.join(tmp, "sdk"), opener=Opener(self.data), say=lambda _: None)
+            game = os.path.join(tmp, "game")
+            os.makedirs(game)
+            theirs = os.path.join(game, ffx_sdk.DLLS[1])
+            with open(theirs, "wb") as f:
+                f.write(b"a newer SDK's upscaler")
+            said = []
+            ffx_sdk.install(os.path.join(tmp, "sdk"), game, say=said.append)
+            with open(theirs, "rb") as f:
+                self.assertEqual(f.read(), b"a newer SDK's upscaler")
+            self.assertFalse(os.path.exists(os.path.join(game, ffx_sdk.DLLS[0])))   # (not mixed with v2.4.0's loader)
+            self.assertEqual(len(said), 1)
+            self.assertIn(ffx_sdk.DLLS[1], said[0])
+
     def test_retry_after_a_reset(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ffx_sdk, "FILES", fake_table(self.data)):
             second = ffx_sdk.FILES[1][0]

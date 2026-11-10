@@ -22,6 +22,10 @@ import urllib.request
 
 COMMIT = "7539ae8b6568ad29ed78a753404351daf3b5cca7"   # (tag v2.4.0: FSR 4.1.2, FSR 3.1.6)
 BASE = "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/" + COMMIT
+# AMD's license for these files, at the pinned commit (it grants installing, copying and redistributing them in binary form,
+# with its notices kept and no reverse engineering; it asks for no acceptance step)
+LICENSE_URL = ("https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/" + COMMIT +
+               "/Kits/FidelityFX/docs/license.md")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # (path in AMD's repository, its SHA-256, its name here)
@@ -34,11 +38,13 @@ FILES = [
      "32357259b965d6a8001e9e508ba60eda6034027c5923a7d226ffbaff813c2bfb", "LICENSE-AMD-FSR-SDK.md"),
 ]
 RUNTIME = [f[2] for f in FILES]
+DLLS = [f[2] for f in FILES if f[2].endswith(".dll")]
 
 NOTICE = """\
 AMD FSR 4: this downloads AMD's FSR runtime for Vulkan (FSR SDK v2.4.0: FSR 4.1.2) from
 github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK. AMD's files are AMD's, not Hookshot's, signed by AMD and under AMD's
-FSR SDK license (saved as LICENSE-AMD-FSR-SDK.md beside them)."""
+FSR SDK license (saved as LICENSE-AMD-FSR-SDK.md beside them):
+  """ + LICENSE_URL
 
 TIMEOUT = 60   # (seconds without an answer, or between two reads, before a download gives up)
 
@@ -88,9 +94,24 @@ def complete(folder):
     return all(os.path.isfile(os.path.join(folder, n)) and sha256(os.path.join(folder, n)) == d for _, d, n in FILES)
 
 
-def install(folder, game_ffx):
-    """The runtime copied from folder into game_ffx (made when missing): where the game finds it (the game folder)"""
+def others(game_ffx):
+    """AMD DLLs in game_ffx that are not the pinned ones (a newer SDK the player put there by hand, say)"""
+    digests = {name: digest for _, digest, name in FILES}
+    return [n for n in DLLS
+            if os.path.isfile(os.path.join(game_ffx, n)) and sha256(os.path.join(game_ffx, n)) != digests[n]]
+
+
+def install(folder, game_ffx, say=print):
+    """The runtime copied from folder into game_ffx (made when missing): where the game finds it (the game folder). AMD's
+    DLLs the player put there already, other than the pinned ones, are left alone, both of them (gpu/vk/vk_fsr4.cpp takes
+    the newest FSR 4 the loader lists, so replacing them could be a downgrade), and say tells which. Returns game_ffx"""
     os.makedirs(game_ffx, exist_ok=True)
+    kept = others(game_ffx)
+    if kept:
+        say("ffx-sdk: %s in %s %s not FSR SDK v2.4.0's: left as %s (delete %s to get v2.4.0's)" % (
+            " and ".join(kept), game_ffx, "is" if len(kept) == 1 else "are", "it is" if len(kept) == 1 else "they are",
+            "it" if len(kept) == 1 else "them"))
+        return game_ffx
     for _, digest, name in FILES:
         dst = os.path.join(game_ffx, name)
         if not (os.path.isfile(dst) and sha256(dst) == digest):

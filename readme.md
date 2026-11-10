@@ -618,8 +618,10 @@ in `hookshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to 
 - **Or fetched for you (Windows):** `make_game.py --fsr --fetch-fsr-runtime` downloads those two DLLs and AMD's license
   from AMD's FidelityFX SDK repository at the v2.4.0 tag, checks each against its SHA-256, and puts them in the game
   folder (`HOOKSHOT_FFX_SDK=<folder>` keeps them between builds, default `work\ffx-sdk`). `python -I scripts/ffx_sdk.py
-  --game <game folder>` does the same for a game built already. They are AMD's, under AMD's FSR SDK license
-  (`LICENSE-AMD-FSR-SDK.md` beside them).
+  --game <game folder>` does the same for a game built already. AMD DLLs already in the game folder that are not v2.4.0's
+  (a newer SDK put there by hand) are left alone, and the build says so. They are AMD's, under
+  [AMD's FSR SDK license](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/docs/license.md)
+  (`LICENSE-AMD-FSR-SDK.md` beside them). On Linux the flag does nothing but say so.
 
 The log's `vk: AMD FSR 4:` lines say which of AMD's upscalers it found for the card and which it uses (the newest FSR 4;
 never an older FSR in its place), and why not when it did not start. Tested on an RX 6700 XT (RDNA 2).

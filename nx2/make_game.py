@@ -1268,6 +1268,9 @@ def place_fsr_runtime(out):
     ffx = ffx_script()
     if LINUX or not ffx.complete(ffx_folder()):
         return None
+    if ffx.others(out):
+        ffx.install(ffx_folder(), out, say=lambda line: print(line, flush=True))   # (it says what it left alone)
+        return None
     dst = ffx.install(ffx_folder(), out)
     print("AMD FSR 4: AMD's runtime in %s (AMD's, under AMD's license)" % dst, flush=True)
     return dst
@@ -1373,6 +1376,9 @@ def main(a=None):
         os.environ["HOOKSHOT_FSR"] = "1"
         if getattr(a, "fetch_fsr_runtime", False) and not LINUX:
             fetch_fsr_runtime()
+        elif getattr(a, "fetch_fsr_runtime", False):
+            print("--fetch-fsr-runtime: AMD publishes this runtime for Windows only; on Linux see the readme "
+                  "(amd_fidelityfx_upscaler_vk.so)", flush=True)
         open(os.path.join(out, FSR_MARK), "w").close()
         if os.environ.get("HOOKSHOT_VK_PREBUILT"):   # (the AppImage's back end, built without FSR 4)
             print("--fsr: this build uses the prebuilt Vulkan back end (HOOKSHOT_VK_PREBUILT), which has no AMD FSR 4: the "
