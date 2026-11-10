@@ -1368,6 +1368,8 @@ float ease_step = 0;     // (this drawing's share of the way: the time since the
 ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
     ui::Ctx c{ImGui::GetForegroundDrawList(), ui::fonts(), 1, (float)w, (float)h, 0, pad_last};
     c.confirm_dot = menu_keys::dot(pad_confirm), c.back_dot = menu_keys::dot(pad_back);
+    c.prompt_face = opts.prompts > 0 && opts.prompts <= HOS_PROMPT_N ? opts.prompts - 1
+                                                                     : host && host->prompt_face ? host->prompt_face() : -1;
     c.s = ui::unit((float)h, opts.menu_size, opts.fullscreen != 0, auto_pad, &c.safe);
     return c;
 }

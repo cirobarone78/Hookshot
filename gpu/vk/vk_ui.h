@@ -1,8 +1,10 @@
 // (hookshot) How the overlays look (vk_menu.cpp draws the Insert menu, the FPS counter and the start-up screen with these): in
 // the style of the game's own pause and options screens, so they sit naturally over it. Our own drawing on ImGui's draw lists
-// (no texture, icon or ornament of the game's); the font is the game's own menu font from the player's files, else Libertinus
-// (vk_imgui.cpp). Sizes are points of a 720-line window times the unit (unit()). Every text sits on its own background at a
-// contrast of 4.5:1 or more (WCAG), a white game pixel behind at worst: gold only for the selected value, with dark text on it.
+// (no texture or ornament of the game's); the font is the game's own menu font from the player's files, else Libertinus, and
+// the prompt strip's controller buttons are the game's own button icons (prompts/<face>/External.bfotf from the dump's font, else
+// the ROM's Font2/Scalable/External, else the drawn ones below), all read in memory (vk_imgui.cpp). Sizes are points of a 720-line
+// window times the unit (unit()). Every text sits on its own background at a contrast of 4.5:1 or more (WCAG), a white game pixel
+// behind at worst: gold only for the selected value, with dark text on it.
 #pragma once
 
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -49,6 +51,7 @@ struct Ctx {
     float safe;   // (the margin kept clear at each edge, pixels)
     bool pad;     // (a controller was the last input: its buttons in the prompts)
     int confirm_dot = 3, back_dot = 1;   // (the face buttons that confirm and go back: vk_menu_keys.h dot, 3 the bottom, 1 the right)
+    int prompt_face = -1;   // (the Button prompts face: HOS_PROMPT_*, -1 unknown; the game's own icons are the Switch's)
 };
 
 inline ImVec2 size_of(ImFont* font, float px, const char* t, float wrap = 0) { return font->CalcTextSizeA(px, FLT_MAX, wrap, t); }
@@ -150,6 +153,74 @@ struct Prompt {
     const char* what;
     const char* key = nullptr;   // (kKey: a key's name, shown with the keys and with a controller alike)
 };
+// The Switch's buttons in the game's button-icon font (Font2/Scalable/External, from the player's dump): the code points
+// nx2/prompt_assets.py SWITCH_ICON and host/prompts.c switch_code use, then the two D-pad outlines.
+namespace prompt_icons {
+enum : unsigned { kA = 0xE040, kB = 0xE041, kX = 0xE042, kY = 0xE043, kL = 0xE044, kR = 0xE045, kZL = 0xE046,
+                  kZR = 0xE047, kHome = 0xE04A, kPlus = 0xE04B, kMinus = 0xE04C, kLS = 0xE056, kRS = 0xE057,
+                  kUp = 0xE060, kDown = 0xE061, kLeft = 0xE062, kRight = 0xE063, kUpDown = 0xE064,
+                  kLeftRight = 0xE065 };
+/// The icon of a gamepad input on a Switch controller (HOS_PAD_*; 0 none)
+inline unsigned pad(int p) {
+    switch (p) {
+    case HOS_PAD_SOUTH: return kB;
+    case HOS_PAD_EAST: return kA;
+    case HOS_PAD_WEST: return kY;
+    case HOS_PAD_NORTH: return kX;
+    case HOS_PAD_BACK: return kMinus;
+    case HOS_PAD_GUIDE: return kHome;
+    case HOS_PAD_START: return kPlus;
+    case HOS_PAD_LSTICK: return kLS;
+    case HOS_PAD_RSTICK: return kRS;
+    case HOS_PAD_LSHOULDER: return kL;
+    case HOS_PAD_RSHOULDER: return kR;
+    case HOS_PAD_UP: return kUp;
+    case HOS_PAD_DOWN: return kDown;
+    case HOS_PAD_LEFT: return kLeft;
+    case HOS_PAD_RIGHT: return kRight;
+    case HOS_PAD_LTRIGGER: return kZL;
+    case HOS_PAD_RTRIGGER: return kZR;
+    default: return 0;
+    }
+}
+/// The gamepad input at a prompt dot (vk_menu_keys.h: 0 the top, 1 the right, 2 the left, 3 the bottom)
+inline int dot_pad(int dot) {
+    return dot == 0 ? HOS_PAD_NORTH : dot == 1 ? HOS_PAD_EAST : dot == 2 ? HOS_PAD_WEST : HOS_PAD_SOUTH;
+}
+} // namespace prompt_icons
+/// The face's own prompt font (prompts/<face>/External.bfotf, its icons at U+F700 + HOS_PAD_*), when there is one
+inline bool face_icons(const Ctx& c) {
+    return c.prompt_face >= 0 && c.prompt_face < HOS_PROMPT_N && c.f.prompt_face[c.prompt_face];
+}
+/// The game's own icons are the Switch's, so the ROM's font stands in for the prompts when the face's font is not there
+inline bool game_icons(const Ctx& c) { return c.pad && (face_icons(c) || c.f.prompt); }
+/// One of the game's button icons (code) in f, its ink starting at x and centred on cy: its width; 0 when the font lacks it.
+/// draw false: measured only
+inline float game_icon(Ctx& c, ImFont* f, unsigned code, float x, float cy, float hh, bool draw) {
+    if (!f || !code || hh < 1.0f) return 0;
+    float px = hh;   // (the size that makes the icon's ink hh high: the glyph's box scales with the size)
+    ImFontBaked* b = nullptr;
+    ImFontGlyph* g = nullptr;
+    for (int k = 0; k < 2; k++) {
+        b = f->GetFontBaked(px);
+        if (!b) return 0;
+        g = b->FindGlyphNoFallback((ImWchar)code);
+        if (!g || !g->Visible) return 0;
+        const float ih = (g->Y1 - g->Y0) * px / b->Size;
+        if (ih < 1.0f) return 0;
+        px *= hh / ih;
+    }
+    b = f->GetFontBaked(px);
+    if (!b) return 0;
+    g = b->FindGlyphNoFallback((ImWchar)code);
+    if (!g || !g->Visible) return 0;
+    const float scale = px / b->Size, w = (g->X1 - g->X0) * scale;
+    if (draw) {   // (the code point as UTF-8: all of them are in the BMP)
+        char text[4] = {(char)(0xE0 | code >> 12), (char)(0x80 | (code >> 6 & 0x3F)), (char)(0x80 | (code & 0x3F)), 0};
+        c.d->AddText(f, px, ImVec2(x - g->X0 * scale, cy - (g->Y0 + g->Y1) * 0.5f * scale), kInk, text);
+    }
+    return w;
+}
 /// One glyph at p (its top left; the line px + 10 points high); its width. draw false: measured only
 inline float glyph(Ctx& c, float px, ImVec2 p, const Prompt& pr, bool draw) {
     const float s = c.s, hh = px + 10 * s, my = p.y + hh * 0.5f, kpx = px * 0.84f;
@@ -179,6 +250,33 @@ inline float glyph(Ctx& c, float px, ImVec2 p, const Prompt& pr, bool draw) {
         }
         case kConfirm: return key(p.x, "Enter");
         default: return key(p.x, "Esc");
+        }
+    }
+    if (game_icons(c)) {   // (the game's own button icons: the face's font, else the ROM's Switch icons)
+        const bool face = face_icons(c);
+        ImFont* f = face ? c.f.prompt_face[c.prompt_face] : c.f.prompt;
+        auto icon = [&](int pad) { return face ? (unsigned)(0xF700 + pad) : prompt_icons::pad(pad); };
+        unsigned one = 0, two = 0;
+        switch (pr.g) {
+        case kUpDown:
+            if (face) one = icon(HOS_PAD_UP), two = icon(HOS_PAD_DOWN);
+            else one = prompt_icons::kUpDown;
+            break;
+        case kLeftRight:
+            if (face) one = icon(HOS_PAD_LEFT), two = icon(HOS_PAD_RIGHT);
+            else one = prompt_icons::kLeftRight;
+            break;
+        case kTabs: one = icon(HOS_PAD_LSHOULDER), two = icon(HOS_PAD_RSHOULDER); break;
+        case kConfirm: one = icon(prompt_icons::dot_pad(c.confirm_dot)); break;
+        case kBack: one = icon(prompt_icons::dot_pad(c.back_dot)); break;
+        default: break;
+        }
+        const float w = game_icon(c, f, one, p.x, my, hh, draw);
+        if (w > 0) {
+            if (!two) return w;
+            const float w2 = game_icon(c, f, two, p.x + w + 3 * s, my, hh, draw);
+            if (w2 > 0) return w + 3 * s + w2;
+            return w;
         }
     }
     const float r = hh * 0.5f;

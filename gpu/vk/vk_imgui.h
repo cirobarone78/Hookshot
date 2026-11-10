@@ -14,6 +14,8 @@ struct Fonts {
     ImFont* body = nullptr;      // (rows, help, prompts)
     ImFont* strong = nullptr;    // (the selected row, values, buttons)
     ImFont* heading = nullptr;   // (tabs, titles, the wordmark)
+    ImFont* prompt = nullptr;    // (the game's button icons, Font2/Scalable/External: the prompt strip's controller buttons)
+    ImFont* prompt_face[HOS_PROMPT_N] = {};   // (prompts/<face>/External.bfotf: one icon per pad input at U+F700 + HOS_PAD_*)
 };
 
 /// A new ImGui frame for a w x h window image (the context made and the fonts loaded on the first call); false when ImGui

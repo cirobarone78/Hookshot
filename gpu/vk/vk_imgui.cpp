@@ -51,18 +51,42 @@ std::string romfs_dir() {
         if (const char* d = host->romfs_dir(); d && *d) return d;
     return "";
 }
-ImFont* game_font(const char* name) {
-    static game_font::Reader reader;
-    static bool opened = false, open = false;
-    if (!opened) opened = true, open = reader.open(romfs_dir());
-    if (!open) return nullptr;
-    std::vector<unsigned char> bytes = reader.read(name);
+ImFont* add_font(std::vector<unsigned char>& bytes, const char* name, const ImWchar* glyphs) {
     if (bytes.empty()) return nullptr;
     void* font = IM_ALLOC(bytes.size());   // (the atlas owns it: in memory only)
     memcpy(font, bytes.data(), bytes.size());
     ImFontConfig cfg;
+    cfg.GlyphRanges = glyphs;
     snprintf(cfg.Name, sizeof cfg.Name, "%s", name);
     return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(font, (int)bytes.size(), 18.0f, &cfg);
+}
+ImFont* game_font(const char* name, bool latin = true, const ImWchar* glyphs = nullptr) {
+    static game_font::Reader reader;
+    static bool opened = false, open = false;
+    if (!opened) opened = true, open = reader.open(romfs_dir());
+    if (!open) return nullptr;
+    std::vector<unsigned char> bytes = reader.read(name, latin);
+    return add_font(bytes, name, glyphs);
+}
+/// The game folder: the romfs folder's parent (--romfs is the dump's folder, or romfs beside the game)
+std::string game_dir() {
+    std::string d = romfs_dir();
+    while (!d.empty() && (d.back() == '/' || d.back() == '\\')) d.pop_back();
+    const size_t slash = d.find_last_of("/\\");
+    return slash == std::string::npos ? std::string() : d.substr(0, slash + 1);
+}
+/// prompts/<face>/External.bfotf: nx2/prompt_assets.py's face font, one icon per pad input at U+F700 + HOS_PAD_*
+ImFont* prompt_face_font(const char* face) {
+    const std::string dir = game_dir();
+    if (dir.empty()) return nullptr;
+    std::vector<unsigned char> raw;
+    const std::string path = dir + "prompts/" + face + "/External.bfotf";
+    if (!game_font::read_file(path, raw)) return nullptr;
+    std::vector<unsigned char> font = game_font::bfotf_font(raw);
+    static const ImWchar glyphs[] = {0xF700, 0xF700 + HOS_PAD_N - 1, 0};
+    char name[32];
+    snprintf(name, sizeof name, "prompts/%s", face);
+    return add_font(font, name, glyphs);
 }
 ImFont* bundled_font(const unsigned char* data, unsigned size, const char* name) {
     ImFontConfig cfg;
@@ -70,7 +94,8 @@ ImFont* bundled_font(const unsigned char* data, unsigned size, const char* name)
     snprintf(cfg.Name, sizeof cfg.Name, "%s", name);
     return ImGui::GetIO().Fonts->AddFontFromMemoryTTF((void*)data, (int)size, 18.0f, &cfg);
 }
-/// The fonts: the game's own when its files have them (all three or none, so the menu never mixes the two), else Libertinus
+/// The fonts: the game's own when its files have them (all three or none, so the menu never mixes the two), else Libertinus.
+/// The prompt strip's controller buttons are the game's own button-icon font (External), whichever menu font is used.
 void load_fonts() {
     const char* off = getenv("RX_VK_UI_GAME_FONT");   // (0: Libertinus whatever the game's files have)
     ImFont* body = nullptr;
@@ -90,7 +115,19 @@ void load_fonts() {
         heading = bundled_font(hookshot_font_heading, hookshot_font_heading_size, "Libertinus Serif Semibold");
         logf("vk: ui: the bundled font (Libertinus): the game's files have no menu font");
     }
-    fonts_ = {body, strong, heading};
+    // (the Switch's icons in the game's button-icon font, U+E040..U+E065: nx2/prompt_assets.py SWITCH_ICON; the menu's prompts
+    // draw them, as the game's own texts do, and fall back to its drawn buttons when the files have no External font)
+    static const ImWchar prompt_glyphs[] = {0xE040, 0xE065, 0};
+    ImFont* prompt = game_font("External", false, prompt_glyphs);
+    if (prompt) logf("vk: ui: the game's button icons, from its files");
+    // (the per-face prompts nx2/prompt_assets.py writes, for the controller the game was given: one icon per pad input at
+    // U+F700 + HOS_PAD_*, the face's own for the menu's prompts too)
+    static const char* const faces[HOS_PROMPT_N] = {"switch", "xbox", "ps4", "ps5", "steamdeck"};
+    ImFont* face_fonts[HOS_PROMPT_N] = {};
+    for (int i = 0; i < HOS_PROMPT_N; i++) face_fonts[i] = prompt_face_font(faces[i]);
+    for (ImFont* f : face_fonts) if (f) { logf("vk: ui: the game's button prompts, from its files"); break; }
+    fonts_ = {body, strong, heading, prompt, {}};
+    for (int i = 0; i < HOS_PROMPT_N; i++) fonts_.prompt_face[i] = face_fonts[i];
 }
 
 // ---- textures: made and updated on the present's command buffer, let go some frames later ----

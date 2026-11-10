@@ -237,8 +237,9 @@ in `hookshot_options.ini` in the game folder.
 
 The menu, the FPS counter and the start-up screen are drawn in the style of the game's own menus. They use the game's
 own menu font, read into memory from your game files (the romfs folder the game runs from) the first time one of them is
-drawn. It is never copied anywhere, and Hookshot does not include it. Without it, or if it has no Latin letters, they use
-Libertinus, which Hookshot includes.
+drawn. The menu's button prompts use the game's own button icons from those files too, for the controller in use, so they
+match the game's (the drawn ones if the files have no icon font). Neither is copied anywhere, and Hookshot includes
+neither. Without the menu font, or if it has no Latin letters, the text uses Libertinus, which Hookshot includes.
 
 The rows marked "after a restart" below are read when the game starts. While one is changed, it is tagged "After
 restart" and the help on the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps

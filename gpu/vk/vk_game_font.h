@@ -2,8 +2,9 @@
 // romfs/Font2/Scalable/<name>.Nin_Ounce_NVN2.bfotf.zs is zstd with the dictionary zs.zsdic, kept in the SARC archive
 // romfs/Pack/ZsDic.pack.zs (zstd, no dictionary). The .bfotf in it is an OpenType font behind an 8-byte header, XOR-ed with a
 // 4-byte key: the first little-endian word is 0x18029a7f XOR the key, the second the font's size (big-endian) XOR the key.
-// A font without Latin letters is not used (the menu would draw boxes): Libertinus is, then. No Vulkan or ImGui here:
-// tests/test_game_font.py checks it on files of its own making.
+// A font without Latin letters is not used for the menu's text (it would draw boxes): Libertinus is, then. The button-icon font
+// (External) is read without that check, for the prompt strip's icons. No Vulkan or ImGui here: tests/test_game_font.py checks
+// it on files of its own making.
 #pragma once
 
 #include <cstdint>
@@ -119,13 +120,14 @@ struct Reader {
             dict = ZSTD_createDDict(zsdic.data(), zsdic.size());
         return dict != nullptr;
     }
-    /// A font by name ("ClarimoUDPE-Regular"); empty when the files do not have it, or it has no Latin letters
-    std::vector<unsigned char> read(const char* name) const {
+    /// A font by name ("ClarimoUDPE-Regular"); empty when the files do not have it, or (latin) it has no Latin letters.
+    /// The button-icon font ("External") has no letters: read it with latin false.
+    std::vector<unsigned char> read(const char* name, bool latin = true) const {
         std::vector<unsigned char> packed, raw;
         if (!dict || !read_file(romfs + "Font2/Scalable/" + name + ".Nin_Ounce_NVN2.bfotf.zs", packed) || !unzstd(packed, dict, raw))
             return {};
         std::vector<unsigned char> font = bfotf_font(raw);
-        if (!font.empty() && !has_latin(font)) font.clear();
+        if (!font.empty() && latin && !has_latin(font)) font.clear();
         return font;
     }
 };

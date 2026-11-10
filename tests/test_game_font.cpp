@@ -1,7 +1,8 @@
 // The game's menu font reader (gpu/vk/vk_game_font.h) on files of its own making, in a folder laid out as a romfs: a SARC with
 // the dictionary in a zstd frame, a font XOR-ed behind its 8-byte header in another. No game file is read. The good case
 // gives the font's bytes back; a truncated frame, a name offset past the archive, a name that only starts like the one asked
-// for, a wrong size word, a wrong font tag and a font with no Latin letters (argv[3]: only a Hebrew letter) give nothing.
+// for, a wrong size word, a wrong font tag and a font with no Latin letters (argv[3]: only a Hebrew letter) give nothing;
+// the same font is still read with latin false, as the prompt strip's button-icon font is.
 #include "../gpu/vk/vk_game_font.h"
 
 #include <cstdio>
@@ -115,6 +116,7 @@ int main(int argc, char** argv) {
         Reader r;
         CHECK("opens", r.open((root / "hebrew").string()));
         CHECK("no Latin letters: not used", r.read("Test").empty());
+        CHECK("read without the Latin check, for the button icons", r.read("Test", false) == hebrew);
         CHECK("though it is a font", bfotf_font(bfotf(hebrew, key)) == hebrew);
     }
     // ---- the archive: a truncated frame, a name offset past it, a longer name that starts the same ----
