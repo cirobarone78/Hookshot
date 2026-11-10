@@ -26,11 +26,14 @@ def main():
     p.add_argument("--cxx", default="g++")
     p.add_argument("--source", type=Path, default=ROOT / "gpu/vk/vk_menu.cpp")
     a = p.parse_args()
-    fn = block(a.source.read_text(encoding="utf-8"), "void menu_record(")
-    fixture = r'''#include <atomic>
+    source = a.source.read_text(encoding="utf-8")
+    fn = block(source, "int scale_of(") + "\n" + block(source, "void menu_record(")
+    fixture = r'''#include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <initializer_list>
 #include <mutex>
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
 using VkCommandBuffer = int;
@@ -46,6 +49,7 @@ struct VkDependencyInfo {
     int sType; unsigned memoryBarrierCount = 0; const VkMemoryBarrier2* pMemoryBarriers = nullptr;
 };
 struct { bool show_fps = false; } opts;
+struct { struct { uint32_t height = 720; } swap_extent; } dev;
 struct Bitmap { uint32_t w, h; } fps_bmp{120, 54}, menu_bmp{360, 500}, startup_bmp{600, 150};
 struct Upload {} ups[3][3];
 std::mutex bmp_mu;

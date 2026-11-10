@@ -2444,7 +2444,8 @@ void menu_tick() {
             if (opts.framegen >= 1) snprintf(fps_sub, sizeof fps_sub, "game %.0f", game);
             else fps_sub[0] = 0;
             fps_bmp.keyed = true;
-            gdi_draw(fps_bmp, 120u * scale, 54u * scale, paint_fps, scale);
+            const int fps_scale = scale_of(dev.swap_extent.height);
+            gdi_draw(fps_bmp, 120u * fps_scale, 54u * fps_scale, paint_fps, fps_scale);
         }
     }
 }
@@ -2475,7 +2476,8 @@ void menu_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_
         std::unique_lock lk(bmp_mu);
         const uint32_t fw = fps_bmp.w;
         lk.unlock();
-        if (fw) copy_over(cmd, dst, fps_bmp, ups[1][slot], (int)w - (int)fw - (int)(12 * cur_scale), (int)(10 * cur_scale), w, h);
+        const int fps_scale = scale_of(dev.swap_extent.height);
+        if (fw) copy_over(cmd, dst, fps_bmp, ups[1][slot], (int)w - (int)fw - (int)(12 * fps_scale), (int)(10 * fps_scale), w, h);
     }
     if (open_now.load(std::memory_order_relaxed)) {
         std::unique_lock lk(bmp_mu);
