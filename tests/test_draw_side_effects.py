@@ -9,6 +9,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "{cxx}"]
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = r"""
 #include <algorithm>
@@ -42,7 +44,7 @@ struct Stages {
 };
 struct Program {
     std::atomic<bool> ready{false};
-    bool failed = false, fallback = false;
+    bool failed = false, fallback = false, fallback_task = false;
     int layout = 1, fallback_topology = 0;
     Stages stages{&ready, {}};
 };
@@ -50,6 +52,9 @@ struct PipeEntry { std::atomic<bool> ready{false}; VkPipeline pipeline = 1; };
 struct Targets { bool persistent = true; };
 struct NvnState {};
 struct ParLock {};
+struct DrawArgs { bool indirect = true; int groups[3]{1, 1, 1}; int first_task = 0; };
+int fallback_task_groups(const Program&) { std::abort(); }
+void draw(int, NvnState&, const DrawArgs&) { std::abort(); }
 Program* current;
 PipeEntry pipe_entry;
 int effect;
@@ -78,7 +83,7 @@ void exposure_note(NvnState&, const Program&) {}
 void ensure_layout(Program&) {}
 PipeEntry* graphics_pipeline(const Program&, NvnState&, const Targets&, int, const unsigned char*) { return &pipe_entry; }
 void decision(const Program* cp, const Targets& at) {
-    NvnState s; int topo = 0; unsigned char types[8]{};
+    NvnState s; DrawArgs d; int cmd = 0, topo = 0; unsigned char types[8]{};
 @BLOCK@
     // Fake draw/consumer witness only: not actual GPU shader execution or resource binding.
     ++draws;
@@ -92,7 +97,9 @@ void scenario(int kind, bool translated, bool pipeline_hot, bool persistent) {
     if (translated) publish();
     pipe_entry.ready.store(pipeline_hot, std::memory_order_release);
     const bool force = std::getenv("RX_VK_PIPE_SKIP") && std::atoi(std::getenv("RX_VK_PIPE_SKIP")) == 0;
-    const bool should_draw = pipeline_hot || force || !persistent || kind != 0;
+    const bool legacy = std::getenv("RX_VK_PIPE_SKIP") && std::atoi(std::getenv("RX_VK_PIPE_SKIP")) == 2;
+    const bool skip_unknown = legacy && !translated && persistent;
+    const bool should_draw = !skip_unknown && (pipeline_hot || force || !persistent || kind != 0);
     decision(&p, {persistent});
     char label[120];
     std::snprintf(label, sizeof label, "kind%d translated%d hot%d persistent%d force%d", kind, translated, pipeline_hot, persistent, force);
@@ -100,8 +107,8 @@ void scenario(int kind, bool translated, bool pipeline_hot, bool persistent) {
     check(draws == int(should_draw), label);
     if (kind && should_draw) check(output == 42, "producer write absent at fake consumer");
     check(!early_reads, "metadata inspected before publication");
-    check(translation_waits == int(!translated), "unknown translation must wait");
-    if (pipeline_hot || force || !persistent) check(scans == 0, "unnecessary classification");
+    check(translation_waits == int(!translated && !skip_unknown), "translation wait mode");
+    if (pipeline_hot || force || !persistent || skip_unknown) check(scans == 0, "unnecessary classification");
     if (!pipeline_hot && !force && persistent && should_draw) check(pipeline_waits == 1, "side effects must wait for pipeline");
     std::printf("%s %s draws%d skips%d scans%d twait%d pwait%d\n", failures == before ? "PASS" : "RED", label,
                 draws, st_pending_skips, scans, translation_waits, pipeline_waits);
@@ -111,6 +118,8 @@ int main() {
         for (bool translated : {false, true})
             for (bool hot : {false, true}) scenario(kind, translated, hot, true);
     scenario(1, true, false, false);
+    scenario(1, false, false, false);
+    scenario(0, false, false, false);
     std::printf("%d failures; fake CPU decision check only\n", failures);
     return failures ? 1 : 0;
 }
@@ -120,8 +129,9 @@ int main() {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="g++")
+    parser.add_argument("--source", type=Path, default=ROOT)
     args = parser.parse_args()
-    src = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
+    src = (args.source / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     try:
         start = src.index("    static const bool always_wait =", src.index("void draw(VkCommandBuffer"))
         end = src.index("    cur_program = &p;", start)
@@ -133,22 +143,22 @@ def main():
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Wno-unused-variable",
                         str(cpp), "-o", str(exe)], check=True, timeout=60)
         failed = False
-        for force in (False, True):
+        for mode in (None, "0", "1", "2"):
             env = os.environ.copy()
             env.pop("RX_VK_PIPE_SKIP", None)
-            if force:
-                env["RX_VK_PIPE_SKIP"] = "0"
+            if mode is not None:
+                env["RX_VK_PIPE_SKIP"] = mode
             result = subprocess.run([str(exe)], env=env, capture_output=True, text=True, timeout=10)
             lines = result.stdout.splitlines()
-            complete = "0 failures; fake CPU decision check only" in lines and sum(l.startswith("PASS kind") for l in lines) == 21
+            complete = "0 failures; fake CPU decision check only" in lines and sum(l.startswith("PASS kind") for l in lines) == 23
             ok = result.returncode == 0 and complete
-            print(f"RX_VK_PIPE_SKIP={'0' if force else 'unset'}: {'PASS' if ok else 'FAIL'}")
+            print(f"RX_VK_PIPE_SKIP={mode if mode is not None else 'unset'}: {'PASS' if ok else 'FAIL'}")
             if not ok:
                 failed = True
-                print("fixture failed or did not finish all 21 cases\n" + result.stdout + result.stderr)
+                print("fixture failed or did not finish all 23 cases\n" + result.stdout + result.stderr)
         if failed:
             raise SystemExit(1)
-    print("PASS: unknown translations wait; memory-writing graphics producers cannot be skipped; hot draws do not scan stages")
+    print("PASS: unknown translations wait by default; mode 2 restores their old skip; translated writers wait; hot draws do not scan stages")
 
 
 if __name__ == "__main__":
