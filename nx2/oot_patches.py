@@ -22,6 +22,7 @@ Each is a runtime switch where it can be, so the game's own path stays reachable
 - The OptimizeChangeBank thread's allocations tried again when their heap is full (host/oot_heap_retry.c): f_804566e0's two
   calls of f_80522050, its GPU memory (GPU_ALLOC_SITES), and its two tryAllocs of CPU buffers (HEAP_ALLOC_SITES). They went on
   with a null pointer and crashed writing through it (issue 1697). The supported build only.
+- Ocarina note controls: the note-wait action's start (f_828a9190) and tick (f_828a9280) report the wait to the host (hos_oc_wait, hos_oc_beat), which swaps the five notes for its own controls (host/nn_hid.c).
 """
 import collections
 import glob
@@ -656,6 +657,65 @@ def patch_heap_retry(s):
     return s, found
 
 
+# (the wait action's start and tick, code_033.c; the anchors carry call-return PC literals, so each is once in its function)
+OC_DECL = ("extern volatile int hos_oc_wait;\nextern volatile int hos_oc_last_kind;\n"
+           "extern volatile unsigned hos_oc_beat;\n")
+OC_ENTRY_HEAD = "void f_828a9190(Ctx *__restrict A64_NOESC c) {"
+OC_ENTRY_OLD = ("    c->x[1]=recomp_load32(c,c->x[19] + 32);\n"
+                "    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[20] = _r; }\n"
+                "c->x[30] = 0x828a91e4ULL; f_832b35d0(c);")
+OC_ENTRY_NEW = ("    c->x[1]=recomp_load32(c,c->x[19] + 32);\n"
+                "    hos_oc_last_kind = (int)c->x[1], hos_oc_wait = (c->x[1] == 1 || c->x[1] == 3) ? 1 : 2, hos_oc_beat++;"
+                "   /* (nx2/oot_patches.py: the note wait began; the live player's kinds are 1 and 3) */\n"
+                "    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[20] = _r; }\n"
+                "c->x[30] = 0x828a91e4ULL; f_832b35d0(c);")
+OC_TICK_HEAD = "void f_828a9280(Ctx *__restrict A64_NOESC c) {"
+OC_TICK_OLD = ("    c->x[8]=recomp_load8(c,c->x[0] + 24);\n"
+               "if (!((c->x[8] >> 1) & 1)) { goto L_828a92e4; }")
+OC_TICK_NEW = ("    c->x[8]=recomp_load8(c,c->x[0] + 24);\n"
+               "if (!((c->x[8] >> 1) & 1)) { hos_oc_wait = 0; goto L_828a92e4; }"
+               "   /* (nx2/oot_patches.py: this action stopped running: no wait) */\n"
+               "    hos_oc_wait = (hos_oc_last_kind == 1 || hos_oc_last_kind == 3) ? 1 : 2, hos_oc_beat++;"
+               "   /* (nx2/oot_patches.py: re-armed every running tick: the input resets between note windows end "
+               "one wait without ending the action; the beat tells the host the wait is alive) */")
+OC_DONE_OLD = "recomp_store32(c,c->x[19] + 24,c->x[9]);"
+OC_DONE_NEW = (OC_DONE_OLD + "\n    hos_oc_wait = 0;"
+               "   /* (nx2/oot_patches.py: the wait action finished) */")
+OC_RESET_OLD = "c->x[30] = 0x828a93e4ULL; f_832b35d0(c);"
+OC_RESET_NEW = (OC_RESET_OLD + "\n    hos_oc_wait = 0;"
+                "   /* (nx2/oot_patches.py: the input reset: this window's wait is over) */")
+
+
+def patch_ocarina_wait(s):
+    """The wait action reports itself to the host; None when the lift has no such functions, s unchanged when an anchor drifted or it is applied already (never a half-patch)."""
+    splices, hits = [], 0
+    for head, pairs in ((OC_ENTRY_HEAD, [(OC_ENTRY_OLD, OC_ENTRY_NEW)]),
+                        (OC_TICK_HEAD, [(OC_TICK_OLD, OC_TICK_NEW), (OC_DONE_OLD, OC_DONE_NEW),
+                                        (OC_RESET_OLD, OC_RESET_NEW)])):
+        at = s.find(head)
+        if at < 0:
+            return None
+        end = s.find("\nvoid f_", at + len(head))
+        body = s[at:end if end >= 0 else len(s)]
+        out = body
+        for old, new in pairs:
+            if new in out:
+                continue
+            if out.count(old) != 1:
+                return s
+            out = out.replace(old, new, 1)
+        if out != body:
+            splices.append((at, end, out))
+            hits = 1
+    if not hits:
+        return s
+    for at, end, out in reversed(splices):   # (later functions first: earlier splices keep the earlier offsets valid)
+        s = s[:at] + out + (s[end:] if end >= 0 else "")
+    if OC_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + OC_DECL, 1)
+    return s
+
+
 def patch_file(s, name, protect_hearts=False):
     """One lifted file's patches (apply(), and nx2/chunks.py edit_c, a process per file): (its text, the places counted in it, the
     lines to print). The counts add up over the files; report() decides from the sums"""
@@ -704,6 +764,13 @@ def patch_file(s, name, protect_hearts=False):
         if movie != out:
             lines.append("oot_patches: the movie's frame count by the frames' time in " + name)
         out = movie
+    ocw = patch_ocarina_wait(out)
+    if ocw is not None:
+        if OC_ENTRY_NEW in ocw:   # (made now, or by an earlier run over this file)
+            counts["ocarina note wait"] += 1
+        if ocw != out:
+            lines.append("oot_patches: the ocarina note wait in " + name)
+        out = ocw
     out, n = fixed_scale(out)
     if n:
         counts["fixed path's scale"] += 1
@@ -786,7 +853,8 @@ def patch_file(s, name, protect_hearts=False):
 def report(paths, counts, protect_hearts=False):
     """The warnings from the files' counts (each file's patch_file counts, in the order of paths), and the step divides' rule:
     both or neither, so a file of paths that has the hook is put back"""
-    done = {"dynamic resolution branch": 0, "text speed block": 0, "fixed path's scale": 0, "movie's frame count": 0}
+    done = {"dynamic resolution branch": 0, "text speed block": 0, "fixed path's scale": 0, "movie's frame count": 0,
+            "ocarina note wait": 0}
     if protect_hearts:   # (the supported build's: these places are its functions)
         done["menu focus hook"] = 0
         done["menu tick hook"] = 0
