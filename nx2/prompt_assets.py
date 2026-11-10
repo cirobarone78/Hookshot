@@ -912,8 +912,8 @@ def main():
             import PIL  # noqa: F401
             import texture2ddecoder  # noqa: F401
             textures = read_zs(a.romfs, TEXTURES, dictionary)
-        except ImportError:
-            print("prompts: the textures keep the Switch's icons (no astc_encoder, Pillow or texture2ddecoder)", file=sys.stderr)
+        except ImportError as e:   # (the module that is missing: a package's own dependency too, astc_encoder's archspec)
+            print(f"prompts: the textures keep the Switch's icons (no {e.name or e})", file=sys.stderr)
     if textures:
         os.makedirs(a.out, exist_ok=True)
         with open(os.path.join(a.out, "Common.bntx"), "wb") as f:
