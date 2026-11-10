@@ -28,7 +28,18 @@ LONG64 InterlockedCompareExchange64(volatile LONG64 *p, LONG64 value, LONG64 exp
     return old;
 }
 static int64_t now_ns = 10000000000LL, sampling;
+typedef long LONG;   /* (the note layer's words: production gets it from windows.h) */
 static int key_bind[HOS_KEY_N][2], pad_raw_now;   /* (the keys-only controls after the Switch's buttons) */
+typedef int SRWLOCK;   /* (host/nn_hid.c guards the pad table with these since #1990) */
+#define SRWLOCK_INIT 0
+static void AcquireSRWLockShared(SRWLOCK *p) { (void)p; }
+static void ReleaseSRWLockShared(SRWLOCK *p) { (void)p; }
+static int pad_bind[HOS_KEY_N][2];   /* (the ocarina note layer reads it; hos_oc_wait stays 0, so nothing is consumed) */
+static SRWLOCK pad_bind_lock = SRWLOCK_INIT;
+static int pad_after_menu;
+static LONG oc_consumed_keys[256];
+static uint64_t oc_consumed_pads;
+volatile uint64_t hos_oc_note_bits; volatile int hos_oc_wait; volatile int hos_oc_last_kind; volatile unsigned hos_oc_beat;
 static unsigned char *memory;
 static char last_log[256];
 static int origin_logs, script_logs;
