@@ -987,6 +987,19 @@ static void oot_player_speed(Ctx *c, uint64_t components) {
     logged = percent;
 }
 
+/* Whether the game moved Link since the flight last placed him: he is more than 2 units (the flight moves him 4 a second)
+   from where it holds him. A respawn after a fall or a warp keeps his actor, so the flight took him straight back to
+   where it had him, over the same drop: he fell, respawned and fell again until the flight was switched off. It starts
+   again from where the game put him instead. */
+static int oot_flight_moved_away(Ctx *c, uint64_t actor, const float held[3]) {
+    float apart = 0;
+    for (unsigned i = 0; i < 3; i++) {
+        const float d = oot_load_float(c, actor + 796 + i * 4) - held[i];
+        apart += d * d;
+    }
+    return apart > 2.0f * 2.0f;
+}
+
 static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {
     int rx_option(int id, int otherwise);
     static uint64_t flying_actor, marked_actor, marked_controller;
@@ -1046,7 +1059,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
         memcpy(target, mark, sizeof target);
         memset(velocity, 0, sizeof velocity);
         flying_actor = flying ? actor : 0;
-    } else if (flying_actor != actor || elapsed < 0 || elapsed > 250000000) {
+    } else if (flying_actor != actor || elapsed < 0 || elapsed > 250000000 || oot_flight_moved_away(c, actor, target)) {
         for (unsigned i = 0; i < 3; i++) target[i] = oot_load_float(c, actor + 796 + i * 4);
         memset(velocity, 0, sizeof velocity);
         flying_actor = actor;
