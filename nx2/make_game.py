@@ -317,7 +317,12 @@ def check_supported_build(exefs):
 def stand_in_damaged_files(out, romfs):
     """An incomplete dump's damaged textures replaced by whole ones of the same kind, and said: without them the game
     leaves out the walls and floors that use them (the Water Temple, #1002). Only in a romfs this builder unpacked (its
-    .hookshot_romfs stamp), and once per unpack: .hookshot_romfs_checked holds the stamp it was checked under"""
+    .hookshot_romfs stamp), and once per unpack: .hookshot_romfs_checked holds the stamp it was checked under.
+    (HOOKSHOT_SKIP_DAMAGED_SCAN=1: skip the walk of every .zs file. A complete dump needs none, and on Windows the
+    antivirus's first-open scan of 186k files can make this pass take many minutes.)"""
+    if os.environ.get("HOOKSHOT_SKIP_DAMAGED_SCAN") == "1":
+        print("the damaged-file check is skipped (HOOKSHOT_SKIP_DAMAGED_SCAN=1)", flush=True)
+        return
     good = os.path.join(out, ".hookshot_romfs")
     checked = os.path.join(out, ".hookshot_romfs_checked")
     if not os.path.isfile(good) or not os.path.isdir(romfs):
@@ -992,8 +997,11 @@ def profile_readable(prof):
 def copy_writable(src, dst):
     """src's bytes at dst, writable whatever src's mode: copy2 took the mode along, and from a read-only install (a Nix
     store, a packaged tools folder) the copies in the work folder were read-only, so lift.py could not write chunks.txt
-    again (PermissionError) and every later build failed on the same file"""
+    again (PermissionError) and every later build failed on the same file.
+    (--work may be the checkout's own work folder: there src and dst are the same file, and copyfile raises SameFileError.)"""
     if os.path.exists(dst):
+        if os.path.abspath(src) == os.path.abspath(dst):
+            return
         os.chmod(dst, stat.S_IREAD | stat.S_IWRITE)
     shutil.copyfile(src, dst)
 
