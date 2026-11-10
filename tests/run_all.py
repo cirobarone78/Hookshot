@@ -54,6 +54,7 @@ ARGS = {
     "tests/test_lower_depbar.py": ["--cxx", "clang++"],
     "tests/test_lower_register_markers.py": ["--cxx", "clang++"],
     "tests/test_text_speed.py": ["--cc", "gcc"],
+    "tests/test_frame_rate_cap_step.py": ["--cc", "gcc"],
     "tests/test_audio_in.py": ["--cc", "gcc", "--cxx", "g++"],
     "tests/test_linux_menu_utf8.py": ["--cc", "clang"],
     "tests/test_upscale_fallback.py": ["--cxx", "g++"],
