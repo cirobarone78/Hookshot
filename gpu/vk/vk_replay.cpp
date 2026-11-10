@@ -100,9 +100,10 @@ const bool rec_thread_hook = (::mkwvk::rec::g_thread_start_hook = [] {
 // (RX_VK_BATCH: see queue_flush_locked)
 VkSemaphore batch_tl = VK_NULL_HANDLE;
 uint64_t batch_next = 0, batch_flushed = 0;
+uint64_t rec_out = 0;   // (the recordings' timeline value the last flush sent out; a wait on one above it is a wait on the held batch)
 struct { std::vector<VkCommandBufferSubmitInfo> cbs; uint64_t signal = 0; bool any_signal = false; uint64_t rec = 0; } pend;   // (rec: the recordings' timeline value the held ones reach)
 int64_t st_flushes, st_batched_cbs;
-enum { FR_OTHER, FR_POLL, FR_WAIT, FR_SLOT, FR_PRESENT, FR_CAP, FR_VALUE, FR_COUNT };
+enum { FR_OTHER, FR_POLL, FR_WAIT, FR_SLOT, FR_PRESENT, FR_CAP, FR_VALUE, FR_READBACK, FR_COUNT };
 int64_t st_reason[FR_COUNT];
 int flush_reason = FR_OTHER;
 std::chrono::steady_clock::time_point pend_since;
@@ -214,6 +215,7 @@ void queue_flush_locked() {   // (dev.present_mu held)
     if (res != VK_SUCCESS && failures++ < 8) logf("vk: batched submit %llu failed (%d)", (unsigned long long)batch_next, (int)res);
     if (res == VK_ERROR_DEVICE_LOST) device_lost();
     batch_flushed = batch_next;
+    if (pend.rec) rec_out = std::max(rec_out, pend.rec);
     st_flushes++, st_batched_cbs += (int64_t)pend.cbs.size();
     st_reason[flush_reason]++;
     flush_reason = FR_OTHER;
@@ -2127,9 +2129,15 @@ bool wait_recorded(uint64_t f, uint64_t timeout_ns, int* ok) {
         if (it == value_rec.end()) return false;
         seq = it->second;
     }
-    // (a batched submit holds its recordings' signal until the batch goes out: the readback wait in invalidate came here
-    // without a flush, and the job that waited held up the main thread, so nothing flushed it: the load hang on RADV)
-    queue_flush_for(FR_WAIT);
+    // (hookshot) a read's demand: that recording may still be held in the batch, its write-back going nowhere until a present
+    // flushed it — a read waited the rest of the frame for one (23-28 ms each, ~1.4 a frame on the sync replay: all its
+    // readbacks come here). Sent now the GPU starts the write-back at once. Only when it is held (seq above what the last flush
+    // sent out: a lower one is on the GPU already, and an empty batch nothing the wait needs — and the reason must not be left
+    // set for another's flush, which queue_flush_locked's empty return would do)
+    {
+        std::lock_guard lk(dev.present_mu);
+        if (seq > rec_out && !pend.cbs.empty()) flush_reason = FR_READBACK, queue_flush_locked();
+    }
     VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
     wi.semaphoreCount = 1;
     wi.pSemaphores = &rec_timeline;
@@ -3675,11 +3683,12 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     static int64_t presents_counted, st_flushes0, st_cbs0, r0[FR_COUNT];
     if (st_flushes && ++presents_counted % 120 == 0) {
         logf("vk: batched submits: %lld flushes, %.1f command buffers each, over 120 presents; by reason: poll %lld, wait %lld, "
-             "slot %lld, present %lld, cap %lld, value %lld, other %lld", (long long)(st_flushes - st_flushes0),
+             "slot %lld, present %lld, cap %lld, value %lld, readback %lld, other %lld", (long long)(st_flushes - st_flushes0),
              (double)(st_batched_cbs - st_cbs0) / std::max<int64_t>(1, st_flushes - st_flushes0),
              (long long)(st_reason[FR_POLL] - r0[FR_POLL]), (long long)(st_reason[FR_WAIT] - r0[FR_WAIT]),
              (long long)(st_reason[FR_SLOT] - r0[FR_SLOT]), (long long)(st_reason[FR_PRESENT] - r0[FR_PRESENT]),
              (long long)(st_reason[FR_CAP] - r0[FR_CAP]), (long long)(st_reason[FR_VALUE] - r0[FR_VALUE]),
+             (long long)(st_reason[FR_READBACK] - r0[FR_READBACK]),
              (long long)(st_reason[FR_OTHER] - r0[FR_OTHER]));
         st_flushes0 = st_flushes, st_cbs0 = st_batched_cbs;
         std::memcpy(r0, st_reason, sizeof r0);
