@@ -15,9 +15,11 @@
 // - in this run (Quarantine::begin answers kFaulted for it);
 // - in later runs on the same driver (hookshot_driver_faults.txt beside the executable, one "<vendor> <driver> <key>" line a
 //   fault, read at the first build; a driver update tries them again).
-// The builds of one program also run one at a time: a second thread waits in Quarantine::begin, outside the driver, and
-// learns of the first one's fault there instead of being caught in the driver behind it.
-// RX_VK_DRIVER_FAULTS=0: off (every program asked of the driver, as before).
+// Where the driver needs it, the builds of one program also run one at a time (serial): a second thread waits in
+// Quarantine::begin, outside the driver, and learns of the first one's fault there instead of being caught in the driver behind
+// it. That is on AMD by default, where the hang was seen. Other drivers keep building a program's state variants in parallel, as
+// before, and only the quarantine applies to them.
+// RX_VK_DRIVER_FAULTS=0: off (every program asked of the driver, as before); =2: serial on every driver.
 #pragma once
 
 #include <condition_variable>
@@ -67,12 +69,24 @@ public:
         std::lock_guard lk(mu_);
         return bad_.count(key) != 0;
     }
+    /// One build of a program in the driver at a time (true), or as many as ask (false: the quarantine alone). Set before the
+    /// first build
+    void set_serial(bool serial) {
+        std::lock_guard lk(mu_);
+        serial_ = serial;
+    }
+    bool serial() const {
+        std::lock_guard lk(mu_);
+        return serial_;
+    }
     enum Gate { kGo, kBusy, kFaulted };
     /// Before a build of the program goes to the driver. kGo: call it, then end(). kFaulted: the program is (or has just become)
-    /// one the driver faulted on: do not call it. While another thread builds the same program, waits for that build to end;
-    /// with wait false (a build that must not block, such as a cold probe on the render thread) answers kBusy instead
+    /// one the driver faulted on: do not call it. When serial, while another thread builds the same program, waits for that
+    /// build to end; with wait false (a build that must not block, such as a cold probe on the render thread) answers kBusy
+    /// instead. When not serial, never waits nor answers kBusy
     Gate begin(uint64_t key, bool wait = true) {
         std::unique_lock lk(mu_);
+        if (!serial_) return bad_.count(key) ? kFaulted : kGo;
         if (wait) cv_.wait(lk, [&] { return bad_.count(key) || !building_.count(key); });
         if (bad_.count(key)) return kFaulted;
         if (building_.count(key)) return kBusy;
@@ -95,6 +109,7 @@ private:
     mutable std::mutex mu_;
     std::condition_variable cv_;
     std::unordered_set<uint64_t> bad_, building_;
+    bool serial_ = true;
 };
 
 }  // namespace driver_faults

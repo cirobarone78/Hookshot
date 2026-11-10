@@ -100,12 +100,37 @@ static void many_builders() {
     assert(went >= 1 && went + refused == 8 && refused >= 4 && q.contains(0xEE));
 }
 
+/// Not serial (a driver other than AMD's): builds of one program go to the driver side by side, never waiting nor busy, and a
+/// fault still keeps the program out afterwards
+static void not_serial() {
+    Quarantine q;
+    q.set_serial(false);
+    assert(!q.serial());
+    assert(q.begin(0xF1) == Quarantine::kGo && q.begin(0xF1) == Quarantine::kGo && q.begin(0xF1, false) == Quarantine::kGo);
+    std::atomic<int> in_driver{0}, most{0};
+    std::vector<std::thread> t;
+    for (int i = 0; i < 4; i++)
+        t.emplace_back([&] {
+            assert(q.begin(0xF2) == Quarantine::kGo);
+            const int now = ++in_driver;
+            for (int m = most; now > m && !most.compare_exchange_weak(m, now);) {}
+            std::this_thread::sleep_for(50ms);
+            --in_driver;
+            q.end(0xF2, false);
+        });
+    for (auto& x : t) x.join();
+    assert(most > 1);   // (side by side, as before the quarantine)
+    assert(q.end(0xF1, true) && !q.end(0xF1, true));   // (the fault is new once)
+    assert(q.begin(0xF1) == Quarantine::kFaulted && q.begin(0xF1, false) == Quarantine::kFaulted);
+}
+
 int main() {
     file_lines();
     refused_after_fault();
     second_build_waits(true);
     second_build_waits(false);
     many_builders();
+    not_serial();
     return 0;
 }
 """
@@ -151,6 +176,11 @@ def main():
     note = draw[draw.index("void driver_fault_note(uint64_t key) {"):]
     note = note[:note.index("\n}\n")]
     assert note.index("fseek(f, 0, SEEK_END);") < note.index("if (ftell(f) == 0)"), "the comment is written with every fault"
+    # (a folder the game cannot write to is said once in the log, not passed over in silence)
+    assert re.search(r"if \(!f\) \{[^}]*logf\(", note), "a file that cannot be written is not logged"
+    # (one at a time on AMD, where the hang was seen, or with RX_VK_DRIVER_FAULTS=2; other drivers build side by side)
+    assert "q.set_serial(driver_faults_mode() == 2 || dev.props.vendorID == 0x1002);" in draw
+    assert 'std::clamp(atoi(getenv("RX_VK_DRIVER_FAULTS")), 0, 2)' in draw, "RX_VK_DRIVER_FAULTS is not read as 0, 1 or 2"
 
     with tempfile.TemporaryDirectory(prefix="driver-faults-") as tmp:
         work = Path(tmp)

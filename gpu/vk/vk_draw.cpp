@@ -1014,12 +1014,15 @@ bool depth_aspect(VkFormat f) {
 }
 
 // (hookshot) The programs the driver faulted on (driver_faults.h): not asked of it again in this run, nor in later runs on the
-// same driver (hookshot_driver_faults.txt beside the executable). RX_VK_DRIVER_FAULTS=0: off
+// same driver (hookshot_driver_faults.txt beside the executable). One program's builds go to the driver one at a time on AMD,
+// where a build behind a faulted one hung (issue 996); other drivers keep building a program's variants in parallel.
+// RX_VK_DRIVER_FAULTS=0: off; =1: the default; =2: one at a time on every driver
 constexpr VkResult kDriverFault = (VkResult)-77;   // (what the guards below answer for a fault in the driver)
-bool driver_faults_on() {
-    static const bool on = !(getenv("RX_VK_DRIVER_FAULTS") && atoi(getenv("RX_VK_DRIVER_FAULTS")) == 0);
-    return on;
+int driver_faults_mode() {
+    static const int mode = getenv("RX_VK_DRIVER_FAULTS") ? std::clamp(atoi(getenv("RX_VK_DRIVER_FAULTS")), 0, 2) : 1;
+    return mode;
 }
+bool driver_faults_on() { return driver_faults_mode() != 0; }
 std::string driver_faults_path() {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
@@ -1039,9 +1042,13 @@ driver_faults::Quarantine& fault_quarantine() {
         }
         const auto keys = driver_faults::parse(text, dev.props.vendorID, dev.props.driverVersion);
         q.load(keys);
+        q.set_serial(driver_faults_mode() == 2 || dev.props.vendorID == 0x1002);
         if (!keys.empty())
             logf("vk: %zu programs the driver faulted on in earlier runs are not asked of it (%s; RX_VK_DRIVER_FAULTS=0: they are)",
                  keys.size(), driver_faults_path().c_str());
+        if (q.serial())
+            logf("vk: one build of a program goes to the driver at a time (%s; RX_VK_DRIVER_FAULTS=0: as many as ask)",
+                 driver_faults_mode() == 2 ? "RX_VK_DRIVER_FAULTS=2" : "AMD");
     });
     return q;
 }
@@ -1050,7 +1057,11 @@ void driver_fault_note(uint64_t key) {
     std::lock_guard lk(mu);
     const std::string path = driver_faults_path();
     FILE* f = fopen(path.c_str(), "ab");
-    if (!f) return;
+    if (!f) {   // (a folder the game cannot write to: Program Files)
+        static bool told;
+        if (!told) told = true, logf("vk: %s could not be written: the faulted programs are kept out for this run only", path.c_str());
+        return;
+    }
     fseek(f, 0, SEEK_END);   // (in append mode ftell says 0 until the first write, on Windows: the file's own end)
     if (ftell(f) == 0)
         fputs("# Hookshot: programs the graphics driver's compiler faulted on, not asked of it again on that driver\n"
@@ -2166,9 +2177,9 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     // (measured: 21 of 21). gpl_libs_cached: RX_VK_GPL_NO_CACHE=1 keeps them out, as before. With our cache: through
     // graphics_with, so in play one compiled goes into the play generation, and an ask under the flag still goes to pcache)
     const bool lib_cached = (part == 1 || part == 2) && gpl_libs_cached();
-    // (hookshot) a program the driver faulted on is not asked of it again, and one program's builds go to it one at a time, so a
-    // second build waits here and not inside the driver behind a faulted one (driver_faults.h, issue 996). A cold probe does not
-    // wait: another build of its program under way is, for it, a compile that is required
+    // (hookshot) a program the driver faulted on is not asked of it again, and on AMD one program's builds go to it one at a
+    // time, so a second build waits here and not inside the driver behind a faulted one (driver_faults.h, issue 996). A cold
+    // probe does not wait: another build of its program under way is, for it, a compile that is required
     const bool gated = driver_faults_on();
     if (gated) {
         const auto gate = fault_quarantine().begin(p.key, !cold);
