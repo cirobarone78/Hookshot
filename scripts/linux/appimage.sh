@@ -42,6 +42,8 @@ L=$APPDIR/usr/lib/hookshot
 
 # ---- the tools (the sources the player's build compiles, and the scripts) ----
 cp -a nx2 host LICENSE readme.md assets "$T/"
+# (the logo's VectorCraft source stays in the repository: the AppImage ships the PNG, not the artwork's project file)
+rm -f "$T"/assets/*.vectorcraft
 printf '%s
 ' "$VERSION" > "$T/VERSION"   # (no git history in here: nx2/version.py reads the release name from it)
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"

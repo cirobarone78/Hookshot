@@ -1,2 +1,6 @@
 * text=auto eol=lf
 *.bat text eol=crlf
+
+# ---- the logo's VectorCraft source: in the repository, not in a release ---- #
+# (git archive and the Linux AppImage leave it out; the icon itself is assets/hookshot.png)
+assets/*.vectorcraft export-ignore
