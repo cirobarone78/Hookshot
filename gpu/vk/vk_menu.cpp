@@ -648,7 +648,7 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear.", hn_text_speed},
     {TAB_GAMEPLAY, "Volume", &opts.volume, 0, 100, 5, tx_volume,
-     "How loud the game's music and sounds are. 100% is the game's own; a change applies at once.", nullptr, false, true},
+     "Master volume level.", nullptr, false, true},
     {TAB_GAMEPLAY, "Audio output", &opts.audio_output, 0, 2, 1, tx_audio_output,
      "The speakers the game mixes its sound for. Applies after a restart.", hn_audio_output, true, true},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
