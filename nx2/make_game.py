@@ -330,9 +330,22 @@ def stand_in_damaged_files(out, romfs):
             if f.read() == stamp:
                 return
     import nup
-    done = nup.stand_in_damaged(romfs)
+    print("Checking unpacked game files...", flush=True)
+    headers_checked = 0
+    next_report = time.monotonic() + 2
+
+    def progress(count):
+        nonlocal headers_checked, next_report
+        headers_checked = count
+        now = time.monotonic()
+        if now >= next_report:
+            print("  %d .zs headers checked" % headers_checked, flush=True)
+            next_report = now + 2
+
+    done = nup.stand_in_damaged(romfs, progress=progress)
     with open(checked, "w") as f:
         f.write(stamp)
+    print("Checked %d unpacked .zs headers." % headers_checked, flush=True)
     if not done:
         return
     print("Your game dump is incomplete: %d game file%s in it %s damaged (a complete dump is about 23.8 GB, an incomplete "

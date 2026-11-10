@@ -67,7 +67,7 @@ make_game = importlib.util.module_from_spec(mg_spec)
 mg_spec.loader.exec_module(make_game)
 calls = []
 sys.modules["nup"] = type(sys)("nup")
-sys.modules["nup"].stand_in_damaged = lambda romfs: calls.append(romfs) or []
+sys.modules["nup"].stand_in_damaged = lambda romfs, progress=None: calls.append(romfs) or []
 with tempfile.TemporaryDirectory() as out:
     romfs = os.path.join(out, "romfs")
     os.makedirs(romfs)
