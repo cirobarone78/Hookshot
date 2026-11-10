@@ -30,6 +30,7 @@
 #include "vk_gprof.h"      // (RX_VK_PASS_TIMING)
 #include "import_hold.h"
 #include "mirror_inherit.h"
+#include "retired_give_back.h"
 #ifdef __linux__
 #include <cerrno>
 #include <dlfcn.h>
@@ -77,6 +78,7 @@ struct Pool {
     // made (mirror_make), and until then the mirror stays (mirrors_give_back)
     bool inherit_pending = false;
     uint64_t retired_epoch = 0;
+    int64_t retired_ms = 0;      // (retired: when, import_now_ms; where its import waits before going back, the wait counts from here)
     bool prefetched = false;     // (amd-fix) imported ahead by the background thread, not bound yet
     // (hookshot) the write-back's diff: what guest memory holds of the pool, in VRAM, and the pages of it known to be so
     VkBuffer shadow = VK_NULL_HANDLE;
@@ -2271,6 +2273,7 @@ void retire_pool(std::map<uint64_t, Pool>::iterator it) {
     shadow_free(*old);   // (its write-backs in this submission, if any, copied whole)
     guest_pages_set(old->lo, old->hi, 0);
     old->retired_value = std::max(old->last_value, mem_rec_value);
+    old->retired_ms = import_now_ms();   // (the wait before its import is given back counts from here)
     std::erase(mirror_wanted, old);   // (the new pool gets the mirror)
     if (old->mstate == Pool::MIRROR_WANTED) old->mstate = Pool::MIRROR_NONE;
     // (EvilOOT, 11-07) what the GPU wrote into its mirror and nowhere else (the culling's bare table entries past their first
@@ -2805,6 +2808,7 @@ std::deque<DeadMirror> dead_mirrors;
 struct DeadImport { VkBuffer buffer; VkDeviceMemory memory; uint64_t value; uint64_t bytes; std::vector<VkDeviceMemory> pieces; };
 std::deque<DeadImport> dead_imports;
 uint64_t st_retired_imports_freed = 0, st_retired_import_bytes_freed = 0;
+uint64_t dead_import_bytes = 0;   // (queued in dead_imports: still in the heap's use until the GPU is past them)
 void reap_mirrors() {   // (pools_mu held)
     while (!dead_mirrors.empty() && dead_mirrors.front().value <= mem_completed) {
         if (env_on("RX_VK_LOG_ADDR")) {
@@ -2821,32 +2825,71 @@ void reap_mirrors() {   // (pools_mu held)
         vkFreeMemory(dev.device, dead_imports.front().memory, nullptr);
         for (VkDeviceMemory m : dead_imports.front().pieces) vkFreeMemory(dev.device, m, nullptr);
         st_retired_imports_freed++, st_retired_import_bytes_freed += dead_imports.front().bytes;
+        dead_import_bytes -= std::min(dead_import_bytes, dead_imports.front().bytes);
         dead_imports.pop_front();
     }
 }
-void retired_imports_give_back() {   // (pools_mu held)
-    // (hookshot) Kept by default on Windows: giving them back is for the Linux amdgpu submit above, and on Windows an Intel Arc
-    // B390 lost the device entering Kokiri every time with it and 1 run in 5 without (issue 17, fuxau); the AMD device losses
-    // on the Ally X (309) and RX 6600 (571) came right after retired pools went back. RX_VK_KEEP_RETIRED=0 or 1 chooses
+bool system_heap_usage(uint64_t* used, uint64_t* budget);   // (vk_vma.cpp; said here too: the pressure probe below runs before imports_give_back's own forward of it)
+/// Whether retired imports are kept, given back at once, or given back after a wait (retired_give_back.h)
+retired_give_back::Mode retired_mode() {
+    // (hookshot) RX_VK_KEEP_RETIRED=1 keeps them for the session and 0, off, false or no gives them back as soon as the
+    // GPU is past them, on every OS and vendor. Unset or empty, the defaults are main's but for one: off Windows at once
+    // (the amdgpu submit above, issues 312 and 413), on Windows NVIDIA at once too (kept, ~20 areas of play left 6.8 GB
+    // of retired pools imported on an RTX 3070 (8 GB) and the next area lost the device, twice; issue 1057), and on
+    // Windows AMD and Intel after a wait, where they were kept for the session: an Intel Arc B390 lost the device
+    // entering Kokiri every time with the give-back and 1 run in 5 without (issue 17, fuxau), and the AMD device losses
+    // on the Ally X (309) and RX 6600 (571) came right after retired pools went back. Kept, those two vendors' retired
+    // pools only grew, multi-GB in a long session, until the system heap's budget was passed and new imports failed
 #ifdef _WIN32
-    // (not on NVIDIA: kept there, ~20 areas of play left 6.8 GB of retired pools imported on an RTX 3070 (8 GB), and the next area
-    // lost the device, twice; given back, the same tour finished every area (issue 1057). The losses above were Intel's and AMD's)
-    static const bool keep = getenv("RX_VK_KEEP_RETIRED") ? getenv("RX_VK_KEEP_RETIRED")[0] != '0' : dev.props.vendorID != 0x10DE;
+    constexpr bool windows = true;
 #else
-    static const bool keep = getenv("RX_VK_KEEP_RETIRED") && getenv("RX_VK_KEEP_RETIRED")[0] != '0';
+    constexpr bool windows = false;
 #endif
+    static const retired_give_back::Mode m = [] {
+        const char* v = getenv("RX_VK_KEEP_RETIRED");
+        return retired_give_back::mode(v && *v, env_on("RX_VK_KEEP_RETIRED"), windows, dev.props.vendorID == 0x10DE);
+    }();
+    return m;
+}
+void retired_imports_give_back() {   // (pools_mu held)
+    using retired_give_back::Mode;
+    const Mode mode = retired_mode();
+    // (hookshot) The wait (Windows AMD and Intel, retired_mode): a retired pool's import is given back once the GPU is
+    // past it and it has been retired for RX_VK_RETIRE_SECS seconds (default 30), oldest first; while the system heap
+    // is past RX_VK_IMPORT_HIGH percent of its budget (default 85; 0: off) the wait is RX_VK_RETIRE_MIN_SECS seconds
+    // (default 2), until what brings it down to RX_VK_IMPORT_LOW percent (75) is queued. The free itself still waits
+    // for the GPU (dead_imports). Elsewhere those switches are not read and nothing waits. Unlike imports_give_back's
+    // valve this one is on by default on Windows and on any budget, not only under 12 GB: it frees pools nothing uses
+    // any more, where that one takes pools still live but idle
+    static const uint64_t idle_ms = (uint64_t)std::max(1, env_int("RX_VK_RETIRE_SECS", 30)) * 1000;
+    static const uint64_t floor_ms = (uint64_t)std::max(0, env_int("RX_VK_RETIRE_MIN_SECS", 2)) * 1000;
+    static const int high = std::clamp(env_int("RX_VK_IMPORT_HIGH", 85), 0, 100);   // (0: off, as in imports_give_back)
+    static const int low = std::clamp(env_int("RX_VK_IMPORT_LOW", 75), 10, 95);
+    // (the driver asked every 16th submission, as imports_give_back does. What is already queued counts as given back:
+    // the heap's use does not go down until the GPU is past it, and the next probe would queue for it again)
+    uint64_t want = 0;
+    if (mode == Mode::GRACE && high > 0) {
+        static uint64_t calls = 0;
+        uint64_t used = 0, budget = 0;
+        if (++calls % 16 == 0 && system_heap_usage(&used, &budget))
+            want = retired_give_back::want(retired_give_back::settled(used, dead_import_bytes), budget, high, low);
+    }
+    const int64_t now = mode == Mode::GRACE ? import_now_ms() : 0;
     uint64_t live_bytes = 0, retired_bytes = 0;
     size_t retired_alive = 0;
     for (auto& [lo, p] : imported) live_bytes += p.hi - p.lo;
-    for (auto& nh : retired_pools) {
+    for (auto& nh : retired_pools) {   // (in the order they were retired: the oldest first)
         Pool& p = nh.mapped();
         if (!p.memory) continue;
-        if (!keep && p.mstate == Pool::MIRROR_NONE && !p.inherit_pending && p.retired_value <= mem_completed &&
-            p.last_value <= mem_completed) {
+        const uint64_t idle = (uint64_t)std::max<int64_t>(0, now - p.retired_ms);
+        if (p.mstate == Pool::MIRROR_NONE && !p.inherit_pending && p.retired_value <= mem_completed &&
+            p.last_value <= mem_completed && retired_give_back::due(mode, idle, idle_ms, floor_ms, want > 0)) {
             dead_imports.push_back({p.buffer, p.memory, std::max(mem_rec_value, p.last_value), p.hi - p.lo, std::move(p.pieces)});
+            dead_import_bytes += p.hi - p.lo;
             p.pieces.clear();
             p.buffer = VK_NULL_HANDLE, p.memory = VK_NULL_HANDLE, p.address = 0;
             pools_gen++;
+            want -= std::min(want, p.hi - p.lo);   // (the short wait ends once the low watermark's worth is queued)
             continue;
         }
         retired_alive++, retired_bytes += p.hi - p.lo;
@@ -2924,8 +2967,10 @@ void imports_give_back() {   // (pools_mu held)
         for (VkDeviceMemory m : p.pieces) vkFreeMemory(dev.device, m, nullptr);   // (a pool imported as several dma-bufs)
         evicted_pools.pop_front();
     }
-    // (hookshot) Off by default on Windows, as giving retired imports back is (RX_VK_KEEP_RETIRED, retired_imports_give_back:
-    // device losses on Intel Arc and AMD right after imports went back): RX_VK_IMPORT_HIGH=85 turns it on there
+    // (hookshot) Off by default on Windows (device losses on Intel Arc and AMD right after imports went back, issues
+    // 17, 309 and 571): RX_VK_IMPORT_HIGH=85 turns it on there. Retired imports have their own valve at the same
+    // watermarks (retired_imports_give_back), on by default on Windows AMD and Intel whatever the budget: that one
+    // frees pools nothing uses any more, this one pools still live that have been idle
     static const char* env_high = getenv("RX_VK_IMPORT_HIGH");
 #ifdef _WIN32
     static const int high = env_high ? atoi(env_high) : 0;
@@ -2943,6 +2988,10 @@ void imports_give_back() {   // (pools_mu held)
              on ? "on" : "off (RX_VK_IMPORT_HIGH=85 turns it on)");
         return on;
     }();
+    // (with both valves on, the other ran just before, on this same submission (the two count alike): what it queued is
+    // still in the driver's figure until the GPU is past it, and live pools would go for the same bytes. Only where
+    // retired imports wait; elsewhere they go back at every submission and this valve reads what it always read)
+    if (retired_mode() == retired_give_back::Mode::GRACE) used = retired_give_back::settled(used, dead_import_bytes);
     if (!small || used <= budget / 100 * (uint64_t)high) return;
     const uint64_t target = budget / 100 * (uint64_t)low;
     const uint64_t want = used > target ? used - target : 0;
