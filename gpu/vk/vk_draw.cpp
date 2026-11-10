@@ -1212,7 +1212,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
 // (a library the driver does not have compiled is not compiled in the draw: asked for with
 // VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT, it comes back at once either way. Cold, the draw is left out or waits
 // for the worker's full build, as without libraries, and a worker builds the library after it, for the program's next pipeline.
-// Needs pipelineCreationCacheControl. RX_VK_GPL_SYNC=1: compiled in the draw, as before) ----
+// Needs pipelineCreationCacheControl. RX_VK_GPL_SYNC (set to anything): compiled in the draw, as before) ----
 bool gpl_wanted() {
     static const bool on = dev.graphics_pipeline_library && dev.eds3_blend && dev.eds3_polygon && dev.eds3_clamp && dev.eds3_a2c &&
                            getenv("RX_VK_GPL") != nullptr;   // (off until the driver step is safe: linked cold, the libraries stall the draw)
