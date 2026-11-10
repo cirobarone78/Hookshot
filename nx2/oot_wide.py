@@ -40,12 +40,18 @@ def _size(name):
             % (name, name, name))
 
 
-HUD = ("{ extern volatile float hos_wide_squeeze; const float _q = hos_wide_squeeze; if (_q > 0.0f) { float _m00, _m11; "
+HUD = ("{ extern volatile float hos_wide_squeeze, hos_wide_vertical_squeeze; "
+       "const float _qx = hos_wide_squeeze, _qy = hos_wide_vertical_squeeze; "
+       "if (_qx > 0.0f || _qy > 0.0f) { float _m00, _m11; "
        "memcpy(&_m00, c->vreg[1], 4); memcpy(&_m11, (const uint8_t *)c->vreg[4] + 4, 4); "
        "if (_m00 == %s && _m11 == %s) { const uint64_t _vt = recomp_load64(c, c->x[0] - 0x1b8); "
        "extern volatile uint32_t hos_wide_keep_mask; const uint32_t _kb = %s; "
-       "if (!(_kb & hos_wide_keep_mask)) { float _row[4]; memcpy(_row, c->vreg[1], 16); for (int _k = 0; _k < 4; _k++) _row[_k] *= _q; "
-       "memcpy(c->vreg[1], _row, 16); } } } }   /* (nx2/oot_wide.py: HUD in the middle 16:9) */"
+       "if (!(_kb & hos_wide_keep_mask)) { float _row[4]; "
+       "if (_qx > 0.0f && _qx < 1.0f) { memcpy(_row, c->vreg[1], 16); "
+       "for (int _k = 0; _k < 4; _k++) _row[_k] *= _qx; memcpy(c->vreg[1], _row, 16); } "
+       "else if (_qy > 0.0f && _qy < 1.0f) { memcpy(_row, (const uint8_t *)c->vreg[4] + 4, 16); "
+       "for (int _k = 0; _k < 4; _k++) _row[_k] *= _qy; memcpy((uint8_t *)c->vreg[4] + 4, _row, 16); } "
+       "} } } }   /* (nx2/oot_wide.py: HUD keeps 16:9 on wide and narrow screens) */"
        % (UI_M00, UI_M11, " : ".join("_vt == 0x%xULL ? %du" % (v, 1 << k) for k, v in enumerate(KEEP_VTABLES)) + " : 0u"))
 
 MOVIE = ("{ extern volatile float hos_wide_margin; const float _m = hos_wide_margin; if (_m > 0.0f) { "

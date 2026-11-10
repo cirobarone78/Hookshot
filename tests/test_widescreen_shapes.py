@@ -34,7 +34,7 @@ def main():
 #include <string.h>
 
 volatile uint64_t hos_wide_out, hos_wide_scene;
-volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
+volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_vertical_squeeze, hos_wide_margin;
 float hos_aspect_ratio;
 static unsigned out_h = 1440;
 uint32_t hos_output_size(int height) { return height ? out_h : out_h * 16 / 9; }
@@ -47,25 +47,25 @@ static void wide(float want) {
 int main(int argc, char **argv) {
     out_h = (unsigned)atoi(argv[2]);
     wide((float)atof(argv[1]));
-    printf("%llux%llu %llux%llu %.4f %.4f %.4f\n",
+    printf("%llux%llu %llux%llu %.4f %.4f %.4f %.4f\n",
            (unsigned long long)(hos_wide_out & 0xffffffffu), (unsigned long long)(hos_wide_out >> 32),
            (unsigned long long)(hos_wide_scene & 0xffffffffu), (unsigned long long)(hos_wide_scene >> 32),
-           (double)hos_wide_ratio, (double)hos_wide_squeeze, (double)hos_wide_margin);
+           (double)hos_wide_ratio, (double)hos_wide_squeeze, (double)hos_wide_vertical_squeeze, (double)hos_wide_margin);
     return 0;
 }
 '''
-    # (screen ratio, output height) -> picture, scene, camera ratio, HUD width, movie margin
+    # (screen ratio, output height) -> picture, scene, camera ratio, HUD x scale, HUD y scale, movie margin
     cases = (
-        ("1.3333", 1440, "1920x1440 1440x1080 1.3333 1.0000 0.0000"),   # 4:3 (2048 x 1536, 1600 x 1200 CRTs)
-        ("1.6", 1440, "2304x1440 1728x1080 1.6000 1.0000 0.0000"),     # 16:10
-        ("1.25", 1440, "1800x1440 1352x1080 1.2500 1.0000 0.0000"),    # 5:4
-        ("1.0", 1440, "0x0 0x0 0.0000 0.0000 0.0000"),                 # square: no ratio from the screen
-        ("1.1", 1440, "1800x1440 1352x1080 1.2500 1.0000 0.0000"),     # narrower than 5:4: kept at 5:4
-        ("1.3333", 2160, "2880x2160 2160x1620 1.3333 1.0000 0.0000"),  # 4:3 at the 4K output
-        ("1.7778", 1440, "0x0 0x0 0.0000 0.0000 0.0000"),              # 16:9: the game's own picture
-        ("2.3889", 1440, "3440x1440 2584x1080 2.3889 0.7442 0.1279"),  # 21:9 (3440 x 1440), as before
-        ("3.5556", 1440, "5120x1440 3840x1080 3.5556 0.5000 0.2500"),  # 32:9, as before
-        ("0", 1440, "0x0 0x0 0.0000 0.0000 0.0000"),                   # Ultrawide off
+        ("1.3333", 1440, "1920x1440 1440x1080 1.3333 1.0000 0.7500 0.0000"),   # 4:3 (2048 x 1536, 1600 x 1200 CRTs)
+        ("1.6", 1440, "2304x1440 1728x1080 1.6000 1.0000 0.9000 0.0000"),     # 16:10
+        ("1.25", 1440, "1800x1440 1352x1080 1.2500 1.0000 0.7031 0.0000"),    # 5:4
+        ("1.0", 1440, "0x0 0x0 0.0000 0.0000 0.0000 0.0000"),                 # square: no ratio from the screen
+        ("1.1", 1440, "1800x1440 1352x1080 1.2500 1.0000 0.7031 0.0000"),     # narrower than 5:4: kept at 5:4
+        ("1.3333", 2160, "2880x2160 2160x1620 1.3333 1.0000 0.7500 0.0000"),  # 4:3 at the 4K output
+        ("1.7778", 1440, "0x0 0x0 0.0000 0.0000 0.0000 0.0000"),              # 16:9: the game's own picture
+        ("2.3889", 1440, "3440x1440 2584x1080 2.3889 0.7442 1.0000 0.1279"),  # 21:9 (3440 x 1440), as before
+        ("3.5556", 1440, "5120x1440 3840x1080 3.5556 0.5000 1.0000 0.2500"),  # 32:9, as before
+        ("0", 1440, "0x0 0x0 0.0000 0.0000 0.0000 0.0000"),                   # Ultrawide off
     )
     with tempfile.TemporaryDirectory(prefix="widescreen-") as tmp:
         work = Path(tmp)

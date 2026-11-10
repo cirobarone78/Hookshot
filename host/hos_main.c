@@ -1210,7 +1210,7 @@ volatile uint64_t hos_wide_out, hos_wide_scene;
    HOS_SCENE_NATIVE=0/1 over it */
 volatile int hos_native_scene;
 volatile int hos_fix_res;   /* (nx2/oot_native_resolution.py's cached-scale refresh: HOS_FIX_RES=1; #849's fixed-scale patch does it by default) */
-volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
+volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_vertical_squeeze, hos_wide_margin;
 volatile uint32_t hos_wide_keep_mask = 0xf;   /* (nx2/oot_wide.py KEEP_VTABLES: the screens that keep the whole picture, a bit each; MkwVkHost.wide_menus) */
 /* (nx2/oot_occlusion.py) read by the game's code where it decides to make occlusion queries: 1, none (HOOKSHOT_OCCLUSION_OFF=1) */
 volatile int hos_occlusion_off;
@@ -1475,7 +1475,7 @@ static int game_main(int argc, char **argv) {
         if (getenv("HOS_FIX_RES")) hos_fix_res = atoi(getenv("HOS_FIX_RES")) != 0;
         if (hos_native_scene) hos_log("boot: HOS_SCENE_NATIVE=1: the scene's base scale 1.0 (the game's 0.8 otherwise)");
         extern volatile uint64_t hos_wide_out, hos_wide_scene;
-        extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
+        extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_vertical_squeeze, hos_wide_margin;
         const double game = 16.0 / 9.0;
         /* (a screen narrower than 16:9 too, 16:10 to 5:4: the picture keeps the game's height and is narrower, the
            cameras take its ratio, and the HUD fills its width instead of a middle 16:9 wider than the screen. A 4:3 CRT
@@ -1496,7 +1496,9 @@ static int game_main(int argc, char **argv) {
             hos_wide_out = (uint64_t)oh << 32 | ow;
             hos_wide_scene = (uint64_t)sh << 32 | sw;
             hos_wide_ratio = (float)ow / (float)oh;
-            hos_wide_squeeze = (float)fmin(1.0, game / ((double)ow / oh));   /* (a narrower screen: the whole width) */
+            const double ratio = (double)ow / oh;
+            hos_wide_squeeze = (float)fmin(1.0, game / ratio);   /* horizontal scale for a wider-than-16:9 HUD */
+            hos_wide_vertical_squeeze = (float)fmin(1.0, ratio / game);   /* vertical scale for a narrower-than-16:9 HUD */
             hos_wide_margin = (1.0f - hos_wide_squeeze) / 2.0f;
             hos_aspect_ratio = hos_wide_ratio;
             hos_log("boot: widescreen: picture %ux%u, scene %ux%u, camera ratio %.4f, HUD and movies in the middle %.1f%%", ow, oh, sw, sh,
