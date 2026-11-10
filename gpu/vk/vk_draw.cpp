@@ -44,6 +44,7 @@
 #include "vk_texture.h"
 #include "movie_upscale_policy.h"
 #include "skip_code.h"
+#include "vk_menu.h"
 
 #include "shaders/clear_f_frag_spv.h"
 #include "shaders/clear_i_frag_spv.h"
@@ -316,6 +317,15 @@ bool stats_prog_wanted(uint64_t key) {
     return std::find(want.begin(), want.end(), key) != want.end();
 }
 bool stats_frame_now();   // (below: the frame being measured is the current one)
+/// The free camera's HUD left out (the Debug tab's Free camera): the programs that draw OoT's HUD and menus (the hearts,
+/// the item slots, the minimap, the item wheel's cards), found as the ones drawn both in play and behind the item wheel and
+/// checked with RX_VK_SKIP_FILE: with them out the world looks the same and no HUD shows
+bool hud_hidden(uint64_t key) {
+    static constexpr uint64_t kHud[] = {0x02d9ea619f5ea640ULL, 0x823bb6db3cdd3e3dULL, 0xa55e8c247a780ac2ULL, 0xb34a4f15fcd7b791ULL,
+                                        0xbc3cd9285fd3f1beULL, 0xbd783cc73add96d4ULL, 0xdc310f71db89f779ULL, 0xe86f9970e0324e77ULL,
+                                        0xfc10fab78898d67eULL, 0xfdcb01be4e381a65ULL};
+    return menu_free_camera() && std::find(std::begin(kHud), std::end(kHud), key) != std::end(kHud);
+}
 /// (EvilOOT) RX_VK_SKIP_FILE=<file>: the draws of the programs listed in it (hex keys, comma or newline separated) left out,
 /// the file read again whenever it changes (checked every 300 ms): a bisection in one run, from the scene being looked at
 bool skip_live(uint64_t key) {
@@ -5612,6 +5622,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     if (cp->key == 0x1a7482c0ec9991eaULL) world_drawn_at.store(presents_now, std::memory_order_relaxed);
     if (cp->key == 0x02ff9920c2571cc2ULL) wheel_drawn_at.store(presents_now, std::memory_order_relaxed);
     if (skip_live(cp->key)) return;   // (EvilOOT, RX_VK_SKIP_FILE)
+    if (hud_hidden(cp->key)) return;   // (the free camera: no HUD)
     {   // (hookshot, RX_VK_SKIP_PROG=<key prefix,...>: draws too, their native code keys logged once; =-: none)
         // (OoT's 53509044401d78d2, by default only while its targets have no view: 128 draws, once while an area loads, that render
         // the slices of two 64^3 BC4 noise volumes through raw RGBA16UI views. Those views were not made (no attachment usage) and

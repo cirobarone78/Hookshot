@@ -27,6 +27,8 @@ struct Options {
     int sharpness = 0;    // 0 to 100
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
     int handheld = 0;     // the game's handheld profile: ~4 fps, softer; read once, at the start (host/nn_applet.c)
+    int filter = 0;       // the screen filter at the present: 0 off, 1 CRT, 2 scanlines, 3 film (shaders/fg_scale.comp)
+    int filter_strength = 60;   // its strength in percent
     int ultrawide = 0;    // the camera at the monitor's shape when it is wider than 16:9; read once, at the start (host/hos_main.c)
     int wide_menus = 1;   // ultrawide: the pause, item and map menus 0 at full width (stretched), 1 in the middle 16:9 with the sides
                           // blurred, 2 with black bars (nx2/oot_wide.py, vk_framegen.cpp)

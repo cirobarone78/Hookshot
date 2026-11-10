@@ -363,6 +363,10 @@ const char* tx_text_speed(int v) {
     return t[v];
 }
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }
+const char* tx_screen_filter(int v) {
+    static const char* t[] = {"Off", "CRT", "Scanlines", "Film"};
+    return t[std::min(std::max(v, 0), 3)];
+}
 const char* tx_prompts(int v) {
     static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
     return t[std::min(std::max(v, 0), (int)HOS_PROMPT_N)];
@@ -635,6 +639,11 @@ Row rows[] = {
      "How the finished picture is scaled to the window, when its size differs from the Output resolution.", hn_filter},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
      "Sharpens the picture as it goes to the window, with any filter. Too much shows halos around edges.", hn_sharpness},
+    // (the screen filter: after the window's scaling filter and the sharpen, in the same pass. Not the Quality preset's)
+    {TAB_GRAPHICS, "Screen filter", &opts.filter, 0, 3, 1, tx_screen_filter,
+     "A look for the whole picture: CRT (curved glass, scanlines and a shadow mask), Scanlines alone, or Film (warm grade, "
+     "grain and vignette). Changes at once.", nullptr, false, true},
+    {TAB_GRAPHICS, "Filter strength", &opts.filter_strength, 0, 100, 10, tx_percent, "How strong the screen filter is.", nullptr, false, true},
     {TAB_GRAPHICS, "Handheld profile", &opts.handheld, 0, 1, 1, tx_onoff,
      "Runs the game as if the console were undocked. Applies after a restart.", hn_handheld, true},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
@@ -947,7 +956,7 @@ constexpr int64_t kMarqueeStep = 150000000LL, kMarqueeRest = 1200000000LL;   // 
 int hover_tab = -1;
 int drag_row = -1;
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
-bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
+bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.filter_strength; }
 /// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
 bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
