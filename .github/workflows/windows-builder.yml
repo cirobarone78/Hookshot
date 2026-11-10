@@ -232,10 +232,12 @@ jobs:
   release:
     name: Release assets
     # (for every release, beside the Linux AppImage. Set vars.CI_RELEASE_WINDOWS to 'false' to upload HookshotBuilder.exe
-    # and hookshot-setup.txt by hand instead. On a push to main, to the nightly prerelease)
+    # and hookshot-setup.txt by hand instead. On a push to main, to the nightly prerelease; not when the Release workflow
+    # calls this on a push to main: that is a release, and github.event_name and github.ref are the caller's)
     if: >-
       ((inputs.tag != '' || (startsWith(github.ref, 'refs/tags/') && github.ref_name != 'builder-parts'
-      && github.ref_name != 'nightly')) && vars.CI_RELEASE_WINDOWS != 'false') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      && github.ref_name != 'nightly')) && vars.CI_RELEASE_WINDOWS != 'false')
+      || (!inputs.tag && github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: [package, vulkan]
     runs-on: ubuntu-24.04
     timeout-minutes: 15

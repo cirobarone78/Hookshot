@@ -116,6 +116,9 @@ jobs:
       # for the nightly the next nightly)
       - name: AppImage
         env:
+          # (a release is named by its tag: a promoted version's commit also has its release candidate's tag, which git
+          # describe could name instead)
+          HOOKSHOT_VERSION: ${{ env.RELEASE_TAG }}
           HOOKSHOT_UPDATE_RELEASE: >-
             ${{ env.RELEASE_TAG == '' && github.event_name == 'push' && github.ref == 'refs/heads/main' && 'nightly' || 'latest' }}
         run: scripts/linux/appimage.sh
