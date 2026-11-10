@@ -91,7 +91,9 @@ static void *shot_thread(void *p) {
     while (fake_frame() <= s->after) sleep_ms(1);
     const int64_t at = fake_frame();
     FILE *f = fopen(s->path, "wb");
-    if (f) fputs("\x89PNG fake", f), fclose(f);
+    static const unsigned char head[24] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R',
+                                           0, 0, 2, 0x80, 0, 0, 1, 0x68};   /* (a PNG's header: 640x360) */
+    if (f) fwrite(head, 1, sizeof head, f), fclose(f);
     s->done(s->ctx, at, f != NULL);
     free(s);
     return NULL;
@@ -569,6 +571,19 @@ int main(int argc, char **argv) {
     CHECK(strstr(line, "\"error\":\"bad_request\""));
     say(c, "\n   \r\n");   /* (empty lines: nothing) */
     ask(c, "{\"id\":\"tab\\t\\u00e9\",\"cmd\":\"status\"}\n", "\"tab\\t\xc3\xa9\"", line, sizeof line, 2000);
+    /* numbers past int64_t's range: refused, never converted (undefined behaviour) */
+    ask(c, "{\"id\":5,\"cmd\":\"press\",\"buttons\":\"A\",\"frames\":1e300}\n", "5", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"bad_request\""));
+    ask(c, "{\"id\":6,\"cmd\":\"press\",\"buttons\":\"A\",\"at\":-1e300}\n", "6", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"bad_request\""));
+    ask(c, "{\"id\":7,\"cmd\":\"wait\",\"event\":\"present\",\"frames\":1e300}\n", "7", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"bad_request\""));
+    ask(c, "{\"id\":8,\"cmd\":\"wait\",\"event\":\"frame\",\"frame\":1e300,\"timeout\":0.05}\n", "8", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"timeout\""));
+    ask(c, "{\"id\":9,\"cmd\":\"sequence\",\"script\":\"1e300:A\"}\n", "9", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"bad_request\""));
+    ask(c, "{\"id\":10,\"cmd\":\"sequence\",\"script\":\"0:A/1e300\",\"units\":\"hos\"}\n", "10", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"bad_request\""));
     {   /* an id longer than 200 characters as JSON: refused (it was taken as null) */
         char big[400];
         memset(big, 'x', 260);
@@ -666,7 +681,7 @@ int main(int argc, char **argv) {
     {
         char path[1100];
         ask(c, "{\"id\":18,\"cmd\":\"shot\"}\n", "18", line, sizeof line, 3000);
-        CHECK(strstr(line, "\"ok\":true"));
+        CHECK(strstr(line, "\"ok\":true") && strstr(line, "\"width\":640,\"height\":360"));   /* (the PNG's own size) */
         path_of(line, path, sizeof path);
 #ifdef _WIN32
         CHECK(strstr(path, "\\shots\\shot_0001_f"));

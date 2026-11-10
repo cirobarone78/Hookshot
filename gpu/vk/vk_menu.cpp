@@ -1159,7 +1159,7 @@ void mic_chosen() {
     mic_tell_host();
 }
 void save() {
-    // (the control bridge changes settings from a thread of its own, menu_setting_set)
+    // (one writer at a time: the present's thread, the game's (menu_option_set) and the control bridge's, menu_setting_set)
     static std::mutex save_mu;
     std::lock_guard lk(save_mu);
     // (hookshot) the lines that are not the menu's are kept: the controls, pad_ and key_ (host/nn_hid.c)
@@ -2578,8 +2578,8 @@ bool fps_take(int64_t now, int64_t shown, int64_t game, int64_t* next, int64_t* 
 }
 
 // (hookshot) the rows' values and the options file, kept apart between menu_tick (the present's thread), menu_option_set
-// (the game's) and the control bridge's menu_setting and menu_setting_set (its own thread). Recursive: menu_tick may come
-// back through a setter
+// (the game's) and the control bridge's menu_setting and menu_setting_set (its own thread). Recursive: a setter reached from
+// inside menu_tick's frame on the same thread does not lock itself out
 std::recursive_mutex menu_mu;
 void menu_option_set(int id, int value) {
     if (id == OOT_CHEAT_AGE_ID) {   // (Link's age: the Switch age row shows it)

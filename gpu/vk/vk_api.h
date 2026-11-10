@@ -199,7 +199,7 @@ typedef struct MkwVkRenderer {
     /* the presents replayed so far, the draws recorded since the start, and the picture's size (the window's swapchain, or
        the offscreen image's) */
     void (*frame_info)(int64_t *presents, int64_t *draws, int *width, int *height);
-    /* a PNG of the first present replayed after present `after` (-1: the next one), 1280x720 as RX_VK_SHOTS', written to
+    /* a PNG of the first present replayed after present `after` (-1: the next one), RX_VK_SHOTS' size, written to
        path on a thread of its own, which then calls done(ctx, the present, 1 when the file was written). 0: not taken
        (too many waiting) */
     int (*shot)(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);

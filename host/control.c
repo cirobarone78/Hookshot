@@ -392,6 +392,8 @@ int hos_control_mem_level(const char *v) {
    frame's memory and a write lands between frames. Each is bounded first (hos_mem_region through the game): out of range
    is an error, never a fault */
 static void mem_service(void) {
+    uint64_t wrote_at[CTL_MEM], wrote_n[CTL_MEM];
+    int nwrote = 0;
     ctl_lock(&G.mu);
     for (int i = 0; i < CTL_MEM; i++) {
         MemReq *m = &G.mems[i];
@@ -406,8 +408,7 @@ static void mem_service(void) {
         if (m->ok) {
             if (m->write) {
                 G.game->mem_write(m->addr[0], m->buf, m->size[0]);
-                ctl_log("control: wrote %llu bytes to guest %#llx", (unsigned long long)m->size[0],
-                        (unsigned long long)m->addr[0]);
+                wrote_at[nwrote] = m->addr[0], wrote_n[nwrote++] = m->size[0];
             } else {
                 uint64_t off = 0;
                 for (int r = 0; r < m->nranges; r++) {
@@ -419,6 +420,8 @@ static void mem_service(void) {
         m->done = 1;
     }
     ctl_unlock(&G.mu);
+    for (int i = 0; i < nwrote; i++)   /* (logged after the lock: the log may wait for its file) */
+        ctl_log("control: wrote %llu bytes to guest %#llx", (unsigned long long)wrote_n[i], (unsigned long long)wrote_at[i]);
 }
 
 /* ---- the controller's read (nn_hid.c read_input, the game's thread) ---- */
@@ -564,6 +567,8 @@ static void reply_ok(Conn *c, const char *id) {
 }
 
 /* ---- arguments ---- */
+/* a JSON number as a whole number, held to +-2^62 first (a double past int64_t's range is undefined to convert) */
+static int64_t whole(double v) { return v != v ? 0 : v > 4.6e18 ? (int64_t)4.6e18 : v < -4.6e18 ? -(int64_t)4.6e18 : (int64_t)v; }
 static double num_arg(const JDoc *d, int req, const char *key, double otherwise, int *bad) {
     const JNode *n = j_get(d, req, key);
     if (!n || n->type == J_NULL) return otherwise;
@@ -657,8 +662,8 @@ static int input_from(const JDoc *d, int obj, Input *in, int64_t default_frames,
     static const char *const axes[4] = {"lx", "ly", "rx", "ry"};
     for (int k = 0; k < 4; k++)
         if (j_get(d, obj, axes[k])) in->stick[k] = axis_value(num_arg(d, obj, axes[k], 0, &bad)), in->stick_set |= 1 << k;
-    in->frames = (int64_t)num_arg(d, obj, "frames", (double)default_frames, &bad);
-    in->at = (int64_t)num_arg(d, obj, "at", 0, &bad);
+    in->frames = whole(num_arg(d, obj, "frames", (double)default_frames, &bad));
+    in->at = whole(num_arg(d, obj, "at", 0, &bad));
     if (bad) return snprintf(err, cap, "frames, at, x, y: numbers"), 0;
     if (in->frames < 1 || in->frames > 216000) return snprintf(err, cap, "frames: 1 to 216000"), 0;
     if (in->at < 0 || in->at > 216000) return snprintf(err, cap, "at: 0 to 216000 frames"), 0;
@@ -693,6 +698,7 @@ static int input_script(const char *s, Input *steps, int max, int hos_units, cha
             if (e == s + 1 || held <= 0) return snprintf(err, cap, "step %d: a bad hold", n + 1), -1;
             s = e;
         }
+        if (at > 1e7 || held > 1e9) return snprintf(err, cap, "step %d: too long", n + 1), -1;   /* (llround past long: undefined) */
         in->at = hos_units ? (int64_t)llround(at * 60) : (int64_t)llround(at);
         in->frames = hos_units ? (int64_t)llround(held * 60 / 1000) : (int64_t)llround(held);
         if (in->frames < 1) in->frames = 1;
@@ -885,12 +891,12 @@ static void cmd_wait(int ci, const JDoc *d, int req, const char *id) {
     int64_t target = 0;
     if (!strcmp(event, "present") || !strcmp(event, "frames")) {
         const double n = num_arg(d, req, "frames", num_arg(d, req, "n", 1, &bad), &bad);
-        if (n < 0) bad = 1;
-        kind = W_FRAME, target = G.frame + (int64_t)n;
+        if (n < 0 || n > 1e9) bad = 1;
+        kind = W_FRAME, target = G.frame + whole(n);
     } else if (!strcmp(event, "frame")) {
         const JNode *f = j_get(d, req, "frame");
         if (!f || f->type != J_NUM) return reply_error(c, id, "bad_request", "wait frame: frame, the frame number");
-        kind = W_FRAME, target = (int64_t)f->num;
+        kind = W_FRAME, target = whole(f->num);
     } else if (!strcmp(event, "in_play")) kind = W_STATE, state = S_PLAY;
     else if (!strcmp(event, "state")) {
         const char *s = str_arg(d, req, "state");
@@ -993,7 +999,7 @@ static void cmd_shot(int ci, const JDoc *d, int req, const char *id) {
     }
     const JNode *after_n = j_get(d, req, "after");
     if (after_n && after_n->type != J_NUM && after_n->type != J_NULL) return reply_error(c, id, "bad_request", "after: a frame number");
-    const int64_t after = after_n && after_n->type == J_NUM ? (int64_t)after_n->num : G.frame;
+    const int64_t after = after_n && after_n->type == J_NUM ? whole(after_n->num) : G.frame;
     const int64_t deadline = deadline_arg(d, req, 30, &bad);
     if (bad) return reply_error(c, id, "bad_request", "timeout: seconds");
     if (!G.game->shot) return reply_error(c, id, "unavailable", "no renderer that takes shots");
@@ -1022,7 +1028,13 @@ static int shot_finished(Pending *p, Conn *c, int64_t now) {
         reply_start(&b, p->id, 1);
         buf_printf(&b, ",\"present\":%lld,\"path\":", (long long)present);
         buf_str(&b, p->path);
-        buf_puts(&b, ",\"width\":1280,\"height\":720");
+        unsigned char h[24];   /* (its size from the PNG's header: 1280x720 unless RX_VK_SHOT_W / RX_VK_SHOT_H) */
+        FILE *f = fopen(p->path, "rb");
+        if (f && fread(h, 1, sizeof h, f) == sizeof h && !memcmp(h, "\x89PNG\r\n\x1a\n", 8) && !memcmp(h + 12, "IHDR", 4))
+            buf_printf(&b, ",\"width\":%lu,\"height\":%lu",
+                       (unsigned long)h[16] << 24 | (unsigned long)h[17] << 16 | (unsigned long)h[18] << 8 | h[19],
+                       (unsigned long)h[20] << 24 | (unsigned long)h[21] << 16 | (unsigned long)h[22] << 8 | h[23]);
+        if (f) fclose(f);
         reply_end(c, &b);
     }
     return 1;
@@ -1123,7 +1135,7 @@ static void cmd_subscribe(int ci, const JDoc *d, int req, const char *id) {
     } else if (ev) return reply_error(c, id, "bad_request", "events: a list (present, state, log, map)");
     const char *filter = str_arg(d, req, "log");
     if (filter) log = 1;
-    const int64_t every = (int64_t)num_arg(d, req, "every", 60, &bad);
+    const int64_t every = whole(num_arg(d, req, "every", 60, &bad));
     if (bad || every < 1) return reply_error(c, id, "bad_request", "every: frames, at least 1");
     c->sub_on = 1, c->sub_present = present, c->sub_state = state, c->sub_log = log, c->sub_map = map, c->sub_every = every;
     c->sub_next = G.frame + every;
@@ -2112,7 +2124,9 @@ static int game_save_root(char *out, size_t cap) {
 }
 static int64_t game_frame(void) { return __atomic_load_n(&hos_present_count, __ATOMIC_RELAXED); }
 static void game_log(const char *line) { hos_log("%s", line); }
-static void game_quit(void) {
+void rx_close_asked(void);   /* (rx_backend.c) */
+static void game_quit(void) {   /* (as the window's close: the pipelines made since the last save kept, then out) */
+    rx_close_asked();
     hos_log("control: exiting");
     hos_log_flush();
     ExitProcess(0);

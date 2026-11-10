@@ -176,8 +176,8 @@ step's end.
 
 **release**: every queued input is let go: `{"released": 3}`. Presses that were waited on reply `cancelled`.
 
-**shot**: a PNG of the first present after the request, or after frame `after`. It is 1280x720, as `RX_VK_SHOTS`
-writes them. `path` defaults to `shots/shot_<n>_f<frame>.png` in the socket's folder (made 0700). A relative path is
+**shot**: a PNG of the first present after the request, or after frame `after`. It is the size `RX_VK_SHOTS` writes
+(1280x720, or `RX_VK_SHOT_W` x `RX_VK_SHOT_H`); the reply's `width` and `height` are read from the file. `path` defaults to `shots/shot_<n>_f<frame>.png` in the socket's folder (made 0700). A relative path is
 taken from the socket's folder, not the game's (on Windows, where a pipe has no folder, from `%TEMP%\hookshot-control-<pipe name>\`, which also holds `shots\`). A shot is the game's own picture: the Insert menu and the FPS counter, drawn over it on the way to the window, are not in it. The file is written whole under another name, then renamed, so the
 path in the reply is complete. The `timeout` default is 30 s. Shots need the Vulkan renderer.
 
