@@ -51,6 +51,7 @@ ARGS = {
     "tests/test_vulkan_copy_span.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_vulkan_copy_span_gpu_compile.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_input_background.py": ["--cc", "gcc"],
+    "tests/test_skip_title.py": ["--cc", "gcc"],
     "tests/test_framegen_resources.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_framegen_preset.py": ["--cxx", "{cxx}"],
     "tests/test_oot_wide_save_picture.py": ["--cc", "gcc"],

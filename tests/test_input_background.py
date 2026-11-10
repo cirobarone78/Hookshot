@@ -74,6 +74,7 @@ def main():
 volatile int hos_oot_live_action;
 int hos_oot_flight_shortcut_ready(void) { CHECK(!"unexpected cheat readiness query"); return 0; }
 void rx_option_set(int id, int value) { (void)id; (void)value; CHECK(!"unexpected cheat option change"); }
+void hos_oot_autoload_input(void) {}
 """
     actual = "\n".join((cheat_state, cheat_spies, block(hid, "static int key("), block(hid, "static int kmap_down("),
         block(hid, "static int game_in_front("), hid[start:end], block(hid, "static void stick_max("),

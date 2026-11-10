@@ -371,6 +371,13 @@ static void scripted_input(uint64_t *buttons, int32_t stick[4]) {
         }
 }
 
+/* (hookshot) A press the host adds while the game runs, in the input script's syntax, timed from now (the Insert menu's Skip
+   title screen row, host/oot_autoload.c). It joins the script's presses, so it holds for its /<ms> and is read like one. */
+void hos_hid_tap(const char *presses) {
+    if (npresses < 0) parse_script();
+    parse_presses(presses, script_elapsed_ms(hos_now_ns()), 1);
+}
+
 static void stick_max(int32_t stick[4], const int32_t v[4]) {
     for (int i = 0; i < 4; i++)
         if ((v[i] < 0 ? -v[i] : v[i]) > (stick[i] < 0 ? -stick[i] : stick[i])) stick[i] = v[i];
@@ -671,6 +678,8 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
     scripted_input(buttons, stick);
+    void hos_oot_autoload_input(void);   /* (host/oot_autoload.c: the Skip title screen row's presses) */
+    hos_oot_autoload_input();
     /* A scripted run (a test) takes no input from the player's devices until 5 s after its last press (a variable
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
        while the game's window is in front, like the keyboard: XInput is global, so a test run in the background

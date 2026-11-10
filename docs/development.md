@@ -195,7 +195,7 @@ number is not the obvious one:
 
 The other rows are 0 Off and 1 On. Some are read at the start, before the menu exists, by the code that needs them:
 `handheld_profile` and `output_res` (`host/nn_applet.c`), `ultrawide` (`host/hos_main.c`), `robust_buffers`
-(`gpu/vk/vk_main.cpp`) and the controls (`host/nn_hid.c`).
+(`gpu/vk/vk_main.cpp`), the controls (`host/nn_hid.c`) and `skip_title_screen` (`host/oot_autoload.c`).
 
 ## Layout
 

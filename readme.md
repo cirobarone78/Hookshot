@@ -247,6 +247,7 @@ choices and starts the game again, so progress since your last save is lost.
 | | Menu size | Auto, Small, Medium, Large | Auto |
 | | Game speed | Per frame, Real time | Real time |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
+| | Skip title screen | Off, On (after a restart) | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
 | | Microphone | Off, Default, or each microphone by name | Default |
 | Controls | Controller in background | Off, On | Off |
@@ -267,6 +268,9 @@ choices and starts the game again, so progress since your last save is lost.
   sets it back to Custom.
 - **Menu size** is how large the menu, the FPS counter and the start-up screen are drawn. Auto is Large in fullscreen on a
   screen of 1080 lines or more while you use a controller (a TV across the room), else Medium.
+- **Skip title screen** starts the game with your most recent save: Hookshot presses A through the title screen and its
+  file list as soon as the game has a save. Until you have saved once, it leaves the title screen alone, so a new game can
+  still be started. It applies after a restart; turn it off to watch the intro and use the title.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a
   second card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed.
   `hookshot_log.txt` lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins

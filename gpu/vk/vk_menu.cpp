@@ -597,6 +597,9 @@ Row rows[] = {
      hn_speed},
     {TAB_GAMEPLAY, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear.", hn_text_speed},
+    {TAB_GAMEPLAY, "Skip title screen", &opts.skip_title, 0, 1, 1, tx_onoff,
+     "Starts a launch with the most recent saved game: presses through the title screen and its file list. Does nothing "
+     "until the game has a save. Applies after a restart.", nullptr, true, true},
     {TAB_GAMEPLAY, "Audio output", &opts.audio_output, 0, 2, 1, tx_audio_output,
      "The speakers the game mixes its sound for. Applies after a restart.", hn_audio_output, true, true},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
