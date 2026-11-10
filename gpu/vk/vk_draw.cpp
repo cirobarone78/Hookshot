@@ -1725,7 +1725,10 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
         for (int i = 0; i < 2; i++)
             if (job->cold[i])
                 jobs_push([job, i] { gpl_build_cold(*job->p, job->s, job->at, job->topo, i + 1, job->cold[i]); });
-    }, false, &e->ready);   // (a draw that waits for it runs it at once if it is still queued: jobs_wait)
+    }, false, &e->ready, [job]() noexcept {
+        // Keep a linked pipeline if one was already usable; otherwise null means the completed build failed.
+        job->e->ready.store(true, std::memory_order_release);
+    });   // (a draw that waits for it runs it at once if it is still queued: jobs_wait)
     return remember(e);
 }
 
@@ -3993,20 +3996,39 @@ std::vector<uint32_t> spirv_location(const uint32_t* w, size_t n, uint32_t locat
 }
 
 std::unordered_map<uint64_t, VkPipeline> clear_pipes;
+struct ClearFailure { int tries = 0, waited = 0; };   // (a key whose pipeline could not be made: its tries, its clears since)
+std::unordered_map<uint64_t, ClearFailure> clear_failures;
+constexpr int kClearTries = 3;          // (failed this often, a key backs off: no try a frame)
+constexpr int kClearRetryEvery = 600;   // (a key that backed off is tried once in this many of its clears)
 VkPipelineLayout clear_layout = VK_NULL_HANDLE;
 
+/// (#1787) The pipeline of a masked clear, made on its first use. A layout, module or pipeline the driver did not make is not
+/// used and not kept: the key is tried again on its next clears, kClearTries times, then once every kClearRetryEvery of its
+/// clears, so a device short of memory for a while gets the clear back and one that never makes it costs no try a frame
 VkPipeline clear_pipeline(const Targets& at, int index, uint32_t mask, int kind) {
     uint64_t key = mix((uint64_t)index << 8 | mask << 4 | (uint64_t)kind, (uint64_t)at.samples);
     for (int i = 0; i < at.n; i++) key = mix(key, (uint64_t)at.color_format[i]);
     key = mix(key, (uint64_t)at.depth_format);
     auto it = clear_pipes.find(key);
     if (it != clear_pipes.end()) return it->second;
+    ClearFailure& failed = clear_failures[key];
+    if (failed.tries >= kClearTries && ++failed.waited < kClearRetryEvery) return VK_NULL_HANDLE;
+    failed.waited = 0;
+    auto fail = [&](const char* what, VkResult r) -> VkPipeline {
+        if (++failed.tries == kClearTries)
+            logf("vk: masked clear: no %s (VkResult %d); this clear is left out, tried again every %d clears", what, (int)r,
+                 kClearRetryEvery);
+        return VK_NULL_HANDLE;
+    };
     if (!clear_layout) {
         const VkPushConstantRange r{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
         VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         li.pushConstantRangeCount = 1;
         li.pPushConstantRanges = &r;
-        vkCreatePipelineLayout(dev.device, &li, nullptr, &clear_layout);
+        VkPipelineLayout made = VK_NULL_HANDLE;
+        const VkResult lr = vkCreatePipelineLayout(dev.device, &li, nullptr, &made);
+        if (lr != VK_SUCCESS || !made) return fail("pipeline layout", lr);
+        clear_layout = made;
     }
     const uint32_t* fw = kind == 1 ? CLEAR_U_FRAG_SPV : kind == 2 ? CLEAR_I_FRAG_SPV : CLEAR_F_FRAG_SPV;
     const size_t fn = (kind == 1 ? sizeof CLEAR_U_FRAG_SPV : kind == 2 ? sizeof CLEAR_I_FRAG_SPV : sizeof CLEAR_F_FRAG_SPV) / 4;
@@ -4014,9 +4036,14 @@ VkPipeline clear_pipeline(const Targets& at, int index, uint32_t mask, int kind)
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE;
     mi.codeSize = sizeof CLEAR_VERT_SPV, mi.pCode = CLEAR_VERT_SPV;
-    vkCreateShaderModule(dev.device, &mi, nullptr, &vm);
+    const VkResult vr = vkCreateShaderModule(dev.device, &mi, nullptr, &vm);
+    if (vr != VK_SUCCESS || !vm) return fail("vertex module", vr);
     mi.codeSize = frag.size() * 4, mi.pCode = frag.data();
-    vkCreateShaderModule(dev.device, &mi, nullptr, &fm);
+    const VkResult fr = vkCreateShaderModule(dev.device, &mi, nullptr, &fm);
+    if (fr != VK_SUCCESS || !fm) {
+        vkDestroyShaderModule(dev.device, vm, nullptr);
+        return fail("fragment module", fr);
+    }
     VkPipelineShaderStageCreateInfo st[2]{{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
                                           {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
     st[0].stage = VK_SHADER_STAGE_VERTEX_BIT, st[0].module = vm, st[0].pName = "main";
@@ -4052,9 +4079,14 @@ VkPipeline clear_pipeline(const Targets& at, int index, uint32_t mask, int kind)
     ci.pMultisampleState = &ms, ci.pDepthStencilState = &ds, ci.pColorBlendState = &bs, ci.pDynamicState = &dy;
     ci.layout = clear_layout;
     VkPipeline pl = VK_NULL_HANDLE;
-    cached_graphics(&ci, &pl);
+    const VkResult pr = cached_graphics(&ci, &pl);
     vkDestroyShaderModule(dev.device, vm, nullptr);
     vkDestroyShaderModule(dev.device, fm, nullptr);
+    if (pr != VK_SUCCESS || !pl) {
+        if (pl) vkDestroyPipeline(dev.device, pl, nullptr);
+        return fail("pipeline", pr);
+    }
+    clear_failures.erase(key);
     clear_pipes[key] = pl;
     return pl;
 }
@@ -5578,8 +5610,12 @@ bool fallback_pipelines_ready(Program& p) {
         // (issue 496: one at a time on Intel, as compute programs are. RX_VK_COMPUTE_SERIAL=1 or 0 says so on any GPU)
         static const bool serial = getenv("RX_VK_COMPUTE_SERIAL") ? getenv("RX_VK_COMPUTE_SERIAL")[0] == '1'
                                                                  : dev.props.vendorID == 0x8086;
-        if (serial) jobs_push_serial(std::move(build));
-        else jobs_push(std::move(build), true);
+        auto failed = [job]() noexcept {
+            // fallback_compute is published only after the whole build succeeds; empty means failed.
+            job->compute_state.store(2, std::memory_order_release);
+        };
+        if (serial) jobs_push_serial(std::move(build), failed);
+        else jobs_push(std::move(build), true, nullptr, failed);
     }
     const auto t0 = std::chrono::steady_clock::now();
     while (fresh && p.compute_state.load(std::memory_order_acquire) != 2 &&
@@ -7771,8 +7807,16 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 p.compute_pipeline = cached;
                 st_pipelines++;
                 p.compute_state.store(2, std::memory_order_release);
-            } else if (serial) jobs_push_serial(std::move(build));
-            else jobs_push(std::move(build), true);
+            } else {
+                auto failed = [job]() noexcept {
+                    Program& q = const_cast<Program&>(*job);
+                    q.compute_pipeline = VK_NULL_HANDLE;
+                    q.failed = true;
+                    q.compute_state.store(2, std::memory_order_release);
+                };
+                if (serial) jobs_push_serial(std::move(build), failed);
+                else jobs_push(std::move(build), true, nullptr, failed);
+            }
         }
         // (only the dispatch that started the build waits: later ones while it still compiles are left out at once, not 50 ms
         // each, which stalled every frame by 50 ms per compute program still building)

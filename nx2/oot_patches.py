@@ -42,7 +42,7 @@ def fixed_scale(t):
     t = t.replace(APPLY_OLD, APPLY_NEW, 1).replace(FLAGS_OLD, FLAGS_NEW, 1)
     return t.replace('#include "a64.h"\n', '#include "a64.h"\n' + DECL2, 1), 1
 
-TEXT_DECL = "extern volatile float hos_text_scale;\n"
+TEXT_DECL = "extern volatile float hos_text_scale;\nextern void hos_oot_text_pane(Ctx *c, uint64_t anim);\n"
 LIFE_BUILD_ID = "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348"
 LIFE_HEAD = "void f_804bd8c0(Ctx *__restrict A64_NOESC c) {\n"
 MOVE_HEAD = "void f_82c415e0(Ctx *__restrict A64_NOESC c) {\n"
@@ -142,6 +142,33 @@ def patch_mouse_camera(source):
     return source.replace('#include "a64.h"\n', '#include "a64.h"\nextern void hos_mouse_camera(uint64_t camera);\n', 1)
 
 
+# The camera's state-3 yaw follow: after f_80642c80's authored heading override (the branch to 0x806492c4), the block at
+# 0x8064720c derives a heading from Link's movement and eases yaw (+0x1a4) through f_80642410 at 0x806475e4. Skip only
+# the movement path, restoring x25's parameter base as that path does, and join the other yaw paths at 0x80645ad8.
+# State 4's stick, state 2's explicit recenter and authored heading overrides stay intact; pitch and collision follow.
+CAM_FOLLOW_ANCHOR = "L_8064720c:;\nif (!c->z) { goto L_806492c4; }\n"
+CAM_FOLLOW_JOIN = "L_80645ad8:;"
+CAM_FOLLOW_HOOK = ("    if (hos_disable_camera_centering()) { c->x[25] = c->x[26]; goto L_80645ad8; }"
+                   "   /* (nx2/oot_patches.py: disable camera centering) */\n")
+
+
+def patch_camera_centering(source):
+    start = source.find(CAM_HEAD)
+    if start < 0:
+        return None
+    end = source.find("\n}", start)
+    if end < 0:
+        return None
+    body = source[start:end]
+    if body.count(CAM_FOLLOW_ANCHOR) != 1 or body.count(CAM_FOLLOW_JOIN) != 1:
+        return None
+    if CAM_FOLLOW_HOOK in body:
+        return source
+    body = body.replace(CAM_FOLLOW_ANCHOR, CAM_FOLLOW_ANCHOR + CAM_FOLLOW_HOOK, 1)
+    return (source[:start] + body + source[end:]).replace(
+        '#include "a64.h"\n', '#include "a64.h"\nextern int hos_disable_camera_centering(void);\n', 1)
+
+
 MENU_FOCUS_HEAD = "void f_802ed660(Ctx *__restrict A64_NOESC c) {\n"
 
 
@@ -184,7 +211,8 @@ TEXT_OLD = ("L_80b1e1b4:;\n"
 # (the same block in a build with interrupt polls: nx2/poll.py puts the poll before each backward goto, as a block)
 TEXT_OLD_POLLED = TEXT_OLD.replace("{ goto L_80b1e18c; }", "{ { A64_POLL(c); goto L_80b1e18c; } }")
 TEXT_ADD = ("    if (hos_text_scale != 1.0f) { float _t; uint32_t _u; memcpy(&_t,c->vreg[0],4); _t *= hos_text_scale; "
-            "memcpy(&_u,&_t,4); a64_vset64(c->vreg[0],_u); }   /* (nx2/oot_patches.py: text speed) */\n")
+            "memcpy(&_u,&_t,4); a64_vset64(c->vreg[0],_u); }   /* (nx2/oot_patches.py: text speed) */\n"
+            "    hos_oot_text_pane(c, c->x[19]);   /* (nx2/oot_patches.py: text size; x19 the LetterAnimControl) */\n")
 TEXT_NEW = TEXT_OLD + TEXT_ADD
 
 
@@ -276,7 +304,8 @@ def patch_movie_frames(s):
 
 
 def patch_text_speed(s):
-    """The scale at the head of the letters' block of f_80b1e140; None when the file has no such function, s unchanged when the
+    """The scale at the head of the letters' block of f_80b1e140 (Text speed), and the call to hos_oot_text_pane after it
+    (Text size: host/oot_text_size.c); None when the file has no such function, s unchanged when the
     function is there but its code differs (another game version)."""
     head = s.find(TEXT_HEAD)
     if head < 0:
@@ -311,6 +340,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         done["player flight rotation"] = 0
         done["free camera"] = 0
         done["mouse camera"] = 0
+        done["disable camera centering"] = 0
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
     for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
@@ -325,7 +355,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         if t is not None and t != out:
             out = t
             done["text speed block"] += 1
-            print("oot_patches: text speed scale in", os.path.basename(path))
+            print("oot_patches: text speed scale and text size in", os.path.basename(path))
         focus = patch_menu_focus(out) if protect_hearts else None
         if focus is not None:
             out = focus
@@ -367,6 +397,11 @@ def apply(gen, *, protect_hearts=False, required=False):
             out = mouse
             done["mouse camera"] += 1
             print("oot_patches: native mouse camera in", os.path.basename(path))
+        center = patch_camera_centering(out) if protect_hearts else None
+        if center is not None:
+            out = center
+            done["disable camera centering"] += 1
+            print("oot_patches: disable camera centering switch in", os.path.basename(path))
         view = patch_view(out) if protect_hearts else None
         if view is not None:
             out = view
