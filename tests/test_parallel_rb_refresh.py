@@ -71,7 +71,7 @@ def main():
         "rb_refresh.inc": cut(memory, "// ---- (from PR 430, YunaraDebugs) Readback pages", "BufferRef gpu_buffer(uint64_t gpu, uint64_t size) {"),
         "rb_bindtail.inc": cut(block(memory, "BufferRef gpu_buffer_bind("),
                                "if (p->synced_epoch != mirror_epoch || p->sync_seg > texture_segment()) mirror_sync(*p);",
-                               "return remember({p->mirror"),
+                               "return remember(p, {p->mirror"),
         "rb_texture.inc": "\n".join(block(texture, m) for m in (
             "uint64_t texture_segment() {", "void texture_set_segment(uint64_t seg) {",
             "void texture_begin_recording(VkCommandBuffer upload, uint64_t value) {", "bool texture_uploads_recorded() {")),
