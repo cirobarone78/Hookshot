@@ -85,7 +85,14 @@ def serve(f):
         rid, cmd = req.get("id"), req.get("cmd")
         r = {"id": rid, "ok": True, "frame": frame[0]}
         if cmd == "status":
-            r.update(protocol=1, fps=59.9, state="play", draws=2400.0, window={"width": 1280, "height": 720}, version="fake")
+            r.update(protocol=1, fps=59.9, state="play", draws=2400.0, window={"width": 1280, "height": 720}, version="fake",
+                     map="KokiriForest_Child")
+        elif cmd == "teleport":
+            if req.get("to") is None:
+                r.update(destinations=[{"index": 0, "child": "KokiriForest_Child", "adult": "KokiriForest_Adult"},
+                                       {"index": 1, "child": None, "adult": "GerudoFortress_Adult"}])
+            else:
+                r.update(teleport=1, child=None, adult="GerudoFortress_Adult")
         elif cmd in ("press", "stick", "sequence"):
             r.update(start=frame[0], end=frame[0] + req.get("frames", 8))
         elif cmd == "shot":
@@ -95,6 +102,8 @@ def serve(f):
                 r = {"id": rid, "ok": False, "frame": frame[0], "error": "timeout", "message": "not met in time"}
             else:
                 r.update(state="play", waited=3)
+                if req.get("event") == "map":
+                    r.update(map=req.get("map") or "HyruleField_Child")
         elif cmd == "option_set":
             if req["name"] == "nope":
                 r = {"id": rid, "ok": False, "frame": frame[0], "error": "not_found", "message": "no setting nope"}
@@ -213,7 +222,7 @@ class HookshotCtl(unittest.TestCase):
 
     def test_status(self):
         r = ctl("status", env=self.env, check=0)
-        self.assertRegex(r.stdout, r"^frame \d+  fps 59\.9  state play  draws 2400  window 1280x720  fake")
+        self.assertRegex(r.stdout, r"^frame \d+  fps 59\.9  state play  draws 2400  window 1280x720  map KokiriForest_Child  fake")
         r = ctl("--sock", self.sock, "--json", "status", check=0)
         self.assertEqual(json.loads(r.stdout)["state"], "play")
 
@@ -245,6 +254,17 @@ class HookshotCtl(unittest.TestCase):
         self.assertEqual(self.last("wait")["timeout"], 120)
         r = ctl("wait", "loading_end", "--timeout", "1", env=self.env, check=3)
         self.assertIn("timeout", r.stderr)
+        r = ctl("wait", "map", "--map", "GerudoFortress_Adult", env=self.env, check=0)
+        self.assertIn("map GerudoFortress_Adult", r.stdout)
+        self.assertEqual(self.last("wait")["map"], "GerudoFortress_Adult")
+        r = ctl("teleport", env=self.env, check=0)
+        self.assertRegex(r.stdout, r"(?m)^  1  -\s+GerudoFortress_Adult$")
+        self.assertNotIn("to", self.last("teleport"))
+        r = ctl("teleport", "1", env=self.env, check=0)
+        self.assertIn("teleport 1 asked for", r.stdout)
+        self.assertEqual(self.last("teleport")["to"], 1)
+        ctl("teleport", "gerudofortress_adult", env=self.env, check=0)
+        self.assertEqual(self.last("teleport")["to"], "gerudofortress_adult")
         r = ctl("option", "set", "nope", "1", env=self.env, check=1)
         self.assertIn("not_found", r.stderr)
         r = ctl("raw", '{"cmd":"fly"}', env=self.env, check=1)

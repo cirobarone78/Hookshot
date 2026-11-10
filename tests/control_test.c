@@ -157,9 +157,32 @@ static int fake_save_root(char *out, size_t cap) {
     snprintf(out, cap, "%s", save_root);
     return 1;
 }
+/* (OoT) the map and the teleport: a teleport asked for is taken by the game's thread at its next frame, as the player's
+   update takes it */
+static const char *const dest_child[3] = {"KokiriForest_Child", "HyruleField_Child", NULL};
+static const char *const dest_adult[3] = {"KokiriForest_Adult", "HyruleField_Adult", "GerudoFortress_Adult"};
+static char fake_map_now[80];
+static volatile int teleport_asked = -1;
+static int fake_map(char *out, size_t cap) {
+    log_lock();
+    const int have = fake_map_now[0] != 0;
+    if (have) snprintf(out, cap, "%s", fake_map_now);
+    log_unlock();
+    return have;
+}
+static int fake_destination(int i, const char **child, const char **adult) {
+    if (i < 0 || i >= 3) return 0;
+    *child = dest_child[i], *adult = dest_adult[i];
+    return 1;
+}
+static int fake_teleport(int i) {
+    if (i < 0 || i >= 3) return 0;
+    __atomic_store_n(&teleport_asked, i, __ATOMIC_RELAXED);
+    return 1;
+}
 static HosControlGame game = {fake_frame, fake_frame_info, fake_shot, fake_setting, fake_setting_set,
                               fake_mem_region, fake_mem_read, fake_mem_write, fake_save_root, fake_log, fake_quit,
-                              fake_renderer, "test"};
+                              fake_renderer, "test", fake_map, fake_destination, fake_teleport};
 
 static void *game_thread(void *unused) {
     (void)unused;
@@ -169,6 +192,12 @@ static void *game_thread(void *unused) {
         uint64_t b = 0;
         int32_t st[4] = {0, 0, 0, 0};
         const int ex = hos_control_input(&b, st);
+        const int t = __atomic_exchange_n(&teleport_asked, -1, __ATOMIC_RELAXED);
+        if (t >= 0) {
+            log_lock();
+            snprintf(fake_map_now, sizeof fake_map_now, "%s", dest_child[t] ? dest_child[t] : dest_adult[t]);
+            log_unlock();
+        }
         const int64_t f = fake_frame();
         if (f < FRAMES) seen_buttons[f] = b, memcpy(seen_stick[f], st, sizeof st), seen_exclusive[f] = ex;
         draws_total += (int64_t)draws_per_frame;
@@ -749,6 +778,38 @@ int main(int argc, char **argv) {
         ask(sub, "{\"id\":\"u\",\"cmd\":\"unsubscribe\"}\n", "\"u\"", line, sizeof line, 2000);
         hangup(sub);
         puts("PASS: subscribe: presents, state changes, filtered log lines; unsubscribe");
+    }
+
+    /* (OoT) the map and the teleport */
+    {
+        ask(c, "{\"id\":70,\"cmd\":\"status\"}\n", "70", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"map\":null"));
+        ask(c, "{\"id\":71,\"cmd\":\"teleport\"}\n", "71", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"destinations\":[{\"index\":0,\"child\":\"KokiriForest_Child\"") &&
+              strstr(line, "{\"index\":2,\"child\":null,\"adult\":\"GerudoFortress_Adult\"}]"));
+        ask(c, "{\"id\":72,\"cmd\":\"teleport\",\"to\":9}\n", "72", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"error\":\"not_found\""));
+        ask(c, "{\"id\":73,\"cmd\":\"teleport\",\"to\":\"nowhere\"}\n", "73", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"error\":\"not_found\""));
+        Client *sub = dial();
+        ask(sub, "{\"id\":\"m\",\"cmd\":\"subscribe\",\"events\":[\"map\"]}\n", "\"m\"", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"events\":[\"map\"]"));
+        say(c, "{\"id\":74,\"cmd\":\"wait\",\"event\":\"map\",\"map\":\"HyruleField_Child\",\"timeout\":5}\n");
+        ask(c, "{\"id\":75,\"cmd\":\"teleport\",\"to\":\"hyrulefield_adult\"}\n", "75", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"teleport\":1") && strstr(line, "\"child\":\"HyruleField_Child\""));
+        CHECK(hear(c, line, sizeof line, 5000) && strstr(line, "\"id\":74,\"ok\":true") &&
+              strstr(line, "\"map\":\"HyruleField_Child\""));
+        CHECK(hear(sub, line, sizeof line, 2000) && strstr(line, "\"event\":\"map\"") &&
+              strstr(line, "\"map\":\"HyruleField_Child\",\"from\":null"));
+        say(c, "{\"id\":76,\"cmd\":\"wait\",\"event\":\"map\",\"timeout\":5}\n");   /* (any other map) */
+        ask(c, "{\"id\":77,\"cmd\":\"teleport\",\"to\":0}\n", "77", line, sizeof line, 2000);
+        CHECK(hear(c, line, sizeof line, 5000) && strstr(line, "\"id\":76,\"ok\":true") &&
+              strstr(line, "\"map\":\"KokiriForest_Child\""));
+        CHECK(hear(sub, line, sizeof line, 2000) && strstr(line, "\"from\":\"HyruleField_Child\""));
+        ask(c, "{\"id\":78,\"cmd\":\"status\"}\n", "78", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"map\":\"KokiriForest_Child\""));
+        hangup(sub);
+        puts("PASS: (OoT) the map in status, events and waits; the teleport by index or map, and its list");
     }
 
     /* a client gone in the middle of a press: its input is let go */

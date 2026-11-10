@@ -12,10 +12,11 @@ steer it and read its state from a shell, a test or a coding agent. Standard lib
     release                                     every queued input let go
     shot [out.png] [--after FRAME]              a PNG of the next present; prints its path
     wait in_play [--timeout 120]                also: present --frames N, frame --frame N, state --state S,
-                                                loading_start, loading_end, change
+                                                loading_start, loading_end, change, map [--map NAME]
+    teleport [INDEX|MAP]                        (OoT) the debug teleport; none: the destinations
     option get [NAME]  /  option set NAME VALUE the Insert menu's settings
     saves  /  slots [--thumbs DIR]              the save folder the game uses; its slots, newest first
-    watch [--events present,state,log] [--every 60] [--log TEXT] [--count N]
+    watch [--events present,state,log,map] [--every 60] [--log TEXT] [--count N]
     mem read ADDR SIZE [--format hex|u8|u16|u32|u64|f32]   read guest memory (HOS_CONTROL_MEM=ro or rw)
     mem write ADDR HEX                          write guest memory (HOS_CONTROL_MEM=rw); aliases: ro->r/read, rw->readwrite
     quit                                        the game exits
@@ -254,9 +255,10 @@ def run(a):
         if a.command == "status":
             r = check(b.request("status"))
             win = r.get("window") or {}
-            show(a, r, lambda r: "frame %d  fps %.1f  state %s  draws %s  window %s  %s" % (
+            show(a, r, lambda r: "frame %d  fps %.1f  state %s  draws %s  window %s  map %s  %s" % (
                 r["frame"], r["fps"], r["state"], "-" if r.get("draws") is None else "%.0f" % r["draws"],
-                "%dx%d" % (win["width"], win["height"]) if win else "-", r.get("version", "")))
+                "%dx%d" % (win["width"], win["height"]) if win else "-", plain_text(r.get("map") or "-"),
+                plain_text(r.get("version", ""))))
         elif a.command in ("press", "stick", "sequence"):
             args = {"exclusive": True if a.exclusive else None, "wait": False if a.no_wait else None}
             if a.command == "press":
@@ -275,8 +277,19 @@ def run(a):
             r = check(b.request("shot", timeout=a.timeout, path=path, after=a.after))
             show(a, r, lambda r: r["path"])
         elif a.command == "wait":
-            r = check(b.request("wait", timeout=a.timeout, event=a.event, frames=a.frames, frame=a.frame, state=a.state))
-            show(a, r, lambda r: "%s after %d frames (frame %d)" % (r["state"], r["waited"], r["frame"]))
+            r = check(b.request("wait", timeout=a.timeout, event=a.event, frames=a.frames, frame=a.frame, state=a.state,
+                                map=a.map))
+            show(a, r, lambda r: "%s after %d frames (frame %d)%s" % (r["state"], r["waited"], r["frame"],
+                                                                     "  map %s" % plain_text(r["map"]) if "map" in r else ""))
+        elif a.command == "teleport":
+            to = None if a.to is None else int(a.to) if a.to.isdigit() else a.to
+            r = check(b.request("teleport", to=to))
+            if "destinations" in r:
+                show(a, r, lambda r: "\n".join("%3d  %-28s %s" % (d["index"], plain_text(d["child"] or "-"),
+                                                                  plain_text(d["adult"] or "-")) for d in r["destinations"]))
+            else:
+                show(a, r, lambda r: "teleport %d asked for (child %s, adult %s): wait map to see it taken" % (
+                    r["teleport"], plain_text(r["child"] or "-"), plain_text(r["adult"] or "-")))
         elif a.command == "option":
             if a.action == "get":
                 r = check(b.request("option_get", name=a.name))
@@ -355,6 +368,9 @@ def run(a):
                     print("state  frame %d: %s -> %s" % (msg["frame"], msg["from"], msg["state"]), flush=True)
                 elif msg["event"] == "present":
                     print("frame  %d  fps %.1f  %s" % (msg["frame"], msg["fps"], msg["state"]), flush=True)
+                elif msg["event"] == "map":
+                    print("map    frame %d: %s -> %s" % (msg["frame"], plain_text(msg["from"] or "-"), plain_text(msg["map"])),
+                          flush=True)
                 else:
                     print(json.dumps(msg), flush=True)
         return 0
@@ -511,17 +527,18 @@ def main(argv=None):
     q.add_argument("--after", type=int, help="the first present after this frame")
     q.add_argument("--timeout", type=float)
     q = sub.add_parser("wait")
-    q.add_argument("event", choices=["present", "frame", "in_play", "state", "loading_start", "loading_end", "change"])
+    q.add_argument("event", choices=["present", "frame", "in_play", "state", "loading_start", "loading_end", "change", "map"])
     q.add_argument("--frames", type=int)
     q.add_argument("--frame", type=int)
     q.add_argument("--state")
+    q.add_argument("--map", help="map: until the game is in this map (default: any other map than now)")
     q.add_argument("--timeout", type=float, default=60)
     q = sub.add_parser("option")
     q.add_argument("action", choices=["get", "set"])
     q.add_argument("name", nargs="?")
     q.add_argument("value", nargs="?")
     q = sub.add_parser("watch")
-    q.add_argument("--events", help="present,state,log (default present,state; with --log alone, log)")
+    q.add_argument("--events", help="present,state,log,map (default present,state; with --log alone, log)")
     q.add_argument("--every", type=int, default=60)
     q.add_argument("--log", help="log lines that contain this text (adds log to the events)")
     q.add_argument("--count", type=int, help="stop after this many events")
@@ -532,6 +549,8 @@ def main(argv=None):
     q.add_argument("hex", nargs="?", help="write: the bytes as hex")
     q.add_argument("--format", default="hex", choices=["hex", "base64", "u8", "u16", "u32", "u64", "f32"],
                    help="read: how to print the bytes")
+    q = sub.add_parser("teleport", help="(OoT) the debug teleport: a destination's index or map; none lists them")
+    q.add_argument("to", nargs="?")
     sub.add_parser("saves", help="the save folder the game uses: its files, newest slot first")
     q = sub.add_parser("slots", help="the save slots: last written, sizes, scene; * the newest (Continue's)")
     q.add_argument("--thumbs", metavar="DIR", help="each slot's file-select picture written there as slot_NN.jpg")

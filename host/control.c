@@ -14,8 +14,8 @@
    (gpu/vk/vk_replay.cpp shot_ask), the Insert menu's settings through its own setter. The game never waits for the
    bridge: the controller's read takes one short lock that the bridge never holds over I/O.
 
-   Commands: status, press, stick, sequence, release, shot, wait, option_get, option_set, saves, subscribe, unsubscribe,
-   quit, and guest memory (mem_read, mem_read_many, mem_write) when HOS_CONTROL_MEM allows it.
+   Commands: status, press, stick, sequence, release, shot, wait, option_get, option_set, saves, teleport (OoT), subscribe,
+   unsubscribe, quit, and guest memory (mem_read, mem_read_many, mem_write) when HOS_CONTROL_MEM allows it.
    Inputs are timed in frames, from the first controller read after the request. The state (intro, menu, loading,
    play) is a guess from the draws a frame, as test scripts made it from the log: ~2 draws at the intro, 15-70 in menus,
    ~5 while loading, hundreds in play.
@@ -301,20 +301,20 @@ typedef struct Conn {
     Buf out;
     int closing;
     /* subscribe */
-    int sub_on, sub_present, sub_state, sub_log;
+    int sub_on, sub_present, sub_state, sub_log, sub_map;
     int64_t sub_every, sub_next;
     char sub_id[256], sub_filter[256];
     unsigned log_seen;   /* (the log ring's count it has seen) */
 } Conn;
 
 enum { P_INPUT = 1, P_WAIT, P_SHOT, P_MEM };
-enum { W_FRAME = 1, W_STATE, W_LOADING_START, W_LOADING_END, W_CHANGE };
+enum { W_FRAME = 1, W_STATE, W_LOADING_START, W_LOADING_END, W_CHANGE, W_MAP };
 typedef struct {
     int used, conn, gen, kind;
     char id[256];   /* the request's id as JSON */
     int64_t deadline, issued_frame;
     int group;       /* P_INPUT: its inputs */
-    int wait, from_changes; int64_t target; char state[16];
+    int wait, from_changes; int64_t target; char state[16], map[80];
     int token, done, ok; int64_t present; char path[1100];   /* P_SHOT */
     int mem_slot;   /* P_MEM */
 } Pending;
@@ -355,6 +355,9 @@ static struct {
     double fps, draws;
     int have_draws, state, candidate, candidate_n, seen_menu, state_changes, loading_ends, loading_starts;
     int width, height;
+    int64_t replayed;   /* the renderer's presents (shots count in these) */
+    char map[80];       /* the map the game is in, the last one known ("" before any); map_changes: how often it changed */
+    int map_changes;
     /* log lines for subscribers (any thread writes; the bridge's thread reads) */
     ctl_mutex log_mu;
     char log_ring[CTL_LOG_RING][400];
@@ -464,7 +467,22 @@ static void stats_tick(int64_t now) {
     int64_t replayed = frame, draws = 0;
     int w = 0, h = 0;
     G.have_draws = G.game->frame_info && G.game->frame_info(&replayed, &draws, &w, &h);
-    if (G.have_draws) G.width = w, G.height = h;
+    if (G.have_draws) G.width = w, G.height = h, G.replayed = replayed;
+    char map[sizeof G.map];
+    if (G.game->map && G.game->map(map, sizeof map) && strcmp(map, G.map)) {
+        for (int i = 0; i < CTL_CONNS; i++) {   /* subscribers: the new map */
+            Conn *c = &G.conns[i];
+            if (!c->used || !c->sub_on || !c->sub_map) continue;
+            buf_printf(&c->out, "{\"event\":\"map\",\"sub\":%s,\"frame\":%lld,\"map\":", c->sub_id, (long long)frame);
+            buf_str(&c->out, map);
+            buf_puts(&c->out, ",\"from\":");
+            if (G.map[0]) buf_str(&c->out, G.map);
+            else buf_puts(&c->out, "null");
+            buf_puts(&c->out, "}\n");
+        }
+        memcpy(G.map, map, sizeof G.map);
+        G.map_changes++;
+    }
     const int at = G.sample_at;
     G.samples[at].t = now, G.samples[at].frame = frame, G.samples[at].replayed = replayed, G.samples[at].draws = draws;
     G.sample_at = (at + 1) % 16;
@@ -834,10 +852,15 @@ static void cmd_status(int ci, const char *id) {
     reply_start(&b, id, 1);
     buf_printf(&b, ",\"protocol\":1,\"fps\":%.1f,\"state\":\"%s\",\"stalled\":%s", G.fps, STATES[G.state],
                G.frame && now - G.last_frame_ns > 1000000000 ? "true" : "false");
-    if (G.have_draws) buf_printf(&b, ",\"draws\":%.1f,\"window\":{\"width\":%d,\"height\":%d}", G.draws, G.width, G.height);
-    else buf_puts(&b, ",\"draws\":null,\"window\":null");
+    if (G.have_draws)
+        buf_printf(&b, ",\"draws\":%.1f,\"replayed\":%lld,\"window\":{\"width\":%d,\"height\":%d}", G.draws,
+                   (long long)G.replayed, G.width, G.height);
+    else buf_puts(&b, ",\"draws\":null,\"replayed\":null,\"window\":null");
     buf_printf(&b, ",\"uptime\":%.1f,\"clients\":%d,\"input\":{\"queued\":%d,\"exclusive\":%s}", (now - G.started_ns) / 1e9,
                clients, active, ex ? "true" : "false");
+    buf_puts(&b, ",\"map\":");
+    if (G.map[0]) buf_str(&b, G.map);
+    else buf_puts(&b, "null");
     buf_puts(&b, ",\"version\":");
     buf_str(&b, G.game->version ? G.game->version : "unknown");
     const char *r = G.game->renderer ? G.game->renderer() : NULL;
@@ -857,7 +880,7 @@ static void cmd_wait(int ci, const JDoc *d, int req, const char *id) {
     Conn *c = &G.conns[ci];
     const char *event = str_arg(d, req, "event");
     if (!event) event = str_arg(d, req, "for");
-    if (!event) return reply_error(c, id, "bad_request", "wait: event (present, frame, in_play, state, loading_start, loading_end, change)");
+    if (!event) return reply_error(c, id, "bad_request", "wait: event (present, frame, in_play, state, loading_start, loading_end, change, map)");
     int bad = 0, kind = 0, state = -1;
     int64_t target = 0;
     if (!strcmp(event, "present") || !strcmp(event, "frames")) {
@@ -876,14 +899,21 @@ static void cmd_wait(int ci, const JDoc *d, int req, const char *id) {
     } else if (!strcmp(event, "loading_start")) kind = W_LOADING_START;
     else if (!strcmp(event, "loading_end")) kind = W_LOADING_END;
     else if (!strcmp(event, "change")) kind = W_CHANGE;
-    else return reply_error(c, id, "bad_request", "wait: no event %s", event);
+    else if (!strcmp(event, "map")) {
+        const JNode *m = j_get(d, req, "map");
+        if (m && m->type != J_STR && m->type != J_NULL) return reply_error(c, id, "bad_request", "wait map: map, a map's name");
+        if (!G.game->map) return reply_error(c, id, "unavailable", "this game tells no map");
+        kind = W_MAP;
+    } else return reply_error(c, id, "bad_request", "wait: no event %.60s", event);
     const int64_t deadline = deadline_arg(d, req, 60, &bad);
     if (bad) return reply_error(c, id, "bad_request", "frames, timeout: numbers");
     Pending *p = pending_new(ci, id, P_WAIT);
     if (!p) return reply_error(c, id, "busy", "too many requests waiting");
     p->wait = kind, p->target = target, p->deadline = deadline;
-    p->from_changes = kind == W_LOADING_START ? G.loading_starts : kind == W_LOADING_END ? G.loading_ends : G.state_changes;
+    p->from_changes = kind == W_LOADING_START ? G.loading_starts : kind == W_LOADING_END ? G.loading_ends
+                    : kind == W_MAP ? G.map_changes : G.state_changes;
     if (state >= 0) snprintf(p->state, sizeof p->state, "%s", STATES[state]);
+    if (kind == W_MAP) snprintf(p->map, sizeof p->map, "%s", str_arg(d, req, "map") ? str_arg(d, req, "map") : "");
 }
 static int wait_done(Pending *p, Conn *c, int64_t now) {
     int met = 0;
@@ -893,6 +923,7 @@ static int wait_done(Pending *p, Conn *c, int64_t now) {
     case W_LOADING_START: met = G.loading_starts != p->from_changes; break;
     case W_LOADING_END: met = G.loading_ends != p->from_changes; break;
     case W_CHANGE: met = G.state_changes != p->from_changes; break;
+    case W_MAP: met = p->map[0] ? !strcmp(G.map, p->map) : G.map_changes != p->from_changes; break;   /* (that map, or another) */
     }
     if (!met && now < p->deadline) return 0;
     if (!met) {
@@ -905,6 +936,7 @@ static int wait_done(Pending *p, Conn *c, int64_t now) {
     Buf b = {0};
     reply_start(&b, p->id, 1);
     buf_printf(&b, ",\"state\":\"%s\",\"waited\":%lld", STATES[G.state], (long long)(G.frame - p->issued_frame));
+    if (p->wait == W_MAP) buf_puts(&b, ",\"map\":"), buf_str(&b, G.map);
     reply_end(c, &b);
     return 1;
 }
@@ -1076,7 +1108,7 @@ static void cmd_option_set(int ci, const JDoc *d, int req, const char *id) {
 /* ---- subscribe ---- */
 static void cmd_subscribe(int ci, const JDoc *d, int req, const char *id) {
     Conn *c = &G.conns[ci];
-    int present = 1, state = 1, log = 0, bad = 0;
+    int present = 1, state = 1, log = 0, map = 0, bad = 0;
     const JNode *ev = j_get(d, req, "events");
     if (ev && ev->type == J_ARR) {
         present = state = 0;
@@ -1085,14 +1117,15 @@ static void cmd_subscribe(int ci, const JDoc *d, int req, const char *id) {
             if (!strcmp(s, "present")) present = 1;
             else if (!strcmp(s, "state")) state = 1;
             else if (!strcmp(s, "log")) log = 1;
-            else return reply_error(c, id, "bad_request", "events: present, state, log");
+            else if (!strcmp(s, "map")) map = 1;
+            else return reply_error(c, id, "bad_request", "events: present, state, log, map");
         }
-    } else if (ev) return reply_error(c, id, "bad_request", "events: a list (present, state, log)");
+    } else if (ev) return reply_error(c, id, "bad_request", "events: a list (present, state, log, map)");
     const char *filter = str_arg(d, req, "log");
     if (filter) log = 1;
     const int64_t every = (int64_t)num_arg(d, req, "every", 60, &bad);
     if (bad || every < 1) return reply_error(c, id, "bad_request", "every: frames, at least 1");
-    c->sub_on = 1, c->sub_present = present, c->sub_state = state, c->sub_log = log, c->sub_every = every;
+    c->sub_on = 1, c->sub_present = present, c->sub_state = state, c->sub_log = log, c->sub_map = map, c->sub_every = every;
     c->sub_next = G.frame + every;
     snprintf(c->sub_id, sizeof c->sub_id, "%s", id);
     snprintf(c->sub_filter, sizeof c->sub_filter, "%s", filter ? filter : "");
@@ -1104,8 +1137,12 @@ static void cmd_subscribe(int ci, const JDoc *d, int req, const char *id) {
     G.log_wanted = any_log;
     Buf b = {0};
     reply_start(&b, id, 1);
-    buf_printf(&b, ",\"events\":[%s%s%s%s%s],\"every\":%lld", present ? "\"present\"" : "", present && (state || log) ? "," : "",
-               state ? "\"state\"" : "", state && log ? "," : "", log ? "\"log\"" : "", (long long)every);
+    buf_puts(&b, ",\"events\":[");
+    const char *names[4] = {"present", "state", "log", "map"};
+    const int on[4] = {present, state, log, map};
+    for (int k = 0, n = 0; k < 4; k++)
+        if (on[k]) buf_printf(&b, "%s\"%s\"", n++ ? "," : "", names[k]);
+    buf_printf(&b, "],\"every\":%lld", (long long)every);
     reply_end(c, &b);
 }
 static void subs_tick(void) {
@@ -1117,6 +1154,7 @@ static void subs_tick(void) {
             buf_printf(&c->out, "{\"event\":\"present\",\"sub\":%s,\"frame\":%lld,\"fps\":%.1f,\"state\":\"%s\"", c->sub_id,
                        (long long)G.frame, G.fps, STATES[G.state]);
             if (G.have_draws) buf_printf(&c->out, ",\"draws\":%.1f", G.draws);
+            if (G.map[0]) buf_puts(&c->out, ",\"map\":"), buf_str(&c->out, G.map);
             buf_puts(&c->out, "}\n");
         }
         if (c->sub_log) {
@@ -1136,6 +1174,55 @@ static void subs_tick(void) {
             ctl_unlock(&G.log_mu);
         }
     }
+}
+
+/* ---- (OoT) the debug teleport by destination: what the Cheats page's Teleport list and the live input file's
+   "!cheat 1000+<index>" ask for; the game takes it at the player's next update, in play, and logs what it did
+   ("cheats: teleport ...") ---- */
+static void cmd_teleport(int ci, const JDoc *d, int req, const char *id) {
+    Conn *c = &G.conns[ci];
+    if (!G.game->destination || !G.game->teleport) return reply_error(c, id, "unavailable", "this game has no teleport");
+    const JNode *to = j_get(d, req, "to");
+    const char *child, *adult;
+    Buf b = {0};
+    if (!to || to->type == J_NULL) {   /* the destinations */
+        reply_start(&b, id, 1);
+        buf_puts(&b, ",\"destinations\":[");
+        for (int i = 0; i < 256 && G.game->destination(i, &child, &adult); i++) {
+            buf_printf(&b, "%s{\"index\":%d,\"child\":", i ? "," : "", i);
+            if (child) buf_str(&b, child);
+            else buf_puts(&b, "null");
+            buf_puts(&b, ",\"adult\":");
+            if (adult) buf_str(&b, adult);
+            else buf_puts(&b, "null");
+            buf_puts(&b, "}");
+        }
+        buf_puts(&b, "]");
+        return reply_end(c, &b);
+    }
+    int index = -1;
+    if (to->type == J_NUM && to->num == floor(to->num) && to->num >= 0 && to->num < 256) index = (int)to->num;
+    else if (to->type == J_STR) {   /* (a map's name, the child's or the adult's, in any case) */
+        char want[80], name[80];
+        name_norm(want, sizeof want, to->s);
+        for (int i = 0; i < 256 && index < 0 && G.game->destination(i, &child, &adult); i++)
+            for (int age = 0; age < 2 && index < 0; age++) {
+                const char *m = age ? adult : child;
+                if (m && (name_norm(name, sizeof name, m), !strcmp(name, want))) index = i;
+            }
+    }
+    if (index < 0 || !G.game->destination(index, &child, &adult))
+        return reply_error(c, id, "not_found", "to: a destination's index or map (teleport with no to lists them)");
+    G.game->teleport(index);
+    ctl_log("control: teleport to destination %d asked for", index);
+    reply_start(&b, id, 1);
+    buf_printf(&b, ",\"teleport\":%d,\"child\":", index);
+    if (child) buf_str(&b, child);
+    else buf_puts(&b, "null");
+    buf_puts(&b, ",\"adult\":");
+    if (adult) buf_str(&b, adult);
+    else buf_puts(&b, "null");
+    reply_end(c, &b);
 }
 
 static void conn_flush_now(Conn *c);
@@ -1516,6 +1603,7 @@ static void request(int ci, const char *line, size_t len) {
     else if (!strcmp(cmd, "press") || !strcmp(cmd, "stick") || !strcmp(cmd, "sequence")) cmd_input(ci, &d, req, id, cmd);
     else if (!strcmp(cmd, "release")) cmd_release(ci, id);
     else if (!strcmp(cmd, "saves")) cmd_saves(ci, id);
+    else if (!strcmp(cmd, "teleport")) cmd_teleport(ci, &d, req, id);
     else if (!strcmp(cmd, "shot")) cmd_shot(ci, &d, req, id);
     else if (!strcmp(cmd, "wait")) cmd_wait(ci, &d, req, id);
     else if (!strcmp(cmd, "option_get")) cmd_option_get(ci, &d, req, id);
@@ -2030,9 +2118,12 @@ static void game_quit(void) {
     ExitProcess(0);
 }
 static const char *game_renderer(void) { return rx_describe(); }
+int hos_oot_current_map(char *out, size_t cap);                              /* (hos_main.c) */
+int hos_oot_destination(int index, const char **child, const char **adult);
+int hos_oot_teleport_ask(int index);
 static HosControlGame game = {game_frame, rx_control_frame_info, rx_control_shot, rx_control_setting, rx_control_setting_set,
                               game_mem_region, game_mem_read, game_mem_write, game_save_root, game_log, game_quit,
-                              game_renderer, NULL};
+                              game_renderer, NULL, hos_oot_current_map, hos_oot_destination, hos_oot_teleport_ask};
 
 void hos_control_start(const char *version) {
     const char *path = getenv("HOS_CONTROL");

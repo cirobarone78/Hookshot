@@ -49,6 +49,12 @@ typedef struct HosControlGame {
     void (*quit)(void);   /* does not return */
     const char *(*renderer)(void);   /* the renderer's description, or NULL */
     const char *version;
+    /* (OoT) the map the game is in, the last one known (Sequence_CurrentBanc): 0 before any */
+    int (*map)(char *out, size_t cap);
+    /* (OoT) the debug teleport's destinations: the index-th's maps for the child and the adult (either NULL when it has
+       none), 0 past the last; and a teleport there asked for (taken at the player's next update, in play), 0: no such */
+    int (*destination)(int index, const char **child, const char **adult);
+    int (*teleport)(int index);
 } HosControlGame;
 
 /* Listens on path and serves on a thread of its own. 0 when it could not (logged) */

@@ -913,6 +913,40 @@ static void oot_teleport_followup(Ctx *c) {
             events && recomp_load64(c, events + 104) ? 1 : 0);
 }
 
+/* (hookshot) the control bridge (host/control.c): the map the game is in (Sequence_CurrentBanc), read on the game's thread
+   with the player's update every 250 ms and kept for the bridge's thread; the last one known (it stays through loads and
+   menus, where Link is not updated). And the debug teleport by destination, as the Cheats page and the live input
+   file's "!cheat 1000+<index>" ask for it: taken at the next update of the player, in play */
+static SRWLOCK oot_map_lock = SRWLOCK_INIT;
+static char oot_map[80];
+static void oot_map_refresh(Ctx *c, int64_t now) {
+    static int64_t next;
+    if (now < next) return;
+    next = now + 250000000LL;
+    char map[80];
+    if (!oot_gamedata_string(c, 0x1d6189dau, map, sizeof map) || !map[0]) return;   /* Sequence_CurrentBanc */
+    AcquireSRWLockExclusive(&oot_map_lock);
+    memcpy(oot_map, map, sizeof oot_map);
+    ReleaseSRWLockExclusive(&oot_map_lock);
+}
+int hos_oot_current_map(char *out, size_t cap) {
+    AcquireSRWLockShared(&oot_map_lock);
+    const int have = oot_map[0] != 0;
+    if (have) snprintf(out, cap, "%s", oot_map);
+    ReleaseSRWLockShared(&oot_map_lock);
+    return have;
+}
+int hos_oot_destination(int index, const char **child, const char **adult) {
+    if (index < 0 || index >= (int)(sizeof oot_destinations / sizeof oot_destinations[0])) return 0;
+    *child = oot_destinations[index].child_banc, *adult = oot_destinations[index].adult_banc;
+    return 1;
+}
+int hos_oot_teleport_ask(int index) {
+    if (index < 0 || index >= (int)(sizeof oot_destinations / sizeof oot_destinations[0])) return 0;
+    __atomic_store_n(&hos_oot_live_action, OOT_TELEPORT_ACTION + index, __ATOMIC_RELAXED);
+    return 1;
+}
+
 static uint64_t oot_gameplay_view(Ctx *c) {
     const uint64_t singleton = recomp_load64(c, 0x84ca6bc0ULL);
     const uint64_t manager = singleton ? recomp_load64(c, singleton) : 0;
@@ -948,6 +982,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     if (!action) action = __atomic_exchange_n(&hos_oot_live_action, 0, __ATOMIC_RELAXED);
     oot_teleport_followup(c);
     oot_inventory_refresh(c, now);
+    oot_map_refresh(c, now);
     if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {
         oot_inventory_edit(c, action);
     } else if (action == OOT_AGE_ACTION) {

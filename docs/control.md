@@ -6,7 +6,9 @@ read the game's state from the log (the `vk: N presents, F fps; a frame: D draws
 through one connection, with replies. Presses are timed in frames, and every reply carries the frame it was made at.
 
 - The game side is `host/control.c`. Hooks: `host/nn_hid.c` (the controller's read), `gpu/vk/vk_replay.cpp` (shots at a
-  present), `gpu/vk/vk_menu.cpp` (the Insert menu's settings).
+  present), `gpu/vk/vk_menu.cpp` (the Insert menu's settings, through its own setter), `host/hos_thread.c` (log lines),
+  `host/hos_main.c` (the start, and for OoT the current map and the debug teleport), `host/hos_mem.c` (guest memory's
+  bounds), `host/nn_fs.c` (the save folder), `host/rx_backend.c` (the renderer's side, `MkwVkRenderer`).
 - The client is `scripts/hookshot_ctl.py` (standard library only).
 - Tests: `tests/test_control.py` (the bridge against a fake game) and `tests/test_hookshot_ctl.py` (the client against a
   fake bridge).
@@ -121,14 +123,18 @@ frame without it). With `"wait": false` the reply is immediate: `{"queued": 1, "
 ### Commands
 
 **status**: the frame, the frame rate over the last second, the draws a frame over the last ~300 ms, the state, the
-picture's size, the version.
+renderer's presents (`replayed`: what a shot's `present` counts in), the picture's size, the map the game is in, the
+version.
 
 ```
 > {"id":1,"cmd":"status"}
-< {"id":1,"ok":true,"frame":5321,"protocol":1,"fps":59.8,"state":"play","stalled":false,"draws":2410.3,
+< {"id":1,"ok":true,"frame":5321,"protocol":1,"fps":59.8,"state":"play","stalled":false,"draws":2410.3,"replayed":5320,
    "window":{"width":1280,"height":720},"uptime":95.2,"clients":1,"input":{"queued":0,"exclusive":false},
-   "version":"1.4.0-abc123","renderer":"Vulkan: ..."}
+   "map":"KokiriForest_Child","version":"1.4.0-abc123","renderer":"Vulkan: ..."}
 ```
+
+`map` is the game's own name for the map (`Sequence_CurrentBanc`), read on the game's thread with the player's update
+every 250 ms: the last one known, so it stays through loads and menus, and it is `null` until Link was first seen.
 
 `state` is a guess from the draws a frame, the way test scripts read the log:
 
@@ -192,20 +198,27 @@ path in the reply is complete. The `timeout` default is 30 s. Shots need the Vul
 | `loading_start` | the next change into `loading` |
 | `loading_end` | the next change out of `loading` |
 | `change` | the next change of state |
+| `map` | the map is `map` (at once if it is); without `map`, the next change of map. The reply has `map` |
 
 **option_get**: the Insert menu's settings, or one of them by `name`. A name is the setting's key in
-`hookshot_options.ini` (`text_speed`) or its row's name (`"Text speed"`), in any case, with `-` taken as `_`.
+`hookshot_options.ini` (`text_speed`) or its row's name (`"Text speed"`), in any case, with `-` taken as `_`. The
+settings are the rows with a value that the menu shows on this PC (a row for what the GPU cannot run is not listed),
+not the section headings and not the Debug tab's tools. The bridge finds a row by its key each time: a key stays the
+same when rows come and go or are renamed, a place in the list does not. `restart` marks a row that takes effect at the
+next start; `fixed`, one with nothing to choose on this PC (the menu shows it greyed).
 
 ```
 > {"id":8,"cmd":"option_get","name":"text_speed"}
 < {"id":8,"ok":true,"frame":5500,"option":{"key":"text_speed","name":"Text speed","tab":"gameplay","value":0,
-   "min":0,"max":3,"step":1,"text":"Normal"}}
+   "min":0,"max":3,"step":1,"restart":false,"fixed":false,"text":"Normal"}}
 ```
 
-**option_set**: `name` and `value` (a number, or `true`/`false`). The value is set as the menu's Left and Right set it:
-cut to the row's range, and the quality preset turned to Custom when the menu would do that. It is kept in
-`hookshot_options.ini`. The reply has the value it had before and the setting as it is now. Rows marked "(restart)" in
-the menu take effect at the next start.
+**option_set**: `name` and `value` (a number, or `true`/`false`). The value is set through the menu's own setter, as
+Left and Right set it: cut to the row's range, the Quality preset turned to Custom unless the row is one it leaves
+alone, a restart noted for the restart question, and kept in `hookshot_options.ini`. The rows the arrows step through
+a list of their own (the Upscaler, Render resolution, the output resolution) are stepped towards the value until they
+reach it or go no further, so they land on the first step at or past it. A `fixed` row replies `failed`. The reply has
+the value it had before and the setting as it is now. The menu's lock keeps a change apart from the menu's own frame.
 
 ```
 > {"id":9,"cmd":"option_set","name":"FPS counter","value":true}
@@ -215,7 +228,7 @@ the menu take effect at the next start.
 **subscribe**: a stream of events on this connection until `unsubscribe` or a disconnect; another `subscribe` replaces
 it. Arguments:
 
-- `events`: any of `present`, `state` and `log`. The default is `["present", "state"]`.
+- `events`: any of `present`, `state`, `log` and `map`. The default is `["present", "state"]`.
 - `every`: frames between present events (default 60).
 - `log`: only log lines that contain this text (it also turns `log` on).
 
@@ -225,7 +238,23 @@ The events carry `sub`, the subscribe request's `id`:
 < {"event":"present","sub":10,"frame":5600,"fps":59.9,"state":"play","draws":2405.0}
 < {"event":"state","sub":10,"frame":5720,"state":"loading","from":"play","draws":5.0}
 < {"event":"log","sub":10,"frame":5721,"line":"[hos sead::MainThread] ..."}
+< {"event":"map","sub":10,"frame":5900,"map":"HyruleField_Child","from":"KokiriForest_Child"}
 < {"event":"log_dropped","sub":10,"lines":40}
+```
+
+**teleport** (OoT): the Debug tab's teleport, by destination: `to`, the destination's index or one of its maps' names
+(any case). Without `to`, the destinations: `{"destinations":[{"index":0,"child":"KokiriForest_Child","adult":
+"KokiriForest_Adult"},...]}` (a destination with no map for an age has `null` there). It is what the Cheats page's
+Teleport list and the live input file's `!cheat 1000+<index>` ask for: the game takes it at the player's next update,
+in play, the map of Link's age, and says in the log what it did (`cheats: teleport ...`, or why it was ignored: an
+event playing, a map loading, another teleport in the last 8 s). The reply comes at once; `wait map` tells when it
+arrived. It changes the game as the menu's teleport does, and a save made after it keeps the new place.
+
+```
+> {"id":12,"cmd":"teleport","to":"HyruleField_Child"}
+< {"id":12,"ok":true,"frame":6000,"teleport":1,"child":"HyruleField_Child","adult":"HyruleField_Adult"}
+> {"id":13,"cmd":"wait","event":"map","map":"HyruleField_Child","timeout":30}
+< {"id":13,"ok":true,"frame":6190,"state":"loading","waited":190,"map":"HyruleField_Child"}
 ```
 
 **quit**: the reply, then the game exits as when its window is closed (the log flushed, exit code 0). The socket is
@@ -335,6 +364,8 @@ python -I scripts/hookshot_ctl.py sequence '0:LUP/2000,2:A' --hos       # HOS_IN
 python -I scripts/hookshot_ctl.py shot out.png
 python -I scripts/hookshot_ctl.py option get
 python -I scripts/hookshot_ctl.py option set text_speed 3
+python -I scripts/hookshot_ctl.py teleport                              # the destinations
+python -I scripts/hookshot_ctl.py teleport 1 && python -I scripts/hookshot_ctl.py wait map --timeout 30
 python -I scripts/hookshot_ctl.py watch --events present,state --log "hid:"
 python -I scripts/hookshot_ctl.py raw '{"cmd": "wait", "event": "frame", "frame": 9000}'
 python -I scripts/hookshot_ctl.py mem read 0x80000000 8               # needs HOS_CONTROL_MEM=ro or rw
