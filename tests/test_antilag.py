@@ -38,7 +38,7 @@ for call in ("antilag_device_extensions(want, exts);", "antilag_device_features(
 if main.index("antilag_device_features(tail);") > main.index("vkGetPhysicalDeviceFeatures2(dev.physical, &f);"):
     raise SystemExit("vk_main.cpp: Anti-Lag 2's feature joins the chain after the features were queried")
 replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
-present = block(replay, "void present_image(")
+present = block(replay, "static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {")
 if "antilag_present();" not in present or present.index("antilag_present();") > present.index("vkQueuePresentKHR("):
     raise SystemExit("present_image: Anti-Lag 2's present stage is not given before vkQueuePresentKHR")
 if "reflex_sleep(); antilag_input();" not in block(replay, "void do_present("):
