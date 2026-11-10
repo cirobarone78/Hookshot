@@ -182,6 +182,17 @@ class ExtractionPaths(unittest.TestCase):
             self.assertEqual((self.out / "romfs" / name).read_bytes(), b"authored fixture")
         self.assertEqual(self.extract(names), (0, 0))
 
+    @unittest.skipIf(os.name == "nt" and not os.path.exists("\\\\?\\" + os.path.abspath("nx2")), "Windows long-path prefix unavailable")
+    def test_deep_destination_extracts_past_max_path(self):
+        """#1468: an ordinary game folder pushed the deepest romfs path past 260 characters; makedirs on the plain
+        path succeeded and opening its .part died with ENOENT. Run where the long-path prefix really matters, or
+        straight through here — either way extract must write both files."""
+        leaf = "FlowchartEvent_MiniGame_FrogTenors.engine__event__ExceptionalActorSetting.bgyml"
+        names = ["a" * 2 + "/" + ("d" * 60 + "/") * 3 + leaf, leaf]   # one >260 with the fixture root, one short: both paths exercised
+        self.assertEqual(self.extract(names), (len(names), len(names) * len(b"authored fixture")))
+        for name in names:
+            self.assertEqual((self.out / "romfs" / name).read_bytes(), b"authored fixture")
+
     def test_paths_cannot_leave_the_output(self):
         names = ["", ".", "..", "../../outside.bin", "nested/../../outside.bin", "nested/../file.bin",
                  "/rooted.bin", "//server/share/file.bin", r"\rooted.bin", r"\\server\share\file.bin",
