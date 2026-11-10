@@ -35,6 +35,8 @@ def main():
 #include <cstdlib>
 #include <initializer_list>
 #include <mutex>
+#include "vk_menu_hit.h"
+namespace menu_hit = mkwvk::menu_hit;
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
 using VkCommandBuffer = int;
 using VkImage = int;
@@ -93,7 +95,7 @@ int main() {
         cpp, exe = Path(tmp) / "fixture.cpp", Path(tmp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror",
-                        str(cpp), "-o", str(exe)], check=True)
+                        "-I" + str(ROOT / "gpu/vk"), str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
 
