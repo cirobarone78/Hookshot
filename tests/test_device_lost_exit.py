@@ -53,6 +53,12 @@ void checkpoints_report() {
     std::fflush(stdout);
     std::_Exit(3);
 }
+// Stubs for Intel device fault reporting in device_lost()
+struct DevProps { uint32_t vendorID = 0x8086; };
+struct Dev { DevProps props; int device_fault = 1; } dev;
+using PFN_vkGetDeviceFaultInfoEXT = void(*)(void*, void*);
+PFN_vkGetDeviceFaultInfoEXT vkGetDeviceFaultInfoEXT = nullptr;
+void device_fault_report() { /* stub */ }
 @@DEVICE_LOST@@
 int main() {
     std::vector<std::thread> t;

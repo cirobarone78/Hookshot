@@ -35,7 +35,16 @@ def main():
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include <cstdarg>
 #define CHECK(ok) do { if (!(ok)) { std::fprintf(stderr, "failed line %d\n", __LINE__); std::exit(1); } } while (0)
+// Stub for hos_log used in pick_reserved_core logging
+inline void hos_log(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "\n");
+}
 ''' + helper + r'''
 struct Core { uint64_t mask; unsigned char cls; };
 uint64_t pick(const std::vector<Core>& cores) {

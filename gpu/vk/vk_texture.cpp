@@ -3330,13 +3330,70 @@ void texture_frame(uint64_t completed) {
     // in Hyrule Field, so 70% (5.1 GB of an 8 GB card's 7.3) put the whole past what the card holds. The driver paged VRAM to system
     // memory and the GPU time went from ~13 to 55 ms a frame for good: an RTX 3060 Ti at 14 fps ten seconds into play, #1400's
     // RTX 4050 at 5 fps. RX_VK_VRAM_MB=<MB>: the old size, or any)
-    {   // (hookshot) an integrated GPU's "VRAM" is the system's RAM, which the game's own ~10 GB also needs: 70% of what the driver allows
-        // was 5.3 GB of textures on a 16 GB laptop with a Radeon 780M, and the PC ran out of memory in Hyrule Field within minutes
-        // (Discord, 2026-11-09). At most 2.5 GB there unless RX_VK_VRAM_MB says otherwise
+    {   // (hookshot) an integrated GPU's "VRAM" is the system's RAM, dynamically calculated based on system RAM
         static bool told;
-        if (!getenv("RX_VK_VRAM_MB") && dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && own > (2560ull << 20)) {
-            own = 2560ull << 20;
-            if (!told) told = true, logf("vk: an integrated GPU shares the system's RAM: textures at most 2560 MB (RX_VK_VRAM_MB=<MB>: other)");
+        if (!getenv("RX_VK_VRAM_MB") && dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+            // Get system RAM
+            uint64_t system_ram = 0;
+#if defined(_WIN32)
+            MEMORYSTATUSEX mem_info{sizeof(MEMORYSTATUSEX)};
+            if (GlobalMemoryStatusEx(&mem_info)) {
+                system_ram = mem_info.ullTotalPhys;
+            }
+#else
+            // Linux: read from /proc/meminfo
+            FILE* f = fopen("/proc/meminfo", "r");
+            if (f) {
+                char line[256];
+                while (fgets(line, sizeof(line), f)) {
+                    if (sscanf(line, "MemTotal: %llu kB", (unsigned long long*)&system_ram) == 1) {
+                        system_ram *= 1024;
+                        break;
+                    }
+                }
+                fclose(f);
+            }
+#endif
+            if (system_ram == 0) system_ram = 8ull << 30;  // 8 GB fallback
+
+            // Reserve memory for non-texture usage:
+            // - Game's own allocations (~10 GB for Switch 2 games)
+            // - Render targets, buffers, pipelines (~3-4 GB)
+            // - OS and other apps (~2-4 GB)
+            // - Driver overhead
+            uint64_t reserved = std::min<uint64_t>(system_ram / 3, 16ull << 30);
+            if (reserved < 8ull << 30) reserved = 8ull << 30;
+
+            uint64_t available = system_ram > reserved ? system_ram - reserved : 0;
+            uint64_t driver_budget = own;  // 'own' already has the 70% calculation applied
+            uint64_t budget = std::min(available, driver_budget);
+
+            // Hard caps based on system RAM
+            if (system_ram <= 8ull << 30) {
+                budget = std::min(budget, 1536ull << 20);   // 1.5 GB
+            } else if (system_ram <= 12ull << 30) {
+                budget = std::min(budget, 2048ull << 20);   // 2 GB
+            } else if (system_ram <= 16ull << 30) {
+                budget = std::min(budget, 2560ull << 20);   // 2.5 GB (previous default)
+            } else if (system_ram <= 24ull << 30) {
+                budget = std::min(budget, 3584ull << 20);   // 3.5 GB
+            } else if (system_ram <= 32ull << 30) {
+                budget = std::min(budget, 4096ull << 20);   // 4 GB
+            } else {
+                budget = std::min(budget, 6144ull << 20);   // 6 GB (dGPU max)
+            }
+
+            budget = std::max(budget, 1024ull << 20);  // Minimum 1 GB
+            own = budget;
+
+            if (!told) {
+                told = true;
+                logf("vk: integrated GPU texture budget: %llu MB (system RAM %llu GB, driver allows %llu MB, reserved %llu GB)",
+                     (unsigned long long)(own >> 20),
+                     (unsigned long long)(system_ram >> 30),
+                     (unsigned long long)(driver_budget >> 20),
+                     (unsigned long long)(reserved >> 30));
+            }
         }
     }
     const bool preset_budget = opts.vram_mb > 0 && preset_caps_memory();   // (a smaller preset on a bigger card: the card's own)

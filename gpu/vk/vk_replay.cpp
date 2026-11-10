@@ -2413,7 +2413,13 @@ uint32_t crc32(const uint8_t* p, size_t n, uint32_t c = 0xFFFFFFFFu) {
 /// too waits for it, instead of ending the process before it is written), then the process ends as replay_fatal does
 [[noreturn]] void device_lost() {
     static std::once_flag once;
-    std::call_once(once, checkpoints_report);
+    std::call_once(once, [] {
+        checkpoints_report();
+        // Intel GPUs: also report device fault info (VK_EXT_device_fault) for better diagnostics
+        if (dev.props.vendorID == 0x8086 && dev.device_fault && vkGetDeviceFaultInfoEXT) {
+            device_fault_report();
+        }
+    });
     replay_fatal("the GPU device was lost (VK_ERROR_DEVICE_LOST): the driver stopped or reset the GPU, and nothing sent "
                  "to it runs any more (on Linux, dmesg or journalctl -k around this time names the reset)");
 }
