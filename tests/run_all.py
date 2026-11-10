@@ -27,6 +27,9 @@ OS = "windows" if WINDOWS else "linux"
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
     "tests/test_setup_tar_diagnostics.py": ["--cc", "gcc"],
+    "tests/test_display_startup_failure.py": ["--cxx", "{cxx}"],
+    "tests/test_frame_wait_bounds.py": ["--cxx", "{cxx}"],
+    "tests/test_fallback_buffer_cleanup.py": ["--cxx", "{cxx}"],
     "tests/test_mesh_args_cleanup.py": ["--cxx", "{cxx}"],
     "tests/test_pipeline_cache_save.py": ["--cxx", "{cxx}"],
     "tests/test_capture_copy_runs.py": ["--cxx", "{cxx}"],
