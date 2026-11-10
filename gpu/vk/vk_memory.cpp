@@ -614,6 +614,25 @@ void stamp_page(uint64_t p, uint32_t g) {
     store_u32(c[p % kChunkPages], g);
     region_gen[p / kRegionPages] = g;
 }
+// (hookshot, issue 508) The generation the CPU last wrote each page at, apart: the collected writes and the captures' pages,
+// not memory_stamp's (the GPU's writes, the host's). A retired pool's mirror is inherited over everything but the pages the
+// CPU wrote since that mirror's last sync (mirror_make), so the stamps of what the GPU wrote must not count there.
+std::vector<std::unique_ptr<uint32_t[]>> cpu_gen_chunks(kPages / kChunkPages);
+std::vector<uint32_t> cpu_region_gen(kPages / kRegionPages);
+inline uint32_t cpu_page_gen(uint64_t p) {
+    const auto& c = cpu_gen_chunks[p / kChunkPages];
+    return c ? load_u32(c[p % kChunkPages]) : 0u;
+}
+void stamp_cpu_page(uint64_t p, uint32_t g) {
+    if (p >= kPages) return;
+    auto& c = cpu_gen_chunks[p / kChunkPages];
+    if (!c) {
+        c.reset(new uint32_t[kChunkPages]);
+        std::fill(c.get(), c.get() + kChunkPages, 0u);
+    }
+    store_u32(c[p % kChunkPages], g);
+    cpu_region_gen[p / kRegionPages] = g;
+}
 } // namespace
 
 namespace { void cap_view_bump(); }   // (defined with cap_view_gen below, in this file's anonymous namespace)
@@ -638,6 +657,7 @@ void memory_collect_written() {
                 continue;
             }
             stamp_page(pages[i], g);
+            stamp_cpu_page(pages[i], g);
         }
         pages_collected += (uint64_t)n;
         cap_view_bump();
@@ -1530,7 +1550,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
     uint32_t g = 0;
     if (!c->pages.empty()) {
         g = ++gen_now;
-        for (uint32_t p : c->pages) stamp_page(p, g);
+        for (uint32_t p : c->pages) stamp_page(p, g), stamp_cpu_page(p, g);
         pages_collected += c->pages.size();
     }
     if (!c->pages.empty() && tex_capture_on()) {   // (the texture storage it took: the shadow, as of this submit)
@@ -2858,8 +2878,15 @@ bool mirror_make(Pool& pool) {
         }
         {   // (EvilOOT) then the mirrors of the pools it took in, over their part: what the GPU wrote there and only there
             // (retire_pool). The captures' pages go over it after, as before: the CPU's newer writes win
+            // (hookshot, issue 508) but not over the pages the CPU wrote since the old mirror's last sync, which stay guest
+            // memory's, as that mirror's next sync would have made them: the captures hold only the last submissions' pages,
+            // and a scene change takes many. Leaving the Deku Tree through the blue warp, the whole copy put the dungeon's
+            // values back over what the game wrote while the next area loaded: the outdoors came out washed white until the
+            // cutscene. RX_VK_INHERIT_WHOLE=1: the whole range, as before
+            static const bool inherit_whole = getenv("RX_VK_INHERIT_WHOLE") != nullptr;
             bool barrier_done = false;
             int inherited = 0;
+            uint64_t cpu_pages = 0;
             for (auto& nh : retired_pools) {
                 Pool& r = nh.mapped();
                 if (!r.inherit_pending || r.mstate != Pool::MIRROR_ON || !r.mirror || r.hi <= p->lo || r.lo >= p->hi) continue;
@@ -2875,8 +2902,32 @@ bool mirror_make(Pool& pool) {
                     barrier_done = true;
                 }
                 const uint64_t a = std::max(r.lo, p->lo), b = std::min(r.hi, p->hi);
-                const VkBufferCopy part{a - r.lo, a - p->lo, b - a};
-                vkCmdCopyBuffer(upload_command_buffer(), r.mirror, p->mirror, 1, &part);
+                std::vector<VkBufferCopy> parts;   // (the runs of pages the CPU has not written since r's sync)
+                uint64_t run_lo = 0, run_hi = 0;
+                const uint64_t last = (b + 4095) >> kPageShift;
+                for (uint64_t page = a >> kPageShift; page < last;) {
+                    uint64_t span = 1;
+                    bool cpu_newer = false;
+                    if (!inherit_whole) {
+                        if (page % kRegionPages == 0 && page + kRegionPages <= last && cpu_region_gen[page / kRegionPages] <= r.synced_gen)
+                            span = kRegionPages;   // (a 2 MB region the CPU has not written since)
+                        else
+                            cpu_newer = cpu_page_gen(page) > r.synced_gen;
+                    }
+                    const uint64_t ga = std::max(page << kPageShift, a), gb = std::min((page + span) << kPageShift, b);
+                    page += span;
+                    if (cpu_newer) {
+                        cpu_pages++;
+                        continue;
+                    }
+                    if (run_hi && run_hi == ga) run_hi = gb;
+                    else {
+                        if (run_hi) parts.push_back({run_lo - r.lo, run_lo - p->lo, run_hi - run_lo});
+                        run_lo = ga, run_hi = gb;
+                    }
+                }
+                if (run_hi) parts.push_back({run_lo - r.lo, run_lo - p->lo, run_hi - run_lo});
+                if (!parts.empty()) vkCmdCopyBuffer(upload_command_buffer(), r.mirror, p->mirror, (uint32_t)parts.size(), parts.data());
                 r.inherit_pending = false;
                 r.retired_value = std::max(r.retired_value, mem_rec_value);   // (in use by this upload until it is done)
                 inherited++;
@@ -2884,8 +2935,8 @@ bool mirror_make(Pool& pool) {
             if (inherited) {
                 static int logged;
                 if (logged++ < 16)
-                    logf("vk: pool %#llx..%#llx: mirror made with the GPU's contents of %d retired pool(s)", (unsigned long long)p->lo,
-                         (unsigned long long)p->hi, inherited);
+                    logf("vk: pool %#llx..%#llx: mirror made with the GPU's contents of %d retired pool(s), but %llu pages the CPU "
+                         "wrote since", (unsigned long long)p->lo, (unsigned long long)p->hi, inherited, (unsigned long long)cpu_pages);
             }
         }
         {   // (then the pages a capture holds as they were at their submit: guest memory is the game's frame ahead)
