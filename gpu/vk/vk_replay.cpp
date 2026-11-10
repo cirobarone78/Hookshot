@@ -2974,6 +2974,17 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         // A2B10G10R10); that picture goes to the HDR10 swapchain as it is, not through the SDR-to-HDR pass)
         present_native_pq.store(tex && dev.hdr && opts.hdr == 2 && tex->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32,
                                 std::memory_order_relaxed);
+        {   // (the presented picture's format and the HDR path it takes, said when either changes: what an HDR report needs)
+            static int64_t said = -1;
+            const int64_t now = tex ? (int64_t)tex->format * 8 + (dev.hdr ? 4 : 0) + opts.hdr : -2;
+            if (now != said) {
+                said = now;
+                logf("vk: present: %ux%u, format %d; the Insert menu's HDR %d, HDR10 swapchain %s: %s", tex ? tex->width : 0,
+                     tex ? tex->height : 0, tex ? (int)tex->format : 0, opts.hdr, dev.hdr ? "yes" : "no",
+                     !dev.hdr ? "SDR" : present_native_pq.load(std::memory_order_relaxed) ? "the game's PQ picture as it is"
+                                                                                        : "the SDR picture expanded to HDR10");
+            }
+        }
         if (tex && !dev.offscreen && (opts.upscale || opts.sharpness || dev.hdr || wide_sides_possible())) {   // (and ultrawide's menu sides)
             // Keep the sampled view with the same cached image as the direct present, before advancing its age.
             direct_view = texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample);

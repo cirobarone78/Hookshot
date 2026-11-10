@@ -584,7 +584,11 @@ VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint
         }
         drop_img(scale.scaled);
         scale.scaled_w = scale.scaled_h = 0;
-        if (!make_img(scale.scaled, dw, dh, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+        // (sampled too: the Insert menu's HDR reads the scaled picture through framegen_scaled_view (framegen_hdr). Without
+        // it the HDR pass sampled an image made without SAMPLED usage, and the picture was black whenever Sharpness, the
+        // Window scaling filter or ultrawide's menu sides were on with HDR)
+        if (!make_img(scale.scaled, dw, dh, VK_FORMAT_R8G8B8A8_UNORM,
+                      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
             drop_img(scale.scaled);
             return VK_NULL_HANDLE;
         }

@@ -9,9 +9,10 @@
 //  - the scene's camera is taken from the draws into the scene's colour target: their vertex stage's uniform buffer 3
 //    holds the target's size at 0x120, this frame's view-projection at 0x30 (row major, clip = M * position; the projection's w row ends -1, 0 at 0xa8). The largest such target in a frame is
 //    the scene (reflections and half-size passes have the same layout). The scene's depth is that draw's depth target.
-//  - shaders/dlss_prep.comp makes the engine's inputs at the render size: the colour as the network samples it (LDR), the
-//    depth, and motion vectors from the depth reprojected through the two cameras. The game has no motion vectors of its
-//    own (no velocity target: the scene pass draws into one B10G11R11 target, and its upscale network samples the colour alone),
+//  - shaders/dlss_prep.comp makes the engine's inputs at the render size: the colour as the network samples it (LDR; with
+//    the game's native HDR past 1, unclamped for an engine made for that: TemporalEngine::hdr), the depth, and motion
+//    vectors from the depth reprojected through the two cameras. The game has no motion vectors of its own (no velocity
+//    target: the scene pass draws into one B10G11R11 target, and its upscale network samples the colour alone),
 //    so that is the camera's motion, and what moves by itself would ghost. The scene camera's sub-pixel jitter
 //    (nx2/oot_jitter.py, while an engine draws) is read back from its projection, given to the engine and taken off the motion.
 //  - actor motion (actor_motion, shaders/dlss_actor.vert): the skinned draws into the scene (vk_draw.cpp's skin_check:
@@ -140,6 +141,10 @@ struct State {
     VkDescriptorSetLayout prep_set = VK_NULL_HANDLE, out_set = VK_NULL_HANDLE;
     VkPipelineLayout prep_layout = VK_NULL_HANDLE, out_layout = VK_NULL_HANDLE;
     VkPipeline prep = VK_NULL_HANDLE, out = VK_NULL_HANDLE;
+    // (dlss_prep.comp again for an engine that takes HDR colour (TemporalEngine::hdr): its colour not clamped to 1)
+    VkDescriptorSetLayout prep_hdr_set = VK_NULL_HANDLE;
+    VkPipelineLayout prep_hdr_layout = VK_NULL_HANDLE;
+    VkPipeline prep_hdr = VK_NULL_HANDLE;
     VkSampler point = VK_NULL_HANDLE, linear = VK_NULL_HANDLE;
     Camera cam;               // (this frame's, since the last upscale)
     // (the gameplay upscale's output, as last seen: the scene sizes the upscaler can take follow from it,
@@ -290,9 +295,11 @@ bool make_image(VkCommandBuffer cmd, Image& im, VkFormat format, uint32_t w, uin
     return true;
 }
 
-/// One compute pipeline with push descriptors; what it made is destroyed again when a step fails
+/// One compute pipeline with push descriptors (spec: its specialization constants, or none); what it made is destroyed
+/// again when a step fails
 bool make_pipeline(const uint32_t* code, size_t size, const VkDescriptorType* types, uint32_t n, uint32_t push,
-                   VkDescriptorSetLayout& set, VkPipelineLayout& layout, VkPipeline& pipe) {
+                   VkDescriptorSetLayout& set, VkPipelineLayout& layout, VkPipeline& pipe,
+                   const VkSpecializationInfo* spec = nullptr) {
     const auto undo = [&] {
         if (layout) vkDestroyPipelineLayout(dev.device, layout, nullptr);
         if (set) vkDestroyDescriptorSetLayout(dev.device, set, nullptr);
@@ -314,7 +321,7 @@ bool make_pipeline(const uint32_t* code, size_t size, const VkDescriptorType* ty
     VkShaderModule m{};
     if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) != VK_SUCCESS) return undo();
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", nullptr};
+    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", spec};
     ci.layout = layout;
     const bool ok = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe) == VK_SUCCESS;
     vkDestroyShaderModule(dev.device, m, nullptr);
@@ -324,11 +331,19 @@ bool make_pipeline(const uint32_t* code, size_t size, const VkDescriptorType* ty
 /// The two passes' pipelines and the samplers, once (temporal_upscale stops trying when this fails)
 bool make_pipelines() {
     State& s = st();
-    if (s.prep && s.out && s.point && s.linear) return true;
+    if (s.prep && s.prep_hdr && s.out && s.point && s.linear) return true;
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return false;
     const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     const VkDescriptorType prep_types[5] = {S, S, I, I, I}, out_types[2] = {S, I};
     if (!s.prep && !make_pipeline(DLSS_PREP_COMP_SPV, sizeof DLSS_PREP_COMP_SPV, prep_types, 5, 84, s.prep_set, s.prep_layout, s.prep))
+        return false;
+    // (the HDR one: dlss_prep.comp's kColorMax, its constant 0, at 16384 in place of 1: the game's native HDR keeps its
+    // highlights, and a stray value stays well inside the colour image's RGBA16F)
+    static const float hdr_max = 16384.0f;
+    static const VkSpecializationMapEntry hdr_entry{0, 0, sizeof hdr_max};
+    static const VkSpecializationInfo hdr_spec{1, &hdr_entry, sizeof hdr_max, &hdr_max};
+    if (!s.prep_hdr && !make_pipeline(DLSS_PREP_COMP_SPV, sizeof DLSS_PREP_COMP_SPV, prep_types, 5, 84, s.prep_hdr_set,
+                                      s.prep_hdr_layout, s.prep_hdr, &hdr_spec))
         return false;
     if (!s.out && !make_pipeline(DLSS_OUT_COMP_SPV, sizeof DLSS_OUT_COMP_SPV, out_types, 2, 8, s.out_set, s.out_layout, s.out))
         return false;
@@ -869,6 +884,11 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     if (!motion) reset = true;   // (without a valid reprojection, prior history has no mapping to this camera)
     pc.jitter[0] = cam.jitter[0], pc.jitter[1] = cam.jitter[1];
     pc.size[0] = (int32_t)rw, pc.size[1] = (int32_t)rh, pc.flags = (motion ? 1 : 0) | (show_motion ? 2 : 0);
+    // (an engine made for HDR colour, as prepare made it this frame: the game's native HDR goes past 1, and the LDR pass's
+    // clamp cut every highlight at the paper white, a flat picture)
+    const bool hdr = engine.e->hdr && engine.e->hdr();
+    const VkPipeline prep_pipe = hdr ? s.prep_hdr : s.prep;
+    const VkPipelineLayout prep_layout = hdr ? s.prep_hdr_layout : s.prep_layout;
 
     const auto prep = [&] {
         const VkDescriptorImageInfo info[5] = {{s.point, in_view, VK_IMAGE_LAYOUT_GENERAL},
@@ -882,9 +902,9 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
             w[i].dstBinding = i, w[i].descriptorCount = 1, w[i].pImageInfo = &info[i];
             w[i].descriptorType = i < 2 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         }
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.prep);
-        vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.prep_layout, 0, 5, w);
-        vkCmdPushConstants(cmd, s.prep_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prep_pipe);
+        vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prep_layout, 0, 5, w);
+        vkCmdPushConstants(cmd, prep_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
         vkCmdDispatch(cmd, (rw + 7) / 8, (rh + 7) / 8, 1);
     };
     full_barrier(cmd);   // (the scene's colour and depth, written before)

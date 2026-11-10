@@ -84,7 +84,8 @@ struct TemporalImage {
     VkFormat format = VK_FORMAT_UNDEFINED;
     uint32_t width = 0, height = 0;
 };
-/// One frame's evaluation. color: the scene as the network samples it (tonemapped, square-root encoded: LDR, RGBA16F);
+/// One frame's evaluation. color: the scene as the network samples it (tonemapped, square-root encoded: LDR, RGBA16F; past
+/// 1 with the game's native HDR for an engine whose hdr() says it takes that);
 /// depth: R32F in [0, 1], not reversed; motion: RG16F in render pixels, towards the frame before, the jitter taken off. They
 /// are as large as the engine asked (in_w x in_h), the frame's part at the top left. output: RGBA16F, at the output's size
 /// (DLAA, FSR's native AA: the render size)
@@ -113,6 +114,9 @@ struct TemporalEngine {
     void (*release)();
     /// Its own video memory for the status line, in bytes (0: not known)
     uint64_t (*memory)();
+    /// Whether what prepare made takes HDR colour (past 1: the game's native HDR), which the chain then gives it unclamped;
+    /// null or false: LDR colour, clamped to 0..1 (an LDR engine fed more would misread it)
+    bool (*hdr)() = nullptr;
 };
 /// Runs f a few frames on, to free what work in flight may still use. Called by the engines with the chain's lock held
 void temporal_later(std::function<void()> f);

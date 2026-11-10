@@ -77,6 +77,10 @@ struct State {
     uint32_t feature_rw = 0, feature_rh = 0, feature_ow = 0, feature_oh = 0;   // (its largest render size, its output)
     uint32_t min_rw = 0, min_rh = 0;
     unsigned feature_preset = ~0u;   // (the preset it was made with: another one from the menu makes it again)
+    // (made for the game's native HDR (the Insert menu's HDR on Native, on an HDR10 swapchain): its scene colour goes past 1
+    // there, and an LDR feature fed the colour clamped to 1 cut every highlight at the paper white, a flat, SDR-looking
+    // picture. Then the feature takes HDR colour with its own exposure, and the chain does not clamp it: hdr())
+    bool feature_hdr = false;
     uint64_t features_made = 0;      // (how many times: a feature made again in play costs a stall, so each says why)
 };
 State& st() {
@@ -281,13 +285,15 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
             const char** fail) {
     State& s = st();
     const unsigned preset = wanted_preset();
+    const bool hdr = dev.hdr && opts.hdr == 2;   // (the game's native HDR: State::feature_hdr)
     if (s.feature && s.feature_ow == ow && s.feature_oh == oh && rw <= s.feature_rw && rh <= s.feature_rh &&
-        rw >= s.min_rw && rh >= s.min_rh && s.feature_preset == preset)
+        rw >= s.min_rw && rh >= s.min_rh && s.feature_preset == preset && s.feature_hdr == hdr)
         return *in_w = s.feature_rw, *in_h = s.feature_rh, 1;
     // (why it is made: in the log with its time, so a stall in play can be matched with one)
     char why[160];
     if (!s.feature && !s.features_made) snprintf(why, sizeof why, "the first");
     else if (!s.feature) snprintf(why, sizeof why, "again after it was let go");
+    else if (s.feature_hdr != hdr) snprintf(why, sizeof why, "the game's native HDR turned %s", hdr ? "on" : "off");
     else if (s.feature_ow != ow || s.feature_oh != oh)
         snprintf(why, sizeof why, "the output went from %ux%u to %ux%u", s.feature_ow, s.feature_oh, ow, oh);
     else if (s.feature_preset != preset)
@@ -336,8 +342,10 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     NVSDK_NGX_DLSS_Create_Params cp{};
     cp.Feature.InWidth = max_w, cp.Feature.InHeight = max_h, cp.Feature.InTargetWidth = ow, cp.Feature.InTargetHeight = oh;
     cp.Feature.InPerfQualityValue = mode;
-    // (LDR colour, already tonemapped: no exposure; motion at the render size, not jittered; depth not reversed)
-    cp.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+    // (LDR colour, already tonemapped: no exposure; motion at the render size, not jittered; depth not reversed. With the
+    // game's native HDR the colour goes past 1: an HDR feature, with DLSS's own exposure)
+    cp.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
+                              (hdr ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure : 0);
     const auto t0 = std::chrono::steady_clock::now();
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (NGX records into cmd itself: what this thread recorded through vk_work.h reaches cmd first)
     const NVSDK_NGX_Result r = NGX_VULKAN_CREATE_DLSS_EXT(cmd, 1, 1, &s.feature, s.params, &cp);
@@ -350,11 +358,12 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     }
     s.feature_rw = max_w, s.feature_rh = max_h, s.feature_ow = ow, s.feature_oh = oh, s.min_rw = min_w, s.min_rh = min_h;
     s.feature_preset = preset;
+    s.feature_hdr = hdr;
     s.features_made++;
     logf("vk: NVIDIA DLSS: feature %llu made (%s; frame %llu, %.1f ms of CPU): %ux%u (%ux%u to %ux%u) -> %ux%u, mode %d, "
-         "preset %c%s", (unsigned long long)s.features_made, why, (unsigned long long)texture_frame_no(), made_ms, rw, rh,
+         "preset %c%s%s", (unsigned long long)s.features_made, why, (unsigned long long)texture_frame_no(), made_ms, rw, rh,
          min_w, min_h, max_w, max_h, ow, oh, (int)mode, upscaler_rows::preset_letter(preset),
-         preset ? "" : " (NVIDIA's default)");
+         preset ? "" : " (NVIDIA's default)", hdr ? ", HDR colour (the game's native HDR)" : "");
     *in_w = s.feature_rw, *in_h = s.feature_rh;
     return 2;   // (a new history)
 }
@@ -397,7 +406,13 @@ uint64_t memory() {
     return s.caps && NVSDK_NGX_SUCCEED(NGX_DLSS_GET_STATS(s.caps, &ngx)) ? (uint64_t)ngx : 0;
 }
 
-const TemporalEngine kEngine{"NVIDIA DLSS", "DLSS", start, prepare, evaluate, release, memory};
+/// Its feature takes HDR colour (made for the game's native HDR): the chain gives it the colour unclamped
+bool hdr() {
+    State& s = st();
+    return s.feature && s.feature_hdr;
+}
+
+const TemporalEngine kEngine{"NVIDIA DLSS", "DLSS", start, prepare, evaluate, release, memory, hdr};
 
 }  // namespace
 
