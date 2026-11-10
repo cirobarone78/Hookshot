@@ -57,8 +57,10 @@ inline void to_image(int x, int y, int win_w, int win_h, int img_w, int img_h, i
 }
 /// The menu's top left in the window's image: centred, as menu_record copies it
 inline void origin(int img_w, int img_h, int menu_w, int menu_h, int* x0, int* y0) {
-    *x0 = (img_w - menu_w) / 2;
-    *y0 = (img_h - menu_h) / 2;
+    // (centred; a menu taller or wider than the window from its top or left edge, so the title and the tabs show and the help
+    // below is what is cut: v2.0.13)
+    *x0 = img_w >= menu_w ? (img_w - menu_w) / 2 : 0;
+    *y0 = img_h >= menu_h ? (img_h - menu_h) / 2 : 0;
 }
 inline int rows_top(int s) { return (kTabY + kTabH + kRowGap) * s; }
 constexpr int kTabs = 4;                  // Graphics, Gameplay, Controls, Debug

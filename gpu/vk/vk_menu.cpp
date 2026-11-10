@@ -1718,8 +1718,8 @@ Upload ups[3][3];   // (the menu's, the counter's, the start-up screen's; a fram
 void copy_over(VkCommandBuffer cmd, VkImage dst, Bitmap& b, Upload& u, int x, int y, uint32_t w, uint32_t h) {
     std::lock_guard lk(bmp_mu);
     if (!b.w) return;
-    // (the keyed ones whole or not at all; the menu, at its smallest scale still taller than a small window, cut to it, centred
-    // as before, rather than left out: v2.0.13)
+    // (the keyed ones whole or not at all; the menu, at its smallest scale still taller than a small window, cut to it rather than
+    // left out: v2.0.13)
     if (b.keyed && (x < 0 || y < 0 || (uint32_t)x + b.w > w || (uint32_t)y + b.h > h)) return;
     const int x0 = std::max(x, 0), y0 = std::max(y, 0);
     const int cw = std::min((int64_t)x + b.w, (int64_t)w) - x0, ch = std::min((int64_t)y + b.h, (int64_t)h) - y0;
@@ -2490,7 +2490,9 @@ void menu_record(VkCommandBuffer cmd, VkImage dst, int slot, uint32_t w, uint32_
         VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         di.memoryBarrierCount = 1, di.pMemoryBarriers = &mb;
         vkCmdPipelineBarrier2(cmd, &di);
-        if (mw) copy_over(cmd, dst, menu_bmp, ups[0][slot], (int)(w - mw) / 2, (int)(h - mh) / 2, w, h);
+        int mx0 = 0, my0 = 0;
+        menu_hit::origin((int)w, (int)h, (int)mw, (int)mh, &mx0, &my0);   // (where the mouse finds it too)
+        if (mw) copy_over(cmd, dst, menu_bmp, ups[0][slot], mx0, my0, w, h);
     }
 }
 
