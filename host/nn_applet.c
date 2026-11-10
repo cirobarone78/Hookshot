@@ -108,13 +108,13 @@ static int handheld(void) {
     return v;
 }
 /* (hookshot) The Insert menu's Output resolution (output_res=, HOS_OUTPUT_RES over it), docked only: 0 the game's 2048 x 1152,
-   1 2560 x 1440, 2 3840 x 2160, 3 1920 x 1080, 4 5120 x 1440. The game's frame is its display size (2560 x 1440 as shipped;
+   1 2560 x 1440, 2 3840 x 2160, 3 1920 x 1080, 4 5120 x 1440, 5 1280 x 720. The game's frame is its display size (2560 x 1440 as shipped;
    nx2/oot_patches.py apply_output_size asks hos_output_size) times its graphics scale (GetCurrentGraphicsScale: 0 x1, 1 x0.8,
    2 x0.667). Here it saw scale 1 (x0 left at the call before's answer), so 2048 x 1152; each explicit size uses x1. */
 static int output_mode(void) {
     static int v = -1;
     if (v < 0) {
-        static const char *const names[] = {"2048x1152 (the game's)", "2560x1440", "3840x2160", "1920x1080", "5120x1440"};
+        static const char *const names[] = {"2048x1152 (the game's)", "2560x1440", "3840x2160", "1920x1080", "5120x1440", "1280x720"};
         v = getenv("HOS_OUTPUT_RES") ? atoi(getenv("HOS_OUTPUT_RES")) : ini_option("output_res", 0);
         if ((unsigned)v >= sizeof names / sizeof *names || handheld()) v = 0;
         hos_log("oe: output resolution %s", names[v]);
@@ -126,6 +126,7 @@ uint32_t hos_output_size(int height) {
     case 2: return height ? 2160 : 3840;
     case 3: return height ? 1080 : 1920;
     case 4: return height ? 1440 : 5120;
+    case 5: return height ? 720 : 1280;
     default: return height ? 1440 : 2560;
     }
 }

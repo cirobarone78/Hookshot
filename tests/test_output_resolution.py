@@ -47,9 +47,9 @@ int main(int argc, char **argv) {
     assert(output_mode() == mode);
     assert(hos_output_size(0) == w && hos_output_size(1) == h);
     assert(hos_rt_pool_size(305ull << 20) == ((mode == 2 ? 687ull : mode == 4 ? 610ull : 512ull) << 20));   // (512 MB at least: nn_applet.c)
-    assert(kLastOutput == 4);
-    assert(output_choice(-1) == 0 && output_choice(4) == 4 && output_choice(5) == 0);
-    assert(step_output_choice(3, -1) == 3);
+    assert(kLastOutput == 5);
+    assert(output_choice(-1) == 0 && output_choice(4) == 4 && output_choice(5) == 5 && output_choice(6) == 0);
+    assert(step_output_choice(5, -1) == 5 && step_output_choice(5, 1) == 3 && step_output_choice(3, -1) == 5);
     assert(step_output_choice(3, 1) == 0 && step_output_choice(0, -1) == 3);
     assert(step_output_choice(0, 1) == 1 && step_output_choice(1, -1) == 0);
     assert(step_output_choice(1, 1) == 2 && step_output_choice(2, -1) == 1);
@@ -62,6 +62,7 @@ int main(int argc, char **argv) {
     game_size(1.0f, scene_w, scene_h);
     assert(scene_w == (opts.handheld ? 1536 : mode ? w : 2048));
     assert(scene_h == (opts.handheld ? 864 : mode ? h : 1152));
+    if (mode == 5) assert(strcmp(tx_resolution(4), "50% (640x360)") == 0);
     if (mode == 3) assert(strcmp(tx_resolution(2), "75% (1440x810)") == 0);
     if (mode == 3) {   // (DLSS at 1080p: its modes' render sizes, each a twelfth of the output, exact; DLAA the full size)
         up_now = ur::DLSS;
@@ -78,6 +79,9 @@ int main(int argc, char **argv) {
 }
 '''
     cases = (
+        (5, 0, None, 5, 1280, 720, "1280x720"),
+        (1, 0, "5", 5, 1280, 720, "1280x720"),
+        (5, 1, "5", 0, 2560, 1440, "2048x1152 (game's)"),
         (0, 0, None, 0, 2560, 1440, "2048x1152 (game's)"),
         (1, 0, None, 1, 2560, 1440, "2560x1440"),
         (2, 0, None, 2, 3840, 2160, "3840x2160"),
@@ -85,7 +89,7 @@ int main(int argc, char **argv) {
         (1, 0, "3", 3, 1920, 1080, "1920x1080"),
         (3, 1, "3", 0, 2560, 1440, "2048x1152 (game's)"),
         (4, 1, None, 0, 2560, 1440, "2048x1152 (game's)"),
-        (5, 0, None, 0, 2560, 1440, "2048x1152 (game's)"),
+        (6, 0, None, 0, 2560, 1440, "2048x1152 (game's)"),
         (4, 0, None, 4, 5120, 1440, "5120x1440"),
     )
     with tempfile.TemporaryDirectory(prefix="output-resolution-") as tmp:
@@ -101,7 +105,7 @@ int main(int argc, char **argv) {
             if override is not None:
                 env["HOS_OUTPUT_RES"] = override
             subprocess.run([str(exe), str(mode), str(w), str(h), label], cwd=work, env=env, check=True)
-    print("PASS: output sizes, menu order, 1080p override, handheld, render-target budgets and DLSS sizes at 1080p, and 5120x1440")
+    print("PASS: output sizes from 720p to 5120x1440, menu order, overrides, handheld, render-target budgets and DLSS sizes")
 
 
 if __name__ == "__main__":
