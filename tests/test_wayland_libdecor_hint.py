@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
     version = mode == "sdl3" ? 3 : 2;
     if (mode == "headless") setenv("HOS_HEADLESS", "1", 1);
     const int r = hos_display_init();
-    printf("%s: init %d\n", mode.c_str(), r);
+    printf("%s: init %d, ready %d\n", mode.c_str(), r, sdl_ready);   // (read: clang 23's -Wunused-but-set-global)
     for (const std::string& h : hints) printf("hint %s\n", h.c_str());
     return 0;
 }
