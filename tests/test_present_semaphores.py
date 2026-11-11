@@ -70,6 +70,7 @@ Reflex& rx(){return cached;}
 void reflex_swapchain_created(uint64_t sc) {cached.swapchain=sc;cached.latency=cached.frame_marked=true;cached.mode=1;}
 ''' + reset + r'''
 template<class... T> void logf(const char*,T...) {}
+void present_thread_drain() {}   // (RX_VK_PRESENT_THREAD off: nothing handed over)
 int vkCreateSwapchainKHR(int,const CreateInfo* ci,void*,uint64_t* out) {
     if(ci->oldSwapchain) {
         if(!chains.count(ci->oldSwapchain) || retired.count(ci->oldSwapchain))bad_chain=true;

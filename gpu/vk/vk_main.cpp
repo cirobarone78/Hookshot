@@ -537,6 +537,7 @@ void swap_views_make(VkImageUsageFlags usage, VkFormat format) {
 }
 
 bool create_swapchain(uint32_t width, uint32_t height) {
+    present_thread_drain();   // (no present of the old swapchain still being made on the presenter thread)
     VkSurfaceCapabilitiesKHR caps;
     VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev.physical, dev.surface, &caps);
     if (result != VK_SUCCESS) {

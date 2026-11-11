@@ -3515,6 +3515,12 @@ std::atomic<uint32_t> present_kind{0};   // (vk_framegen.cpp: 1 while a made fra
 std::mutex present_image_mu;
 static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk);   // (present_image's end, below)
 thread_local PendingPresent* present_defer_into = nullptr;
+static VkFence present_copy_done = VK_NULL_HANDLE;   // (present_image's copy, while it presents: the presenter thread may take it)
+namespace {
+bool present_thread_on();
+void present_hand_off(uint32_t index, VkFence done);
+void present_finish(VkResult res, bool on_presenter);
+}  // namespace
 void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view) {
     std::lock_guard lk(present_image_mu);
     static int hdr_was = -1;   // (the Insert menu's HDR as the swapchain was made for it; -1: not yet looked at)
@@ -3525,6 +3531,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     if (vsync_was < 0) vsync_was = menu_vsync();
     const uint64_t want = dev.swap_resize.exchange(0, std::memory_order_acquire);
     if (want || !dev.swapchain || reflex_swapchain_stale() || hdr_changed || vsync_changed) {   // (resized, gone, Reflex, HDR or V-Sync changed)
+        present_thread_drain();   // (before the queue's lock: the presenter takes it)
         std::lock_guard qk(dev.present_mu);
         const uint32_t width = want ? (uint32_t)(want >> 32) : dev.swap_extent.width;
         const uint32_t height = want ? (uint32_t)want : dev.swap_extent.height;
@@ -3579,6 +3586,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     }
 #endif
     if (res == VK_ERROR_OUT_OF_DATE_KHR) {
+        present_thread_drain();
         std::lock_guard qk(dev.present_mu);
         create_swapchain(dev.swap_extent.width, dev.swap_extent.height);
         return;
@@ -3714,7 +3722,9 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         present_defer_into->swapchain = dev.swapchain;
         return;
     }
+    present_copy_done = f.done;
     present_out(index, qk);
+    present_copy_done = VK_NULL_HANDLE;
 }
 
 bool present_commit(const PendingPresent& p) {
@@ -3731,6 +3741,17 @@ static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
     VkResult res;
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.pNext = reflex_present_id(nullptr);   // (NVIDIA Reflex: the frame's present id, and its present's markers)
+    if (present_copy_done && !pi.pNext && present_thread_on()) {   // (RX_VK_PRESENT_THREAD: below)
+        antilag_present();   // (AMD Anti-Lag 2: the frame's present stage)
+        qk.unlock();
+        present_hand_off(index, present_copy_done);
+        return;
+    }
+    if (present_thread_on()) {   // (one handed over before, made first: the presents in order; the queue's lock let go meanwhile)
+        qk.unlock();
+        present_thread_drain();
+        qk.lock();
+    }
     pi.waitSemaphoreCount = 1;
     pi.pWaitSemaphores = &dev.swap_rendered[index];
     pi.swapchainCount = 1;
@@ -3753,6 +3774,16 @@ static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
     }
     if (res == VK_ERROR_DEVICE_LOST) device_lost();
     reflex_presented();
+    present_finish(res, false);
+    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
+        if (!qk.owns_lock()) qk.lock();
+        create_swapchain(dev.swap_extent.width, dev.swap_extent.height);
+    }
+}
+namespace {
+/// What follows a present, on the thread that made it. The presenter thread asks the next present_image for a new swapchain (its
+/// swap_resize) rather than making one itself
+void present_finish(VkResult res, bool on_presenter) {
     if (res < 0 && res != VK_ERROR_OUT_OF_DATE_KHR) {   // (a present that failed: said, a few times)
         static int logged;
         if (logged++ < 8) logf("vk: present failed (VkResult %d%s)", (int)res, dev.present_queue ? ", on the presents' own queue" : "");
@@ -3771,10 +3802,103 @@ static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
             if (++frames % 60 == 0) std::fflush(fl);
         }
     }
-    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
-        if (!qk.owns_lock()) qk.lock();
-        create_swapchain(dev.swap_extent.width, dev.swap_extent.height);
+    if (on_presenter && (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)) {   // (the size it has: made again as it is)
+        uint64_t empty = 0;
+        dev.swap_resize.compare_exchange_strong(empty, (uint64_t)dev.swap_extent.width << 32 | dev.swap_extent.height,
+                                                std::memory_order_release, std::memory_order_relaxed);
     }
+}
+}  // namespace
+
+// (hookshot) The presenter thread (RX_VK_PRESENT_THREAD=1). With NVIDIA's driver on Wayland, vkQueuePresentKHR waits on the CPU until
+// the frame's copy into the window's image is done on the GPU, after all of the frame's work: 2.4 ms a frame of the game's
+// presentation thread on an RTX 3090 in Kokiri Forest (HOS_CHAIN), on the frame's critical path, since the game's main thread waits
+// for that thread's present to return before it starts the next frame's commands. On, present_image hands the present to a thread of
+// its own, which waits for the copy's fence, then presents (the present itself then takes ~0.2 ms), and the game's thread goes on
+// at once. One present out at most: the next one waits for it (the presents in order, no frame more in flight than the swapchain
+// had). Only the presents made right after their copy (present_image; not frame interpolation's, made by present_commit), and NVIDIA
+// Reflex off (its markers are the game thread's). On the replay's queue the present takes the queue's lock (dev.present_mu) only for
+// vkQueuePresentKHR; a swapchain is made again only with the presenter idle (present_thread_drain, before that lock). Off by default.
+namespace {
+struct Presenter {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool busy = false;               // (a present handed over and not yet made)
+    uint32_t index = 0;
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    VkFence done = VK_NULL_HANDLE;   // (the copy's fence)
+    bool started = false;
+};
+Presenter presenter;
+void presenter_loop() {
+    std::unique_lock lk(presenter.mu);
+    for (;;) {
+        presenter.cv.wait(lk, [] { return presenter.busy; });
+        const uint32_t index = presenter.index;
+        const VkSwapchainKHR sc = presenter.swapchain;
+        const VkFence done = presenter.done;
+        lk.unlock();
+        const auto t0 = std::chrono::steady_clock::now();
+        if (done && vkWaitForFences(dev.device, 1, &done, VK_TRUE, UINT64_MAX) == VK_ERROR_DEVICE_LOST) device_lost();
+        const auto t1 = std::chrono::steady_clock::now();
+        VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        pi.waitSemaphoreCount = 1;
+        pi.pWaitSemaphores = &dev.swap_rendered[index];
+        pi.swapchainCount = 1;
+        pi.pSwapchains = &sc;
+        pi.pImageIndices = &index;
+        VkResult res;
+        if (dev.present_queue) {
+            std::lock_guard pq(dev.present_queue_mu);
+            res = vkQueuePresentKHR(dev.present_queue, &pi);
+        } else {
+            std::lock_guard qk(dev.present_mu);
+            res = vkQueuePresentKHR(dev.queue, &pi);
+        }
+        if (res == VK_ERROR_DEVICE_LOST) device_lost();
+        {   // (what it waited for, every 600 presents)
+            static double fence_ms, present_ms;
+            static int n;
+            const auto t2 = std::chrono::steady_clock::now();
+            fence_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+            present_ms += std::chrono::duration<double, std::milli>(t2 - t1).count();
+            if (++n % 600 == 0) {
+                logf("vk: presenter thread: the copy's fence %.2f ms, the present %.2f ms a present", fence_ms / 600, present_ms / 600);
+                fence_ms = present_ms = 0;
+            }
+        }
+        present_finish(res, true);
+        lk.lock();
+        presenter.busy = false;
+        presenter.cv.notify_all();
+    }
+}
+bool present_thread_on() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_PRESENT_THREAD");
+        const bool v = e && atoi(e) != 0;
+        if (v) logf("vk: presenter thread: each present made on a thread of its own once its copy is done (RX_VK_PRESENT_THREAD)");
+        return v;
+    }();
+    return on;
+}
+/// The present of image index, whose copy signals done, to the presenter thread (started at the first), once the one before is made
+void present_hand_off(uint32_t index, VkFence done) {
+    std::unique_lock lk(presenter.mu);
+    if (!presenter.started) {
+        presenter.started = true;
+        std::thread(presenter_loop).detach();
+    }
+    presenter.cv.wait(lk, [] { return !presenter.busy; });   // (the frame before's present made: one out at most)
+    presenter.index = index, presenter.swapchain = dev.swapchain, presenter.done = done, presenter.busy = true;
+    presenter.cv.notify_all();
+}
+}  // namespace
+/// Waits until the presenter thread has made the present it was handed (none: at once). Before a swapchain is made again or destroyed,
+/// and never with dev.present_mu held (the presenter takes it on the replay's queue)
+void present_thread_drain() {
+    std::unique_lock lk(presenter.mu);
+    presenter.cv.wait(lk, [] { return !presenter.busy; });
 }
 
 
