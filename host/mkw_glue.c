@@ -676,6 +676,18 @@ void a64_poll(Ctx *c) {   /* (the old form, A64_POLL_CTX builds) */
 /* CNTPCT_EL0 at the Switch 2's 31.25 MHz (rt/a64_rt.c's default counts the Switch 1's 19.2 MHz). The SDK checks
    nn::os::GetSystemTickFrequency against 31250000 at init and aborts otherwise. */
 uint64_t a64_cntpct_host(void) {
+#ifndef _WIN32
+    static int64_t base_ns;
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    int64_t b = __atomic_load_n(&base_ns, __ATOMIC_RELAXED);
+    if (__builtin_expect(!b, 0)) {
+        b = now.QuadPart;
+        __atomic_store_n(&base_ns, b, __ATOMIC_RELAXED);
+    }
+    /* 1e9 Hz / 31.25 MHz == 32 exactly: 1 tick = 32 ns */
+    return (uint64_t)(now.QuadPart - b) >> 5;
+#else
     static LARGE_INTEGER base;
     static uint64_t mult;
     LARGE_INTEGER now;
@@ -688,6 +700,7 @@ uint64_t a64_cntpct_host(void) {
     }
     QueryPerformanceCounter(&now);
     return (uint64_t)(((unsigned __int128)(uint64_t)(now.QuadPart - base.QuadPart) * mult) >> 32);
+#endif
 }
 
 /* ---- what the renderer (gpu/render, TOTKPort's) asks of TOTKPort's hos_prof.c and totk_ultrawide.c ---- */
@@ -740,7 +753,18 @@ void hos_host_thread_register_self(const char *name) {   /* (hos_prof.c: names f
     wchar_t w[64];
     if (MultiByteToWideChar(CP_UTF8, 0, name, -1, w, 64)) SetThreadDescription(GetCurrentThread(), w);
 }
+#ifndef _WIN32
+#include <psapi.h>
+#endif
 void hos_process_memory(uint64_t *private_bytes, uint64_t *working_set) {
+#ifndef _WIN32
+    PROCESS_MEMORY_COUNTERS_EX m;
+    memset(&m, 0, sizeof m);
+    m.cb = sizeof m;
+    if (!K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&m, sizeof m)) memset(&m, 0, sizeof m);
+    *private_bytes = m.PrivateUsage;
+    *working_set = m.WorkingSetSize;
+#else
     typedef struct {
         DWORD cb, PageFaultCount;
         SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
@@ -755,4 +779,5 @@ void hos_process_memory(uint64_t *private_bytes, uint64_t *working_set) {
     if (!fn || !fn(GetCurrentProcess(), &m, sizeof m)) memset(&m, 0, sizeof m);
     *private_bytes = m.PrivateUsage;
     *working_set = m.WorkingSetSize;
+#endif
 }
