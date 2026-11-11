@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <iterator>
+#include <tuple>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -52,6 +53,7 @@
 #include "shaders/clear_u_frag_spv.h"
 #include "shaders/clear_vert_spv.h"
 #include "shaders/taau_upscale_comp_spv.h"
+#include "shaders/shadow_stab_comp_spv.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -1510,9 +1512,9 @@ void state_record(const Program& p, const NvnState& s, const Targets& at, VkPrim
     if (!state_file) state_open_locked();
     if (state_file && state_seen.insert(h).second) fwrite(&r, sizeof r, 1, state_file), fflush(state_file);
 }
-/// (prepare_run, the seed open) every pipeline of the state lists (the player's own and the shipped one): its program translated
+/// Every pipeline of the state lists (the player's own and the shipped one): its program translated
 /// when the program cache lacks it, then noted in hookshot_pipelines.bin for precompile_run to build. RX_VK_NO_STATE_LIST=1: off
-void state_list_prepare(void (*progress)(size_t done, size_t total)) {
+void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_seed = false) {
     if (getenv("RX_VK_NO_STATE_LIST")) return;
     const auto t0 = std::chrono::steady_clock::now();
     int shipped_version = 0;
@@ -1521,7 +1523,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
     // (the player's own: this build's, and an older build's version 1 list, state_open_locked)
     for (const char* own : {"hookshot_pipeline_states.bin", "hookshot_pipeline_states_v1.bin"})
         for (const StateRec& r : state_list_read(state_list_path(own))) recs.push_back(r);
-    if (recs.empty()) return;
+    if (recs.empty() || (open_seed && !seed_open())) return;
     // the programs: each once (by its stages and the types it was translated for)
     struct Want { const StateRec* r; uint64_t key = 0; };
     std::vector<Want> want;
@@ -1542,6 +1544,16 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
         if (fresh) want.push_back({&r});
         rec_program[i] = it->second;
     }
+    // The texture variants that need translation are only known after loading the base programs.
+    size_t done = 0, total = want.size() + recs.size();
+    std::mutex progress_mu;
+    const auto report_done = [&] {
+        if (progress) {
+            std::lock_guard<std::mutex> lock(progress_mu);
+            progress(++done, total);
+        }
+    };
+    if (progress) progress(0, total);
     std::atomic<size_t> next{0}, made{0}, missing{0};
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off; the pipeline state list's builds raced the replay's updates)
@@ -1560,7 +1572,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
                 for (Stage& st : p->stages)
                     if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
             }
-            if (progress) progress(i, want.size());
+            report_done();
         }
     };
     std::vector<std::thread> threads;
@@ -1584,6 +1596,8 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
                 variant_of.push_back(i);
         }
     }
+    total = want.size() + variant_of.size();
+    if (progress) progress(done, total);
     std::atomic<size_t> variants_made{0};
     next = 0;
     const auto variant_worker = [&] {
@@ -1601,6 +1615,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
                 if (portable_variant(*p) == r.variant) variants_made++;
                 ensure_layout(const_cast<Program&>(*p));
             }
+            report_done();
         }
     };
     threads.clear();
@@ -1638,6 +1653,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total)) {
          "made, in %.1f s", recs.size(), shipped, shipped_version, want.size(), made.load(), missing.load(), variant_of.size(),
          variants_made.load(), noted_n, noted_mesh, noted_fallback, no_variant,
          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    if (open_seed && !getenv("RX_VK_SEED_CHECK")) seed_close();
 }
 
 // ---- (hookshot) Stage libraries, as TotK Recomp's runtime/vk_pipeline.c: the part of a pipeline that costs is its shaders, and with
@@ -5953,6 +5969,122 @@ static void skin_check(const NvnState& s, const Program& p, const DrawArgs& d, c
     temporal_note_skinned_draw(k);
 }
 
+/// OoT's tree-shadow pass (3427a1dbefd5e02c: a full-screen draw that writes G and B of an RGBA8 mask at the scene's size, MIN
+/// blended) offsets each pixel's shadow-map lookup by a normal it reconstructs from a gather of the neighbouring depths. On
+/// grass blades and leaf edges those neighbours flip between the blade and the ground behind it with the camera's sub-pixel
+/// shift, so pixels flip between lit and shadowed every frame: fast thin streaks over sunlit ground (the console's TAAU
+/// averages them away). The mask is evened out over frames right after that draw (shaders/shadow_stab.comp).
+/// RX_VK_MASK_BLEND=<weight> (default 0.85, 0: off), RX_VK_MASK_RADIUS=<r> (the history's bound, a (2r+1)^2 neighbourhood;
+/// default 0: unbounded. A 3x3 bound kept nothing: the streaks move as blocks wider than that)
+float mask_weight() {
+    static const float w = std::clamp(getenv("RX_VK_MASK_BLEND") ? (float)atof(getenv("RX_VK_MASK_BLEND")) : 0.85f, 0.0f, 0.95f);
+    return w;
+}
+int mask_radius_env() {
+    static const int r = std::clamp(getenv("RX_VK_MASK_RADIUS") ? atoi(getenv("RX_VK_MASK_RADIUS")) : 0, 0, 4);
+    return r;
+}
+void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t layer, float weight) {
+    if (!tex || !tex->image || tex->format != VK_FORMAT_R8G8B8A8_UNORM || !(tex->usage & VK_IMAGE_USAGE_STORAGE_BIT)) return;
+    if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return;
+    static VkPipeline pipe = VK_NULL_HANDLE;
+    static VkPipelineLayout layout = VK_NULL_HANDLE;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        VkDescriptorSetLayoutBinding b[3] = {{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                                             {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                                             {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+        li.bindingCount = 3, li.pBindings = b;
+        VkDescriptorSetLayout set{};
+        vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &set);
+        const VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 24};
+        VkPipelineLayoutCreateInfo pi{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pi.setLayoutCount = 1, pi.pSetLayouts = &set, pi.pushConstantRangeCount = 1, pi.pPushConstantRanges = &pr;
+        vkCreatePipelineLayout(dev.device, &pi, nullptr, &layout);
+        VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        mi.codeSize = sizeof SHADOW_STAB_COMP_SPV, mi.pCode = SHADOW_STAB_COMP_SPV;
+        VkShaderModule m{};
+        vkCreateShaderModule(dev.device, &mi, nullptr, &m);
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", nullptr};
+        ci.layout = layout;
+        if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+        vkDestroyShaderModule(dev.device, m, nullptr);
+        logf("vk: tree-shadow mask blend %s", pipe ? "ready" : "not made");
+    }
+    if (!pipe) return;
+    const uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
+    // (the mask's own storage view at that level and layer, made once a texture and level)
+    static std::map<std::tuple<VkImage, uint32_t, uint32_t>, VkImageView> views;
+    VkImageView& mv = views[{tex->image, level, layer}];
+    if (!mv) {
+        VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vc.image = tex->image, vc.viewType = VK_IMAGE_VIEW_TYPE_2D, vc.format = VK_FORMAT_R8G8B8A8_UNORM;
+        vc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, level, 1, layer, 1};
+        if (vkCreateImageView(dev.device, &vc, nullptr, &mv) != VK_SUCCESS) { mv = VK_NULL_HANDLE; return; }
+    }
+    static VkImage hist[2] = {};
+    static VmaAllocation hist_mem[2] = {};
+    static VkImageView hist_view[2] = {};
+    static uint32_t hist_w = 0, hist_h = 0, cur = 0;
+    static uint64_t hist_frame = 0;
+    if (hist_w != w || hist_h != h) {
+        for (int i = 0; i < 2; i++) {
+            VkImageCreateInfo ic{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+            ic.imageType = VK_IMAGE_TYPE_2D, ic.format = VK_FORMAT_R8G8B8A8_UNORM;
+            ic.extent = {w, h, 1}, ic.mipLevels = 1, ic.arrayLayers = 1, ic.samples = VK_SAMPLE_COUNT_1_BIT;
+            ic.tiling = VK_IMAGE_TILING_OPTIMAL, ic.usage = VK_IMAGE_USAGE_STORAGE_BIT;
+            if (!create_image(ic, hist[i], hist_mem[i])) { hist_w = hist_h = 0; return; }
+            VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            vc.image = hist[i], vc.viewType = VK_IMAGE_VIEW_TYPE_2D, vc.format = ic.format;
+            vc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCreateImageView(dev.device, &vc, nullptr, &hist_view[i]);
+            VkImageMemoryBarrier2 ib{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+            ib.srcStageMask = VK_PIPELINE_STAGE_2_NONE, ib.srcAccessMask = VK_ACCESS_2_NONE;
+            ib.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            ib.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+            ib.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            ib.srcQueueFamilyIndex = ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            ib.image = hist[i], ib.subresourceRange = vc.subresourceRange;
+            VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            di.imageMemoryBarrierCount = 1, di.pImageMemoryBarriers = &ib;
+            vkCmdPipelineBarrier2(cmd, &di);
+        }
+        hist_w = w, hist_h = h, hist_frame = 0, cur = 0;
+    }
+    const uint64_t now_frame = texture_frame_no();
+    const int valid = hist_frame && now_frame - hist_frame <= 3 ? 1 : 0;
+    hist_frame = now_frame;
+    const uint32_t prev = cur, nxt = cur ^ 1u;
+    cur = nxt;
+    const VkDescriptorImageInfo infos[3] = {{VK_NULL_HANDLE, mv, VK_IMAGE_LAYOUT_GENERAL},
+                                            {VK_NULL_HANDLE, hist_view[prev], VK_IMAGE_LAYOUT_GENERAL},
+                                            {VK_NULL_HANDLE, hist_view[nxt], VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet wr[3]{};
+    for (int i = 0; i < 3; i++) {
+        wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, wr[i].dstBinding = (uint32_t)i, wr[i].descriptorCount = 1;
+        wr[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, wr[i].pImageInfo = &infos[i];
+    }
+    struct { int32_t size[2]; int32_t valid, mode; float weight; int32_t radius; } pc{{(int32_t)w, (int32_t)h}, valid, 0, weight, mask_radius_env()};
+    end_pass(cmd);
+    full_barrier(cmd);   // (after the pass's write of the mask)
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+    vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 3, wr);
+    descriptors_disturbed();   // (what bind_descriptors remembers pushing is not what is bound now: the next dispatch pushes all again; unmarked, a dispatch of the same layout kept these bindings and read our images: the device lost)
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+    vkCmdDispatch(cmd, (w + 7) / 8, (h + 7) / 8, 1);
+    full_barrier(cmd);
+    pc.mode = 1;
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+    vkCmdDispatch(cmd, (w + 7) / 8, (h + 7) / 8, 1);
+    full_barrier(cmd);   // (before the next pass reads or draws the mask)
+    static std::atomic<int> told{0};
+    if (told++ == 0) logf("vk: tree-shadow mask blend on #%u %ux%u, weight %.2f", tex->id, w, h, weight);
+}
+
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PROF_HOT(PROF_DRAW);
     FINE_N(FC_DRAWS, 1);
@@ -6120,6 +6252,17 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     cur_program = &p;
     dlss_trace_draw(s, p, d, at);
     skin_check(s, p, d, at);
+    // (after OoT's tree-shadow pass has drawn its mask: the mask evened out over frames, at this draw's end: mask_stabilize)
+    struct MaskGuard {
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        Texture* tex = nullptr;
+        uint32_t level = 0, layer = 0;
+        float w = 0;
+        ~MaskGuard() { if (cmd) mask_stabilize(cmd, tex, level, layer, w); }
+    } mask_guard;
+    if (p.key == 0x3427a1dbefd5e02cull && at.n > 0 && at.color[0])
+        if (const float mw = mask_weight(); mw > 0)
+            mask_guard = {cmd, at.color[0], at.color_level[0], at.color_layer[0], mw};
     if (!record_progs().empty() && std::find(record_progs().begin(), record_progs().end(), p.key) != record_progs().end())
         record_draw(s, p, d, at);
     // (RX_VK_DUMP_EACH=<key>,...: in a dump, the pass ends after each draw of those programs, so every one of them is
@@ -6773,7 +6916,7 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     // (hookshot) an upscale network that did not translate here (the Render resolution's fixed shares have one each, and on a
     // GPU without cooperative matrices they are left out): the temporal upscaler is offered it first, as temporal_stand_in
     // offers the networks that did translate. It takes only the scene into the picture; anything else goes on below
-    if (temporal_wanted() && temporal_rejected_network(cmd, key, src, &in, dst, &out)) return true;
+    if ((temporal_wanted() || temporal_off()) && temporal_rejected_network(cmd, key, src, &in, dst, &out)) return true;
     VkFormatProperties fs{}, fd{};
     vkGetPhysicalDeviceFormatProperties(dev.physical, src->format, &fs);
     vkGetPhysicalDeviceFormatProperties(dev.physical, dst->format, &fd);
@@ -7030,7 +7173,7 @@ bool temporal_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p)
     // share of the Render resolution row (67%: 6676619641320ba7, 58% f10782f9e58b6a7c, 50% 72ba090c70fe2614, 33%
     // 0775215f8da720e6 at 2048x1152), by their shape: a network sampling one texture into one image. temporal_upscale takes those
     // only when the texture is this frame's scene, in the gameplay networks' input format, and the image the picture)
-    if (!temporal_wanted() || p.stages.empty()) return false;
+    if ((!temporal_wanted() && !temporal_off()) || p.stages.empty()) return false;   // (Off: the network's stretch)
     const Stage& st = p.stages[0];
     if (!gameplay_network(p.key) && !(st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 &&
                                       st.info.image_descriptors.size() == 1))
@@ -7375,7 +7518,8 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
 /// driver's part made once for this driver (see PreparedFor). True: prepared now, either of them.
 /// background: in play, behind the game: a few workers at idle priority, translation only (the driver's part is left to first use:
 /// its compiler crashing in here would take the game with it)
-bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
+/// refresh_states: Builder preparation also imports state lists when the seed is already prepared
+bool prepare_run(void (*progress)(size_t done, size_t total), bool background, bool refresh_states) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::string path = prepared_path();
     PreparedFor prepared_for;
@@ -7388,7 +7532,12 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
         logf("vk: the shader list was hashed (%.0f MB in %.0f ms): written since the last check, or too close to it to go by its time",
              prepared_for.seed_size / 1048576.0, hash_ms);
     if (why == PrepareWhy::None && !getenv("RX_VK_PREPARE_AGAIN")) {
-        if (getenv("RX_VK_SEED_CHECK")) seed_open();
+        // A Builder run can add pipeline states without changing the shader seed.
+        if (getenv("RX_VK_SEED_CHECK")) {
+            if (seed_open() && refresh_states) state_list_prepare(progress);
+        } else if (refresh_states) {
+            state_list_prepare(progress, true);
+        }
         if (prepared_for.warmed == warmed || background) return false;
         // (translated, and the driver's part is another driver's, or of before the libraries were wanted: that part alone, no
         // shader translated. Without libraries it is predict_run's pipelines, which follow a prepare that prepared)
@@ -7552,9 +7701,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background) {
 /// (hookshot) An update (prepare_is_update): the seed is prepared in play, behind the game, too late for the precompile; the pipelines
 /// of the state list are made now, before it, so that precompile_run builds them before the game as on a first start
 void state_list_run() {
-    if (getenv("RX_VK_NO_STATE_LIST") || !seed_open()) return;
-    state_list_prepare(nullptr);
-    if (!getenv("RX_VK_SEED_CHECK")) seed_close();
+    state_list_prepare(nullptr, true);
 }
 void prepare_background() {
     std::thread([] {
