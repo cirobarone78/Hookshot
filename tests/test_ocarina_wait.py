@@ -58,9 +58,10 @@ def main():
         line = new.splitlines()[-1]
         check(out.count(line) == 1, name + " not injected exactly once")
     check(out.count("hos_oc_beat++") == 2, "the entry and the tick do not stamp the beat once each")
+    check(out.count("HOS_OC_BUTTONS(") == 3, "the player's kinds are not one macro at both arming sites")
     check(out.count(oot_patches.OC_DECL) == 1, "the host's words are not declared once")
     check(out.index(oot_patches.OC_DECL) < out.index("void f_828a9190"), "the lifted file does not declare them at its head")
-    gate = out.index("hos_oc_wait = (hos_oc_last_kind == 1 || hos_oc_last_kind == 3)")
+    gate = out.index("HOS_OC_BUTTONS(hos_oc_last_kind)")
     check(gate > out.index("if (!((c->x[8] >> 1) & 1))") and gate < out.index("L_828a937c:;"),
           "the tick's re-arm is not between its running gate and its body")
     check(oot_patches.patch_ocarina_wait(out) == out, "a second run changed the file")
