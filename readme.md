@@ -341,7 +341,7 @@ HDR peak brightness show only while HDR is on.
   (a desk) or Large (a TV across the room). It stays the same whether you use a controller or the keyboard and mouse.
 - **Field of view** changes the gameplay camera's vertical angle: 100% keeps the game's view, higher shows more of the
   world and lower brings it closer. The game's zoom changes remain relative to your choice.
-  Ultrawide gameplay has not yet been tested with this setting.
+  Aiming has been tested in the 50% to 150% range, including with ultrawide enabled.
   Cutscenes, the HUD and movies keep their own view. The setting is saved as `field_of_view` in `hookshot_options.ini`.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a
   second card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed.
