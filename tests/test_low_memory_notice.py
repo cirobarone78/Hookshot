@@ -14,6 +14,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+RUN_ALL_SKIP = {"macos": "this fixture exercises Linux sysinfo; macOS builder memory checks use vm_stat"}
+
 RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]

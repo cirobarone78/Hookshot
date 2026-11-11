@@ -15,7 +15,7 @@ no arguments and its own defaults.
 
     RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]   # its command-line arguments
     RUN_ALL_MODULES = ["zstandard"]                                       # Python packages it imports
-    RUN_ALL_SKIP = {"windows": "needs spirv-val: checked on Linux"}       # OS ("linux", "windows") -> why it is skipped
+    RUN_ALL_SKIP = {"windows": "needs spirv-val: checked on Linux"}       # OS ("linux", "windows", "macos") -> why it is skipped
 
 {name} in an argument is a tool or folder find_tools looks for (cxx, vulkan_headers, spirv_headers, spirv_val, glslang,
 dotnet); a check whose tool, compiler (the word after --cc or --cxx) or module is missing here is skipped, or fails
@@ -44,8 +44,19 @@ import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WINDOWS = os.name == "nt"
-OS = "windows" if WINDOWS else "linux"
+
+
+def host_os():
+    if sys.platform == "win32":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    raise RuntimeError("Unsupported host platform: " + sys.platform)
+
+
+OS = host_os()
 
 # What a check needs is declared in the test file itself, as top-level literals the runner reads with ast (the test is
 # never imported): see the docstring above and read_declarations below.
@@ -53,7 +64,7 @@ DECLARATIONS = ("RUN_ALL_ARGS", "RUN_ALL_MODULES", "RUN_ALL_SKIP")
 # (a list's or a dict's methods that change it in place: a declaration changed that way is not what the runner reads)
 MUTATORS = {"append", "extend", "insert", "remove", "pop", "clear", "update", "setdefault", "popitem", "sort",
             "reverse", "__setitem__", "__delitem__", "__iadd__", "__ior__"}
-OSES = ("linux", "windows")
+OSES = ("linux", "windows", "macos")
 
 # (each OS's measured seconds per check, for the order and the --shard split: see the docstring)
 TIMES = os.path.join(ROOT, "tests", "run_all_times.json")

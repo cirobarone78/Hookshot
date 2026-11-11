@@ -953,6 +953,13 @@ void GatherInfoFromHeader(Environment& env, Info& info) {
 }
 } // Anonymous namespace
 
+/// (macOS / WebGPU, as gpu/vk) NVN2 compute's storage buffer table in c0 for the program being
+/// translated on this thread. Set by rx_shader.cpp from the control section (rx_nvn.cpp nvn2_cs_layout):
+/// right after the push constants and the uniform buffer table, not Maxwell's 0x310.
+thread_local u32 g_nvn2_compute_ssbo_base{0};
+thread_local u32 g_nvn2_compute_ssbo_count{16};
+thread_local u32 g_nvn2_compute_layout_end{0};
+
 void CollectShaderInfoPass(Environment& env, IR::Program& program) {
     Info& info{program.info};
     const u32 base{[&] {
@@ -969,7 +976,7 @@ void CollectShaderInfoPass(Environment& env, IR::Program& program) {
         case Stage::Fragment:
             return 0x510u;
         case Stage::Compute:
-            return 0x310u;
+            return g_nvn2_compute_ssbo_base ? g_nvn2_compute_ssbo_base : 0x310u;
         }
         throw InvalidArgument("Invalid stage {}", program.stage);
     }()};

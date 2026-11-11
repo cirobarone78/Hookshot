@@ -71,9 +71,10 @@ class FinishOutputTests(unittest.TestCase):
         with mock.patch.object(make_game, "BESIDE", ["hookshot.exe"]):
             # Comprehensions use globals. Keep one namespace, as in production, and discover only authored setup files.
             namespace = dict(make_game.__dict__, built=str(self.built), out=str(self.out), work=str(self.work),
-                             ROOT=str(self.root / "tools"), LINUX=False if launcher else make_game.LINUX,
+                             game_dir=str(self.out), launcher=None, ROOT=str(self.root / "tools"),
+                             LINUX=False if launcher else make_game.LINUX,
                              a=SimpleNamespace(fsr=False, no_fsr=False, update=None, fetch_fsr_runtime=False))
-            exec(FINISH, namespace)
+            exec(FINISH, namespace, namespace)
 
     def assert_installed_unchanged(self):
         self.assertEqual(self.destination.read_bytes(), b"existing synthetic executable")

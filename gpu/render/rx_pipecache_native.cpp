@@ -67,7 +67,11 @@ std::string path_of_cache() {
     exe[n] = 0;
     std::string dir = std::string(exe) + "rxcache";
     CreateDirectoryA(dir.c_str(), nullptr);
+#if defined(_WIN32)
     return dir + "\\pipelines.bin";
+#else
+    return dir + "/pipelines.bin";
+#endif
 }
 
 bool nc_on = true;

@@ -475,7 +475,7 @@ int main(void) {
                 if grouped:
                     self.assertEqual(a64_lift.group_marks([os.path.join(d, "code_000.c")]), 1)
                 exe = os.path.join(d, "h%d.exe" % grouped)
-                subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
+                subprocess.run([cc] + toolchain.macos_sysroot_flags() + toolchain.native_target() + toolchain.native_link() +
                                ["-O1", "-Wno-everything", "-DA64_WRITE_TRACK", "-DA64_HOST_BASE=((uintptr_t)a64_test_mem)",
                                 "-I" + os.path.join(ROOT, "third_party", "a64-kit", "rt"), "-I" + d,
                                 os.path.join(d, "harness.c"), "-o", exe], check=True)

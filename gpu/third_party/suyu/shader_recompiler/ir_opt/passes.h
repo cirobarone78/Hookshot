@@ -12,6 +12,11 @@ struct HostTranslateInfo;
 
 namespace Shader::Optimization {
 
+/// (macOS / WebGPU, as gpu/vk) NVN2 compute storage-buffer table placement for the program being translated.
+extern thread_local u32 g_nvn2_compute_ssbo_base;
+extern thread_local u32 g_nvn2_compute_ssbo_count;
+extern thread_local u32 g_nvn2_compute_layout_end;
+
 void CollectShaderInfoPass(Environment& env, IR::Program& program);
 void ConditionalBarrierPass(IR::Program& program);
 void ConstantPropagationPass(Environment& env, IR::Program& program);

@@ -15,7 +15,8 @@ import zipfile
 from pathlib import Path
 
 # (Linux only)
-RUN_ALL_SKIP = {"windows": "the Linux builder's update and folder launcher, POSIX files and shell scripts"}
+RUN_ALL_SKIP = {"windows": "the Linux builder's update and folder launcher, POSIX files and shell scripts",
+                "macos": "the Linux builder update installs Linux AppImages"}
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "builder" / "linux"))

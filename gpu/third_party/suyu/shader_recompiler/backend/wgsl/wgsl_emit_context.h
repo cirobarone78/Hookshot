@@ -215,6 +215,7 @@ private:
     void DefineConstantBufferIndirect();
     void DefineStorageBuffers(Bindings& bindings);
     void DefineHelperFunctions();
+    std::string DefineGlobalMemoryFunctions();
     void DefineConstants();
     void SetupImages(Bindings& bindings);
     void SetupTextures(Bindings& bindings);

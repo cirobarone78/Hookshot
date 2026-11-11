@@ -84,7 +84,7 @@ class CpmDiscoveryTests(unittest.TestCase):
                          expected["spirv-headers"])
         self.assertEqual(build.header_package("vulkanmemoryallocator", "vk_mem_alloc.h", "HOOKSHOT_VMA_HEADERS"),
                          expected["vulkanmemoryallocator"])
-        if not build.LINUX:
+        if build.WINDOWS:
             self.assertEqual(build.FFMPEG, expected["ffmpeg"], "Windows import did not select FFmpeg")
 
     def test_portable_package_without_rx_cpm(self):

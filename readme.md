@@ -543,6 +543,37 @@ You need:
 </details>
 
 <details>
+<summary>macOS (Apple Silicon), build from source and use the Builder</summary>
+
+This port requires an Apple Silicon Mac and macOS 13.3 or newer. Install Xcode Command Line Tools (if needed) and Homebrew's
+dependency builders, then build and package the native dependencies and Builder from the repository root:
+
+```sh
+xcode-select --install
+brew install cmake nasm meson ninja
+git submodule update --init --recursive
+bash scripts/macos/deps.sh
+bash scripts/macos/package-builder.sh
+```
+
+The packages are written to `build-macos/`. The `HookshotBuilder-macos-arm64.zip` archive contains the app,
+command-line launcher, source and tools; `HookshotBuilder-macos-arm64.app.zip` contains the standalone app. Open
+`HookshotBuilder.app` to choose your own game dump and output folder, or run:
+
+```sh
+./HookshotBuilder/HookshotBuilder.command --nup "/path/to/your-game.nup" \
+  --out "$HOME/Games/Hookshot" --jobs 4
+```
+
+For a direct source build, see [the macOS development guide](docs/development.md#macos-apple-silicon). Progress, thanks to
+contributors, and every related PR are in [docs/macos-port-status.md](docs/macos-port-status.md) (current work:
+[PR #1872](https://github.com/NotRexed/Hookshot/pull/1872)). The packaged Builder and CI artifact contain no game data.
+The app is ad hoc signed but not notarized; CI checks do not replace testing on a real Mac. Please report the chip,
+macOS version, build log, and steps when testing.
+
+</details>
+
+<details>
 <summary>Linux, the AppImage from the command line</summary>
 
 ```sh

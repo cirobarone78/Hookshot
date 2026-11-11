@@ -797,10 +797,10 @@ void stage_resources(StageResources& out, const Channel& ch, const Regs& r, cons
     if (frame_dump_active()) dump_textures.clear();
     // (web: from the 17th texture on, a texture shares the sampler of the last earlier one of its kind that has its
     // own, as the WGSL backend declares them: browsers allow 16 samplers a stage)
-    uint32_t last_own[2] = {0, 0};
+    uint32_t last_own[2] = {0, 0}, own_samplers = 0;   // (at most 16: wgsl_emit_context.cpp SetupTextures)
     for (const auto& d : info.texture_descriptors) {
-        const bool shared_sampler = RX_WEB && t_index >= 16 && last_own[d.is_depth ? 1 : 0];
-        if (!shared_sampler) last_own[d.is_depth ? 1 : 0] = b + 1;
+        const bool shared_sampler = RX_SHARE_SAMPLERS && own_samplers >= 15 && last_own[d.is_depth ? 1 : 0];
+        if (!shared_sampler) last_own[d.is_depth ? 1 : 0] = b + 1, own_samplers++;
         const uint32_t handle = read_handle(ch, stage, d);
         if (static const bool trace_bindings = env_flag("RX_TRACE_BINDINGS"); trace_bindings) {
             static std::unordered_map<uint64_t, bool> seen;
@@ -2789,13 +2789,15 @@ bool nvn_vertex_input(VertexInput& vi, const NvnState& s, const Shader::Info& in
         uint32_t end = 0;
         for (const Attr& a : streams[st]) end = std::max(end, a.offset + a.size);
         if (cached.on) {
+            // (whole strides, as below: wgpu's Metal back end reads the last element of a shorter binding as zeros)
+            const auto whole = [&](uint64_t n) { return stride ? (n + stride - 1) / stride * stride : n; };
             uint64_t bytes;
-            if (cached.indirect) bytes = std::max<uint64_t>(vs.size, end);
+            if (cached.indirect) bytes = whole(std::max<uint64_t>(vs.size, end));
             else if (!stride) bytes = end;
-            else if (instanced) bytes = (uint64_t)(base_instance + instances - 1) * stride + end;
-            else if (!cached.indexed) bytes = (uint64_t)(cached.first + cached.count - 1) * stride + end;
-            else bytes = std::max<uint64_t>(vs.size, end);
-            bytes = std::min<uint64_t>((bytes + 3) & ~3ull, std::max<uint64_t>((vs.size + 3) & ~3ull, (end + 3) & ~3ull));
+            else if (instanced) bytes = (uint64_t)(base_instance + instances) * stride;
+            else if (!cached.indexed) bytes = (uint64_t)(cached.first + cached.count) * stride;
+            else bytes = whole(std::max<uint64_t>(vs.size, end));
+            bytes = std::min<uint64_t>((bytes + 3) & ~3ull, std::max<uint64_t>((whole(vs.size) + 3) & ~3ull, (end + 3) & ~3ull));
             if (vs.addr & 3) {
                 count("nc_align");
                 return false;
@@ -2824,7 +2826,10 @@ bool nvn_vertex_input(VertexInput& vi, const NvnState& s, const Shader::Info& in
         }
         const uint64_t first = instanced ? base_instance : v0;
         const uint64_t n_el = instanced ? instances : (uint64_t)v1 - v0 + 1;
-        uint64_t bytes = stride ? (n_el - 1) * stride + end : end;
+        // (whole strides, the last element's too: wgpu's Metal back end counts a binding's elements as size / stride, so
+        // a binding of (n - 1) * stride + end bytes, valid in WebGPU, read its last vertex as zeros. The title's
+        // composite quad (4 vertices of 16 bytes, 8 used: 56 bytes) then lost a triangle, and the logo half the screen)
+        uint64_t bytes = stride ? n_el * stride : end;
         bytes = (bytes + 3) & ~3ull;
         if (bytes > (64ull << 20)) return false;
         const uint64_t off = stream_ro.alloc(bytes, 16);
@@ -3146,10 +3151,18 @@ void nvn_stage_resources(StageResources& out, const NvnState& s, int stage, cons
     uint32_t t_index = 0;
     // (web: from the 17th texture on, a texture shares the sampler of the last earlier one of its kind that has its
     // own, as the WGSL backend declares them and stage_resources binds them: browsers allow 16 samplers a stage)
-    uint32_t last_own[2] = {0, 0};
+    uint32_t last_own[2] = {0, 0}, own_samplers = 0;   // (at most 16: wgsl_emit_context.cpp SetupTextures)
+    // (the last texture of each kind with a sampler of its own: where its sampler's layout and bind group entries are,
+    // and that sampler never filtering. A texture that shares it and cannot be filtered (a depth buffer read as a
+    // color) makes it non-filtering, the owner's filtering lost: wgpu refused the pipeline, "Non-filterable float
+    // textures can't be sampled with a filtering sampler", and the gameplay's final picture with it)
+    struct Owner {
+        size_t layout = SIZE_MAX, entry = SIZE_MAX;
+        WGPUSampler nonfiltering = nullptr;
+    } owner[2];
     for (const auto& d : info.texture_descriptors) {
-        const bool shared_sampler = RX_WEB && t_index >= 16 && last_own[d.is_depth ? 1 : 0];
-        if (!shared_sampler) last_own[d.is_depth ? 1 : 0] = b + 1;
+        const bool shared_sampler = RX_SHARE_SAMPLERS && own_samplers >= 15 && last_own[d.is_depth ? 1 : 0];
+        if (!shared_sampler) last_own[d.is_depth ? 1 : 0] = b + 1, own_samplers++;
         uint32_t primary = 0, secondary = 0;
         banks.read(s, stage, d.cbuf_index, d.cbuf_offset, &primary, 4);
         if (d.has_secondary) banks.read(s, stage, d.secondary_cbuf_index, d.secondary_cbuf_offset, &secondary, 4);
@@ -3198,7 +3211,19 @@ void nvn_stage_resources(StageResources& out, const NvnState& s, int stage, cons
         sl.sampler.type = t.kind == TexKind::Depth             ? WGPUSamplerBindingType_Comparison
                           : t.kind == TexKind::UnfilterableFloat ? WGPUSamplerBindingType_NonFiltering
                                                                  : WGPUSamplerBindingType_Filtering;
-        if (!shared_sampler) out.layout.push_back(pack_layout(sl));
+        Owner& own = owner[d.is_depth ? 1 : 0];
+        if (!shared_sampler) {
+            own.layout = out.layout.size(), own.nonfiltering = t.nonfiltering;
+            out.layout.push_back(pack_layout(sl));
+        } else if (sl.sampler.type == WGPUSamplerBindingType_NonFiltering && own.layout != SIZE_MAX && own.nonfiltering) {
+            WGPUBindGroupLayoutEntry ol = unpack_layout(out.layout[own.layout]);
+            if (ol.sampler.type == WGPUSamplerBindingType_Filtering) {
+                ol.sampler.type = WGPUSamplerBindingType_NonFiltering;
+                out.layout[own.layout] = pack_layout(ol);
+                if (own.entry != SIZE_MAX) out.entries[own.entry].sampler = own.nonfiltering;
+                count("shared_sampler_nonfiltering");
+            }
+        }
         WGPUBindGroupEntry te{};
         te.binding = b;
         te.textureView = t.view;
@@ -3206,7 +3231,7 @@ void nvn_stage_resources(StageResources& out, const NvnState& s, int stage, cons
         WGPUBindGroupEntry se{};
         se.binding = b + 1;
         se.sampler = t.sampler;
-        if (!shared_sampler) out.entries.push_back(se);
+        if (!shared_sampler) own.entry = out.entries.size(), out.entries.push_back(se);
         b += 2;
     }
     out.next_binding = b;
@@ -3473,7 +3498,7 @@ void nvn_draw(NvnState& s, const NvnDraw& d) {
     // the frame rate depends on the replay's time (what making it faster could give)
     if (static const int64_t spin = getenv("RX_DEBUG_DRAW_SPIN_NS") ? atoll(getenv("RX_DEBUG_DRAW_SPIN_NS")) : 0; spin) {
         const int64_t until = clock_ns() + spin;
-        while (clock_ns() < until) _mm_pause();
+        while (clock_ns() < until) cpu_relax();
     }
     struct DrawTimer {
         int64_t t0 = clock_ns();
@@ -3493,6 +3518,10 @@ void nvn_draw(NvnState& s, const NvnDraw& d) {
         count(why);
     };
     if (!d.count) return count("draws_empty");
+    // (macOS port, as gpu/vk) the draw macros' parameters in the vertex stage's c0 (NvnState::draw_base_vertex)
+    s.draw_base_vertex = d.indexed ? d.base_vertex : (int32_t)d.first;
+    s.draw_base_instance = d.base_instance;
+    s.draw_id = 0;
     trim_bind_groups();
     const Attachments at = nvn_attachments(s);
     if (!at.width) return skip("no render target");

@@ -35,5 +35,9 @@ __pycache__/
 build-linux/
 *.so
 
+# ---- macOS builds ----
+build-macos/
+*.dylib
+
 # ---- NVIDIA's DLSS SDK (scripts/ngx_sdk.py): NVIDIA's files, never committed ----
 ngx-sdk/

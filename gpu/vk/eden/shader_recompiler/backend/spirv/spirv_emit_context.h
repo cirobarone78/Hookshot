@@ -76,6 +76,10 @@ struct UniformDefinitions {
     Id U32x2{};
     Id U32x4{};
 
+    static void ReportInvalidMember() {
+        ASSERT(false);
+    }
+
     constexpr static size_t NumElements(Id UniformDefinitions::*member_ptr) {
         if (member_ptr == &UniformDefinitions::U8) {
             return 1;
@@ -101,7 +105,7 @@ struct UniformDefinitions {
         if (member_ptr == &UniformDefinitions::U32x4) {
             return 4;
         }
-        ASSERT(false);
+        ReportInvalidMember();
         return 1;
     }
 

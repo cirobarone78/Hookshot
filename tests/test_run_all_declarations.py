@@ -122,8 +122,9 @@ class Reader(unittest.TestCase):
         self.assertEqual(set(run_all.find_tools()), set(TOOLS))
 
     def test_unknown_os(self):
-        self.bad('RUN_ALL_SKIP = {"win32": "why"}\n', "unknown OS 'win32'", "linux, windows")
-        self.bad('RUN_ALL_SKIP = {"windows": "why", "macos": "why"}\n', "'macos'")
+        self.bad('RUN_ALL_SKIP = {"win32": "why"}\n', "unknown OS 'win32'", "linux, windows, macos")
+        self.assertEqual(self.read('RUN_ALL_SKIP = {"macos": "Metal runtime fixture"}\n')["skip"],
+                         {"macos": "Metal runtime fixture"})
 
 
 class Runner(unittest.TestCase):

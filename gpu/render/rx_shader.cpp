@@ -27,6 +27,7 @@
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/host_translate_info.h"
+#include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/object_pool.h"
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/program_header.h"
@@ -1008,6 +1009,7 @@ struct NvnCode {
     uint32_t local[3]{};
     uint32_t shared = 0, local_memory = 0;   // compute: workgroup shared memory, local memory bytes
     bool ok = false;
+    bool matrix = false;   // (macOS port) it has native matrix multiplies (HMMA, opcode 0x23c): an upscaler network's pass
 };
 
 constexpr uint32_t kNvn2ControlMagic = 0x98761234;
@@ -1044,6 +1046,7 @@ NvnCode read_nvn_code(const nvn_stage_data& sd) {
     for (uint32_t i = 0; hdr + (i + 1) * sizeof(Instruction) <= len; i++) {
         Instruction& insn = native.emplace_back();
         std::memcpy(&insn, area.data() + hdr + i * sizeof(Instruction), sizeof insn);
+        if (insn.Bits(0, 12) == 0x23c) c.matrix = true;
         const auto r = capture.Observe(insn, i);
         if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
             log_limited("nvn_capture", 8, "rx: NVN2 program %016llx: branch outside the program at +%#x",
@@ -1161,6 +1164,7 @@ public:
     void Dump(u64, u64) override {}
 
     std::vector<uint32_t> c2_reads;   // texture handle words the translation read (what its answers depend on)
+    const NvnState& state() const { return s; }
 
 private:
     const NvnState& s;
@@ -1182,6 +1186,25 @@ std::unique_ptr<Translated> nvn_translate(NvnEnvironment& env, bool graphics) {
     host.support_float64 = false;
     host.support_int64 = false;
     host.min_ssbo_alignment = dev.limits.minStorageBufferOffsetAlignment;
+    struct ResetNvn2Table {
+        bool armed = false;
+        ~ResetNvn2Table() {
+            if (!armed) return;
+            Shader::Optimization::g_nvn2_compute_ssbo_base = 0;
+            Shader::Optimization::g_nvn2_compute_ssbo_count = 16;
+            Shader::Optimization::g_nvn2_compute_layout_end = 0;
+        }
+    } reset_nvn2;
+    if (!graphics) {
+        // (as gpu/vk) NVN2 compute's storage buffer table is not at Maxwell's 0x310: without this, global loads
+        // searched an empty table and OoT's culling / exposure writes were lost (white 3D).
+        uint32_t base = 0, count = 0, end = 0;
+        nvn_compute_ssbo_table(env.state(), &base, &count, &end);
+        Shader::Optimization::g_nvn2_compute_ssbo_base = count ? base : 0;
+        Shader::Optimization::g_nvn2_compute_ssbo_count = count ? count : 16;
+        Shader::Optimization::g_nvn2_compute_layout_end = count ? end : 0;
+        reset_nvn2.armed = true;
+    }
     t->program = Shader::Maxwell::TranslateProgram(t->insts, t->blocks, env, cfg, host);
     // RX_WARP_LOG=1: programs using the warp's lane id, shuffles, votes or lane masks (the WGSL backend has no warps)
     static const bool warp_log = env_flag("RX_WARP_LOG");
@@ -1276,6 +1299,7 @@ const NvnCode* nvn_cs_code(const NvnState& s) {
         c = std::make_unique<NvnCode>();
         for (uint32_t i = 0; i < s.prog.nstage && i < 6; i++) {
             NvnCode k = read_nvn_code(s.prog.sd[i]);
+            if (k.stage == 5 && k.matrix) c->matrix = true;   // (kept when it does not lower too: nvn_cs_matrix)
             if (k.ok && k.stage == 5) {
                 *c = std::move(k);
                 break;
@@ -1290,6 +1314,14 @@ const NvnCode* nvn_cs_code(const NvnState& s) {
 uint64_t nvn_cs_key(const NvnState& s) {
     const NvnCode* code = s.has_prog ? nvn_cs_code(s) : nullptr;
     return code ? code->key : 0;
+}
+
+/// (macOS port) whether the bound compute program has native matrix multiplies, translated or not (nvn_upscale_stub)
+bool nvn_cs_matrix(const NvnState& s) {
+    if (!s.has_prog) return false;
+    nvn_cs_code(s);   // (read and kept, failed or not)
+    const auto it = nvn_cs_codes.find(s.prog.serial);
+    return it != nvn_cs_codes.end() && it->second && it->second->matrix;
 }
 
 ShaderModule* nvn_compute_module(const NvnState& s, const std::array<uint8_t, 64>* ssbo_alias,

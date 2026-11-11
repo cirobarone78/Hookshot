@@ -4,11 +4,14 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "third_party" / "a64-kit" / "tools"))
+import toolchain  # noqa: E402
 CASES = ("headless", "headless_zero", "load_failure", "init_failure", "window_failure",
          "visible_success", "thread_failure", "prepare_success", "prepare_no_vulkan",
          "flag_as_romfs", "flag_as_user")
@@ -43,7 +46,18 @@ def main():
     # through window-creation failure. Successful event/render handling is outside
     # this fixture: stop at its first normal window assignment, with a marker.
     loop = function(display, "void hos_display_loop(void)")
-    loop = loop[:loop.index("    vk_window.window = window;")] + "    ++visible_window_started;\n}\n"
+    loop = loop[:loop.index("    vk_window.window = window;")]
+    # The cut can leave any nested preprocessor guard open. Close every active
+    # directive so the extracted fixture remains valid on each host.
+    depth = 0
+    for line in loop.splitlines():
+        directive = line.lstrip()
+        if directive.startswith(("#if ", "#ifdef ", "#ifndef ")):
+            depth += 1
+        elif directive.startswith("#endif"):
+            depth -= 1
+    loop += "#endif\n" * max(0, depth)
+    loop += "    ++visible_window_started;\n}\n"
     app_main = function(host, "int main(int argc, char **argv)").replace("int main(", "int app_main(", 1)
     actual = "\n\n".join([function(display, "int hos_display_init(void)"),
                              function(display, "void hos_display_start(void)"), loop, app_main])
@@ -54,7 +68,7 @@ def main():
         tmp = Path(folder)
         (tmp / "display_startup_actual.inc").write_text(actual + "\n", encoding="utf-8")
         exe = tmp / ("display_start.exe" if os.name == "nt" else "display_start")
-        command = [cxx, "-std=c++20", "-O0", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS",
+        command = [cxx, *toolchain.macos_sysroot_flags(), "-std=c++20", "-O0", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS",
                    "-I" + str(tmp), str(ROOT / "tests/display_startup_failure_test.cpp"), "-o", str(exe)]
         result = subprocess.run(command, cwd=tmp, env=env, capture_output=True, text=True, timeout=60,
                                 creationflags=flags)

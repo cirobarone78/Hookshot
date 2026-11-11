@@ -59,6 +59,7 @@ static void* hos_sdl_window(const char*, int w, int h) {
 static void hos_sdl_wait_event(HosSdlEvent*, int) {
     throw std::runtime_error("unexpected startup event wait");
 }
+[[maybe_unused]] static int hos_sdl_window_focused(void*) { return 1; }
 static HANDLE CreateEventA(void*, int, int, void*) { return &event_token; }
 [[maybe_unused]] static void SetEvent(HANDLE h) {
     require(h == &event_token, "wrong readiness event");

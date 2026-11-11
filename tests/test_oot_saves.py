@@ -16,6 +16,7 @@ from unittest import mock
 RUN_ALL_SKIP = {
     "windows": "the save script's folder discovery is the Linux one"
                " (on Windows Hookshot's saves are in the game folder: --hookshot)",
+    "macos": "the save script's folder discovery is Linux-specific",
 }
 
 ROOT = Path(__file__).resolve().parents[1]

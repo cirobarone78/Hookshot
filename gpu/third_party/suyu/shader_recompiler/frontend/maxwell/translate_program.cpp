@@ -89,13 +89,26 @@ void CollectInterpolationInfo(Environment& env, IR::Program& program) {
     }
 }
 
+void EnsureDriverCbuf(IR::Program& program, u32 used_end) {
+    u32& used{program.info.constant_buffer_used_sizes[0]};
+    used = std::max(used, used_end);
+    program.info.constant_buffer_mask |= 1u;
+    auto& cbufs{program.info.constant_buffer_descriptors};
+    const auto it{std::ranges::find(cbufs, 0U, &ConstantBufferDescriptor::index)};
+    if (it == cbufs.end()) {
+        cbufs.push_back({.index = 0U, .count = 1U});
+    }
+}
+
 void AddNVNStorageBuffers(IR::Program& program) {
     if (!program.info.uses_global_memory) {
         return;
     }
     const u32 driver_cbuf{0};
     const u32 descriptor_size{0x10};
-    const u32 num_buffers{16};
+    const u32 num_buffers{program.stage == Stage::Compute && Optimization::g_nvn2_compute_ssbo_base
+                              ? std::min<u32>(Optimization::g_nvn2_compute_ssbo_count, 16)
+                              : 16};
     const u32 base{[&] {
         switch (program.stage) {
         case Stage::VertexA:
@@ -110,7 +123,7 @@ void AddNVNStorageBuffers(IR::Program& program) {
         case Stage::Fragment:
             return 0x510u;
         case Stage::Compute:
-            return 0x310u;
+            return Optimization::g_nvn2_compute_ssbo_base ? Optimization::g_nvn2_compute_ssbo_base : 0x310u;
         }
         throw InvalidArgument("Invalid stage {}", program.stage);
     }()};
@@ -125,12 +138,18 @@ void AddNVNStorageBuffers(IR::Program& program) {
             it->is_written |= program.info.stores_global_memory;
             continue;
         }
+        if (descs.size() >= Info::MAX_SSBOS) {
+            break;
+        }
         descs.push_back({
             .cbuf_index = driver_cbuf,
             .cbuf_offset = offset,
             .count = 1,
             .is_written = program.info.stores_global_memory,
         });
+    }
+    if (num_buffers) {
+        EnsureDriverCbuf(program, base + descriptor_size * num_buffers);
     }
 }
 

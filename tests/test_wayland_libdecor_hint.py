@@ -45,7 +45,13 @@ static int sdl_ready;
 int main(int argc, char** argv) {
     const std::string mode = argc > 1 ? argv[1] : "";
     version = mode == "sdl3" ? 3 : 2;
-    if (mode == "headless") setenv("HOS_HEADLESS", "1", 1);
+    if (mode == "headless") {
+#ifdef _WIN32
+        _putenv_s("HOS_HEADLESS", "1");
+#else
+        setenv("HOS_HEADLESS", "1", 1);
+#endif
+    }
     const int r = hos_display_init();
     printf("%s: init %d\n", mode.c_str(), r);
     for (const std::string& h : hints) printf("hint %s\n", h.c_str());

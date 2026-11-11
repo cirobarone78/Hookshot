@@ -16,7 +16,7 @@
 #
 #   scripts/release_rc.sh
 set -euo pipefail
-shopt -s inherit_errexit
+shopt -s inherit_errexit 2>/dev/null || true
 FILES=$(dirname "$0")/release_files.sh
 RC=rc
 TITLE="Latest release candidate"

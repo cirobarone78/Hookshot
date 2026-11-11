@@ -118,7 +118,7 @@ class HeaderCacheTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(make_game.subprocess, 'run', side_effect=run))
             stack.enter_context(mock.patch.object(make_game.shutil, 'rmtree', side_effect=rmtree))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
-            make_game.drop_stale_objects(str(self.work))
+            make_game._drop_stale_windows(str(self.work))
 
     def test_relocated_install_with_spaces_keeps_cached_bytes(self):
         first, second = self.install('version one'), self.install('version two')

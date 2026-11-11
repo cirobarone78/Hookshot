@@ -16,6 +16,7 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 RUN_ALL_SKIP = {
     "linux": "needs a Vulkan 1.3 device for offscreen transfer/readback",
     "windows": "needs a Vulkan 1.3 device for offscreen transfer/readback",
+    "macos": "needs a Vulkan 1.3 device for offscreen transfer/readback",
 }
 
 ROOT = Path(__file__).resolve().parents[1]

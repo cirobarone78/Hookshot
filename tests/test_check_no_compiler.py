@@ -20,8 +20,10 @@ def main():
         env["EMSDK"] = d                  # (an emsdk folder that holds none)
         env["HOOKSHOT_MSVC"] = "1"        # (the Visual Studio route: no tools/llvm-mingw either)
         env.pop("HOOKSHOT_MINGW", None)
-        r = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "nx2" / "make_game.py"), "--check", "--nup",
-                            str(ROOT / "no-such-game.nup"), "--work", str(Path(d) / "work")],
+        script = ("import runpy, sys; sys.platform = 'linux'; path = sys.argv.pop(1); "
+                  "sys.argv[0] = path; runpy.run_path(path, run_name='__main__')")
+        r = subprocess.run([sys.executable, "-I", "-B", "-c", script, str(ROOT / "nx2" / "make_game.py"),
+                            "--check", "--nup", str(ROOT / "no-such-game.nup"), "--work", str(Path(d) / "work")],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
     said = [line for line in r.stdout.splitlines() if line.startswith("@@")]
     if not said:

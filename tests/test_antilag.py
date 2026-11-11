@@ -20,7 +20,7 @@ source = (ROOT / "gpu" / "vk" / "vk_antilag.cpp").read_text(encoding="utf-8")
 
 def block(text, marker):
     """From marker to the brace closing its first one"""
-    start = text.index(marker)
+    start = text.rindex(marker)
     end = text.index("{", start) + 1
     depth = 1
     while depth:

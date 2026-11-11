@@ -85,7 +85,9 @@ def main():
         d = gate.enter("d")
         e = gate.enter("e")
         check("with the free memory unknown, compiles do not wait", {d, e} <= set(gate.running))
-        check("with the free memory unknown, the countdown expects the jobs", gate.expected(24) == 24)
+        unknown_expected = gate.floor if build.MACOS else 24
+        check("with the free memory unknown, the countdown stays conservative",
+              gate.expected(24) == unknown_expected)
     finally:
         build.free_mb = real
     print("ok")

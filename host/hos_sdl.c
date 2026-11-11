@@ -15,7 +15,8 @@ static struct {
     /* window */
     void *CreateWindow, *SetWindowPosition, *SetWindowFullscreen, *SetRelativeMouseMode, *GetPrimaryDisplay,
         *GetDesktopDisplayMode, *Vulkan_CreateSurface, *PixelSize, *GetKeyboardState, *GetMouseState, *WaitEventTimeout,
-        *PollEvent, *GetWindowSize, *LoadPNG, *SetWindowIcon, *DestroySurface, *GetWindowDisplay, *GetCurrentDisplayMode;
+        *PollEvent, *GetWindowSize, *LoadPNG, *SetWindowIcon, *DestroySurface, *GetWindowDisplay, *GetCurrentDisplayMode,
+        *Metal_CreateView, *Metal_GetLayer, *GetWindowFlags, *GetKeyboardFocus;
     /* sound */
     void *OpenAudioDevice, *PauseAudioDevice, *OpenAudioDeviceStream, *ResumeAudioStreamDevice, *PutAudioStreamData;
     /* controllers */
@@ -49,11 +50,19 @@ static int get_all(HMODULE m, int three) {
     GET(SetWindowFullscreen, "SDL_SetWindowFullscreen");
     GET2(SetRelativeMouseMode, "SDL_SetWindowRelativeMouseMode", "SDL_SetRelativeMouseMode");
     GET(GetDesktopDisplayMode, "SDL_GetDesktopDisplayMode");
+#ifdef __APPLE__
+    GET(Metal_CreateView, "SDL_Metal_CreateView");
+    GET(Metal_GetLayer, "SDL_Metal_GetLayer");
+    GET2(PixelSize, "SDL_GetWindowSizeInPixels", "SDL_GetWindowSizeInPixels");
+#else
     GET(Vulkan_CreateSurface, "SDL_Vulkan_CreateSurface");
     GET2(PixelSize, "SDL_GetWindowSizeInPixels", "SDL_Vulkan_GetDrawableSize");
+#endif
     GET(GetKeyboardState, "SDL_GetKeyboardState");
     GET(GetMouseState, "SDL_GetMouseState");
     GET(GetWindowSize, "SDL_GetWindowSize");
+    *(FARPROC *)&f.GetWindowFlags = GetProcAddress(m, "SDL_GetWindowFlags");
+    *(FARPROC *)&f.GetKeyboardFocus = GetProcAddress(m, "SDL_GetKeyboardFocus");
     GET(WaitEventTimeout, "SDL_WaitEventTimeout");
     GET(PollEvent, "SDL_PollEvent");
     GET2(PadOpen, "SDL_OpenGamepad", "SDL_GameControllerOpen");
@@ -144,13 +153,21 @@ void hos_sdl_identity(const char *name, const char *app_id) {
 const char *hos_sdl_error(void) { return version ? CALL(const char *(*)(void), GetError)() : "no SDL"; }
 
 /* ---- the window ---- */
-enum { WIN_SHOWN2 = 0x4, WIN_RESIZABLE = 0x20, WIN_HIGH_DENSITY = 0x2000, WIN_VULKAN = 0x10000000, CENTRED = 0x2FFF0000 };
+enum {
+    WIN_SHOWN2 = 0x4, WIN_RESIZABLE = 0x20, WIN_HIGH_DENSITY = 0x2000, WIN_VULKAN = 0x10000000,
+    WIN_METAL = 0x20000000, CENTRED = 0x2FFF0000
+};
 void *hos_sdl_window(const char *title, int width, int height) {
+#ifdef __APPLE__
+    const uint64_t flags = WIN_RESIZABLE | WIN_HIGH_DENSITY | WIN_METAL;
+#else
+    const uint64_t flags = WIN_RESIZABLE | WIN_HIGH_DENSITY | WIN_VULKAN;
+#endif
     if (version == 2)
         return CALL(void *(*)(const char *, int, int, int, int, uint32_t), CreateWindow)(
-            title, CENTRED, CENTRED, width, height, WIN_SHOWN2 | WIN_RESIZABLE | WIN_HIGH_DENSITY | WIN_VULKAN);
+            title, CENTRED, CENTRED, width, height, WIN_SHOWN2 | (uint32_t)flags);
     void *w = CALL(void *(*)(const char *, int, int, uint64_t), CreateWindow)(title, width, height,
-                                                                              WIN_RESIZABLE | WIN_HIGH_DENSITY | WIN_VULKAN);
+                                                                              flags);
     if (w) CALL(_Bool (*)(void *, int, int), SetWindowPosition)(w, CENTRED, CENTRED);
     return w;
 }
@@ -201,6 +218,10 @@ void hos_sdl_pixel_size(void *window, int *width, int *height) {
     if (version == 3) CALL(_Bool (*)(void *, int *, int *), PixelSize)(window, width, height);
     else CALL(void (*)(void *, int *, int *), PixelSize)(window, width, height);
 }
+#ifdef __APPLE__
+void *hos_sdl_metal_create_view(void *window) { return CALL(void *(*)(void *), Metal_CreateView)(window); }
+void *hos_sdl_metal_get_layer(void *view) { return CALL(void *(*)(void *), Metal_GetLayer)(view); }
+#endif
 const uint8_t *hos_sdl_keys(int *count) {   /* (SDL3's bool and SDL2's Uint8: a byte each) */
     return CALL(const uint8_t *(*)(int *), GetKeyboardState)(count);
 }
@@ -226,6 +247,13 @@ void hos_sdl_mouse_position(float *x, float *y) {
 void hos_sdl_window_size(void *window, int *width, int *height) {
     if (version == 3) CALL(_Bool (*)(void *, int *, int *), GetWindowSize)(window, width, height);
     else CALL(void (*)(void *, int *, int *), GetWindowSize)(window, width, height);
+}
+int hos_sdl_window_focused(void *window) {
+    if (!window) return 0;
+    if (f.GetKeyboardFocus && CALL(void *(*)(void), GetKeyboardFocus)() == window) return 1;
+    /* SDL2/SDL3: SDL_WINDOW_INPUT_FOCUS is 0x200 */
+    if (f.GetWindowFlags && (CALL(uint32_t (*)(void *), GetWindowFlags)(window) & 0x200u)) return 1;
+    return 0;
 }
 
 /* ---- events ---- */

@@ -8,7 +8,8 @@ import subprocess
 import tempfile
 
 RUN_ALL_ARGS = ["--dotnet", "{dotnet}"]
-RUN_ALL_SKIP = {"linux": "WPF layout and hit testing require Windows; exercised by the Windows source checks"}
+RUN_ALL_SKIP = {"linux": "WPF layout and hit testing require Windows; exercised by the Windows source checks",
+                "macos": "WPF layout and hit testing require Windows; exercised by the Windows source checks"}
 
 ROOT = Path(__file__).resolve().parents[1]
 

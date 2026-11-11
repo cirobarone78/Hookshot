@@ -11,6 +11,9 @@
    the game gets none of it; the capture it had comes back when the menu closes. */
 #include "../hos.h"
 #include "../hos_sdl.h"
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 
 /* (the window's app id: the applications menu's entry names it as its StartupWMClass, builder/linux/hookshot_builder.py) */
 #define HOS_APP_ID "io.github.NotRexed.Hookshot"
@@ -53,6 +56,9 @@ static int ptr_in;
 static uint32_t ptr_held;
 static int menu_open;   /* window-thread only */
 static void *window;
+#ifdef __APPLE__
+static void *metal_view, *metal_layer;
+#endif
 int hos_mouse_pointer(MkwVkPointer *out) { return hos_pointer_take(&pointer, out); }
 
 /* SDL's window/mouse queries belong on the main thread, never on the renderer's pointer callback. */
@@ -115,6 +121,7 @@ static volatile int renderer;   /* the renderer presents into the window */
 static HANDLE renderer_up;   /* (set once rx_start has returned, ready or not: hos_renderer_wait) */
 static int fullscreen;
 
+#ifndef __APPLE__
 static int create_surface(void *w, void *instance, void *surface) { return hos_sdl_vulkan_surface(w, instance, surface); }
 static void drawable_size(void *w, int *width, int *height) {
     (void)w;
@@ -124,6 +131,15 @@ static void drawable_size(void *w, int *width, int *height) {
 static volatile int refresh_now;
 static int refresh_mhz(void *w) { (void)w; return __atomic_load_n(&refresh_now, __ATOMIC_RELAXED); }
 static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_size, NULL, refresh_mhz};
+#endif
+static void window_pixel_size(void *w, int *width, int *height) {
+    hos_pointer_size(&pointer, width, height);
+}
+#ifdef __APPLE__
+void hos_posix_window_pixel_size(int *width, int *height) {
+    window_pixel_size(window, width, height);
+}
+#endif
 
 /* Esc let the captured mouse go just before it opened the Insert menu (Menu shortcut "Insert, F1 or Esc"):
    the capture that comes back when the menu closes. Spent by the next capture or menu */
@@ -145,8 +161,12 @@ static void set_fullscreen(int on) {
 }
 
 static DWORD WINAPI renderer_main(void *p) {
+#ifdef __APPLE__
+    const int ok = p ? rx_start(p) : 0;
+#else
     (void)p;
     const int ok = rx_start(&vk_window);
+#endif
     if (!ok) hos_log("display: the renderer did not start: the window stays black");
     renderer = ok;
     if (ok) {   /* (a size change while it started) */
@@ -219,8 +239,12 @@ int hos_display_init(void) {
        Under gamescope (XDG_CURRENT_DESKTOP names it: Steam Deck game mode) SDL keeps its own order.) */
     const char* desktop = getenv("XDG_CURRENT_DESKTOP");
     const int gamescope = desktop && strstr(desktop, "gamescope");
+#ifndef __APPLE__
     if (!getenv("SDL_VIDEODRIVER") && !getenv("SDL_VIDEO_DRIVER") && !gamescope)
         hos_sdl_hint(hos_sdl_load() == 3 ? "SDL_VIDEO_DRIVER" : "SDL_VIDEODRIVER", "wayland,x11");
+#else
+    (void)gamescope;
+#endif
     /* (SDL2 on Wayland: libdecor from the start. SDL2 2.32 asks for the compositor's decorations before the window's first
        configure, and a compositor that answers "the client draws them" (COSMIC) has it unmap and map the window again
        with libdecor inside that wait, which then waits forever on a field the switch cleared: no window, no renderer
@@ -269,7 +293,9 @@ void hos_display_loop(void) {
         hos_log_flush();
         ExitProcess(1);
     }
+#ifndef __APPLE__
     vk_window.window = window;
+#endif
     hos_posix_window[0] = 1;
     {   /* the window's icon: hookshot.png beside the game (make_game.py puts it there), for X11 and the compositors that
            take one from the window; the others find it through the menu entry */
@@ -280,16 +306,25 @@ void hos_display_loop(void) {
         hos_sdl_icon(window, png);
     }
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
-    __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
     pointer_update(0, 0);
+#ifdef __APPLE__
+    metal_view = hos_sdl_metal_create_view(window);
+    metal_layer = metal_view ? hos_sdl_metal_get_layer(metal_view) : NULL;
+    if (!metal_layer) hos_log("display: SDL_Metal_CreateView did not provide a Metal layer");
+    CloseHandle(CreateThread(NULL, 0, renderer_main, metal_layer, 0, NULL));
+#else
+    __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));
     DWORD refresh_asked = GetTickCount();
+#endif
     for (;;) {
         hos_sdl_pads_pump();
+#ifndef __APPLE__
         if (GetTickCount() - refresh_asked >= 1000) {   /* (the window may have moved to another display) */
             refresh_asked = GetTickCount();
             __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
         }
+#endif
         if (hos_sdl_wait_event(&e, 4)) {
             do {
                 switch (e.type) {
@@ -309,6 +344,9 @@ void hos_display_loop(void) {
                     hos_posix_window[0] = 1;
                     break;
                 case HOS_SDL_EV_FOCUS_LOST:
+                    /* macOS can emit focus-lost while the window still owns keyboard focus (Metal view /
+                       occlusion churn). Drop the event when SDL still reports us focused. */
+                    if (hos_sdl_window_focused(window)) break;
                     hos_posix_window[0] = 0;
                     esc_had_capture = 0;
                     mouse_capture(0);
@@ -323,9 +361,11 @@ void hos_display_loop(void) {
                     break;
                 case HOS_SDL_EV_MOUSE_ENTER:
                     ptr_in = 1;
+                    if (hos_sdl_window_focused(window)) hos_posix_window[0] = 1;
                     break;
                 case HOS_SDL_EV_KEY_DOWN: {
                     const int scancode = e.scancode, mod = e.mod;
+                    hos_posix_window[0] = 1;   /* a key delivered here means the window is in front */
                     if (e.scancode == 41) {   /* Esc (it may open the Insert menu too: the capture comes back) */
                         if (!menu_open && mouse_captured) esc_had_capture = 1;
                         mouse_capture(0);
@@ -335,6 +375,7 @@ void hos_display_loop(void) {
                 }
                 case HOS_SDL_EV_MOUSE_DOWN:
                     ptr_in = 1;
+                    hos_posix_window[0] = 1;   /* a click in the window recovers from a spurious focus loss */
                     ptr_held |= sdl_button_bit(e.button);
                     if (menu_open) pointer_publish_at(e.x, e.y, sdl_button_bit(e.button), 0);   /* (the menu's click) */
                     else if (renderer && !mouse_captured) mouse_capture(1);
@@ -374,6 +415,10 @@ void hos_display_loop(void) {
             hos_window_closed_exit();
         }
         pointer_update(0, 0);
+#ifdef __APPLE__
+        /* Metal/occlusion churn can clear focus while SDL still reports the window focused. */
+        if (!hos_posix_window[0] && hos_sdl_window_focused(window)) hos_posix_window[0] = 1;
+#endif
         keys_update();
     }
 }

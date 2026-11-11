@@ -20,8 +20,9 @@ import sys
 import tempfile
 import unittest
 
-# (Linux only: bash and jq)
-RUN_ALL_SKIP = {"windows": "the release scripts are bash, run by Linux runners; exercised on Linux"}
+# (Linux only: bash 4+ with inherit_errexit, and jq)
+RUN_ALL_SKIP = {"windows": "the release scripts are bash, run by Linux runners; exercised on Linux",
+                "macos": "the release scripts need bash 4+ (inherit_errexit); exercised on Linux"}
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = "owner/repo"

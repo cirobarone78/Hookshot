@@ -20,7 +20,7 @@
 #
 #   scripts/release_upload.sh <tag> <file> ...
 set -euo pipefail
-shopt -s inherit_errexit
+shopt -s inherit_errexit 2>/dev/null || true
 files=$(dirname "$0")/release_files.sh
 tag=$1
 shift

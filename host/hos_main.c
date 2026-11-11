@@ -31,11 +31,11 @@ const char *hos_version(void) { return HOOKSHOT_VERSION; }   /* (discord_rpc.c's
 #ifdef __linux__
 #include <sys/prctl.h>
 #include <sys/sysinfo.h>
+#include <sys/syscall.h>
 #endif
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/syscall.h>
 #endif
 /* (linux) the separator of the paths the executable's folder is joined with */
 #ifdef _WIN32
@@ -143,10 +143,11 @@ static int reserve_guest(void) {
     hos_commit_init();
     return VirtualAlloc((void *)A64_HOST_BASE, GUEST_SPACE, MEM_RESERVE | watch, PAGE_NOACCESS) == (void *)A64_HOST_BASE;
 #else
-    /* (linux) the whole window readable and writable at once, its pages made as they are first touched (no commit
+    /* (POSIX) the whole window readable and writable at once, its pages made as they are first touched (no commit
        step: MAP_NORESERVE). Decommitting is madvise (host/posix/win32_posix.c VirtualFree): the pages read as zero. */
     void hos_commit_init(void);
     hos_commit_init();   /* (the crash report) */
+#ifdef __linux__
     /* The window is a memfd's, shared, so the Vulkan back end can hand the GPU the game's own pages as a dma-buf
        (udmabuf, gpu/vk/vk_memory.cpp import_dma_buf) instead of a host pointer: amdgpu checks every page of a host-pointer
        import again at each command submission, 15-45 ms a submission in Kokiri Forest. Pages of a shared mapping are freed
@@ -204,14 +205,23 @@ static int reserve_guest(void) {
             hos_log("mem: no memfd for the guest window (errno %d): anonymous memory", errno);
         }
     }
-    if (mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
-             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) != (void *)A64_HOST_BASE)
+#endif
+    void *guest = mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
+#ifdef __linux__
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE,
+#else
+                       MAP_PRIVATE | MAP_ANONYMOUS,
+#endif
+                       -1, 0);
+    if (guest != (void *)A64_HOST_BASE) {
+        if (guest != MAP_FAILED) munmap(guest, GUEST_SPACE);
         return 0;
+    }
     /* (issue 312) no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
        collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
        next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
-    if (!getenv("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
 #ifdef __linux__
+    if (!getenv("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
     /* (HOS_NO_THP=1, experiment: none outside the window either. With THP "always" 400-450 MB of the host heap's and the binary's bss are huge
        pages, each resident whole when any of its 2 MB is touched) */
     if (getenv("HOS_NO_THP")) prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
@@ -226,7 +236,12 @@ static int reserve_guest(void) {
 int hos_guest_memfd = -1;
 int hos_posix_guest_memfd(void) { return hos_guest_memfd; }
 int hos_posix_guest_discard(void *p, size_t n) {
+#ifdef __linux__
     return madvise(p, n, hos_guest_memfd >= 0 ? MADV_REMOVE : MADV_DONTNEED);
+#else
+    memset(p, 0, n);
+    return madvise(p, n, MADV_DONTNEED);
+#endif
 }
 #endif
 

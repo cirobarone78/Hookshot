@@ -256,17 +256,105 @@ The other rows are 0 Off and 1 On. Some are read at the start, before the menu e
 `handheld_profile` and `output_res` (`host/nn_applet.c`), `ultrawide` (`host/hos_main.c`), `robust_buffers`
 (`gpu/vk/vk_main.cpp`) and the controls (`host/nn_hid.c`).
 
+## macOS (Apple Silicon)
+
+The builder and generated game target native Apple Silicon (`arm64`), without Rosetta. The game uses SDL2 for input
+and the WebGPU renderer through `wgpu-native`'s Metal backend; Vulkan is not built on macOS. The minimum supported OS
+is macOS 13.3. Intel Macs and Rosetta processes are not supported by these scripts.
+
+### Build and package the Builder from a clone
+
+Use an Apple Silicon Mac running macOS 13.3 or newer. If Xcode Command Line Tools are not installed, install them;
+then install Homebrew's dependency builders:
+
+```sh
+xcode-select --install
+brew install cmake nasm meson ninja
+git submodule update --init --recursive
+```
+
+From the repository root, build the pinned arm64 Python, SDL2, FFmpeg/dav1d, and Metal-enabled `wgpu-native`
+dependencies, then assemble and sign the Builder package:
+
+```sh
+bash scripts/macos/deps.sh
+bash scripts/macos/package-builder.sh
+```
+
+The default dependency directory is `build-macos/deps`; `DEPS=/path/to/deps` overrides it. Packages are written to
+`build-macos/`; set `OUT=/path/to/output` to change that directory. The scripts download pinned upstream releases,
+so the first run needs network access and several gigabytes of free disk space. Later runs reuse completed downloads
+and builds. `package-builder.sh` verifies arm64 slices, signs the finished app ad hoc, verifies that signature, and
+creates:
+
+- `build-macos/HookshotBuilder-macos-arm64.zip` — the Builder folder with the app, command-line launcher, source,
+  runtime, libraries, and license notices.
+- `build-macos/HookshotBuilder-macos-arm64.app.zip` — the standalone `HookshotBuilder.app`.
+
+These are not notarized release packages. To try the CI package, open the
+[macOS platform workflow](https://github.com/NotRexed/Hookshot/actions/workflows/macos-platform.yml), select a
+successful run, and download its `HookshotBuilder-macos-arm64` artifact. Pull-request artifacts are test builds, not
+published stable releases, and expire after the normal GitHub Actions retention period.
+
+### Build a game directly from the clone
+
+The dependency script's bundled Python has the pinned packages expected by the build. Set the native dependency
+paths and run `make_game.py` with a legally obtained game dump:
+
+```sh
+export WGPU_NATIVE="$PWD/build-macos/deps/wgpu-native"
+export HOOKSHOT_SDL2="$PWD/build-macos/deps/sdl2/lib/libSDL2-2.0.0.dylib"
+export HOOKSHOT_FFMPEG="$PWD/build-macos/deps/ffmpeg"
+export RX_BACKEND=metal
+build-macos/deps/python/bin/python3 -I nx2/make_game.py \
+  --nup "/path/to/your-game.nup" \
+  --out "$HOME/Games/Hookshot" \
+  --jobs 4 --language en-US
+```
+
+For an already extracted dump, replace `--nup` with `--romfs /path/to/romfs --exefs /path/to/exefs`. Use `--check`
+to verify the dump without building, `--log /path/to/build.log` to save output, and omit `--jobs` to use the
+memory-aware default. The build places the native `hookshot`, SDL2 dylib, and `wgpu-native` dylib beside the game's
+data. FFmpeg is linked statically; the packaged FFmpeg includes dav1d for the game's AV1 movies. Launch the result
+from its output folder with `./hookshot`. The game dump is not included in the repository or Builder package.
+
+### Use the Builder
+
+For the packaged folder, unzip it and open `HookshotBuilder/HookshotBuilder.app`. For the standalone app archive,
+unzip it and open `HookshotBuilder.app`. On first use, choose the `.nup` dump and an output folder in the Builder
+window, then start the build. The command-line equivalent is:
+
+```sh
+./HookshotBuilder/HookshotBuilder.command --check --nup "/path/to/your-game.nup"
+./HookshotBuilder/HookshotBuilder.command --nup "/path/to/your-game.nup" \
+  --out "$HOME/Games/Hookshot" --jobs 4 --language en-US
+```
+
+Run `./HookshotBuilder/HookshotBuilder.command --help` for all options. `--romfs` and `--exefs` can be used instead
+of `--nup`. Keep the Builder in a folder writable by your account if you want its in-app updater to replace it. The
+updater checks the latest stable GitHub release; a pull-request artifact is not itself a release and may update to
+the last published version.
+
+The `macOS platform` workflow checks the POSIX build, Builder dependencies, package architecture, signature, and
+startup command. It does not build or run a game. For actual game testing, report the Mac model/chip, macOS version,
+build command, and log; include an Xcode Metal GPU frame capture for rendering defects if possible. Port progress,
+contributor thanks, and related PRs: [macos-port-status.md](macos-port-status.md). Hardware re-test is still wanted
+for 3D exposure/brightness after the writeback and Occluded/focus fixes. For lower-level development,
+`nx2/lift.py --standalone --write` followed by `nx2/build.py --standalone --jobs 4` writes the executable and
+libraries under `work/sa/build/`.
+
 ## Layout
 
 | Path | What |
 |---|---|
 | `docs/design.md` | why mkw-recomp's pipeline, the architecture, MKW's lessons as rules, stages, testing |
+| `docs/macos-port-status.md` | Apple Silicon port progress, contributor thanks, and related PRs (#1872) |
 | `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths), and `make_game.py`, which the builders run |
-| `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has the Win32 calls on Linux |
+| `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has the Win32 calls on Linux and macOS |
 | `gpu/vk/` | the Vulkan back end (`hookshot_vk.dll`, `hookshot_vk.so`), with Eden's shader recompiler and sirit |
 | `gpu/render/`, `gpu/third_party/` | the WebGPU renderer the Windows exe falls back to when it was built with wgpu-native, its op stream (`rx_nvn.h`), suyu's decoders |
 | `builder/` | Hookshot Builder: the Windows app (.NET 8 WPF), its setup and MSI, and the Linux builder and launcher scripts |
-| `scripts/` | test runs, the profile and log readers, the save copier (`oot_saves.py`), release tooling, `scripts/linux` (dependencies, AppImage) |
+| `scripts/` | test runs, the profile and log readers, the save copier (`oot_saves.py`), release tooling, and platform build/package scripts under `scripts/linux` and `scripts/macos` |
 | `tests/` | the game-free checks, all run by `tests/run_all.py` |
 | `third_party/` | a64-kit (Hookshot's few changes marked `(hookshot)`), libopus, zbic (Atmosphere's zstd with ZBIC, for unpacking only), SDL2's licence, Dear ImGui and its Vulkan backend, zstd's decoder, the Libertinus fonts |
 

@@ -19,6 +19,13 @@
    setting. Short paths are as they were. */
 #define HOS_FS_PATH 1024
 #ifdef _WIN32
+#define FS_SEP '\\'
+#define FS_SEP_S "\\"
+#else
+#define FS_SEP '/'
+#define FS_SEP_S "/"
+#endif
+#ifdef _WIN32
 static const wchar_t *fs_wide(const char *p, wchar_t *w, size_t cap) {
     const size_t n = strlen(p);
     const int already = p[0] == '\\' && p[1] == '\\' && p[2] == '?';
@@ -171,14 +178,18 @@ static int host_path(const char *guest_mem, char *out, size_t cap, int *writable
             while (*rest == '/') rest++;
             if (!guest_path_ok(rest)) break;
             if (mounts[i].writable || !hos_mods_romfs(rest, out, cap))
-                if ((size_t)snprintf(out, cap, "%s/%s", mounts[i].root, rest) >= cap) break;   /* (cut short: not this path) */
+                if ((size_t)snprintf(out, cap, "%s" FS_SEP_S "%s", mounts[i].root, rest) >= cap) break;   /* (cut short: not this path) */
             if (writable) *writable = mounts[i].writable;
             ok = 1;
             break;
         }
     }
     ReleaseSRWLockShared(&mount_lock);
+#ifdef _WIN32
     for (char *p = out; ok && *p; p++) if (*p == '/') *p = '\\';
+#else
+    for (char *p = out; ok && *p; p++) if (*p == '\\') *p = '/';
+#endif
     return ok;
 }
 
@@ -198,7 +209,12 @@ static void make_dirs(const char *path) {   /* every parent of path */
     char tmp[HOS_FS_PATH];
     snprintf(tmp, sizeof tmp, "%s", path);
     for (char *p = tmp + 3; *p; p++)
-        if (*p == '\\') { *p = 0; CreateDirectoryA(tmp, NULL); *p = '\\'; }
+        if (*p == '\\' || *p == '/') {
+            const char sep = *p;
+            *p = 0;
+            CreateDirectoryA(tmp, NULL);
+            *p = sep;
+        }
 }
 
 /* ---- handles: a FileHandle / DirectoryHandle is one pointer-sized value; ours are table indices + 1 ----------- */
@@ -244,7 +260,7 @@ HLE(_ZN2nn2fs8MountRomEPKc) {
 
 static int user_mount(const char *name, const char *sub) {
     char root[HOS_FS_PATH];
-    snprintf(root, sizeof root, "%s\\%s", hos_user_dir, sub);
+    snprintf(root, sizeof root, "%s" FS_SEP_S "%s", hos_user_dir, sub);
     make_dirs(root);
     CreateDirectoryA(root, NULL);
     return mount(name, root, 1);
@@ -253,33 +269,35 @@ static int user_mount(const char *name, const char *sub) {
 /* nn::fs::IsSaveDataExisting(ApplicationId, account::Uid const&) -> bool */
 HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
     char root[HOS_FS_PATH];
-    snprintf(root, sizeof root, "%s\\save\\%016llx%016llx", hos_user_dir, (unsigned long long)G64(ARG(1) + 8),
-             (unsigned long long)G64(ARG(1)));
+    snprintf(root, sizeof root, "%s" FS_SEP_S "save" FS_SEP_S "%016llx%016llx", hos_user_dir,
+             (unsigned long long)G64(ARG(1) + 8), (unsigned long long)G64(ARG(1)));
     RET(GetFileAttributesA(root) != INVALID_FILE_ATTRIBUTES);
 }
 /* MountSaveData(char const*, account::Uid const&) */
 HLE(_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE) {
     char sub[64];
-    snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)G64(ARG(1) + 8), (unsigned long long)G64(ARG(1)));
+    snprintf(sub, sizeof sub, "save" FS_SEP_S "%016llx%016llx", (unsigned long long)G64(ARG(1) + 8),
+             (unsigned long long)G64(ARG(1)));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 /* MountSaveDataReadOnly(char const*, ApplicationId, account::Uid const&) */
 HLE(_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE) {
     char sub[64];
-    snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)G64(ARG(2) + 8), (unsigned long long)G64(ARG(2)));
+    snprintf(sub, sizeof sub, "save" FS_SEP_S "%016llx%016llx", (unsigned long long)G64(ARG(2) + 8),
+             (unsigned long long)G64(ARG(2)));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 HLE(_ZN2nn2fs21MountTemporaryStorageEPKc) { RET(user_mount(gstr(ARG(0)), "temp") ? 0 : R_NOT_MOUNTED); }
 /* MountCacheStorage(char const*, int index) */
 HLE(_ZN2nn2fs17MountCacheStorageEPKci) {
     char sub[32];
-    snprintf(sub, sizeof sub, "cache\\%d", (int)ARG(1));
+    snprintf(sub, sizeof sub, "cache" FS_SEP_S "%d", (int)ARG(1));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 /* CreateCacheStorage(int index, long size, long journal) */
 HLE(_ZN2nn2fs18CreateCacheStorageEill) {
     char root[HOS_FS_PATH];
-    snprintf(root, sizeof root, "%s\\cache\\%d\\", hos_user_dir, (int)ARG(0));
+    snprintf(root, sizeof root, "%s" FS_SEP_S "cache" FS_SEP_S "%d" FS_SEP_S, hos_user_dir, (int)ARG(0));
     make_dirs(root);
     RET(0);
 }
@@ -291,7 +309,7 @@ HLE(_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorage
     int n = 0, max = (int)ARG(3);
     for (; cache_list_pos < 16 && n < max; cache_list_pos++) {
         char root[HOS_FS_PATH];
-        snprintf(root, sizeof root, "%s\\cache\\%d", hos_user_dir, cache_list_pos);
+        snprintf(root, sizeof root, "%s" FS_SEP_S "cache" FS_SEP_S "%d", hos_user_dir, cache_list_pos);
         if (GetFileAttributesA(root) != INVALID_FILE_ATTRIBUTES) {
             memset(GP(ARG(1) + 0x20 * n), 0, 0x20);
             G32(ARG(1) + 0x20 * n) = (uint32_t)cache_list_pos;
@@ -491,6 +509,7 @@ HLE(_ZN2nn2fs15CreateDirectoryEPKc) {
 static void delete_tree(const char *dir) {
     char pat[HOS_FS_PATH];
     WIN32_FIND_DATAA fd;
+    /* (\\: CreateDirectoryA/FindFirstFileA on POSIX turn them into /; tests extract this as-is) */
     snprintf(pat, sizeof pat, "%s\\*", dir);
     HANDLE f = FindFirstFileA(pat, &fd);
     if (f != INVALID_HANDLE_VALUE) {

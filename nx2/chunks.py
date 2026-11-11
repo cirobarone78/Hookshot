@@ -20,6 +20,8 @@ import glob
 import multiprocessing
 import os
 import re
+import subprocess
+import sys
 import whole_write   # (rewrites written beside and moved over: issue 1197)
 
 import a64_lift
@@ -104,14 +106,23 @@ def _emit_run(es):
 
 
 def _available_gb():
-    """MemAvailable from /proc/meminfo in GB (None where there is none)"""
+    """Memory available to lift workers in GB (None where the host cannot report it)."""
     try:
         with open("/proc/meminfo", encoding="ascii") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
                     return int(line.split()[1]) / (1024 * 1024)
     except (OSError, ValueError, IndexError):
-        pass
+        if sys.platform == "darwin":
+            try:
+                result = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5, check=True)
+                page_size = re.search(r"page size of (\d+) bytes", result.stdout)
+                pages = sum(int(value.replace(".", "")) for _, value in
+                            re.findall(r"^Pages (free|inactive|speculative|purgeable):\s+([\d.]+)", result.stdout, re.M))
+                if page_size and pages:
+                    return pages * int(page_size.group(1)) / (1024 ** 3)
+            except (OSError, subprocess.SubprocessError, ValueError):
+                pass
     return None
 
 
@@ -132,6 +143,8 @@ def emit_jobs():
     gb = _available_gb()
     if gb is not None:
         n = max(1, min(n, int(gb // 2)))
+    elif sys.platform == "darwin":
+        n = 1   # Unknown memory must not turn an Apple Silicon build into one worker per CPU thread.
     return n
 
 

@@ -252,19 +252,31 @@ def cxx():
     want = os.environ.get("BAKE_CXX")
     if want:
         return want
+    unsupported = None
     for name in ("clang++", "g++", "c++"):
         found = shutil.which(name)
         if found:
-            return found
+            try:
+                cxx_std(found)
+                return found
+            except SystemExit as error:
+                unsupported = error
+    if unsupported is not None:
+        raise unsupported
     raise SystemExit("no C++ compiler: set BAKE_CXX (the bake builds gpu/shaderbatch.cpp)")
 
 
 def cxx_std(compiler):
     """-std=c++23 where the compiler has it, else -std=c++2b (gpu/vk/compat/common/assert.h needs the static-in-
     constexpr rule of C++23, and the recompiler is written against it)."""
-    cached = os.path.join(work_dir(), "cxx_std")
+    identity = compiler_identity(compiler)
+    cache_key = hashlib.sha256("\0".join(identity).encode()).hexdigest()[:16]
+    cached = os.path.join(work_dir(), "cxx_std-" + cache_key)
     if os.path.isfile(cached):
-        return open(cached).read().strip()
+        with open(cached, encoding="ascii") as f:
+            value = f.read().strip()
+        if value in ("-std=c++23", "-std=c++2b"):
+            return value
     for std in ("-std=c++23", "-std=c++2b"):
         # Match assert.h: a static on the non-constant failure path, while a
         # successful call remains a valid constant expression (also on Clang 18).
@@ -277,6 +289,18 @@ def cxx_std(compiler):
                 f.write(std)
             return std
     raise SystemExit("%s: no C++23 mode: the recompiler needs one (BAKE_CXX to point at a newer compiler)" % compiler)
+
+
+def compiler_identity(compiler):
+    """Distinguish object caches made by different compiler binaries or versions."""
+    path = shutil.which(compiler) or compiler
+    try:
+        result = subprocess.run([compiler, "--version"], capture_output=True, text=True)
+        output = result.stdout or result.stderr
+    except OSError:
+        output = ""
+    version = output.splitlines()[0] if output.splitlines() else ""
+    return os.path.realpath(path), version
 
 
 def work_dir(out=None):
@@ -317,10 +341,13 @@ def build_tool(out_dir, jobs=0):
              "-I" + os.path.join(vk, "compat"), "-I" + os.path.join(ROOT, "gpu", "compat"), "-I" + inc]
     objs_dir = os.path.join(out_dir, "obj")
     exe = os.path.join(out_dir, "shaderbatch")
-    stamp = "\x00".join(flags)
+    stamp = "\x00".join([*compiler_identity(compiler), *flags])
     stamp_path = os.path.join(out_dir, "obj.flags")
-    if os.path.isfile(stamp_path) and open(stamp_path).read() != stamp:   # (flags changed: everything rebuilds)
-        shutil.rmtree(objs_dir, ignore_errors=True)
+    if os.path.isfile(stamp_path):
+        with open(stamp_path, encoding="utf-8") as f:
+            previous_stamp = f.read()
+        if previous_stamp != stamp:   # (compiler or flags changed: everything rebuilds)
+            shutil.rmtree(objs_dir, ignore_errors=True)
     os.makedirs(objs_dir, exist_ok=True)
     if not os.path.isfile(stamp_path):
         with open(stamp_path, "w") as f:

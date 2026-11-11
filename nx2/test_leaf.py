@@ -60,6 +60,7 @@ from unicorn import arm64_const as A
 RUN_ALL_SKIP = {
     "linux": "needs the game's modules (work/dump) and Unicorn",
     "windows": "needs the game's modules (work/dump) and Unicorn",
+    "macos": "needs the game's modules (work/dump) and Unicorn",
 }
 
 insn.install()

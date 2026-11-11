@@ -6,7 +6,8 @@ import subprocess
 import tempfile
 from types import SimpleNamespace
 
-RUN_ALL_SKIP = {"windows": "uses the Linux Builder's /bin/sh launch path"}
+RUN_ALL_SKIP = {"windows": "uses the Linux Builder's /bin/sh launch path",
+                "macos": "uses the Linux Builder's /bin/sh launch path"}
 
 BUILDER = Path(__file__).resolve().parents[1] / "builder/linux"
 

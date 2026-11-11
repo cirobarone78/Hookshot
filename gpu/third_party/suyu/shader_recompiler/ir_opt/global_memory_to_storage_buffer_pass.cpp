@@ -379,6 +379,15 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) 
         .offset_end = 0x700,
         .alignment = 16,
     };
+    // (macOS / WebGPU, as gpu/vk) NVN2 compute: its own storage buffer slots are the bias, not Maxwell's
+    // 0x100..0x700, which never matched OoT's culling passes (their table sits near 0x40 after push constants).
+    const Bias compute_bias{
+        .index = 0,
+        .offset_begin = g_nvn2_compute_ssbo_base,
+        .offset_end = g_nvn2_compute_ssbo_base + 16 * g_nvn2_compute_ssbo_count,
+        .alignment = 16,
+    };
+    const Bias* const bias{g_nvn2_compute_ssbo_base ? &compute_bias : &nvn_bias};
     // Track the low address of the instruction
     const std::optional<LowAddrInfo> low_addr_info{TrackLowAddress(&inst)};
     if (!low_addr_info) {
@@ -387,7 +396,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) 
     }
     // First try to find storage buffers in the NVN address
     const IR::U32 low_addr{low_addr_info->value};
-    std::optional<StorageBufferAddr> storage_buffer{Track(low_addr, &nvn_bias)};
+    std::optional<StorageBufferAddr> storage_buffer{Track(low_addr, bias)};
     if (!storage_buffer) {
         // If it fails, track without a bias
         storage_buffer = Track(low_addr, nullptr);

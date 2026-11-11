@@ -140,6 +140,7 @@ class CppPreflightTests(unittest.TestCase):
                 # (the Visual Studio route on any host: on Linux check_windows_sdk asks for the system's clang, and
                 # with llvm-mingw beside the builder it takes that one; this case is about Visual Studio's library)
                 stack.enter_context(mock.patch.object(make_game, "LINUX", False))
+                stack.enter_context(mock.patch.object(make_game, "MACOS", False))
                 stack.enter_context(mock.patch.object(make_game, "bundled_mingw", return_value=""))
                 stack.enter_context(mock.patch("ctypes.WinDLL", create=True))
                 argv = ["make_game.py", "--nup", str(self.root / "missing-input.nup"),

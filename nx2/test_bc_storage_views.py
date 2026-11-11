@@ -10,7 +10,8 @@ import subprocess,tempfile
 
 RUN_ALL_ARGS = ["--headers", "{vulkan_headers}"]
 # (a GPU)
-RUN_ALL_SKIP = {"linux": "needs a Windows Vulkan device", "windows": "needs a Windows Vulkan device"}
+RUN_ALL_SKIP = {"linux": "needs a Windows Vulkan device", "windows": "needs a Windows Vulkan device",
+                "macos": "needs a Windows Vulkan device"}
 
 ROOT=Path(__file__).resolve().parents[1]
 def block(text,marker):

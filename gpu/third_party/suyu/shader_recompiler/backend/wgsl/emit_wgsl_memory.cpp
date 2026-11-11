@@ -41,27 +41,16 @@ void EmitLoadGlobalS16(EmitContext&) {
 }
 
 void EmitLoadGlobal32(EmitContext& ctx, IR::Inst& inst, std::string_view address) {
-    if (ctx.profile.support_int64) {
-        return ctx.AddU32("{}=LoadGlobal32({});", inst, address);
-    }
-    LOG_WARNING(Shader_WGSL, "Int64 not supported, ignoring memory operation");
-    ctx.AddU32("{}=0u;", inst);
+    // Addresses are vec2<u32> after LowerInt64ToInt32; LoadGlobal* helpers search bound SSBOs.
+    ctx.AddU32("{}=LoadGlobal32({});", inst, address);
 }
 
 void EmitLoadGlobal64(EmitContext& ctx, IR::Inst& inst, std::string_view address) {
-    if (ctx.profile.support_int64) {
-        return ctx.AddU32x2("{}=LoadGlobal64({});", inst, address);
-    }
-    LOG_WARNING(Shader_WGSL, "Int64 not supported, ignoring memory operation");
-    ctx.AddU32x2("{}=vec2<u32>(0);", inst);
+    ctx.AddU32x2("{}=LoadGlobal64({});", inst, address);
 }
 
 void EmitLoadGlobal128(EmitContext& ctx, IR::Inst& inst, std::string_view address) {
-    if (ctx.profile.support_int64) {
-        return ctx.AddU32x4("{}=LoadGlobal128({});", inst, address);
-    }
-    LOG_WARNING(Shader_WGSL, "Int64 not supported, ignoring memory operation");
-    ctx.AddU32x4("{}=vec4<u32>(0);", inst);
+    ctx.AddU32x4("{}=LoadGlobal128({});", inst, address);
 }
 
 void EmitWriteGlobalU8(EmitContext&) {
@@ -81,24 +70,15 @@ void EmitWriteGlobalS16(EmitContext&) {
 }
 
 void EmitWriteGlobal32(EmitContext& ctx, std::string_view address, std::string_view value) {
-    if (ctx.profile.support_int64) {
-        return ctx.Add("WriteGlobal32({},{});", address, value);
-    }
-    LOG_WARNING(Shader_WGSL, "Int64 not supported, ignoring memory operation");
+    ctx.Add("WriteGlobal32({},{});", address, value);
 }
 
 void EmitWriteGlobal64(EmitContext& ctx, std::string_view address, std::string_view value) {
-    if (ctx.profile.support_int64) {
-        return ctx.Add("WriteGlobal64({},{});", address, value);
-    }
-    LOG_WARNING(Shader_WGSL, "Int64 not supported, ignoring memory operation");
+    ctx.Add("WriteGlobal64({},{});", address, value);
 }
 
 void EmitWriteGlobal128(EmitContext& ctx, std::string_view address, std::string_view value) {
-    if (ctx.profile.support_int64) {
-        return ctx.Add("WriteGlobal128({},{});", address, value);
-    }
-    LOG_WARNING(Shader_WGSL, "Int64 not supported, ignoring memory operation");
+    ctx.Add("WriteGlobal128({},{});", address, value);
 }
 
 void EmitLoadStorageU8(EmitContext& ctx, IR::Inst& inst, const IR::Value& binding,

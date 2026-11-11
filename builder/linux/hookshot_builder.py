@@ -26,10 +26,13 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
 sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
 import linux_update  # noqa: E402  (the release check and the part download)
+if sys.platform == "darwin":
+    import macos_update  # noqa: E402  (the native .app self-updater)
 import make_game  # noqa: E402  (LANGUAGES, BUILD_ID)
 import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
 
-CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hookshot", "builder.ini")
+CONFIG = os.path.join(os.path.expanduser("~/Library/Application Support"), "Hookshot", "builder.ini") if sys.platform == "darwin" else \
+    os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hookshot", "builder.ini")
 STAGES = {"read": "Reading your game files", "lift": "Translating the game to PC code", "compile": "Compiling",
           "finish": "Putting the game folder together", "shaders": "Preparing shaders"}
 DLSS_LICENSE = (
@@ -145,6 +148,8 @@ def add_to_menu(folder):
     """an entry in the applications menu that starts the game"""
     if any(ch in folder for ch in "\r\n\0"):   # (a line break would start another key of the entry)
         raise ValueError("the game folder's name has a line break")
+    if sys.platform == "darwin":
+        return
     icon = os.path.join(folder, "hookshot.png")
     src = os.path.join(ROOT, "assets", "hookshot.png")
     if os.path.exists(src):
@@ -363,7 +368,7 @@ class Builder(tk.Tk):
         code = self.cfg.get("language", "en-US")
         self.language = tk.StringVar(value=dict(make_game.LANGUAGES).get(code, names[0]))
         self.prepare = tk.BooleanVar(value=self.cfg.get("prepare", "1") != "0")   # (make_game.py's last step: off, at the first start)
-        self.dlss = tk.BooleanVar(value=self.cfg.get("dlss", "0") == "1")
+        self.dlss = tk.BooleanVar(value=sys.platform != "darwin" and self.cfg.get("dlss", "0") == "1")
         self.check_text = tk.StringVar()
         self.space_text = tk.StringVar()
         self.stage_text = tk.StringVar()
@@ -734,10 +739,11 @@ class Builder(tk.Tk):
         ttk.Checkbutton(options, text="Prepare shaders now", variable=self.prepare, cursor="hand2").pack(anchor="w")
         ttk.Label(options, text="A few minutes at the end of the build. Unticked, the game prepares them at its first start, "
                   "behind a black window.", style="Small.TLabel", wraplength=px(540)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
-        ttk.Checkbutton(options, text="NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)", variable=self.dlss,
-                        command=self.on_dlss_changed, cursor="hand2").pack(anchor="w", pady=(px(12), 0))
-        ttk.Label(options, text="For NVIDIA RTX graphics cards. NVIDIA's files stay on this PC: never share a game folder built with them.",
-                  style="Small.TLabel", wraplength=px(540)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
+        if sys.platform != "darwin":
+            ttk.Checkbutton(options, text="NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)", variable=self.dlss,
+                            command=self.on_dlss_changed, cursor="hand2").pack(anchor="w", pady=(px(12), 0))
+            ttk.Label(options, text="For NVIDIA RTX graphics cards. NVIDIA's files stay on this PC: never share a game folder built with them.",
+                      style="Small.TLabel", wraplength=px(540)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
 
         f.rowconfigure(10, weight=1, minsize=px(18))
         ttk.Label(f, textvariable=self.status, style="Status.TLabel", wraplength=px(800)).grid(
@@ -950,6 +956,10 @@ class Builder(tk.Tk):
 
         def run():
             try:
+                if sys.platform == "darwin" and not folder:
+                    macos_update.start(os.environ.get("HOOKSHOT_APP_PATH"), self.update_tag or self.latest, os.getpid())
+                    self.lines.put(("mac-update-ready", ""))
+                    return
                 if not fetched:
                     root = linux_update.running_root()
                     if root is None:
@@ -1132,6 +1142,8 @@ class Builder(tk.Tk):
                         self.stage_text.set(v)
                 elif kind == "do-build":
                     self.start_make_update(v)
+                elif kind == "mac-update-ready":
+                    self.destroy()
                 elif kind == "update-error":
                     if hasattr(self, "stage_text"):
                         self.stage_text.set(v + " Your game folder is unchanged.")
@@ -1228,8 +1240,9 @@ class Builder(tk.Tk):
                 pass
             ttk.Button(self.buttons, text="Play", style="Go.TButton", image=self.images["play"], compound="left", cursor="hand2",
                        command=lambda: self.play_and_close(folder)).pack(side="right", padx=self.px(4))
+            opener = "open" if sys.platform == "darwin" else "xdg-open"
             ttk.Button(self.buttons, text="Open folder", cursor="hand2",
-                       command=lambda: subprocess.Popen(["xdg-open", folder])).pack(side="right", padx=self.px(4))
+                       command=lambda: subprocess.Popen([opener, folder])).pack(side="right", padx=self.px(4))
             self.heading.configure(text="Your game is ready")
             self.stage_label.configure(style="Go.Stage.TLabel")
             self.set_step(2)

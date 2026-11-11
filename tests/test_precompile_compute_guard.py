@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 
 RUN_ALL_ARGS = ["--cxx", "clang++"]
-RUN_ALL_SKIP = {"linux": "Windows structured exceptions"}
+RUN_ALL_SKIP = {"linux": "Windows structured exceptions", "macos": "Windows structured exceptions"}
 
 
 def block(text, marker):
