@@ -541,6 +541,12 @@ void swap_views_make(VkImageUsageFlags usage, VkFormat format) {
 /// again when it changes
 int swapchain_framegen() { return opts.framegen >= 2 ? std::min(opts.framegen, 4) : 0; }
 
+/// (hookshot) Whether the swapchain is made for NVIDIA DLSS Frame Generation: a fixed multiplier, and DLSS-G making the sets
+/// (vk_dlss.cpp dlss_fg_runs: asked for, on a device it runs on). V-Sync Auto is FIFO for it, where it was measured; the
+/// renderer's own methods and other GPUs keep Auto's mailbox (or immediate). present_image makes the swapchain again when it
+/// changes
+bool swapchain_dlssg() { return swapchain_framegen() >= 2 && dlss_fg_runs(); }
+
 bool create_swapchain(uint32_t width, uint32_t height) {
     VkSurfaceCapabilitiesKHR caps;
     VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev.physical, dev.surface, &caps);
@@ -607,11 +613,12 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     // card or driver with vsync forced; Auto and Off as below. FIFO is the one mode every driver has
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
     const int vsync = menu_vsync();
-    // (hookshot) V-Sync Auto with frame generation at 2x and up: FIFO. Mailbox, NVIDIA's Fast Sync, puts the made frames on the
-    // refresh grid whenever they come slower than the display (DLSS Frame Gen 3x: ~135 shown on a 165 Hz screen), so evenly
-    // timed presents still reached the screen unevenly; FIFO on a VRR display shows each one when it is presented
-    const bool fg_fifo = vsync == 0 && swapchain_framegen() >= 2;
-    if (fg_fifo) logf("vk: V-Sync Auto with frame generation at %dx: FIFO", swapchain_framegen());
+    // (hookshot) V-Sync Auto with DLSS Frame Generation at 2x and up: FIFO. Mailbox, NVIDIA's Fast Sync, puts the made frames on
+    // the refresh grid whenever they come slower than the display (DLSS Frame Gen 3x: ~135 shown on a 165 Hz screen), so evenly
+    // timed presents still reached the screen unevenly; FIFO on a VRR display shows each one when it is presented. Only where
+    // that was measured (swapchain_dlssg): the renderer's own frame generation and other GPUs keep Auto as it was
+    const bool fg_fifo = vsync == 0 && swapchain_dlssg();
+    if (fg_fifo) logf("vk: V-Sync Auto with DLSS Frame Generation at %dx: FIFO", swapchain_framegen());
     if (vsync != 1) {
         if (!fg_fifo)
             for (auto m : modes)

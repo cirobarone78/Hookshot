@@ -33,6 +33,9 @@ struct TemporalFrame;
 /// Whether it is asked for now: the Insert menu's Frame generation by row (Auto), RX_VK_DLSS_FG=0 / 1 over it (and the build
 /// has it)
 bool dlss_fg_wanted();
+/// Whether it makes the sets as far as is known: asked for, on a device DLSS runs on, and NGX's answer not a no (the swapchain's
+/// present mode follows it: vk_main.cpp swapchain_dlssg)
+bool dlss_fg_runs();
 /// Frame generation's device extensions, asked of NGX, added to `want` when the device has them
 void dlss_fg_device_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all);
 /// The chain's frame (vk_temporal.cpp, after its engine's evaluation): its depth and motion copied, its camera kept, for the
@@ -44,6 +47,9 @@ void dlss_fg_inputs(VkCommandBuffer cmd, const TemporalFrame& f, const float pro
 /// blend: there is a picture before this one; sequence: the present's count (one skipped makes a new history)
 int dlss_fg_frames(VkCommandBuffer cmd, VkImage color, VkImageView color_view, uint32_t w, uint32_t h, int count,
                    const VkImage* out, const VkImageView* out_views, bool blend, uint64_t sequence);
+/// Frame generation at Off or Auto (no fixed multiplier: dlss_fg_frames is not asked): its feature, if made, let go and its
+/// memory back, as when the Frame generation by row changes. Each such present (vk_replay.cpp); nothing to do is one load
+void dlss_fg_idle();
 /// Before the process exits (mkwvk_close_asked): its feature let go with the queue idle
 void dlss_fg_close();
 

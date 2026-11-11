@@ -64,8 +64,10 @@ CHOICE = r"""
 #include <vector>
 enum VkPresentModeKHR { VK_PRESENT_MODE_IMMEDIATE_KHR = 0, VK_PRESENT_MODE_MAILBOX_KHR = 1, VK_PRESENT_MODE_FIFO_KHR = 2 };
 int row = 0, framegen = 0;
+bool dlssg = false;
 int menu_vsync() { return row; }
 int swapchain_framegen() { return framegen; }   // (vk_main.cpp: frame generation's fixed multiplier, 0 none)
+bool swapchain_dlssg() { return framegen >= 2 && dlssg; }   // (vk_main.cpp: and DLSS-G makes its sets)
 void logf(const char*, ...) {}
 VkPresentModeKHR choose(const std::vector<VkPresentModeKHR>& modes) {
 /* CHOICE */
@@ -87,8 +89,18 @@ int main() {
             return 1;
         }
     }
-    // (frame generation at 2x and up: Auto is FIFO, mailbox or not; On and Off as without it)
+    // (the renderer's own frame generation at 2x and up, or DLSS-G that does not run here: as without it)
     framegen = 3;
+    for (const Case& c : cases) {
+        row = c.row;
+        if (choose(*c.modes) != c.want) {
+            std::fprintf(stderr, "FAIL: V-Sync %d with the renderer's own frame generation chose mode %d, wanted %d\n", c.row,
+                         (int)choose(*c.modes), (int)c.want);
+            return 1;
+        }
+    }
+    // (DLSS Frame Generation at 2x and up: Auto is FIFO, mailbox or not; On and Off as without it)
+    dlssg = true;
     const Case with_fg[] = {
         {0, &all, F}, {0, &no_mailbox, F}, {0, &fifo_only, F},
         {1, &all, F}, {2, &all, I}, {2, &no_mailbox, I},

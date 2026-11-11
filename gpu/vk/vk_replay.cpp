@@ -39,6 +39,7 @@
 #include "vk_paths.h"   // (game_module_path: the frame trace beside the game)
 #include "vk_gprof.h"
 #include "vk_framegen.h"
+#include "vk_dlss.h"   // (hookshot: dlss_fg_idle)
 #include "vk_menu.h"
 #include "vk_jobs.h"
 #include "vk_shader.h"
@@ -3077,6 +3078,8 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                                            sw, sh, crop);
             submit_recording(g, false);
         }
+        // (frame generation at Off or Auto, where DLSS-G is not asked: its feature, if made, let go, vk_dlss.cpp)
+        if (swapchain_framegen() < 2) dlss_fg_idle();
         if (interpolated) {   // (NVIDIA Reflex: the game frame's rendering is submitted; the display thread presents it later)
             reflex_game_submitted();
             framegen_queue(value);
@@ -3497,8 +3500,9 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     const bool hdr_changed = hdr_was >= 0 && hdr_was != opts.hdr;   // (turned on or off: the swapchain's format)
     if (hdr_was < 0) hdr_was = opts.hdr;
     static int vsync_was = -1;   // (the V-Sync row as the swapchain was made for it: its present mode)
-    // (and frame generation's multiplier, swapchain_framegen: FIFO under V-Sync Auto at 2x and up, a spare image a frame)
-    const int vsync_now = menu_vsync() * 8 + swapchain_framegen();
+    // (and frame generation's multiplier, swapchain_framegen: a spare image a frame; and swapchain_dlssg: FIFO under V-Sync
+    // Auto with DLSS Frame Generation)
+    const int vsync_now = menu_vsync() * 16 + swapchain_framegen() * 2 + (swapchain_dlssg() ? 1 : 0);
     const bool vsync_changed = vsync_was >= 0 && vsync_was != vsync_now;
     if (vsync_was < 0) vsync_was = vsync_now;
     const uint64_t want = dev.swap_resize.exchange(0, std::memory_order_acquire);

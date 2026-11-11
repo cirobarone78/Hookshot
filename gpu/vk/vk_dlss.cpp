@@ -489,6 +489,8 @@ struct Fg {
     uint32_t fw = 0, fh = 0;          // (the picture its feature was made for)
     int create_failures = 0;
     bool closed = false;
+    // (read without mu, each present: a feature held (dlss_fg_idle), and NGX's answer a no (dlss_fg_runs))
+    std::atomic<bool> held{false}, start_failed{false};
     // this frame's inputs (dlss_fg_inputs): the depth and motion copied, the camera NGX's way
     FgImage depth, motion;
     uint32_t rw = 0, rh = 0;
@@ -562,6 +564,13 @@ void fg_mul(const float* a, const float* b, float* out) {   // (row major: out =
 bool fg_start(Fg& g) {
     if (g.tried) return g.ok;
     g.tried = true;
+    g.start_failed = true;   // (until NGX says yes, below)
+    // (not on a device DLSS does not run on: an AMD or Intel GPU, without NVIDIA's extensions (dlss_device_extensions), does
+    // not start NGX at its first present)
+    if (dlss_why() != DLSS_OK) {
+        logf("vk: DLSS Frame Gen (NGX): DLSS does not run on this device (%d): off", (int)dlss_why());
+        return false;
+    }
     if (!ngx_init()) {
         logf("vk: DLSS Frame Gen (NGX): NGX did not start (above): off");
         return false;
@@ -589,6 +598,7 @@ bool fg_start(Fg& g) {
     g.most = most ? most : 1;
     logf("vk: DLSS Frame Gen (NGX): available, up to %u made frames between two of the game's", g.most);
     g.ok = true;
+    g.start_failed = false;
     return true;
 }
 
@@ -659,6 +669,7 @@ void fg_release(Fg& g) {
     }
     NVSDK_NGX_VULKAN_ReleaseFeature(g.feature);
     g.feature = nullptr;
+    g.held = false;
     g.fw = g.fh = 0;
 }
 
@@ -666,8 +677,17 @@ void fg_release(Fg& g) {
 
 bool dlss_fg_wanted() { return fg_asked(); }
 
+bool dlss_fg_runs() { return fg_asked() && dlss_why() == DLSS_OK && !fgs().start_failed.load(std::memory_order_relaxed); }
+
 void dlss_fg_device_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all) {
     if (!fg_possible() || !dev.instance || !dev.physical) return;   // (whenever it may run: the row then needs no restart)
+    // (only on a device DLSS may run on: without NVIDIA's NVX extensions (dlss_device_extensions' check) NGX is not asked, so
+    // an AMD or Intel GPU's device is made as without DLSS-G)
+    for (const char* name : {VK_NVX_BINARY_IMPORT_EXTENSION_NAME, VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME}) {
+        bool have = false;
+        for (const auto& e : all) have |= !strcmp(e.extensionName, name);
+        if (!have) return;
+    }
     const fs::path game = game_dir();
     if (game.empty() || game.is_relative()) return;
     const std::vector<fs::path> dirs = runtime_dirs(game);
@@ -817,6 +837,7 @@ int dlss_fg_frames(VkCommandBuffer cmd, VkImage color, VkImageView color_view, u
             return g.refused++, 0;
         }
         g.fw = w, g.fh = h;
+        g.held = true;
         g.last_sequence = 0;
         logf("vk: DLSS Frame Gen (NGX): feature made for %ux%u from %ux%u inputs, %d made frame(s) a set", w, h, g.rw, g.rh,
              count);
@@ -900,6 +921,8 @@ int dlss_fg_frames(VkCommandBuffer cmd, VkImage color, VkImageView color_view, u
             static int told = 0;
             if (told++ < 8) logf("vk: DLSS Frame Gen (NGX): frame %d of %d was refused (%#x)", k, count, (unsigned)r);
             g.last_sequence = 0;
+            // (frames 1..k-1 are NGX's writes in this command buffer: done before the renderer's own write the same images)
+            if (k > 1) fg_barrier(cmd);
             return g.refused++, 0;   // (a half-made set: the renderer's own makes all of it)
         }
     }
@@ -909,6 +932,13 @@ int dlss_fg_frames(VkCommandBuffer cmd, VkImage color, VkImageView color_view, u
     g.made++;
     g.sets_made++;
     return count;
+}
+
+void dlss_fg_idle() {
+    Fg& g = fgs();
+    if (!g.held.load(std::memory_order_relaxed)) return;
+    std::lock_guard lk(g.mu);
+    if (g.feature) fg_release(g), logf("vk: DLSS Frame Gen (NGX): frame generation Off or Auto: its feature let go");
 }
 
 void dlss_fg_close() {
@@ -941,12 +971,14 @@ void dlss_probe() {}
 void dlss_instance_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_device_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 bool dlss_fg_wanted() { return false; }
+bool dlss_fg_runs() { return false; }
 void dlss_fg_device_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_fg_inputs(VkCommandBuffer, const TemporalFrame&, const float*, const float*, const float*, bool) {}
 int dlss_fg_frames(VkCommandBuffer, VkImage, VkImageView, uint32_t, uint32_t, int, const VkImage*, const VkImageView*, bool,
                    uint64_t) {
     return 0;
 }
+void dlss_fg_idle() {}
 void dlss_fg_close() {}
 
 #endif
