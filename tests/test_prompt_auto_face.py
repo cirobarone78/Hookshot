@@ -1,6 +1,7 @@
 """Game-free: the button prompts' Auto face for a controller's name (host/prompts.c face_of_name, contains). A Steam Controller
-gets the Steam Deck's face, as the Deck does: SDL3 names it "Steam Controller", which fell through to the Xbox's. Steam
-Input's virtual pad stays on the Xbox's, since any controller can be behind it.
+gets the Steam Deck's face, as the Deck does: SDL3 names it "Steam Controller", which fell through to the Xbox's. Under
+Steam, Steam Input's stand-in pad for a Steam Controller has the same name, so it gets the Deck's face too. A pad named
+"Steam Virtual Gamepad" stays on the Xbox's, since any controller can be behind it.
 
 python -I -B tests/test_prompt_auto_face.py [--cc gcc]
 """
