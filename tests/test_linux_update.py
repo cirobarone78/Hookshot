@@ -2,6 +2,7 @@
 
 python -I -B tests/test_linux_update.py
 """
+import argparse
 import io
 import os
 import shutil
@@ -574,7 +575,9 @@ class UpdateTests(unittest.TestCase):
             for name in make_game.BESIDE:   # (a folder from a builder before the launcher: the game and its libraries in it)
                 (out / name).write_bytes(b"old " + name.encode())
             with mock.patch.dict(os.environ, {"HOOKSHOT_TOOLS": str(ROOT)}):
-                exec(finish, make_game.__dict__, {"built": str(built), "out": str(out), "work": str(work)})
+                # (a: the build's arguments, read since --fetch-fsr-runtime: a build without AMD FSR 4)
+                args = argparse.Namespace(update=False, fsr=False, no_fsr=False, fetch_fsr_runtime=False)
+                exec(finish, make_game.__dict__, {"built": str(built), "out": str(out), "work": str(work), "a": args})
             self.assertEqual((out / "hookshot").read_bytes(), (ROOT / "builder" / "linux" / "hookshot-folder").read_bytes())
             self.assertTrue((out / "hookshot").stat().st_mode & stat.S_IXUSR)
             self.assertEqual(sorted(p.name for p in out.iterdir()), ["bin", "hookshot", "image.bin"])

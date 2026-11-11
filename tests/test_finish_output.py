@@ -2,6 +2,7 @@
 
 python -I -B tests/test_finish_output.py
 """
+import argparse
 import ast
 import contextlib
 import ctypes
@@ -69,8 +70,10 @@ class FinishOutputTests(unittest.TestCase):
             (self.root / "HookshotBuilder-Setup.exe").write_bytes(b"new synthetic launcher")
         with mock.patch.object(make_game, "BESIDE", ["hookshot.exe"]):
             # Comprehensions use globals. Keep one namespace, as in production, and discover only authored setup files.
+            # (a: the build's arguments, read since --fetch-fsr-runtime for what goes beside the game: a build without AMD FSR 4)
             namespace = dict(make_game.__dict__, built=str(self.built), out=str(self.out), work=str(self.work),
-                             ROOT=str(self.root / "tools"), LINUX=False if launcher else make_game.LINUX)
+                             ROOT=str(self.root / "tools"), LINUX=False if launcher else make_game.LINUX,
+                             a=argparse.Namespace(update=False, fsr=False, no_fsr=False, fetch_fsr_runtime=False))
             exec(FINISH, namespace)
 
     def assert_installed_unchanged(self):
