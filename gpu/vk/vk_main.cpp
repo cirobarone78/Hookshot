@@ -18,6 +18,8 @@
 #include "vk_draw.h"
 #include "vk_framegen.h"
 #include "vk_internal.h"
+#include "presenter_queue.h"
+static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCompute == VK_QUEUE_COMPUTE_BIT);
 #include "gpu_choice.h"
 #include "vk_menu.h"
 #include "vk_dlss.h"
@@ -340,16 +342,11 @@ bool create_device() {
     const char* pt_env = getenv("RX_VK_PRESENT_THREAD");
     const bool presenter_wanted = !pt_env || atoi(pt_env) != 0;
     uint32_t presenter_family = UINT32_MAX, presenter_index = 0;
-    if (presenter_wanted) {
-        if (families[dev.queue_family].queueCount >= 2) {
-            presenter_family = dev.queue_family, presenter_index = 1;
-        } else {
-            for (uint32_t i = 0; i < n && presenter_family == UINT32_MAX; i++) {
-                if (!(families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) || (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) continue;
-                const uint32_t used = i == compute_family ? 1 : 0;
-                if (families[i].queueCount > used) presenter_family = i, presenter_index = used;
-            }
-        }
+    if (presenter_wanted) {   // (presenter_queue.h: never a queue another part of the renderer takes)
+        std::vector<QueueFamilyInfo> qf(n);
+        for (uint32_t i = 0; i < n; i++) qf[i] = {(uint32_t)families[i].queueFlags, families[i].queueCount};
+        if (!presenter_queue_pick(qf.data(), n, dev.queue_family, compute_family, presenter_family, presenter_index))
+            presenter_family = UINT32_MAX;
     }
     static const float priorities[2] = {1.0f, 1.0f};
     std::vector<VkDeviceQueueCreateInfo> qs;

@@ -103,16 +103,22 @@ def main():
     need('getenv("RX_VK_PRESENT_THREAD")' in on and "!e || atoi(e) != 0" in on, "the switch is not RX_VK_PRESENT_THREAD, on by default")
     need("dev.presenter_queue && dev.presenter_supported" in on, "the presenter thread runs without a queue of its own that presents")
     dev_make = block(main_cpp, "bool create_device() {")
-    need("families[dev.queue_family].queueCount >= 2" in dev_make and "presenter_index = 1" in dev_make,
-         "the presenter's queue is not a second queue of the replay's family where there is one")
-    need("!(families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) || (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)" in dev_make,
-         "without a second graphics queue the presenter's queue is not a compute family's")
     swap = block(main_cpp, "bool create_swapchain(uint32_t width, uint32_t height) {")
     need("if (dev.presenter_supported) share(dev.presenter_family);" in swap and "VK_SHARING_MODE_CONCURRENT" in swap,
          "a presenter queue of another family presents images it does not share")
     choose = block(main_cpp, "static void choose_present_queue() {")
     need("vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.presenter_family" in choose,
          "the presenter's family is not checked against the window's surface")
+    # (the queue choice on NVIDIA's, RADV's and smaller layouts: tests/presenter_queue_test.cpp)
+    import subprocess, tempfile, os
+    need("presenter_queue_pick(" in dev_make, "create_device does not choose the presenter's queue with presenter_queue_pick")
+    with tempfile.TemporaryDirectory() as tmp:
+        exe = os.path.join(tmp, "presenter_queue_test")
+        subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests" / "presenter_queue_test.cpp"),
+                        "-o", exe], check=True)
+        out = subprocess.run([exe], capture_output=True, text=True)
+        print(out.stdout.strip())
+        need(out.returncode == 0, "the presenter's queue choice fails a family layout")
     print("PASS: the presenter thread waits for the copy, keeps the presents in order and off the swapchain's remaking")
 
 
