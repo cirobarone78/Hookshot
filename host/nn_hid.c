@@ -513,9 +513,6 @@ static const signed char pad_default[HOS_SW_N] = {
     HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
     HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START, HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP,
     HOS_PAD_RIGHT, HOS_PAD_DOWN};
-/* (the ocarina's notes, in pitch order: the pads the Switch note buttons already sit on, and Numpad 0/2/4/6/8) */
-static const signed char pad_note_default[5] = {HOS_PAD_LSHOULDER, HOS_PAD_RSHOULDER, HOS_PAD_EAST, HOS_PAD_WEST,
-                                                HOS_PAD_NORTH};
 static int is_note_row(int i) { return i >= HOS_KEY_OC_NOTE_L && i <= HOS_KEY_OC_NOTE_X; }
 static int has_pad(int i) { return i < HOS_SW_N || is_note_row(i); }
 #ifndef VK_XBUTTON1
@@ -531,7 +528,7 @@ static int is_mouse_vk(int vk) { return vk == VK_LBUTTON || vk == VK_RBUTTON || 
 static const unsigned char key_default[HOS_KEY_N][2] = {
     {'E'}, {VK_SHIFT}, {VK_SPACE}, {VK_LBUTTON}, {VK_CONTROL}, {'C'}, {'Q'}, {'R'}, {'Z', VK_RBUTTON}, {'X', 'F'},
     {VK_TAB, VK_RETURN}, {'M'}, {'1'}, {'2'}, {'3'}, {'4'}, {'W'}, {'S'}, {'A'}, {'D'}, {VK_UP, 'I'}, {VK_DOWN, 'K'},
-    {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}, {VK_NUMPAD0}, {VK_NUMPAD2}, {VK_NUMPAD4}, {VK_NUMPAD6}, {VK_NUMPAD8}};
+    {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}, {0}, {0}, {0}, {0}, {0}};   /* (the five note rows start unset: oc_pad_word) */
 static SRWLOCK pad_bind_lock = SRWLOCK_INIT;
 static int pad_bind[HOS_KEY_N][2];
 static volatile LONG key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
@@ -547,8 +544,7 @@ static uint64_t oc_consumed_pads;
 static void binds_default(void) {
     AcquireSRWLockExclusive(&pad_bind_lock);
     for (int i = 0; i < HOS_KEY_N; i++) {
-        pad_bind[i][0] = i < HOS_SW_N ? pad_default[i]
-                                      : is_note_row(i) ? pad_note_default[i - HOS_KEY_OC_NOTE_L] : -1;
+        pad_bind[i][0] = i < HOS_SW_N ? pad_default[i] : -1;   /* (the note rows: -1, unset) */
         pad_bind[i][1] = -1;
     }
     ReleaseSRWLockExclusive(&pad_bind_lock);
@@ -931,10 +927,16 @@ static uint64_t oc_pad_word(uint64_t buttons) {
     static const uint64_t note_to[5] = {1ULL << HOS_SW_L, 1ULL << HOS_SW_R, 1ULL << HOS_SW_A,
                                         1ULL << HOS_SW_Y, 1ULL << HOS_SW_X};
     uint64_t w = buttons;
-    if (hos_oc_last_kind != 2)   /* (the lesson kind teaches the game's own note buttons, so they stay) */
-        w &= ~(note_to[0] | note_to[1] | note_to[2] | note_to[3] | note_to[4]);
-    for (int i = 0; i < 5; i++)
+    AcquireSRWLockShared(&pad_bind_lock);
+    for (int i = 0; i < 5; i++) {
+        const int row = HOS_KEY_OC_NOTE_L + i;
+        if (pad_bind[row][0] < 0 && pad_bind[row][1] < 0 && !key_bind[row][0] && !key_bind[row][1])
+            continue;   /* (unset: that button plays on) */
+        /* (kind 2, the song lesson, teaches the game's own note buttons: the remap adds to them, never replaces) */
+        if (hos_oc_last_kind != 2) w &= ~note_to[i];
         if (hos_oc_note_bits & (1ULL << i)) w |= note_to[i];
+    }
+    ReleaseSRWLockShared(&pad_bind_lock);
     return w;
 }
 

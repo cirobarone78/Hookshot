@@ -1,7 +1,8 @@
-"""The ocarina note layer (host/nn_hid.c): while the game's note wait is on (hos_oc_wait 1), the five note controls
-drive hos_oc_note_bits and their keys and gamepad inputs are consumed, so they press nothing else (the Switch-key
-loop, pads_read's pads, and the Move/Cam stick keys all let the consumed inputs through as nothing).
-The microphone wait (hos_oc_wait 2) and wait off change nothing.
+"""The ocarina note layer (host/nn_hid.c): while the game's note wait is on (hos_oc_wait 1), a note row the player bound
+drives hos_oc_note_bits and its keys and gamepad inputs are consumed, so they press nothing else (the Switch-key loop,
+pads_read's pads, and the Move/Cam stick keys all let the consumed inputs through as nothing). A row left unset takes
+nothing over: that Switch button keeps its own binding. The microphone wait (hos_oc_wait 2) and wait off
+change nothing.
 python -I -B tests/test_ocarina_notes.py   (needs a C compiler)
 """
 import shutil
@@ -114,7 +115,23 @@ int main(int argc, char **argv) {
     (void)argc;
     ini_dir = argv[1];
     binds_load();
-    /* (a) NumPad 4 is the (A) note by default and also bound to D-pad down: during the wait it is only the note */
+    /* (unset) rows the player never bound change nothing: the game's own note buttons play on */
+    hos_oc_wait = 1, hos_oc_beat++;
+    release(), held['Q'] = held['E'] = 1;   /* the l and a rows' own keys */
+    oc_notes();
+    CHECK(hos_oc_note_bits == 0);
+    const uint64_t own = switch_bits();
+    CHECK((own & (1ULL << HOS_SW_L)) && (own & (1ULL << HOS_SW_A)));
+    CHECK(oc_pad_word(own) == own);   /* nothing stripped: the Xbox / PC layout's B still puts the ocarina away */
+    hos_oc_wait = 0;
+    /* the rest of this test is a player who bound the rows: only then does the layer take the buttons over */
+    hos_bind(HOS_BIND_KEY, HOS_KEY_OC_NOTE_L, 0, VK_NUMPAD0);
+    hos_bind(HOS_BIND_KEY, HOS_KEY_OC_NOTE_R, 0, VK_NUMPAD2);
+    hos_bind(HOS_BIND_KEY, HOS_KEY_OC_NOTE_A, 0, VK_NUMPAD4);
+    hos_bind(HOS_BIND_KEY, HOS_KEY_OC_NOTE_Y, 0, VK_NUMPAD6);
+    hos_bind(HOS_BIND_KEY, HOS_KEY_OC_NOTE_X, 0, VK_NUMPAD8);
+    hos_bind(HOS_BIND_PAD, HOS_KEY_OC_NOTE_L, 0, HOS_PAD_LSHOULDER);
+    /* (a) NumPad 4 is the (A) note and also bound to D-pad down: during the wait it is only the note */
     hos_bind(HOS_BIND_KEY, HOS_SW_DOWN, 0, VK_NUMPAD4);   /* shared: both rows hold it */
     hos_oc_wait = 1;
     release(), held[VK_NUMPAD4] = held['2'] = 1;

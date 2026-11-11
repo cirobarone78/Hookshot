@@ -1,6 +1,7 @@
-"""The five ocarina note controls (host/nn_hid.c, gpu/vk/vk_api.h): defaults, ini lines, and the shared-binding
-rules. A note row's keys are never taken from it and it takes none from others, so one key can be a note and the
-D-pad direction that opens the ocarina at once; a normal row's rebinding still takes its key from the other normal
+"""The five ocarina note controls (host/nn_hid.c, gpu/vk/vk_api.h): unset by default, ini lines, and the shared-binding
+rules. A row starts unset, meaning the Switch button's own binding plays the note; only a row the player bound takes that
+button's bit for the wait. A note row's keys are never taken from it and it takes none from others, so one key can be a note
+and the D-pad direction that opens the ocarina at once; a normal row's rebinding still takes its key from the other normal
 rows, and its pad input still swaps among them. MOVE/CAM rows take no gamepad input.
 python -I -B tests/test_ocarina_note_bindings.py   (needs a C compiler)
 """
@@ -89,17 +90,18 @@ int main(int argc, char **argv) {
     (void)argc;
     ini_dir = argv[1];
     binds_load();
-    /* (a) defaults: Numpad 0/2/4/6/8 low to high, the pads the note buttons already sit on */
-    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_L, 0) == VK_NUMPAD0
-          && hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_R, 0) == VK_NUMPAD2
-          && hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_A, 0) == VK_NUMPAD4
-          && hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_X, 0) == VK_NUMPAD8);   /* (note_y: this tmp's ini overrides its key) */
-    CHECK(hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_L, 0) == HOS_PAD_LSHOULDER
-          && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_R, 0) == HOS_PAD_RSHOULDER
-          && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_A, 0) == HOS_PAD_EAST
-          && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_Y, 0) == HOS_PAD_WEST
-          && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_X, 0) == HOS_PAD_NORTH);
-    /* (b) an ini with no note_ lines: the unrelated lines load, the note rows keep their defaults
+    /* (a) defaults: the five note rows are unset, so the game's own buttons play until the player binds one */
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_L, 0) == 0
+          && hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_R, 0) == 0
+          && hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_A, 0) == 0
+          && hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_X, 0) == 0);   /* (note_y: this tmp's ini overrides its key) */
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_Y, 0) == 78);   /* the ini's own line: the only bound row here */
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_L, 0) == -1
+          && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_R, 0) == -1
+          && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_A, 0) == -1
+          && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_Y, 0) == -1
+          && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_X, 0) == -1);
+    /* (b) an ini with no note_ lines: the unrelated lines load, the note rows stay unset
        (this tmp has key_move_up=90 and pad_a=1 and no note_ line) */
     CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_MOVE_UP, 0) == 'Z');
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 0) == HOS_PAD_GUIDE);
@@ -107,6 +109,7 @@ int main(int argc, char **argv) {
     /* (c) a key_ line for a note row loads */
     CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_Y, 0) == 78);   /* key_note_y=78 in the file */
     /* (d) sharing: a normal row taking a note row's key leaves the note row holding it too... */
+    hos_bind(HOS_BIND_KEY, HOS_KEY_OC_NOTE_A, 0, VK_NUMPAD4);
     hos_bind(HOS_BIND_KEY, HOS_SW_DOWN, 0, VK_NUMPAD4);
     CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_DOWN, 0) == VK_NUMPAD4
           && hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_A, 0) == VK_NUMPAD4);
@@ -118,6 +121,7 @@ int main(int argc, char **argv) {
     hos_bind(HOS_BIND_KEY, HOS_SW_A, 0, 'E');
     CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_B, 0) != 'E');
     /* (e) pad inputs: a normal row's bind swaps among the Switch rows and leaves the note rows alone... */
+    hos_bind(HOS_BIND_PAD, HOS_KEY_OC_NOTE_R, 0, HOS_PAD_RSHOULDER);
     hos_bind(HOS_BIND_PAD, HOS_SW_B, 0, HOS_PAD_RSHOULDER);
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_B, 0) == HOS_PAD_RSHOULDER
           && hos_binding(HOS_BIND_PAD, HOS_SW_R, 0) == HOS_PAD_SOUTH   /* r gives up RSHOULDER for B's old SOUTH */
@@ -129,9 +133,9 @@ int main(int argc, char **argv) {
     /* the MOVE/CAM rows take no gamepad input */
     hos_bind(HOS_BIND_PAD, HOS_KEY_CAM_UP, 0, HOS_PAD_WEST);
     CHECK(hos_binding(HOS_BIND_PAD, HOS_KEY_CAM_UP, 0) == -1);
-    /* Reset to defaults: the note rows come back */
+    /* Reset to defaults: the note rows come back unset */
     hos_bind(HOS_BIND_KEY, -1, 0, 0);
-    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_L, 0) == VK_NUMPAD0 && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_A, 0) == HOS_PAD_EAST);
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_L, 0) == 0 && hos_binding(HOS_BIND_PAD, HOS_KEY_OC_NOTE_A, 0) == -1);
     if (!fails) printf("PASS\n");
     return fails != 0;
 }

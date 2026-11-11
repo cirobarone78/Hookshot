@@ -508,11 +508,9 @@ face button), then the new button or key. <kbd>Esc</kbd> cancels, <kbd>Delete</k
 puts them all back. A gamepad button taken from another Switch button swaps with it. The page saves them in
 `hookshot_options.ini`.
 
-**Ocarina notes:** the page gains five rows, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)`, `(X)`, default <kbd>Num 0</kbd>
-<kbd>Num 2</kbd> <kbd>Num 4</kbd> <kbd>Num 6</kbd> <kbd>Num 8</kbd> (low note to high); while the game waits for a
-note it hears only those controls, and when a dialogue or cutscene takes the buttons the wait ends so they answer
-again; a song lesson also answers the game's own note buttons, since it teaches them. `HOS_OC_NOTES=0` keeps the
-shipped note controls and leaves the rows inert.
+**Ocarina notes:** the page gains five rows, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)`, `(X)`, unset by default: the game's own
+buttons play until you bind a note to a key or gamepad input of your own, and a bound note then answers only that input while
+the game waits for it. A dialogue or cutscene that takes the buttons ends the wait, and a song lesson keeps the game's own too.
 
 <details>
 <summary>Writing the controls in hookshot_options.ini yourself</summary>
