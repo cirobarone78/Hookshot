@@ -83,6 +83,10 @@ game's presents so far):
 Requests on one connection may be answered out of order: a `status` sent while a `wait` is pending is answered first.
 Match replies by `id`. Lines with an `"event"` key and no `"ok"` key are subscription events (see `subscribe`).
 
+A client may shut its sending side once its requests are sent (`printf '...\n' | socat - UNIX-CONNECT:<path>`): the
+bridge reads no more from it, ends its subscription, answers what it waits for, and closes the connection once those
+replies are out. (Linux; a Windows pipe has no half-close.)
+
 ### Errors
 
 ```
@@ -102,7 +106,8 @@ Match replies by `id`. Lines with an `"event"` key and no `"ok"` key are subscri
 | `out_of_range` | a memory address or range outside mapped guest memory |
 | `not_found` | no such setting |
 | `failed` | a shot could not be written |
-| `cancelled` | a press that was waited on was let go by `release` |
+| `refused` | the game turned a teleport down (an event playing, a map loading, ...); the message says why |
+| `cancelled` | a press that was waited on was let go by `release`, or a teleport was replaced by a later one |
 
 ### Frames and inputs
 
@@ -130,7 +135,8 @@ version.
 > {"id":1,"cmd":"status"}
 < {"id":1,"ok":true,"frame":5321,"protocol":1,"fps":59.8,"state":"play","stalled":false,"draws":2410.3,"replayed":5320,
    "window":{"width":1280,"height":720},"uptime":95.2,"clients":1,"input":{"queued":0,"exclusive":false},
-   "map":"KokiriForest_Child","version":"1.4.0-abc123","renderer":"Vulkan: ..."}
+   "map":"KokiriForest_Child","game":{"event":false,"loading":false,"age":"child"},"version":"1.4.0-abc123",
+   "renderer":"Vulkan: ..."}
 ```
 
 `map` is the game's own name for the map (`Sequence_CurrentBanc`), read on the game's thread with the player's update
@@ -177,7 +183,12 @@ step's end.
 > {"id":6,"cmd":"sequence","steps":[{"at":0,"buttons":"ZL","frames":30},{"at":10,"lx":-1,"frames":20}]}
 ```
 
-**release**: every queued input is let go: `{"released": 3}`. Presses that were waited on reply `cancelled`.
+**release**: the caller's queued inputs are let go, and those that clients which have gone left behind (sent with
+`"wait": false`): `{"released": 3, "all": false}`. Another connected client's inputs stay. With `"all": true`, every
+client's. Presses that were waited on reply `cancelled`.
+
+An input sent with `"wait": false` stays queued after its client goes (so a one-shot `hookshot_ctl.py press --no-wait`
+works) and is freed once it is over. An input that is waited on is let go when its client goes.
 
 **shot**: a PNG of the first present after the request, or after frame `after`. It is the size `RX_VK_SHOTS` writes
 (1280x720, or `RX_VK_SHOT_W` x `RX_VK_SHOT_H`); the reply's `width` and `height` are read from the file. `path` defaults to `shots/shot_<n>_f<frame>.png` in the socket's folder (made 0700). A relative path is
@@ -201,7 +212,7 @@ path in the reply is complete. The `timeout` default is 30 s. Shots need the Vul
 | `loading_start` | the next change into `loading` |
 | `loading_end` | the next change out of `loading` |
 | `change` | the next change of state |
-| `map` | the map is `map` (at once if it is); without `map`, the next change of map. The reply has `map` |
+| `map` | the map is `map` (any case; at once if it is); without `map`, the next change of map. The reply has `map` |
 
 **option_get**: the Insert menu's settings, or one of them by `name`. A name is the setting's key in
 `hookshot_options.ini` (`text_speed`) or its row's name (`"Text speed"`), in any case, with `-` taken as `_`. The
@@ -232,7 +243,7 @@ the value it had before and the setting as it is now. The menu's lock keeps a ch
 it. Arguments:
 
 - `events`: any of `present`, `state`, `log` and `map`. The default is `["present", "state"]`.
-- `every`: frames between present events (default 60).
+- `every`: frames between present events (default 60, 1 to 216000).
 - `log`: only log lines that contain this text (it also turns `log` on).
 
 The events carry `sub`, the subscribe request's `id`:
@@ -248,16 +259,26 @@ The events carry `sub`, the subscribe request's `id`:
 **teleport** (OoT): the Debug tab's teleport, by destination: `to`, the destination's index or one of its maps' names
 (any case). Without `to`, the destinations: `{"destinations":[{"index":0,"child":"KokiriForest_Child","adult":
 "KokiriForest_Adult"},...]}` (a destination with no map for an age has `null` there). It is what the Cheats page's
-Teleport list and the live input file's `!cheat 1000+<index>` ask for: the game takes it at the player's next update,
-in play, the map of Link's age, and says in the log what it did (`cheats: teleport ...`, or why it was ignored: an
-event playing, a map loading, another teleport in the last 8 s). The reply comes at once; `wait map` tells when it
-arrived. It changes the game as the menu's teleport does, and a save made after it keeps the new place.
+Teleport list asks for: the game takes it at the player's next update, in play, and goes to the map of Link's age.
+
+The reply comes once the game took it (within `timeout`, default 10 s):
+
+- `"sent": true` and `map`, the map it goes to. `wait map` then tells when it arrived.
+- `refused`, with the game's reason: an event playing (a cutscene, a map change's), a map loading, another teleport
+  in the last 8 s, or no map for Link's age there.
+- `timeout` when the game did not take it: Link is not being updated (the title, the file select, a pause, a load).
+  The request is then withdrawn, so it does not happen later behind the client's back.
+- `cancelled` when a later `teleport` replaced it before the game took it (one waits at a time).
+
+With `"wait": false` the reply is at once, with `"sent": null`. The game logs each teleport (`cheats: teleport ...`).
+It changes the game as the menu's teleport does, and a save made after it keeps the new place.
 
 ```
 > {"id":12,"cmd":"teleport","to":"HyruleField_Child"}
-< {"id":12,"ok":true,"frame":6000,"teleport":1,"child":"HyruleField_Child","adult":"HyruleField_Adult"}
+< {"id":12,"ok":true,"frame":6003,"teleport":1,"child":"HyruleField_Child","adult":"HyruleField_Adult","sent":true,
+   "map":"HyruleField_Child"}
 > {"id":13,"cmd":"wait","event":"map","map":"HyruleField_Child","timeout":30}
-< {"id":13,"ok":true,"frame":6190,"state":"loading","waited":190,"map":"HyruleField_Child"}
+< {"id":13,"ok":true,"frame":6190,"state":"loading","waited":187,"map":"HyruleField_Child"}
 ```
 
 **quit**: the reply, then the game exits as when its window is closed (the log flushed, exit code 0). The socket is
@@ -326,7 +347,8 @@ A write to memory the GPU reads goes through the same soft write-watch the game'
 and synced into the renderer's VRAM mirror on the next frame's memory sync), so it reaches the GPU like any other CPU
 write; this has not been checked against the GPU's output in a scene.
 
-**mem_read**: `addr` and `size` (a number, or a `"0x..."` string for a large address). `format` is `hex` (default) or
+**mem_read**: `addr` and `size`: whole numbers, or strings of decimal digits or `0x` and hex digits (a string for an
+address past 2^53, which a JSON number cannot hold exactly; no sign, no octal). `format` is `hex` (default) or
 `base64`.
 
 ```
@@ -368,7 +390,8 @@ python -I scripts/hookshot_ctl.py shot out.png
 python -I scripts/hookshot_ctl.py option get
 python -I scripts/hookshot_ctl.py option set text_speed 3
 python -I scripts/hookshot_ctl.py teleport                              # the destinations
-python -I scripts/hookshot_ctl.py teleport 1 && python -I scripts/hookshot_ctl.py wait map --timeout 30
+python -I scripts/hookshot_ctl.py teleport 1 --arrive 30                # sent (or refused, and why), then arrived
+python -I scripts/hookshot_ctl.py release                               # this client's inputs and abandoned ones (--all)
 python -I scripts/hookshot_ctl.py watch --events present,state --log "hid:"
 python -I scripts/hookshot_ctl.py raw '{"cmd": "wait", "event": "frame", "frame": 9000}'
 python -I scripts/hookshot_ctl.py mem read 0x80000000 8               # needs HOS_CONTROL_MEM=ro or rw
@@ -381,7 +404,22 @@ Each command prints plain lines; `--json` prints the replies. `--sock` overrides
 when done, 1 for an error reply, 2 when there is no game or the usage is bad, and 3 for a timeout. `launch --data`
 sets `XDG_DATA_HOME` for the run, so it plays from saves of its own. `--env NAME=VALUE` adds switches.
 
-## Tests and what is not tested
+## Known limits
+
+- **Windows** is built and its pipe tested in CI only (the windows-2022 runner): the bridge inside a Windows game build,
+  `launch` on Windows, and refusing remote pipe clients (`PIPE_REJECT_REMOTE_CLIENTS`, which needs a second machine)
+  are not tested.
+- **The state is a guess** from the draws a frame (above). A scene with unusual counts can be misread; for OoT, `game`'s
+  `event` and `loading` and `map` are the game's own.
+- **A teleport the game sent but that did not move Link** (its event failed later) shows only as `wait map` timing out.
+- **The first `option_get` or `option_set`** after start can wait, on the bridge's thread, for the start-up check of
+  the upscalers (NVIDIA's NGX start: about 3 s). The game does not wait for it; other replies to every client wait
+  that long.
+- **Named game values** (`mem get NAME`, `symbols`) are not served yet (see Guest memory).
+- `HOS_CONTROL_MEM=rw` writes were checked against the game's memory (written, read back, put back), not against the
+  picture the GPU draws from a written value.
+
+## Tests
 
 `tests/test_control.py` builds the bridge with a fake game and drives it over its real transport: the Unix socket on
 Linux, the named pipe on Windows (the CI's windows-2022 runner). On Windows it also checks the pipe's access control:
@@ -389,5 +427,4 @@ another first instance of the name and a second bridge on it are refused, and th
 handle, is protected with a single ACE for the current user. `tests/test_hookshot_ctl.py` drives the client against a
 fake bridge on the same transports.
 
-Not tested: refusing remote clients (`PIPE_REJECT_REMOTE_CLIENTS`; that needs a second machine), `hookshot_ctl.py
-launch` on Windows, and the bridge inside a Windows game build (only the Linux game was run).
+What is not tested is under Known limits.
