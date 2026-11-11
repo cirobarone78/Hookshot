@@ -307,6 +307,23 @@ uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits) {
     ReleaseSRWLockExclusive(&frame_whole_lock);
     return whole;
 }
+/* (nx2/oot_patches.py patch_solver_steps) the physics solver's step count for a frame from the game's sum, frames per update *
+   count + 0.001 (its float's bits): rounded up from the product less a quarter, ceil(frames per update * count - 0.25), so that
+   above 60 fps the solver runs no fewer steps a second than at 60 and never skips a frame's solve (4 at 60 fps, 8 at 30, as the
+   game's); HOS_PHYSICS_STEPS=0, the game's own trunc(sum). The result as the 32-bit register write leaves it */
+uint64_t hos_solver_steps(uint32_t sum_bits) {
+    static int own = -1;
+    if (own < 0) own = getenv("HOS_PHYSICS_STEPS") && !atoi(getenv("HOS_PHYSICS_STEPS"));
+    float sum;
+    memcpy(&sum, &sum_bits, sizeof sum);
+    if (!(sum == sum) || sum <= 0.0f) return 0;   /* (NaN and below one: 0, as the game's convert gives) */
+    const double v = own ? (double)sum : (double)sum - 0.001 - 0.25;
+    if (v <= 0.0) return 0;
+    if (v >= 2147483647.0) return 0x7fffffffu;
+    int64_t n = (int64_t)v;   /* (toward zero: the game's convert) */
+    if (!own && (double)n < v) n++;   /* (rounded up) */
+    return (uint32_t)n;
+}
 volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: nx2/oot_patches.py) */
 /* Quantize the time step to the engine's integer nominal rate. Keep debt from a short frame even when the minimum
    step is 1/60: discarding it made alternating short/long frames advance more game time than elapsed wall time.

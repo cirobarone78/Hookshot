@@ -451,6 +451,44 @@ def patch_whole_frames(s):
     return s, done
 
 
+# The physics system's solver steps: its step setup (f_838ceb80, and the same code in f_838cfc10) gives the rigid body world
+# its solver step count for the frame (+712), trunc(frames per update * count + 0.001) with the count at +580 (4): 4 at 60 fps
+# and 8 at 30, the two rates the game ships with, 240 solver steps a second. Under a Frame rate cap above 60 the frames per
+# update are under 1 and the count truncates to fewer steps a second (3 from 61 to 80 fps, 2 to 120, 1 to 240: 144 a second at
+# 144 fps), and to 0 in a frame under a quarter of a 60 Hz frame, where the solver skips its whole solve and sub-integration: such
+# a frame resolves no contact or friction and moves no rigid body, so what stands on a moving body is left behind (Link falling
+# off moving platforms above 60 fps, issue 1742). host/nn_vi.c hos_solver_steps rounds up instead, ceil(frames per update *
+# count - 0.25): 4 and 8 as before at 60 and 30 fps (also a few percent off them), never fewer steps a second than at 60, at
+# least 1 down to a 16th of a frame. HOS_PHYSICS_STEPS=0: the game's own count. The supported build's functions.
+SOLVER_HEADS = ("void f_838ceb80(Ctx *__restrict A64_NOESC c) {\n", "void f_838cfc10(Ctx *__restrict A64_NOESC c) {\n")
+SOLVER_OLD = ("    c->x[1]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
+              "    recomp_store32(c,c->x[0] + 712,c->x[1]);\n")
+SOLVER_MARK = "/* (the solver's steps rounded up: nx2/oot_patches.py) */"
+SOLVER_NEW = ("    c->x[1]=hos_solver_steps((uint32_t)c->vreg[0][0]);   " + SOLVER_MARK + "\n"
+              "    recomp_store32(c,c->x[0] + 712,c->x[1]);\n")
+SOLVER_DECL = "extern uint64_t hos_solver_steps(uint32_t sum_bits);\n"
+
+
+def patch_solver_steps(s):
+    """The solver step counts of SOLVER_HEADS rounded up by hos_solver_steps: (s, the sites patched here). A file without the
+    function, one patched before, or one whose code differs (another game version) is left as it is."""
+    done = 0
+    for head_text in SOLVER_HEADS:
+        head = s.find(head_text)
+        if head < 0:
+            continue
+        end = s.find("\n}\n", head)
+        body = s[head:end if end >= 0 else len(s)]
+        if SOLVER_MARK in body or body.count(SOLVER_OLD) != 1:
+            continue
+        at = head + body.index(SOLVER_OLD)
+        s = s[:at] + SOLVER_NEW + s[at + len(SOLVER_OLD):]
+        done += 1
+    if done and SOLVER_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SOLVER_DECL, 1)
+    return s, done
+
+
 def patch_text_speed(s):
     """The scale at the head of the letters' block of f_80b1e140 (Text speed), and the call to hos_oot_text_pane after it
     (Text size: host/oot_text_size.c); None when the file has no such function, s unchanged when the
@@ -692,6 +730,11 @@ def patch_file(s, name, protect_hearts=False):
     counts["whole sites"] += out.count(WHOLE_MARK)   # (made now, or by an earlier run over this file)
     if whole:
         lines.append("oot_patches: %d frame counter(s) with the step's whole frames in %s" % (whole, name))
+    if protect_hearts:   # (the supported build's functions)
+        out, solver = patch_solver_steps(out)
+        counts["solver sites"] += out.count(SOLVER_MARK)   # (made now, or by an earlier run over this file)
+        if solver:
+            lines.append("oot_patches: the physics solver's steps rounded up at %d place(s) in %s" % (solver, name))
     return out, counts, lines
 
 
@@ -734,6 +777,9 @@ def report(paths, counts, protect_hearts=False):
     if protect_hearts and camera_speed != len(CAMERA_SPEED_HEADS):
         print("oot_patches: WARNING: the camera's turn speed was found in %d of %d functions (the Camera speed row turns only "
               "those)" % (camera_speed, len(CAMERA_SPEED_HEADS)))
+    if protect_hearts and total["solver sites"] != len(SOLVER_HEADS):
+        print("oot_patches: WARNING: the physics solver's step count was found at %d of %d places (above 60 fps what stands on a "
+              "moving platform can be left behind)" % (total["solver sites"], len(SOLVER_HEADS)))
     if step_sites != len(STEP_SITES):
         # (both or neither: with one divide timed and the other stepping 1/60 s the two clocks of the game would run apart. Without
         # the hook the host keeps the rate up to the cap, as before: host/nn_vi.c, hos_step_probe)
