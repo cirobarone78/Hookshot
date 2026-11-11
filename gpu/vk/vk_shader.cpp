@@ -583,11 +583,17 @@ struct Pools {
     Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_blocks{32};
 };
 /// (each thread's pools of its finished translations, emptied, for its next ones: fresh pages were 20-30% of a stage's
-/// translation time)
+/// translation time. Room for three, the most alive at once: task, mesh and fragment)
 std::vector<std::unique_ptr<Pools>>& spare_pools() {
-    static thread_local std::vector<std::unique_ptr<Pools>> spare;
+    static thread_local std::vector<std::unique_ptr<Pools>> spare = [] {
+        std::vector<std::unique_ptr<Pools>> v;
+        v.reserve(3);
+        return v;
+    }();
     return spare;
 }
+/// (a released pool keeps the size of the largest stage it held for the thread's life: one bigger than this is freed)
+constexpr size_t kSparePoolBytes = 8u << 20;
 
 /// A translated stage: its IR program (kept for the next stage's inputs) and the pools its IR lives in
 struct Translation {
@@ -603,7 +609,10 @@ struct Translation {
         }
     }
     ~Translation() {
+        size_t bytes = program.blocks.size() * (sizeof(Shader::IR::Block) + sizeof(Shader::Maxwell::Flow::Block));
+        for (const auto* block : program.blocks) bytes += block->Instructions().size() * sizeof(Shader::IR::Inst);
         program = {};
+        if (bytes > kSparePoolBytes) return;
         pools->flow_blocks.ReleaseContents();
         pools->blocks.ReleaseContents();
         pools->insts.ReleaseContents();

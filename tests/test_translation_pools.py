@@ -1,6 +1,6 @@
 """A stage's translation reuses its thread's emptied pools and commits no 68 MB of IR::Blocks (gpu/vk/vk_shader.cpp; no game/GPU).
 
-Pools, spare_pools and Translation are cut out of vk_shader.cpp and compiled with Eden's real ObjectPool and stand-ins
+Pools, spare_pools, kSparePoolBytes and Translation are cut out of vk_shader.cpp and compiled with Eden's real ObjectPool and stand-ins
 for the IR types (an IR::Block of its real ~8 KB). The default chunk of 8192 Blocks was 68 MB committed for every stage,
 and fresh pages for each one cost 20-30% of the translation's time.
 
@@ -49,7 +49,14 @@ static int live = 0;
 namespace Shader {
 namespace IR {
 struct Inst { char bytes[120]; Inst() { live++; } ~Inst() { live--; } };
-struct Block { char bytes[8288]; Block() { live++; } ~Block() { live--; } };
+struct Block {
+    char bytes[8288];
+    std::vector<Inst*> insts;
+    Block() { live++; }
+    ~Block() { live--; }
+    std::vector<Inst*>& Instructions() { return insts; }
+    const std::vector<Inst*>& Instructions() const { return insts; }
+};
 struct Program { std::vector<Block*> blocks; };
 }
 namespace Maxwell::Flow {
@@ -65,8 +72,9 @@ static void check(bool ok, const char* what) {
 }
 static void fill(Translation& t, int n) {
     for (int i = 0; i < n; i++) {
-        (void)t.pools->insts.Create();
-        t.program.blocks.push_back(t.pools->blocks.Create());
+        auto* block = t.pools->blocks.Create();
+        block->insts.push_back(t.pools->insts.Create());
+        t.program.blocks.push_back(block);
         (void)t.pools->flow_blocks.Create();
     }
 }
@@ -99,6 +107,14 @@ int main() {
         fill(t, 10);
     }).join();
     check(live == 0, "a finished translation's IR outlives it");
+    {
+        Translation big;
+        check(big.pools.get() == first, "the thread's spare pools are not reused");
+        fill(big, 1100);
+    }
+    check(live == 0, "a finished translation's IR outlives it");
+    check(spare_pools().size() == 1, "a translation over the size limit keeps its pools");
+    check(spare_pools().capacity() >= 3, "the spare list can grow in a destructor");
     if (failed) return 1;
     std::puts("translation pools: ok");
 }
@@ -111,7 +127,7 @@ def main():
     args = parser.parse_args()
     shader = (VK / "vk_shader.cpp").read_text(encoding="utf-8")
     pools = cut(shader, "struct Pools {", "\n};\n") + cut(shader, "std::vector<std::unique_ptr<Pools>>& spare_pools() {", "\n}\n") + \
-        cut(shader, "struct Translation {", "\n};\n")
+        cut(shader, "constexpr size_t kSparePoolBytes", ";\n") + cut(shader, "struct Translation {", "\n};\n")
     with tempfile.TemporaryDirectory(prefix="translation-pools-") as tmp:
         tmp = Path(tmp)
         (tmp / "pools.inc").write_text(pools, encoding="utf-8")
