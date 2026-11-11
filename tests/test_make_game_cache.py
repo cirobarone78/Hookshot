@@ -1,5 +1,8 @@
 """Game-free checks of make_game's NUP cache selection and replacement.
 
+make_game runs as from a checkout of its own, with nothing in its work/: a developer's play profile in the clone's
+work/ (CONTRIBUTING.md puts it there) was copied in and probed with clang, a process these checks refuse.
+
 Run with: python -I tests/test_make_game_cache.py
 """
 import contextlib
@@ -125,6 +128,10 @@ class NupCacheTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(make_game, "drop_stale_objects"))
             stack.enter_context(mock.patch.object(make_game, "no_throttle"))
             stack.enter_context(mock.patch("ctypes.WinDLL", create=True))
+            # (the hot list, link order, PGO profile and chunk boundaries come from <checkout>/work: an empty one here. The lift's
+            # key hashes nx2/ relative to the checkout, which relpath refuses across drives (Windows CI): not what is checked here)
+            stack.enter_context(mock.patch.object(make_game, "ROOT", str(self.root / "checkout")))
+            stack.enter_context(mock.patch.object(make_game, "lift_key", return_value="test key"))
             stack.enter_context(mock.patch.object(make_game, "run", side_effect=run))
             output = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             try:
@@ -182,7 +189,7 @@ class NupCacheTests(unittest.TestCase):
         after = self.cache()
         # (the one file added: the damaged-texture check's note that this unpack was checked, nup.stand_in_damaged)
         self.assertEqual(after.pop(".hookshot_romfs_checked").decode().splitlines(),
-                         ["resolved-v1"] + before[".hookshot_romfs"].decode().splitlines())
+                         ["resolved-v2"] + before[".hookshot_romfs"].decode().splitlines())
         self.assertEqual(after, before)
         self.assertEqual((scratch / "main").read_bytes(), (self.out / ".hookshot_exefs/main").read_bytes())
 
@@ -205,7 +212,7 @@ class NupCacheTests(unittest.TestCase):
         after = self.cache()
         # (the one file added: the damaged-texture check's note that this unpack was checked, nup.stand_in_damaged)
         self.assertEqual(after.pop(".hookshot_romfs_checked").decode().splitlines(),
-                         ["resolved-v1"] + before[".hookshot_romfs"].decode().splitlines())
+                         ["resolved-v2"] + before[".hookshot_romfs"].decode().splitlines())
         self.assertEqual(after, before)
         self.assertEqual((self.work / "exefs/main").read_bytes(),
                          (self.out / ".hookshot_exefs/main").read_bytes())
@@ -248,7 +255,7 @@ class NupCacheTests(unittest.TestCase):
             self.run_to_lift(self.old_nup)
         self.assertEqual(broken.read_bytes(), donor.read_bytes())
         self.assertFalse(heads.exists())
-        self.assertEqual((self.out / ".hookshot_romfs_checked").read_text(), "resolved-v1\n" + self.marker.read_text())
+        self.assertEqual((self.out / ".hookshot_romfs_checked").read_text(), "resolved-v2\n" + self.marker.read_text())
         self.assertEqual(self.old_nup.read_bytes(), original_nup)
         self.assertEqual((self.out / "user/save/sentinel.txt").read_bytes(), b"authored save sentinel")
         self.assertEqual((self.out / "hookshot_options.ini").read_bytes(), b"authored options sentinel")
@@ -273,7 +280,7 @@ class NupCacheTests(unittest.TestCase):
         with self.assertRaises(Prepared):
             self.run_to_lift(self.old_nup)
         self.assertIn("checking your game files", self.output)
-        self.assertEqual(checked.read_text(), "resolved-v1\n" + self.marker.read_text())
+        self.assertEqual(checked.read_text(), "resolved-v2\n" + self.marker.read_text())
         with mock.patch.object(make_game, "file_progress", side_effect=AssertionError("Unexpected second scan")):
             with self.assertRaises(Prepared):
                 self.run_to_lift(self.old_nup)

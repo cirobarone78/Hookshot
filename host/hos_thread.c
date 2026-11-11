@@ -36,7 +36,8 @@ struct HosThread {
     uint32_t kernel_handle;
     HANDLE wake;
     /* virtual cores (HOS_VCORES): the core held + 1 (0: none), the last one, a better waiter's request, queued, and
-       whether it has run without one since an escape (vc_acquire; until its next block: hos_vcore_away) */
+       whether it has run without one since an escape (vc_acquire; until its next block, hos_vcore_away, or the next
+       hos_vcore_back) */
     int vc_held, vc_last, vc_queued, vc_escaped;
     volatile int vc_kick;
     int64_t vc_since;
@@ -436,13 +437,21 @@ HosThread *hos_thread_by_handle(uint32_t h) {
 }
 
 /* Block on the thread's wake event (the kernel layer's lock must not be held). */
+/* (HOS_CHAIN: the kernel's waits, svc mutexes, condition variables and the address arbiter, end in a wake of the
+   thread itself: one key per thread, bit 62: never a guest address) */
+static uint64_t wake_chain_key(HosThread *t) { return 1ULL << 62 | (uint64_t)(uintptr_t)t; }
 void hos_thread_wait(HosThread *t, int64_t timeout_ns, int *timed_out) {
     DWORD ms = timeout_ns < 0 ? INFINITE : (DWORD)((timeout_ns + 999999) / 1000000);
+    HOS_CHAIN(HOS_CHAIN_WAIT, wake_chain_key(t));
     const int away = hos_vcore_away();
     *timed_out = WaitForSingleObject(t->wake, ms) == WAIT_TIMEOUT;
     if (away) hos_vcore_back();
+    HOS_CHAIN(HOS_CHAIN_WOKE, wake_chain_key(t));
 }
-void hos_thread_wake(HosThread *t) { SetEvent(t->wake); }
+void hos_thread_wake(HosThread *t) {
+    HOS_CHAIN(HOS_CHAIN_SIGNAL, wake_chain_key(t));
+    SetEvent(t->wake);
+}
 
 HosThread *hos_thread_of(uint64_t guest_tt) {
     HosThread *r = NULL;
@@ -856,9 +865,11 @@ static void sleep_away(int64_t ns, int guest) {
         SwitchToThread();
         return;
     }
+    HOS_CHAIN(HOS_CHAIN_SLEEP, (uint64_t)ns);
     const int away = hos_vcore_away();
     sleep_ns(ns, guest);
     if (away) hos_vcore_back();
+    HOS_CHAIN(HOS_CHAIN_AWAKE, (uint64_t)ns);
 }
 void hos_sleep_ns(int64_t ns) { sleep_away(ns, 0); }
 static void sleep_ns(int64_t ns, int guest) {
@@ -1378,6 +1389,8 @@ static void vc_dequeue(HosThread *t) {
         }
     t->vc_queued = 0;
 }
+/* (HOS_CHAIN: a thread's wait for a core, and the grant that ends it; bit 63: never a guest address) */
+static uint64_t vc_chain_key(HosThread *t) { return 1ULL << 63 | (uint64_t)(uintptr_t)t; }
 /* core c is free: to the best waiter allowed on it; holding vc_lock */
 static void vc_grant(int c) {
     HosThread *best = NULL;
@@ -1386,6 +1399,7 @@ static void vc_grant(int c) {
     if (!best) return;
     vc_dequeue(best);
     vc_take(best, c);
+    HOS_CHAIN(HOS_CHAIN_SIGNAL, vc_chain_key(best));
     WakeConditionVariable(&best->vc_cv);
 }
 static void vc_stats_locked(int64_t now) {
@@ -1418,6 +1432,7 @@ static void vc_acquire(HosThread *t) {
         return;
     }
     const int64_t t0 = hos_now_ns();
+    HOS_CHAIN(HOS_CHAIN_WAIT, vc_chain_key(t));
     t->vc_since = t0;
     t->vc_queued = 1;
     if (vc_nq < 1024) vc_queue[vc_nq++] = t;
@@ -1470,6 +1485,7 @@ static void vc_acquire(HosThread *t) {
         }
     }
     const int64_t waited = hos_now_ns() - t0;
+    HOS_CHAIN(HOS_CHAIN_WOKE, vc_chain_key(t));
     vc_st.wait_ns += waited;
     if (waited > vc_st.max_ns) vc_st.max_ns = waited;
     vc_stats_locked(hos_now_ns());
@@ -1519,7 +1535,12 @@ int hos_vcore_away(void) {
 }
 void hos_vcore_back(void) {
     HosThread *t = cur;
-    if (hos_vcores_on() && t && !t->vc_held) vc_acquire(t);
+    if (!hos_vcores_on() || !t) return;
+    /* after it the thread holds a core or has escaped again (vc_acquire sets the flag again): the escape the flag stood
+       for has ended, also at a back without its away (a thread's start). A flag left up while a core is held would make
+       a later inner block's away answer 1 and take a core in the middle of the outer block */
+    t->vc_escaped = 0;
+    if (!t->vc_held) vc_acquire(t);
 }
 /* Lifted code calls this from its interrupt polls with the loop's guest registers still in host registers (a64_poll_cur,
    mkw_glue.c: the poll hands over no context, so the compiler need not spill them). It, and everything it calls, must never
