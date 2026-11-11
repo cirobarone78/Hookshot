@@ -512,8 +512,10 @@ std::string mic_key(const char* name) {
     std::string k(name ? name : "");
     for (char& c : k)   // (a device's name goes into hookshot_options.ini: a line break in it would add lines there)
         if ((unsigned char)c < 0x20 || c == 0x7f) c = ' ';
-    if (k.size() <= kMicNameKept) return k;
-    return k.substr(0, text_char_start(k, kMicNameKept));
+    if (k.size() > kMicNameKept) k = k.substr(0, text_char_start(k, kMicNameKept));
+    // (and no spaces at the end: a saved line's end, made one above, and those an older build saved with the name)
+    while (!k.empty() && k.back() == ' ') k.pop_back();
+    return k;
 }
 /// buf cut back to whole UTF-8 characters (snprintf may have cut one)
 void utf8_whole(char* buf) {
@@ -3537,7 +3539,6 @@ void menu_init() {
             has_vram_budget |= !strcmp(line, "vram_budget");
             if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone, by its name)
                 mic_want = mic_key(eq + 1);
-                while (!mic_want.empty() && (mic_want.back() == '\n' || mic_want.back() == '\r')) mic_want.pop_back();
             }
         }
         fclose(f);
