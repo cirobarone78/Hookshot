@@ -84,6 +84,11 @@ static int face_of_name(const char *name) {
     return HOS_PROMPT_XBOX;   /* (Xbox pads, and the many that copy their layout) */
 }
 
+/* the pad input bound to each Switch button now (HOS_SW_N: hos_binding's, as the Controls page sets them) */
+static void current_binds(int *bind) {
+    for (int b = 0; b < HOS_SW_N; b++) bind[b] = hos_binding(HOS_BIND_PAD, b, 0);
+}
+
 /* HOS_PROMPT_* (faces[]) */
 static int choose_face(const char *dir) {
     char path[MAX_PATH], line[80];
@@ -488,7 +493,7 @@ static int build_textures(char *out, size_t cap) {
     uint8_t *t = read_all(path, "HPTX", &tn);
     if (!t) return 0;   /* (built without the textures: the game's) */
     int bind[HOS_SW_N];
-    for (int b = 0; b < HOS_SW_N; b++) bind[b] = hos_binding(HOS_BIND_PAD, b, 0);
+    current_binds(bind);
     uint64_t h = fnv(fnv(fnv(0xcbf29ce484222325ull, &face, sizeof face), bind, sizeof bind), t, (size_t)tn);
     size_t nruns;
     Run *runs = texture_runs(t, tn, bind, &nruns);
@@ -605,11 +610,15 @@ static struct {
     long nbins[HOS_PROMPT_N];
 } tex;
 
-/* what the game holds now (the start's, then each change's): the face and the controls */
+/* what the game is to show now (the start's, then each change's): the face and the controls; and what each part it loaded
+   shows (PART_*: the start's until written over, so a part found after a change catches up) */
+enum { PART_TEXTURES, PART_LAYOUTS, PART_FONT, PARTS };
 static int live_face_now = -1, live_bind_now[HOS_SW_N];
+static int part_face[PARTS], part_bind[PARTS][HOS_SW_N];
 static void live_start(int face, const int *bind) {   /* (the first file served: the start's) */
     if (live_face_now >= 0) return;
     memcpy(live_bind_now, bind, sizeof live_bind_now);
+    for (int p = 0; p < PARTS; p++) part_face[p] = face, memcpy(part_bind[p], bind, sizeof part_bind[p]);
     live_face_now = face;
 }
 
@@ -657,7 +666,7 @@ void hos_prompts_pool(uint64_t mem, uint64_t size) {
         if (!q || memcmp(q, tex.want[s], SAMPLE_LEN)) return;
     }
     tex.l.lo = mem, tex.l.hi = mem + size;
-    tex.l.base = base;
+    __atomic_store_n(&tex.l.base, base, __ATOMIC_RELEASE);   /* (lo and hi first: the input thread reads them once base is set) */
     hos_log("prompts: the textures' pool at %#llx (+%#llx): a new face or new controls show at once", (unsigned long long)mem,
             (unsigned long long)size);
 }
@@ -684,7 +693,6 @@ static struct {
     volatile uint64_t at;              /* where the game keeps the served font, decrypted (behind its header), 0 not seen */
     uint32_t n;                        /* the file's length */
     uint8_t head[64];                  /* its first bytes, decrypted: the tables' directory */
-    uint32_t cmap_off, cmap_len;       /* its cmap, in the font (behind the header) */
 } font;
 
 typedef struct {
@@ -710,14 +718,14 @@ static uint64_t lay_n;         /* its length, 0 not served */
 /* where the game keeps the layouts: the whole Common.blarc, unpacked near the start of an address region of its own (the
    game's resources each take one: the textures' pool and the font too), its offsets made pointers where they lie. Looked
    for by the file's first bytes at the pages of each region's first 1 MB, every 2 s from when the textures' pool is known
-   (the game unpacks its resources then), 30 times at most; then the runs served that are still there are the ones a change
+   (the game unpacks its resources then; without the textures, at once), 30 times at most; then the runs served that are still there are the ones a change
    puts the game's bytes back over (put_runs, guarded: never over a pointer the game made) */
 static void find_layouts(void) {
     static int tries;
     static int64_t last;
     static uint64_t regions[4096][2];
     const int64_t now = hos_now_ns();
-    if (lay.base || tries >= 30 || !lay_n || !tex.l.lo || now - last < 2000000000) return;
+    if (lay.base || tries >= 30 || !lay_n || (tex.data_len && !tex.l.lo) || now - last < 2000000000) return;
     last = now, tries++;
     int n = hos_regions(regions, 4096);
     if (n > 4096) n = 4096;
@@ -830,36 +838,40 @@ static int text_rewrite(uint64_t box) {
     return changed;
 }
 
-/* nx2/oot_patches.py, as the game lays a text box out (f_8152aec0, before it looks at the box's status: laid out now) */
-void hos_prompts_text_layout(uint64_t box) {
-    if (!text_rewrite(box)) return;
+/* the box's status bits set (as the word after them allows) */
+static void mark_box(uint64_t box, uint32_t bits) {
     const uint64_t *status = (const uint64_t *)hos_guest_range(box + 8, 8);
     uint32_t *word = status && *status ? (uint32_t *)hos_guest_range(*status, 8) : NULL;
-    if (word) *word |= 0x20000 & word[1];
+    if (word) *word |= bits & word[1];
+}
+
+/* nx2/oot_patches.py, as the game lays a text box out (f_8152aec0, before it looks at the box's status: laid out now) */
+void hos_prompts_text_layout(uint64_t box) {
+    if (text_rewrite(box)) mark_box(box, 0x20000);
 }
 
 /* nx2/oot_patches.py, as the game draws a text box (f_8152b670, each time it shows it): a box rewritten is laid out again at
    the next update (its status) */
 void hos_prompts_text_draw(uint64_t box) {
-    if (!text_rewrite(box)) return;
-    const uint64_t *status = (const uint64_t *)hos_guest_range(box + 8, 8);
-    uint32_t *word = status && *status ? (uint32_t *)hos_guest_range(*status, 8) : NULL;
-    if (word) *word |= (0x20000 | 0x100000) & word[1];
+    if (text_rewrite(box)) mark_box(box, 0x20000 | 0x100000);
 }
 
 /* nx2/oot_patches.py, as FreeType draws a glyph (ft_smooth_render, f_81680c60; slot: its FT_GlyphSlot): the font the glyph
    is of (slot->face at +8, the face's stream at +192: its base and size), the one served? Then where the game keeps it,
    decrypted (FreeType and the text shaping read it there) */
 void hos_prompts_glyph(uint64_t slot) {
-    static volatile uint64_t last;   /* (the face looked at last: a glyph of another face is looked at again) */
+    static volatile uint64_t last;   /* (the last face found to be another font: its glyphs not looked at again) */
     if (font.at || !font.n) return;
     const uint64_t *s = (const uint64_t *)hos_guest_range(slot + 8, 8);
     const uint64_t face = s ? *s : 0;
     if (!face || face == last) return;
-    last = face;
     const uint64_t *st = (const uint64_t *)hos_guest_range(face + 192, 8);
     const uint64_t *base = st ? (const uint64_t *)hos_guest_range(*st, 16) : NULL;
-    if (!base || (base[1] != font.n && base[1] != font.n - 8)) return;
+    if (!base) return;   /* (not readable yet: looked at again) */
+    if (base[1] != font.n && base[1] != font.n - 8) {
+        last = face;   /* (another font: not looked at again while its glyphs follow each other) */
+        return;
+    }
     const uint8_t *q = (const uint8_t *)hos_guest_range(base[0], font.n - 8);
     if (!q || memcmp(q, font.head, sizeof font.head)) return;
     font.at = base[0];
@@ -886,38 +898,43 @@ static int live_font(const char *dir, int face) {
 
 volatile int hos_prompts_row = -1;   /* nn_hid.c's live input ("!prompts <row>"): over the menu's row, -1 none */
 
-/* the face the Button prompts row chooses now: Auto, the first controller's (none: the face shown stays) */
+/* the face the Button prompts row chooses now: Auto, the first controller's (none: the Switch's, as at the start) */
 static int live_face(void) {
     const int choice = hos_prompts_row >= 0 ? hos_prompts_row : rx_option(HOS_OPT_PROMPTS, -1);
     if (choice >= 1 && choice <= HOS_PROMPT_N) return choice - 1;
     if (choice < 0) return live_face_now;   /* (no menu: the start's) */
     char name[128] = "";
     hos_sdl_pad_first_name(name, sizeof name);
-    return name[0] ? face_of_name(name) : live_face_now;
+    return face_of_name(name);
 }
 
-/* nn_hid.c, as the game reads its controller (every frame; looked at every 100 ms): the face or the controls changed? */
+/* nn_hid.c, as the game reads its controller (every frame; looked at every 100 ms): the face or the controls changed, or a
+   part found since that still shows what was before? */
 void hos_prompts_live(void) {
     static volatile LONG busy;
     static int64_t last;
-    if (live_face_now < 0 || (!tex.l.base && !lay_n && !font.at) || InterlockedCompareExchange(&busy, 1, 0)) return;
+    const int pool = __atomic_load_n(&tex.l.base, __ATOMIC_ACQUIRE) != 0;   /* (hos_prompts_pool: lo and hi set before) */
+    if (live_face_now < 0 || (!pool && !lay_n && !font.at) || InterlockedCompareExchange(&busy, 1, 0)) return;
     const int64_t now = hos_now_ns();
     if (now - last >= 100000000) {
         last = now;
         find_layouts();
         int bind[HOS_SW_N];
-        for (int b = 0; b < HOS_SW_N; b++) bind[b] = hos_binding(HOS_BIND_PAD, b, 0);
+        current_binds(bind);
         const int face = live_face();
-        if (face != live_face_now || memcmp(bind, live_bind_now, sizeof bind)) {
-            char dir[MAX_PATH];
-            int start;
-            if (setup(dir, sizeof dir, &start)) {
-                if (tex.l.base) live_textures(dir, face, bind);
-                if (lay.base) live_layouts(dir, face, bind);
-                if (font.at) live_font(dir, face);
-            }
-            live_face_now = face;   /* (also when it failed: not tried again until the next change) */
-            memcpy(live_bind_now, bind, sizeof live_bind_now);
+        live_face_now = face;
+        memcpy(live_bind_now, bind, sizeof live_bind_now);
+        const int found[PARTS] = {pool, lay.base != 0, font.at != 0};
+        char dir[MAX_PATH];
+        int start, ready = -1;
+        for (int p = 0; p < PARTS; p++) {
+            if (!found[p] || (part_face[p] == face && !memcmp(part_bind[p], bind, sizeof bind))) continue;
+            if (ready < 0) ready = setup(dir, sizeof dir, &start);
+            if (ready && p == PART_TEXTURES) live_textures(dir, face, bind);
+            if (ready && p == PART_LAYOUTS) live_layouts(dir, face, bind);
+            if (ready && p == PART_FONT) live_font(dir, face);
+            part_face[p] = face;   /* (also when it failed: not tried again until the next change) */
+            memcpy(part_bind[p], bind, sizeof part_bind[p]);
         }
     }
     InterlockedExchange(&busy, 0);
@@ -972,7 +989,7 @@ static int build_layouts(char *out, size_t cap) {
     int face;
     if (!setup(dir, sizeof dir, &face)) return 0;
     int bind[HOS_SW_N];
-    for (int b = 0; b < HOS_SW_N; b++) bind[b] = hos_binding(HOS_BIND_PAD, b, 0);
+    current_binds(bind);
     Layout o;
     if (!layout_runs(dir, face, bind, &o)) return 0;
     live_start(face, bind);
@@ -1081,18 +1098,12 @@ static int build(char *out, size_t cap) {
     uint8_t *b = font_bound(dir, face, &n, &key, &bound);
     if (!b) return 0;
     if (n >= 8 + 64) memcpy(font.head, b + 8, sizeof font.head);
-    const unsigned tables = n >= 8 + 12 ? rd16(b + 8 + 4) : 0;
-    for (unsigned t = 0; t < tables && 8 + 12 + 16 * (long)(t + 1) <= n; t++) {
-        const uint8_t *rec = b + 8 + 12 + 16 * t;
-        if (!memcmp(rec, "cmap", 4) && rd32(rec + 8) <= (uint32_t)n - 8 && rd32(rec + 12) <= (uint32_t)n - 8 - rd32(rec + 8))
-            font.cmap_off = rd32(rec + 8), font.cmap_len = rd32(rec + 12);
-    }
     for (long i = 8; i < n; i += 4) wr32le(b + i, rd32le(b + i) ^ key);
     snprintf(out, cap, "%sprompts/External.bfotf.zs", dir);
     const int ok = write_zstd_raw(out, b, (size_t)n);
     if (ok) {
         int bind[HOS_SW_N];
-        for (int k = 0; k < HOS_SW_N; k++) bind[k] = hos_binding(HOS_BIND_PAD, k, 0);
+        current_binds(bind);
         live_start(face, bind);
         font.n = n >= 8 + 64 ? (uint32_t)n : 0;
     }

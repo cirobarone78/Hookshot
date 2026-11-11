@@ -367,7 +367,8 @@ static void live_input(void) {
                 if (!strncmp(line, "!cheat ", 7)) __atomic_store_n(&hos_oot_live_action, atoi(line + 7), __ATOMIC_RELAXED);
                 void hos_bind(int set, int button, int slot, int code);   /* "!bind <HOS_SW_*> <HOS_PAD_*>", as the Controls page */
                 int bind_b = -1, bind_pad = -2;
-                if (!strncmp(line, "!bind ", 6) && sscanf(line + 6, "%d %d", &bind_b, &bind_pad) == 2)
+                if (!strncmp(line, "!bind ", 6) && sscanf(line + 6, "%d %d", &bind_b, &bind_pad) == 2 &&
+                    bind_b >= 0 && bind_b < HOS_SW_N)
                     hos_bind(HOS_BIND_PAD, bind_b, 0, bind_pad);
                 extern volatile int hos_prompts_row;   /* host/prompts.c: "!prompts <0 Auto, HOS_PROMPT_* + 1>", as the row */
                 if (!strncmp(line, "!prompts ", 9)) __atomic_store_n(&hos_prompts_row, atoi(line + 9), __ATOMIC_RELAXED);
