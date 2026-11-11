@@ -94,7 +94,7 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | Switch | What it does |
 |---|---|
 | `HOS_INPUT_SCRIPT=<presses>` | Presses timed from the game's first controller read |
-| `HOS_INPUT_LIVE=<file>` | A file the test appends lines of presses to, read every 30 ms; each line's times count from when it is read. A line `!cheat <n>` sends a Cheats page action, `!synclog` logs the NVN syncs (`!dump`, `!shots`, `!rdoc` and `!flasharm` are the WebGPU renderer's) |
+| `HOS_INPUT_LIVE=<file>` | A file the test appends lines of presses to, read every 30 ms; each line's times count from when it is read. A line `!cheat <n>` sends a Cheats page action (`!cheat 998`, which no menu row sends: a `cheats: state:` line with the map, whether an event plays or a map loads, and Link's age), a line `!teleport <map> <start position> [<arrival event>]` a map change no menu row names (a boss's room, for the pipeline tour), `!synclog` logs the NVN syncs (`!dump`, `!shots`, `!rdoc` and `!flasharm` are the WebGPU renderer's) |
 | `HOS_INPUT_FRAME_CLOCK=1` | The script's time runs at 60 game frames a second instead of the wall clock |
 | `HOS_INPUT_EXCLUSIVE`, `HOS_INPUT_BACKGROUND`, `HOS_INPUT_SCRIPT_BACKGROUND` (set) | As above; the last lets every device count while the window is behind another one |
 | `RX_VK_MENU_SCRIPT=<seconds>:<key>,...` | Timed Insert menu keys: `INS`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `ESC`, `ENTER`, `TABL`, `TABR` |
@@ -225,6 +225,44 @@ is made from. A record that no longer matches what play asks for builds a pipeli
 compiles in play. When the record's format changes (its magic and record size, `MAGIC` and `SIZE` in
 `nx2/pipeline_states.py`), the old lists no longer read and the release checks stop. Convert each source in place, or
 record it again, and make a new tour list. The folder's layout stays the same.
+
+### The pipeline tour
+
+`scripts/pipeline_tour.py` plays the game for the tour's list, unattended, on Linux, and writes `tour.bin.xz` with its note:
+
+```sh
+python -I scripts/pipeline_tour.py tour --game <game folder> --out <tour dir> --name play --publish
+```
+
+`tour` runs its parts (the opening; the child overworld; the dungeons at both ages; the adult overworld) one after another,
+one game at a time, in a reflinked copy of the game folder, on `--cpus` (default 6-11,18-23) at nice 19, in games of `--chunk`
+stops (8; a fresh game each, as one game's memory only grows), and merges their lists; `--publish` then runs
+`nx2/pipeline_states.py tour` with the GPU, build, settings and route the runs logged (`merge` merges any lists). One game
+holds 4-14 GB (its 9809 MB of guest memory is shared memory, touched as it goes), so each game runs under a memory guard (the
+script's `MEM`, `--mem key=value`): it starts only with 8 GB available and at most 16 GB of swap in use (else it waits, 30
+minutes at most, and the tour ends there with what it has); a game holding more than 9 GB after a stop ends there and a fresh
+one goes on from the next stop; past 12 GB, under 3 GB available or past 20 GB of swap it is stopped at once and a fresh game
+goes on from the stop it was at (a stop that does it twice is left out). On Linux the game also runs in a systemd scope of its
+own with `MemoryMax` (16 GB), so that should all of this fail the kernel ends the game, not the session. `--lock NAME` runs each
+game under `oot-status --lock NAME --priority low` where that is used. Each part starts with no save, in a data folder of its own: the title, New Game and the opening (watched whole by the
+opening part, skipped by the others), until the game's state says Link is in control (`!cheat 998`), then every item from the
+Debug tab's inventory but the story's (medallions, stones and songs start scenes that wait for the player), and each Teleport
+destination: the camera all around, at a few the sword, the shield and an item from the pause menu's Items page used, and on to
+the next once no new pipeline came for 2.5 s of game time. A few stops are left out: one starts a scene the tour cannot finish,
+others added almost nothing (the script's `LEFT_OUT`). `value <run dirs>` measures that: each step's pipelines that neither the
+players' lists (`contrib/`) nor any other step has, its seconds, and the steps under `--floor` (10) cut, the least worth a
+second first (`--sub`: a stop's arrival, look around, item use and settling apart).
+
+It is driven through `HOS_INPUT_LIVE` and its `!cheat` lines (the Debug tab's actions, `HOS_OOT_CHEATS=1`); no controller is
+opened (`HOS_NO_SDL`) and nothing reaches the desktop. Waits and presses count the game's frames (`RX_VK_FRAME_LOG`,
+`HOS_INPUT_FRAME_CLOCK`), so it runs faster than real time: pacing off, the cap at 240 with a 60th of a second of game time a
+frame, and the cheapest options in the run's own copy of the options file (640x360, the game's own upscaler at 50%, no frame
+generation, sharpening or HDR); a pipeline's key has formats and state, not sizes. Each map change waits for the game's own
+state, a stuck scene is answered with A and B, and a stop that does not happen is reported and skipped (three in a row end the
+run). `run` is one part (`--part`, `--first <stop>` to start again at a stop, `--stops N`, `--dry-run`); `--env` and `--ini`
+change the settings, and `--window WxH` shows it on a Sway workspace. Each run writes `states.bin`, `report.txt` (each step's
+pipelines, the new ones it added, its frames, seconds and the game's memory: a flattening curve says the list is nearly whole),
+`log.txt`, `steps.txt` and a small picture every 600 frames (`shots/`, the renderer's own frames).
 
 ## The options file
 

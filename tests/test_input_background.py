@@ -75,6 +75,7 @@ def main():
                             r"static int move_stick_held;", hid, re.M).group(0)
     cheat_spies = """
 volatile int hos_oot_live_action;
+void hos_oot_custom_teleport(const char *banc, const char *start, const char *boot) { (void)banc; (void)start; (void)boot; }
 int hos_oot_flight_shortcut_ready(void) { CHECK(!"unexpected cheat readiness query"); return 0; }
 void rx_option_set(int id, int value) { (void)id; (void)value; CHECK(!"unexpected cheat option change"); }
 """
