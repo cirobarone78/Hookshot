@@ -44,6 +44,7 @@ FIXTURE = r"""
 #include <cstring>
 #include <iterator>
 #include <string>
+#include "hookshot_env.h"   // (gpu/vk/compat: env_value_off, the switches' rule)
 #include "hos_wide_size.h"   // (host/: the output sizes the menu accepts, hos_output_size_valid)
 #ifdef _WIN32
 static int setenv(const char* name, const char* value, int) { return _putenv_s(name, value); }
@@ -101,7 +102,9 @@ int main(int argc, char** argv) {
     setenv("RX_VK_UPSCALE", "2", 1);
     setenv("RX_VK_FRAMEGEN_MULT", "4", 1);
     setenv("HOS_OUTPUT_RES", "2400x1350", 1);
+    setenv("RX_VK_ASTC_RGBA8", "1", 1);
     env_part();
+    CHECK(opts.astc_rgba8 == 1);
     // This run follows the environment
     CHECK(opts.pace == 1 && opts.realtime == 1 && opts.resolution == 0 && opts.upscale == 2 && opts.framegen == 4);
     CHECK(output_at(opts.output_res).w == 2400 && output_at(opts.output_res).h == 1344);
@@ -130,6 +133,11 @@ int main(int argc, char** argv) {
     opts.output_res = 1;
     save();
     CHECK(has("output_res=2560x1440\n"));
+    // A preset (or the Upscaler's snap) sets an overridden row to the very value the environment forced: the menu's, saved
+    CHECK(has("game_speed=0\n"));
+    env_release(&opts.realtime);
+    save();
+    CHECK(has("game_speed=1\n"));
     std::puts("PASS: the environment's rows last for the run; the options file keeps the player's");
 }
 """
@@ -151,7 +159,8 @@ def fixture(source):
     env_from = init.index("// (the environment over the saved rows")
     env_to = init.index("restart_init();", env_from)
     env = init[env_from:env_to]
-    for name in ("RX_VK_FRAMEGEN_MULT", "RX_VK_PACE", "RX_VK_UPSCALE", "HOS_REALTIME_STEP", "HOS_DYNRES", "HOS_OUTPUT_RES"):
+    for name in ("RX_VK_FRAMEGEN_MULT", "RX_VK_PACE", "RX_VK_UPSCALE", "HOS_REALTIME_STEP", "HOS_DYNRES", "HOS_OUTPUT_RES",
+                 "RX_VK_ASTC_RGBA8"):
         if '"%s"' % name not in env:
             raise SystemExit("menu_init no longer reads %s with the other overrides" % name)
     if re.search(r"opts\.\w+\s*=", env):
@@ -181,10 +190,11 @@ def main():
         exe = Path(tmp) / ("menu_env.exe" if os.name == "nt" else "menu_env")
         src.write_text(fixture(args.source), encoding="utf-8")
         if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
-            command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/D_CRT_SECURE_NO_WARNINGS", "/I" + str(args.source / "host"), str(src),
+            command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/D_CRT_SECURE_NO_WARNINGS", "/I" + str(args.source / "host"), "/I" + str(args.source / "gpu" / "vk" / "compat"), str(src),
                        "/Fo" + str(Path(tmp) / "menu_env.obj"), "/Fe" + str(exe)]
         else:
             command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-I", str(args.source / "host"),
+                       "-I", str(args.source / "gpu" / "vk" / "compat"),
                        str(src), "-o", str(exe)]
         subprocess.run(command, cwd=tmp, check=True)
         subprocess.run([str(exe), str(Path(tmp) / "hookshot_options.ini")], check=True)

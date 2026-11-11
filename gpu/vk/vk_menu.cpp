@@ -425,7 +425,8 @@ const char* hn_resolution(int v, int variant) {
 bool row_fixed(const int* value) {
     return (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::render_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
-           (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
+           (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr)) ||
+           (value == &opts.astc_rgba8 && getenv("RX_VK_ASTC_RGBA8"));   // (set for the run: vk_texture.cpp reads it first)
 }
 const char* tx_output_res(int v) {
     static char b[40];
@@ -577,7 +578,12 @@ void sync_preset_budgets(int p) {
 // (Sharpness: tuned for the window pass's neighbours one picture pixel apart, each about the old setting's sharpening on a
 // 3840 x 2160 window at that preset's picture, 2048 x 1152 or the handheld profile's 1536 x 864: same frame, mean |Laplacian|
 // of the window and of the picture, on the slider's steps)
+void env_release(const int* value);   // (below: a row the environment held, set by the menu from now on)
 void apply_preset(int p) {
+    // (the rows it sets are the preset's from now on, even at the value the environment forced: save writes them)
+    if (p > 0)
+        for (const int* v : {&opts.resolution, &opts.upscale, &opts.sharpness, &opts.pace, &opts.realtime, &opts.handheld})
+            env_release(v);
     switch (p) {
     case 1: // Minimum (4GB VRAM / iGPU)
         opts.resolution = 4; opts.upscale = 2; opts.sharpness = 30;
@@ -684,6 +690,11 @@ const char* tx_wide_menus(int v) {
 MENU_HINTS(hn_wide_menus, 0, "The menus stretched over the whole screen, as before.",
            "The menus in the middle 16:9; beside them, what the game draws there, out of focus.",
            "The menus in the middle 16:9; black beside them.")
+/// (the ASTC as RGBA8 row's line while RX_VK_ASTC_RGBA8 holds it: the old readme's way, still in some hookshot_env.txt files)
+const char* hn_astc_rgba8(int, int variant) {
+    return variant <= 0 && getenv("RX_VK_ASTC_RGBA8") ? "Set by RX_VK_ASTC_RGBA8 (hookshot_env.txt or the environment): remove that line to choose here."
+                                       : nullptr;
+}
 MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
 MENU_HINTS(hn_mesh_mode, 0, "The GPU's own mesh shaders where it has them, the compute path where it has not.",
            "The GPU's own mesh shaders for every draw. A GPU without them still uses the compute path.",
@@ -896,7 +907,7 @@ Row rows[] = {
      "restart.", hn_robust, true, true},
     {TAB_DEBUG, "ASTC as RGBA8", &opts.astc_rgba8, 0, 1, 1, tx_onoff,
      "Big ASTC textures kept as decoded RGBA8 instead of re-encoded to BC3: a workaround for texture artifacts seen on some AMD "
-     "cards (issues 57 and 1006). Takes far more video memory. Applies after restart.", nullptr, true, true},
+     "cards (issues 57 and 1006). Takes far more video memory. Applies after restart.", hn_astc_rgba8, true, true},
     // (Restart and Quit stay the table's last two: kRestartRow and kQuitRow count back from its end)
     {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
      "Starts the game again. Save your progress first. Press Enter or A twice to restart. Esc or B "
@@ -1169,7 +1180,7 @@ struct EnvOverride {
     int* value;
     int saved, forced;
 };
-EnvOverride env_overrides[8];
+EnvOverride env_overrides[16];
 int env_override_count = 0;
 void env_override(int* value, int v) {
     for (int i = 0; i < env_override_count; i++)
@@ -1190,6 +1201,12 @@ int saved_value(int* value) {
         o.value = nullptr;   // (changed in the menu: the player's choice from now on)
     }
     return *value;
+}
+/// The menu set the row (the player, a preset, the Upscaler's snap): its value is saved from now on, even where it is the
+/// one the environment forced
+void env_release(const int* value) {
+    for (int i = 0; i < env_override_count; i++)
+        if (env_overrides[i].value == value) env_overrides[i].value = nullptr;
 }
 /// Whether the environment still holds the row (saved_value has not seen the player change it)
 bool env_holds(const int* value) {
@@ -1381,7 +1398,10 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     } else {
         *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
         // (another Upscaler: the Render resolution moves to the nearest of its steps, DLSS's modes or the game's)
-        if (r.value == &opts.dlss) opts.resolution = ur::snap_render(upscaler(), opts.resolution);   // (a slider stop kept)
+        if (r.value == &opts.dlss) {   // (a slider stop kept)
+            opts.resolution = ur::snap_render(upscaler(), opts.resolution);
+            env_release(&opts.resolution);
+        }
         if (!r.preset_exempt) {   // (rows no preset sets: the controls, the window, the counter...)
             // (Custom, with the memory budgets of the preset it came from: they went with it, and Low (6GB) then a Resolution
             // step left a 6 GB card without its texture cap, past its VRAM, and Streamline refused DLSS frames)
@@ -2692,12 +2712,14 @@ void menu_init() {
     sync_preset_budgets(opts.budget);
     // (the environment over the saved rows, for this run only: env_override, save)
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) env_override(&opts.framegen, std::min(std::max(atoi(e), 2), 8));
-    if (const char* e = getenv("RX_VK_PACE")) env_override(&opts.pace, atoi(e) != 0);
+    if (const char* e = getenv("RX_VK_PACE")) env_override(&opts.pace, !env_value_off(e));
     if (const char* e = getenv("RX_VK_UPSCALE"))
         for (Row& r : rows)
             if (r.value == &opts.upscale) env_override(r.value, std::min(std::max(atoi(e), r.lo), r.hi));
-    if (const char* e = getenv("HOS_REALTIME_STEP")) env_override(&opts.realtime, atoi(e) != 0);
-    if (const char* e = getenv("HOS_DYNRES")) env_override(&opts.resolution, atoi(e) != 0 ? 0 : 1);
+    if (const char* e = getenv("HOS_REALTIME_STEP")) env_override(&opts.realtime, !env_value_off(e));
+    if (const char* e = getenv("HOS_DYNRES")) env_override(&opts.resolution, env_value_off(e) ? 1 : 0);
+    // (vk_texture.cpp reads RX_VK_ASTC_RGBA8 over the row: the row shows it, fixed (row_fixed), and the ini keeps the player's)
+    if (const char* e = getenv("RX_VK_ASTC_RGBA8")) env_override(&opts.astc_rgba8, !env_value_off(e));
     if (const char* e = getenv("HOS_OUTPUT_RES")) {
         player_custom_output = custom_output;   // (parse_output replaces the player's own size with the environment's)
         env_override(&opts.output_res, parse_output(e));

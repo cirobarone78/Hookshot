@@ -239,10 +239,11 @@ has more switches.
 For these AMD texture artifacts, try keeping decoded ASTC textures as RGBA8 instead of re-encoding them to BC3
 ([#57](https://github.com/NotRexed/Hookshot/issues/57), [#1006](https://github.com/NotRexed/Hookshot/issues/1006)).
 Turn on **ASTC as RGBA8** in the menu's Debug tab, under Developer, and restart the game. (`RX_VK_ASTC_RGBA8=1` in
-`hookshot_env.txt` does the same; `=0` turns it off whatever the row says.)
+`hookshot_env.txt` does the same, as earlier versions of this readme said; while that line is there the row shows its
+value and cannot be changed, so remove the line to choose in the menu.)
 
 This is a workaround for some artifacts, not a general lighting fix. It can substantially increase graphics-memory
-use and cause stalls when the card runs out of headroom. To undo it, turn the row off and restart the game.
+use and cause stalls when the card runs out of headroom. To undo it, turn the row off (and remove any `RX_VK_ASTC_RGBA8` line from `hookshot_env.txt`) and restart the game.
 
 ## In-game menu
 
