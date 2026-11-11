@@ -53,12 +53,12 @@ def main():
           "vk_menu.cpp: draw_menu must dim for subpages and only skip dim on page 0")
 
     # 4. Prompts in draw_options and draw_tune_bar
-    check('{ui::kCompact, "Compact", compact_key_name}' in menu_cpp,
-          'vk_menu.cpp: draw_options must offer {ui::kCompact, "Compact", compact_key_name} prompt')
-    check('{ui::kCompact, "Full menu", compact_key_name}' in menu_cpp,
-          'vk_menu.cpp: draw_tune_bar must offer {ui::kCompact, "Full menu", compact_key_name} prompt')
+    check('{ui::kCompact, i18n::tr("Compact"), compact_key_name}' in menu_cpp,
+          'vk_menu.cpp: draw_options must offer {ui::kCompact, i18n::tr("Compact"), compact_key_name} prompt')
+    check('{ui::kCompact, i18n::tr("Full menu"), compact_key_name}' in menu_cpp,
+          'vk_menu.cpp: draw_tune_bar must offer {ui::kCompact, i18n::tr("Full menu"), compact_key_name} prompt')
     # (Save my pipeline list, an action rather than a page, says Save: tests/test_pipeline_share.py)
-    check('tune_prompts[1] = {ui::kConfirm, confirms ? (pending == &r ? "Confirm" : r.name) : is_share_row(r) ? "Save" : "Open"};' in menu_cpp,
+    check('tune_prompts[1] = {ui::kConfirm, confirms ? (pending == &r ? i18n::tr("Confirm") : i18n::tr(r.name)) : i18n::tr(is_share_row(r) ? "Save" : "Open")};' in menu_cpp,
           "vk_menu.cpp: draw_tune_bar must use row name or Confirm for Restart/Quit")
 
     # 5. Motion tab title in compact bar

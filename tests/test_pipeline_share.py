@@ -297,7 +297,7 @@ def check_sources():
     assert "is_share_row(const Row& r) { return !r.value && r.tab == TAB_DEBUG" in menu
     # the compact tuning bar (row_value_cell, its prompts) shows it as an action too, not as a page to open
     cell = body_of(menu, "void row_value_cell(")
-    assert 'is_share_row(r)) choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value' in cell, "the tuning bar shows the row as a page"
+    assert 'is_share_row(r)) choice_cell(c, va, vb, i18n::tr_dyn(share_value.empty() ? "Save" : share_value.c_str())' in cell, "the tuning bar shows the row as a page"
     assert menu.count('is_share_row(r) ? "Save" : "Open"') + menu.count('is_share_row(selr) ? "Save" : "Open"') >= 2, \
         "a prompt says Open for Save my pipeline list"
     cs = (ROOT / "builder" / "HookshotBuilder" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
