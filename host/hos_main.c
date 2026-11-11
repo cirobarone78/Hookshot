@@ -1671,7 +1671,12 @@ static void driver_cache_folder(void) {
                     path, strerror(errno));
             return;
         }
-        if (!c) return;
+        if (!c) {   /* (a file already at that name counts as made for mkdir, but the driver can't use it) */
+            struct stat st;
+            if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode))
+                fprintf(stderr, "vk: __GL_SHADER_DISK_CACHE_PATH %s: cannot make it, a file has that name: NVIDIA's driver keeps no shader cache\n", dir);
+            return;
+        }
         *p = '/';
     }
 }

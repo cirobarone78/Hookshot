@@ -73,6 +73,7 @@ def main():
             (str(tmp / "d" / "e") + "/", tmp / "d" / "e", False),
             (str(tmp / "f") + "//g", tmp / "f" / "g", False),
             (str(tmp / "file" / "h"), None, True),
+            (str(tmp / "file"), None, True),   # (a file at the name itself)
             ("", None, False),
         ]
         failed = 0
