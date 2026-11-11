@@ -18,8 +18,18 @@ struct PipeNote {
     uint32_t color_format[8];
     NvnState s;
 };
+/// (vk_predict.cpp) What the prediction left out: pipelines whose vertex layout or targets have types the program was not made for
+/// (no draw asks for them), and the program variants left with none; and the notes whose own types do not fit (0: else the rule
+/// that leaves them out is wrong)
+struct PredictCounts {
+    size_t vertex_types = 0, output_types = 0, variants_unfit = 0, notes_unfit = 0;
+    size_t refit = 0;   // (program variants whose signature fallback took a less common class, the most common not fitting)
+};
 /// (vk_predict.cpp) The pipelines the notes predict for the kept graphics program variants no note names (key 0: not made yet)
-std::vector<std::unique_ptr<PipeNote>> predict_pipelines(const std::vector<std::unique_ptr<PipeNote>>& notes, size_t* programs);
+std::vector<std::unique_ptr<PipeNote>> predict_pipelines(const std::vector<std::unique_ptr<PipeNote>>& notes, size_t* programs,
+                                                         PredictCounts* left_out = nullptr);
+/// The colour output types a note's targets give a program (Shader::AttributeType, as a draw's: color_types_of)
+void note_color_types(const PipeNote& n, uint8_t types[8]);
 }
 
 #include <functional>
@@ -70,7 +80,7 @@ void draw_stats3(int64_t* pending_skips, int64_t* waits, double* wait_ms);
 bool draw_stats4(int64_t* links, double* link_ms, int64_t* lib_hits, int64_t* lib_cold, int64_t* lib_built, double* lib_build_ms);
 void draw_skip_report(double frames);   // (hookshot) skips by the line that made them
 int64_t draw_desc_reused();
-/// (RX_VK_DESC_SLOTGEN) Of those, the reuses the global registrations' generation check would have rebuilt for
+/// (Descriptor reuse) Of those, the reuses the global registrations' generation check would have rebuilt for
 int64_t draw_slotgen_saves();
 /// RX_VK_FLASH_RECORD=<key>,...: the last frames' draws of those programs, written to the log for frames around a flash
 void draw_records_log(uint64_t frame_lo, uint64_t frame_hi);
