@@ -11,12 +11,14 @@ extern volatile uint32_t hos_frame_seconds_bits;   /* (host/nn_vi.c: the frame's
 
 static int timed(void) { return __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0; }
 static int fps_log(void) {
-    static int on = -1;
-    if (on < 0) on = getenv("HOS_FPS_LOG") != NULL;
-    return on;
+    static int on = -1;   /* (read by the game's threads) */
+    int v = __atomic_load_n(&on, __ATOMIC_RELAXED);
+    if (v < 0) v = getenv("HOS_FPS_LOG") != NULL, __atomic_store_n(&on, v, __ATOMIC_RELAXED);
+    return v;
 }
 
-static OotSoundGate sound_gate;
+static OotSoundGate sound_gate = OOT_SOUND_GATE_INIT;
+static long long sound_calls, sound_runs;   /* (HOS_FPS_LOG's counts, under sound_lock) */
 static SRWLOCK sound_lock = SRWLOCK_INIT;   /* (the job's phases may come from different threads) */
 
 /* f_80435300's head: phase w2, slot the guest address of the pointer to the object whose +0x10 is the game step (the job's own
@@ -30,16 +32,17 @@ int hos_oot_sound_gate(Ctx *c, uint32_t phase, uint64_t slot) {
         const uint64_t time = object ? G64(object) : 0;
         if (time) step = oot_bits_float(*(const uint32_t *)GP(time + 0x10));
     }
+    long long ran = -1;
     AcquireSRWLockExclusive(&sound_lock);
     const int run = oot_sound_gate(&sound_gate, phase, step, t);
-    ReleaseSRWLockExclusive(&sound_lock);
     if (phase == 0 && fps_log()) {
-        static long long calls, runs;
-        runs += run;
-        if (!(++calls % 600))
-            hos_log("oot: sound job ran %lld of the last 600 frames (step %.3f%s)", runs, step,
-                    oot_sound_partial(step, t) ? ", held to 60 Hz" : ""), runs = 0;
+        sound_runs += run;
+        if (!(++sound_calls % 600)) ran = sound_runs, sound_runs = 0;
     }
+    ReleaseSRWLockExclusive(&sound_lock);
+    if (ran >= 0)
+        hos_log("oot: sound job ran %lld of the last 600 frames (step %.3f%s)", ran, step,
+                oot_sound_partial(step, t) ? ", held to 60 Hz" : "");
     return run;
 }
 
