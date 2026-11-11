@@ -409,9 +409,15 @@ static void pads_poll(void) {
             const int motion_only = steam_pads_motion_only(pads[i].vendor, pads[i].steam, stand_in);
             if (motion_only != pads[i].motion_only) {
                 pads[i].motion_only = motion_only;
-                hos_log(motion_only ? "hid: \"%s\": motion only, its buttons come through Steam Input's pad"
-                                    : "hid: \"%s\": its buttons count again (no Steam Input pad is open)",
-                        hos_sdl_pad_name(gc));
+                /* (a real Valve pad this SDL opens with no gyroscope: an SDL with no driver for it, so the loosened
+                   list gives no motion, said once so the next person with #1897 sees why) */
+                if (motion_only && !pads[i].motion)
+                    hos_log("hid: \"%s\": no motion sensors through this SDL, so Motion controls can't read it; "
+                            "its buttons come through Steam Input's pad", hos_sdl_pad_name(gc));
+                else
+                    hos_log(motion_only ? "hid: \"%s\": motion only, its buttons come through Steam Input's pad"
+                                        : "hid: \"%s\": its buttons count again (no Steam Input pad is open)",
+                            hos_sdl_pad_name(gc));
             }
             if (motion_only) {
                 motion_only_used(i, now);
