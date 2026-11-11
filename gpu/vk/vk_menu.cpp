@@ -557,6 +557,28 @@ const char* tx_deadzone(int v) {
     static const char* t[] = {"Low", "Standard", "High"};
     return t[v < 0 ? 0 : v > 2 ? 2 : v];
 }
+// (hookshot) The virtual amiibo a scan presents: the profiles of host/nfp_amiibo.h, in its order (host/nn_nfp.c
+// reads the row as amiibo=<index>; HOS_AMIIBO=<profile> overrides it for a run)
+constexpr int kAmiiboCount = 8;
+const char* tx_amiibo(int v) {
+    static const char* t[] = {"Link (OoT)", "Zelda (BotW)", "Young Link (Smash)", "Zelda (Smash)",
+                              "Young Link (OoT 2026)", "Young Zelda (OoT 2026)", "Mario (not supported)", "None"};
+    return (unsigned)v < kAmiiboCount ? t[v] : t[0];
+}
+const char* hn_amiibo(int v, int variant) {
+    static const char* const t[] = {
+        "The Ocarina of Time Link figure: a random item Link has already found.",
+        "The Breath of the Wild Zelda figure: a random item Link has already found.",
+        "The Super Smash Bros. Young Link figure: a random item Link has already found.",
+        "The Super Smash Bros. Zelda figure: a random item Link has already found.",
+        "The 2026 Ocarina of Time Young Link figure: Mask 101, the blocky Young Link mask.",
+        "The 2026 Ocarina of Time Young Zelda figure: Mask 102, the blocky Young Zelda mask.",
+        "Mario: the game says this amiibo does not work.",
+        "No virtual tag: the game waits for a real NFC reader.",
+    };
+    if (variant > 0) return nullptr;
+    return t[v < 0 ? 0 : v >= kAmiiboCount ? 0 : v];
+}
 const char* tx_robust(int v) {
     static const char* t[] = {"Auto", "Off", "On"};
     return (unsigned)v < 3 ? t[v] : t[0];
@@ -855,6 +877,9 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
+    {TAB_GAMEPLAY, "Amiibo", &opts.amiibo, 0, kAmiiboCount - 1, 1, tx_amiibo,
+     "The figure a scan presents. The game's amiibo function asks for a tag, and this one appears at once: no NFC reader "
+     "is needed. HOS_AMIIBO=<profile> overrides it for a run.", hn_amiibo, false, true},
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},

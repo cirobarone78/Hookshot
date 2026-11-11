@@ -89,6 +89,8 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `HOS_LANGUAGE=<code>` | The game's language for this run, a code from `language.txt` |
 | `HOS_OUTPUT_RES=<width>x<height>`, `HOS_HANDHELD=1`, `HOS_ASPECT=<ratio>` | Over the options file: the output resolution (a size, as `output_res`), the handheld profile, a picture wider than 16:9 (2.3889 for 3440x1440) |
 | `HOS_DYNRES=0`, `HOS_REALTIME_STEP=0`, `HOS_TEXT_SPEED=<0..3>` | Over the options file: Resolution 100% (non-zero: Auto), Game speed Per frame (1: Real time), Text speed |
+| `HOS_AMIIBO=<profile>` or `HOS_AMIIBO=0x...` | The virtual amiibo a scan presents (host/nn_nfp.c, host/nfp_amiibo.h): `link-oot`, `zelda-botw`, `young-link`, `young-zelda`, `oot-young-link`, `oot-young-zelda`, `mario`, `none`, or a 16-hex-digit id; over the Insert menu's Amiibo row |
+| `HOS_AMIIBO_RANDOM_UID=1` | A different tag UID each scan, for a game's once-a-day rule |
 | `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=<2..8>`, `RX_VK_PACE=0`, `RX_VK_UPSCALE=<0..2>` | No frame generation whatever the menu says; over the options file: its multiplier, frame pacing, the upscaling filter |
 | `RX_VK_DEVICE=<n>` | The graphics card listed as `vk: device <n>` in the log, over the menu's GPU device |
 | `HOOKSHOT_NO_UPDATE_CHECK=1` | No look for a newer release at the start |

@@ -87,6 +87,7 @@ struct Options {
     int volume = 100;     // (hookshot) the game's sound in percent, 0 to 100 (host/nn_audio.c: HOS_OPT_VOLUME, 27)
     int mute_background = 0;   // (hookshot) no sound while another window has the focus (host/nn_audio.c: HOS_OPT_MUTE_BACKGROUND, 28)
     int mic = 1;          // (hookshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
+    int amiibo = 0;       // (hookshot) the virtual amiibo a scan presents (host/nn_nfp.c, host/nfp_amiibo.h): 0 Link (OoT), 1 Zelda (BotW), 2 Young Link (Smash), 3 Zelda (Smash), 4 Young Link (OoT 2026), 5 Young Zelda (OoT 2026), 6 Mario (not supported), 7 None
 };
 extern Options opts;
 /// (vk_memory.cpp) true when the quality preset's memory budgets (vram_mb, mirror_mb) are to be used: the card has no more
