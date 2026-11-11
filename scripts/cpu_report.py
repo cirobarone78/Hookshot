@@ -360,6 +360,7 @@ MEASURE = re.compile(r"\d\s*%|%\s*of|\d[\d,.]*\s+(million\s+|thousand\s+)?(\w+\s
                      r"\b(a third|half|a quarter|two thirds|three quarters|most) of (all|its|the)\b|\bthe (largest|hottest|most sampled)\b|"
                      r"\b(one|two|three|four|five|\d+) (of|in) (every )?(two|three|four|five|six|ten|\d+) "
                      r"(waits|calls|lookups|samples|frames|times|runs|misses|hits)\b|\b(dozens|hundreds|thousands|millions) of (times|calls)\b|"
+                     r"\b(a|one|two|several|a few) (dozen|hundred|thousand|million)\b[\w ]{0,40}?\b(a|per) (frame|second)\b|"
                      r"\b(one|two|three|four|\d+) or (two|three|four|five|\d+) [\w-]+( [\w-]+)? (a|per) \w+|\bwas measured\b", re.I)
 SPEED = re.compile(r"vi: game clock [0-9.]+: [0-9.]+ a second of wall time \(speed ([0-9.]+)\)")
 
@@ -525,6 +526,10 @@ def main():
                          log=log_stats(folder)))
     if not runs:
         raise SystemExit("no runs")
+    if not any(m in names.syms and names.syms[m][0] for m in OUR_MODULES):
+        # (a Linux capture names hookshot / hookshot_vk.so, whose ELF maps this script does not read yet)
+        raise SystemExit("no linker map of hookshot.exe or hookshot_vk.dll in --maps: cpu_report.py reads Windows captures "
+                         "with lld-link maps only")
 
     def share(run, view, key):   # (% of one core)
         return 100.0 * run["c"][view][key] / run["inst"] if run["inst"] else 0.0

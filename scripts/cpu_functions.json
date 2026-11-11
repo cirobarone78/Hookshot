@@ -94,7 +94,6 @@
  },
  "NtGdiDdDDIWaitForSynchronizationObjectFromCpu (win32u.dll)": {
   "does": "The driver waiting on a GPU fence from the CPU.",
-  "note": "Mostly blocked time; the on-CPU part is the call.",
   "source": "read"
  },
  "RtlAcquireSRWLockExclusive (ntdll.dll)": {
@@ -111,7 +110,6 @@
  },
  "RtlDelayExecution (ntdll.dll)": {
   "does": "SwitchToThread's and Sleep's system call: gives the processor to another ready thread.",
-  "note": "The body of the short-sleep yield loop.",
   "source": "read"
  },
  "RtlEnterCriticalSection (ntdll.dll)": {
@@ -128,12 +126,10 @@
  },
  "RtlQueryFeatureConfiguration (ntdll.dll)": {
   "does": "An ntdll-internal function named by its nearest export (no symbols); no frame of ours in its stacks.",
-  "note": "Not identified.",
   "source": "read"
  },
  "RtlQueryPerformanceCounter (ntdll.dll)": {
   "does": "The high-resolution clock read.",
-  "note": "Mostly from the short-sleep loop and the spin loops, which read the clock every turn.",
   "source": "read"
  },
  "RtlReleaseSRWLockExclusive (ntdll.dll)": {
@@ -146,17 +142,14 @@
  },
  "RtlSizeHeap (ntdll.dll)": {
   "does": "Heap bookkeeping inside allocation and free (named by the nearest export).",
-  "note": "From malloc and free in the host bridge, the renderer and the driver.",
   "source": "read"
  },
  "RtlSleepConditionVariableSRW (ntdll.dll)": {
   "does": "A thread going to sleep on a condition variable and waking again (user-mode part).",
-  "note": "8 to 9 % of a core: the price of blocking, paid once per sleep. It falls only with fewer sleeps.",
   "source": "read"
  },
  "RtlVirtualUnwind2 (ntdll.dll)": {
   "does": "Not stack unwinding: ntdll has no symbols here and this is the nearest export. The samples are the slow path of taking a slim lock for reading (under check_handle).",
-  "note": "Counts with check_handle.",
   "source": "read"
  },
  "RtlWakeAllConditionVariable (ntdll.dll)": {
@@ -194,7 +187,6 @@
  },
  "ZwAlertThreadByThreadId (ntdll.dll)": {
   "does": "The system call that wakes a thread sleeping on a condition variable or lock.",
-  "note": "One per wake that finds a sleeper; under SignalLightEvent and the queues.",
   "source": "read"
  },
  "ZwAlertThreadByThreadIdEx (ntdll.dll)": {
@@ -207,7 +199,6 @@
  },
  "ZwCreateFile (ntdll.dll)": {
   "does": "The system call that opens a file or device.",
-  "note": "On the loading threads it is reached through GetDriveTypeW: the C runtime's stat asks the drive's type on every call, which opens the volume. About 1 % of a core while loading; a file-attribute call instead of stat would avoid it.",
   "source": "read"
  },
  "ZwQueryInformationThread (ntdll.dll)": {
@@ -216,12 +207,10 @@
  },
  "ZwQueryVirtualMemory (ntdll.dll)": {
   "does": "The system call behind VirtualQuery (and DiscardVirtualMemory).",
-  "note": "From the renderer on the Presentation Thread and from the game's memory handling.",
   "source": "read"
  },
  "ZwSetInformationThread (ntdll.dll)": {
   "does": "The system call behind SetThreadAffinityMask.",
-  "note": "In play: the renderer moves a thread's affinity around each replay (the reserved core while it replays). A system call per change; worth checking whether it can be set once.",
   "source": "read"
  },
  "_Mtx_unlock": {
@@ -252,7 +241,6 @@
  },
  "a64_fpx_mul32_fma32": {
   "does": "A multiply followed by a fused multiply-add kept as the guest's two operations (single precision), so the rounding matches the console.",
-  "note": "The FPX helpers exist because results must be bit-exact: the game's simulation diverges otherwise. They are the price of exactness in vector-heavy code, not a defect.",
   "source": "read"
  },
  "a64_fpx_sub32_sub32": {
@@ -269,7 +257,6 @@
  },
  "a64_lookup": {
   "does": "Finds the host function of a guest address for an indirect call or jump (hash table).",
-  "note": "Behind a64_icall_site and a64_ijump_site when the call site's one-entry cache misses.",
   "source": "read"
  },
  "a64_vfpx_add32_lanes": {
@@ -287,7 +274,6 @@
  "amdvlk64.dll": {
   "category": "driver",
   "does": "AMD's Vulkan driver (user mode): command encoding, descriptor updates, pipeline binds, queue submits.",
-  "note": "No symbols. The largest single module on the CPU; what reaches it is decided by the renderer's call count.",
   "source": "read"
  },
  "amdxc64.dll": {
@@ -297,12 +283,10 @@
  },
  "check_handle": {
   "does": "Checks under a shared lock that a command handle is a live recording before it is used.",
-  "note": "The shared lock is taken by every worker that calls commands, against the exclusive lock of every EndRecording: 1.3 to 2.3 % of a core with its slow path (shown by the sampler as an ntdll function with a wrong name).",
   "source": "read"
  },
  "cmd_adopt": {
   "does": "Takes a host slot and recording segment for a command buffer the game initializes.",
-  "note": "The game creates and finalizes over a hundred command buffers a frame; each takes the command lock here.",
   "source": "read"
  },
  "cmd_alloc": {
@@ -323,7 +307,6 @@
  },
  "collect_in": {
   "does": "Reads and clears the lifted code's write marks over the GPU-visible memory ranges and returns the pages written since the last submission.",
-  "note": "Runs at every submission over every GPU-visible range (32 pages at a time while none is marked); its cost follows the size of the pools, not what was written.",
   "source": "read"
  },
  "discard_pages": {
@@ -339,7 +322,7 @@
   "source": "read"
  },
  "event_wait": {
-  "does": "Waits for an an SDK library function event: takes it if set, else spins (spin_until_set), else sleeps on the object's condition variable with its virtual core given up.",
+  "does": "Waits for an nn::os event: takes it if set, else spins (spin_until_set), else sleeps on the object's condition variable with its virtual core given up.",
   "source": "read"
  },
  "free_dead_copies": {
@@ -360,7 +343,6 @@
  },
  "hos_gpu_guest_ranges": {
   "does": "The merged list of guest memory ranges the GPU can reach, rebuilt (and sorted) whenever a mapping changed since the last call.",
-  "note": "Free while the mappings are stable; about 2 % of a core while a scene streams in and pools come and go at every submission.",
   "source": "read"
  },
  "hos_gpu_maps_generation": {
@@ -385,12 +367,10 @@
  },
  "hos_now_ns": {
   "does": "The host clock in nanoseconds (QueryPerformanceCounter).",
-  "note": "Read by every spin and sleep loop turn.",
   "source": "read"
  },
  "hos_region_alloc": {
   "does": "Finds free guest address space for a new mapping (first fit, top down, under the memory lock).",
-  "note": "Called by AllocateAddressRegion while a scene streams in.",
   "source": "read"
  },
  "hos_self": {
@@ -407,7 +387,6 @@
  },
  "hos_sleep_ns": {
   "does": "A host sleep with the virtual core given up; under a millisecond it yields in a loop until the time (Windows' timer would wake 0.5 ms late).",
-  "note": "The game's idle job workers sleep 20 us about 7,600 times a second; each sleep keeps a processor busy while it lasts. PR 2263 puts the game's own short sleeps on the timer on PCs with 6 logical processors or fewer.",
   "source": "read"
  },
  "hos_ticks": {
@@ -423,7 +402,7 @@
   "source": "read"
  },
  "hos_vcore_checkpoint": {
-  "does": "Virtual cores: at every an SDK library function call, gives the caller's core to a waiting thread of better priority (a flag test when nobody waits).",
+  "does": "Virtual cores: at every nn::os call, gives the caller's core to a waiting thread of better priority (a flag test when nobody waits).",
   "source": "read"
  },
  "hos_vi_native_acquire": {
@@ -447,46 +426,39 @@
   "source": "read"
  },
  "imp__ZN2nn2os11GetTlsValueENS0_7TlsSlotE": {
-  "does": "an SDK library function an array read in the thread record.",
-  "note": "5,600 to 5,900 calls a frame; cheap, the call itself is the cost.",
+  "does": "nn::os::GetTlsValue: an array read in the thread record.",
   "source": "read"
  },
  "imp__ZN2nn2os11SleepThreadENS_8TimeSpanE": {
   "does": "nn::os::SleepThread.",
-  "note": "About 200 calls a frame in Kokiri, nearly all from one worker loop (guest 0x800998a0) asking for 20 us.",
   "source": "read"
  },
  "imp__ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE": {
-  "does": "an SDK library function object lookup, then mutex_unlock.",
-  "note": "10,000 to 11,000 calls a frame.",
+  "does": "nn::os::UnlockMutex: object lookup, then mutex_unlock.",
   "source": "read"
  },
  "imp__ZN2nn2os11YieldThreadEv": {
-  "does": "an SDK library function offers the virtual core to an equal waiter, then yields the host processor.",
-  "note": "About 1,200 calls a frame from the game's own spin loops.",
+  "does": "nn::os::YieldThread: offers the virtual core to an equal waiter, then yields the host processor.",
   "source": "read"
  },
  "imp__ZN2nn2os13GetSystemTickEv": {
-  "does": "an SDK library function the host clock as the console's tick count.",
+  "does": "nn::os::GetSystemTick: the host clock as the console's tick count.",
   "source": "read"
  },
  "imp__ZN2nn2os14WaitLightEventEPNS0_14LightEventTypeE": {
-  "does": "an SDK library function event_wait on a light event.",
-  "note": "About 410 waits a frame in Kokiri, 7.5 us of CPU each on average (the spin).",
+  "does": "nn::os::WaitLightEvent: event_wait on a light event.",
   "source": "read"
  },
  "imp__ZN2nn2os16GetCurrentThreadEv": {
-  "does": "an SDK library function returns the calling thread's guest ThreadType.",
+  "does": "nn::os::GetCurrentThread: returns the calling thread's guest ThreadType.",
   "source": "read"
  },
  "imp__ZN2nn2os16SignalLightEventEPNS0_14LightEventTypeE": {
-  "does": "an SDK library function sets the event and wakes every thread sleeping on it.",
-  "note": "About 740 a frame; the cost is the wake system call. All sleepers are woken also for an auto-clear event that only one can take.",
+  "does": "nn::os::SignalLightEvent: sets the event and wakes every thread sleeping on it.",
   "source": "read"
  },
  "imp__ZN2nn2os17GetThreadPriorityEPKNS0_10ThreadTypeE": {
-  "does": "an SDK library function finds the thread record under a shared lock and returns its priority.",
-  "note": "1,400 to 2,400 calls a frame, most from the game's worker loops; the shared lock is the cost (the priority could be read without it).",
+  "does": "nn::os::GetThreadPriority: finds the thread record under a shared lock and returns its priority.",
   "source": "read"
  },
  "imp__ZN2nn2os19AllocateMemoryPagesEmm": {
@@ -494,30 +466,27 @@
   "source": "read"
  },
  "imp__ZN2nn2os23SignalConditionVariableEPNS0_21ConditionVariableTypeE": {
-  "does": "an SDK library function takes the object's lock, bumps its generation, wakes one waiter.",
-  "note": "1,500 to 2,500 calls a frame, most with nobody waiting: the lock pair and the wake call are made anyway (a waiter count read first would skip them; about 0.4 % of a core).",
+  "does": "nn::os::SignalConditionVariable: takes the object's lock, bumps its generation, wakes one waiter.",
   "source": "read"
  },
  "imp__ZN2nn2os24ReceiveLightMessageQueueEPmPNS0_21LightMessageQueueTypeE": {
-  "does": "an SDK library function queue_get, waiting while the queue is empty.",
+  "does": "nn::os::ReceiveLightMessageQueue: queue_get, waiting while the queue is empty.",
   "source": "read"
  },
  "imp__ZN2nn2os24TrySendLightMessageQueueEPNS0_21LightMessageQueueTypeEm": {
-  "does": "an SDK library function puts a message in a queue and wakes its receivers.",
+  "does": "nn::os::TrySendLightMessageQueue: puts a message in a queue and wakes its receivers.",
   "source": "read"
  },
  "imp__ZN2nn2os28IsMutexLockedByCurrentThreadEPKNS0_9MutexTypeE": {
-  "does": "an SDK library function object lookup, then compares the owner.",
-  "note": "700 to 1,200 calls a frame.",
+  "does": "nn::os::IsMutexLockedByCurrentThread: object lookup, then compares the owner.",
   "source": "read"
  },
  "imp__ZN2nn2os7WaitAnyEPNS0_13MultiWaitTypeE": {
-  "does": "an SDK library function scans the holders of a multi-wait under one lock and sleeps until one of the objects they watch changes.",
+  "does": "nn::os::WaitAny: scans the holders of a multi-wait under one lock and sleeps until one of the objects they watch changes.",
   "source": "read"
  },
  "imp__ZN2nn2os9LockMutexEPNS0_9MutexTypeE": {
-  "does": "an SDK library function object lookup, then mutex_lock.",
-  "note": "10,000 to 11,000 calls a frame.",
+  "does": "nn::os::LockMutex: object lookup, then mutex_lock.",
   "source": "read"
  },
  "imp__ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE": {
@@ -526,7 +495,6 @@
  },
  "inline_recording": {
   "does": "CallCommands: copies a finished recording into the calling command buffer.",
-  "note": "A second copy of the same bytes; 570 to 2,200 calls a frame.",
   "source": "read"
  },
  "level_offset": {
@@ -550,7 +518,6 @@
  "memcpy_repmovs": {
   "category": "crt",
   "does": "The C runtime's memcpy for large blocks (rep movs).",
-  "note": "Charged to its caller: mostly the recorded command buffers' copies (EndRecording, CallCommands).",
   "source": "read"
  },
  "memmove": {
@@ -576,7 +543,6 @@
  },
  "mkwvk::ReplayPin::ReplayPin": {
   "does": "Moves the calling thread to the renderer's reserved core for the length of a replay, remembering the mask to put back.",
-  "note": "A SetThreadAffinityMask call, also when the thread already is on that core.",
   "source": "read"
  },
  "mkwvk::StatsQuery::StatsQuery": {
@@ -613,7 +579,6 @@
  },
  "mkwvk::build_descriptors": {
   "does": "Builds the descriptor writes of a draw or dispatch: for each binding of the program, the buffer range, texture view or sampler the game's state names.",
-  "note": "Once a draw whose bindings changed; the largest single renderer function. Reuse of the last draw's set already skips unchanged draws.",
   "source": "read"
  },
  "mkwvk::canonical_answer": {
@@ -650,7 +615,6 @@
  },
  "mkwvk::copy_nt": {
   "does": "Copies captured guest pages with non-temporal stores (the copy of what a submission's memory looked like).",
-  "note": "2 % of on-CPU time: the submit-time capture of every page the game wrote since the last submission. Fewer pages written, or pages captured lazily, is the only way down.",
   "source": "read"
  },
  "mkwvk::copy_part": {
@@ -767,7 +731,6 @@
  },
  "mkwvk::gpu_buffer_bind": {
   "does": "The Vulkan buffer and offset for a guest GPU address range: finds the memory pool's mirror and brings it up to date.",
-  "note": "Called for every buffer binding of every draw; it leads into mirror_sync when the CPU wrote the pool since.",
   "source": "read"
  },
  "mkwvk::gpu_buffer_bind::lambda": {
@@ -896,7 +859,6 @@
  },
  "mkwvk::menu_vsync": {
   "does": "The V-Sync choice of the menu, read at every present.",
-  "note": "Reads the environment with getenv on every call: a static would make it free.",
   "source": "read"
  },
  "mkwvk::mirror_make": {
@@ -961,7 +923,6 @@
  },
  "mkwvk::program_for": {
   "does": "The translated shader program for the game's current shaders and state, from a per-thread cache of the last picks.",
-  "note": "Asked for every draw; most are answered by the last pick, the rest compare texture kinds (texture_answer).",
   "source": "read"
  },
  "mkwvk::program_for::lambda": {
@@ -990,7 +951,6 @@
  },
  "mkwvk::replay": {
   "does": "Walks a submission's recorded commands and replays each into Vulkan state and calls.",
-  "note": "The decode loop of the Presentation Thread's critical path.",
   "source": "read"
  },
  "mkwvk::resume_queue": {
@@ -1015,7 +975,6 @@
  },
  "mkwvk::shadows_forget_written": {
   "does": "After a submission: drops the write-back shadows of the pages written since (sorts and merges the three page lists).",
-  "note": "The sort here is one of the small C++ library sorts in the tail.",
   "source": "read"
  },
  "mkwvk::skin_check": {
@@ -1064,7 +1023,6 @@
  },
  "mkwvk::taau_stand_in": {
   "does": "Whether a compute dispatch is the game's temporal anti-aliasing pass the renderer stands in for.",
-  "note": "Reads the environment with getenv on every dispatch.",
   "source": "read"
  },
  "mkwvk::take_capture": {
@@ -1210,7 +1168,6 @@
  },
  "n_nvnCommandBufferEndRecording": {
   "does": "Ends a command buffer's recording: copies the recorded commands into a pooled block that becomes the command handle.",
-  "note": "The copy (memcpy under it) is 2.7 to 4.8 % of a core, mostly on the main thread; handing the recorded segment over instead of copying it would remove it, at the price of the recorder's memory use.",
   "source": "read"
  },
  "n_nvnCommandBufferSetRenderEnableConditional": {
@@ -1263,12 +1220,10 @@
  },
  "obj": {
   "does": "The per-thread cache in front of obj_lookup, after a virtual-core checkpoint.",
-  "note": "Called by every an SDK library function call that names an object: about 1.2 million a second (LockMutex and UnlockMutex are 10,000 a frame each).",
   "source": "read"
  },
  "obj_lookup": {
   "does": "Finds the host object of a guest mutex, event, queue or condition variable by its guest address in the shared table (lock-free probe; creates it on a miss).",
-  "note": "Runs when the calling thread's 1024-entry cache misses, 15 % of lookups: the game has about 200,000 mutexes and each thread walks a long tail of them. A larger cache was measured worse. What is left is two or three cache misses a lookup.",
   "source": "read"
  },
  "poke_multiwait": {
@@ -1282,7 +1237,6 @@
  "qsort": {
   "category": "crt",
   "does": "The C runtime's sort.",
-  "note": "Here: hos_gpu_guest_ranges' sort of the GPU-visible ranges, while mappings change.",
   "source": "read"
  },
  "queue_get": {
@@ -1295,12 +1249,10 @@
  },
  "read_at": {
   "does": "Reads a file at an offset straight into guest memory for nn::fs::ReadFile (the host file's read with an explicit position).",
-  "note": "On the loading threads; its time is the disk read and the copy into guest pages.",
   "source": "read"
  },
  "recomp_fp_estimate": {
   "does": "The ARM reciprocal and reciprocal-square-root estimate instructions, bit-exact (table and integer arithmetic).",
-  "note": "x86 has no instruction with the same result; called from vector maths in the game's hot loops.",
   "source": "read"
  },
  "recomp_fpe_fma32": {
@@ -1349,7 +1301,6 @@
  },
  "spin_until_set": {
   "does": "Spins for up to 20 us (HOS_SPIN_US) on an event's or queue's flag before the waiter sleeps.",
-  "note": "The largest host item: the six actor executors and the job workers wait on light events hundreds of times a frame, and three of four waits end inside the spin. Shorter (5 us) saved 3 % of the process's CPU at the same frame rate on 16 threads and nothing on 4.",
   "source": "read"
  },
  "tex_copy": {

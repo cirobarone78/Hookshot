@@ -166,7 +166,9 @@ def main():
                            ("Three of four waits end inside the spin.", True), ("What is left is two or three cache misses a lookup.", True),
                            ("A larger cache was measured worse.", True), ("Waits for one of the six cores.", False),
                            ("Selects one of two buffers and waits for its fence.", False),
-                           ("Workers wait hundreds of times a frame.", True)):
+                           ("Workers wait hundreds of times a frame.", True),
+                           ("The game creates over a hundred command buffers a frame.", True),
+                           ("Marks one bit for a few hundred pages.", False)):
         if bool(rep.MEASURE.search(text)) != measured:
             failures.append("measurement filter: %r should %sbe dropped" % (text, "" if measured else "not "))
     if rep.nn_name("imp__ZN2nn2os14WaitLightEventEPNS0_14LightEventTypeE") != "nn::os::WaitLightEvent":

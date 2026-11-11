@@ -222,20 +222,20 @@ Every function in the order of its **owner** share (the work it asked for: its o
 | `mkwvk::guarded_copy` | render/memory-and-mirrors | 9.2 (8.7-10.0) | 1.79 | 0.0 | 9.2 | - | - | copy_nt behind a fault handler: a guest page unmapped meanwhile ends the copy instead of the game. |
 | `hos_cv_sleep` | os/sleep-and-timers | 7.0 (6.4-8.3) | 1.40 | 0.1 | 9.2 | - | - | A guest thread's sleep on a host condition variable: gives its virtual core up for the wait and takes one again after it (letting the lock go while it waits for the core). |
 | `mkwvk::submit_recording` | render/replay-and-submit | 6.2 (5.5-6.3) | 1.21 | 0.0 | 6.9 | - | - | Ends a replayed recording: flushes its draw state, adds the texture uploads and the memory copies recorded for it, and submits its Vulkan command buffer. |
-| `collect_in` | os/nvn-bridge | 5.9 (4.4-6.0) | 1.17 | 5.9 | 5.9 | - | - | Reads and clears the lifted code's write marks over the GPU-visible memory ranges and returns the pages written since the last submission. Runs at every submission over every GPU-visible range (32 pages at a time while none is marked); its cost follows the size of the pools, not what was written. |
+| `collect_in` | os/nvn-bridge | 5.9 (4.4-6.0) | 1.17 | 5.9 | 5.9 | - | - | Reads and clears the lifted code's write marks over the GPU-visible memory ranges and returns the pages written since the last submission. |
 | `vc_acquire` | os/virtual-cores | 4.7 (4.5-5.5) | 0.92 | 0.4 | 5.0 | - | - | Virtual cores: waits for one of the game's six cores before running game code; after the escape time (HOS_VCORE_ESCAPE_US, 2 s by default on this build) it runs without one and logs an escape. |
 | `mkwvk::present_out` | render/replay-and-submit | 4.5 (3.3-4.9) | 0.87 | 0.0 | 4.5 | - | - | Presents a swapchain image (vkQueuePresentKHR with the frame's present id), outside the queue lock. |
-| `mkwvk::build_descriptors` | render/descriptors | 3.8 (3.4-4.2) | 0.78 | 3.5 | 12.5 | - | - | Builds the descriptor writes of a draw or dispatch: for each binding of the program, the buffer range, texture view or sampler the game's state names. Reuse of the last draw's set already skips unchanged draws. |
-| `hos_sleep_ns` | os/sleep-and-timers | 3.3 (3.1-3.4) | 0.65 | 1.3 | 3.8 | - | - | A host sleep with the virtual core given up; under a millisecond it yields in a loop until the time (Windows' timer would wake 0.5 ms late). PR 2263 puts the game's own short sleeps on the timer on PCs with 6 logical processors or fewer. |
+| `mkwvk::build_descriptors` | render/descriptors | 3.8 (3.4-4.2) | 0.78 | 3.5 | 12.5 | - | - | Builds the descriptor writes of a draw or dispatch: for each binding of the program, the buffer range, texture view or sampler the game's state names. |
+| `hos_sleep_ns` | os/sleep-and-timers | 3.3 (3.1-3.4) | 0.65 | 1.3 | 3.8 | - | - | A host sleep with the virtual core given up; under a millisecond it yields in a loop until the time (Windows' timer would wake 0.5 ms late). |
 | `obj_lookup` | os/sync | 3.1 (2.7-3.3) | 0.62 | 3.1 | 3.1 | - | - | Finds the host object of a guest mutex, event, queue or condition variable by its guest address in the shared table (lock-free probe; creates it on a miss). |
 | `mkwvk::draw` | render/draw-translation | 3.0 (2.6-3.1) | 0.59 | 2.1 | 29.8 | - | - | Replays one draw: program, pipeline, vertex streams, descriptors, dynamic state, then the Vulkan draw call. |
 | `?call@?$Route@$1?vkCmdDrawIndexed@vkx@@3P6AXPEAUVkCommandBuffer_T@@IIIHI@ZEA$1?pack@?$Value@$1?vkCmdDrawIndexed@vkx@@3P6AXPEAUVkCommandBuffer_T@@IIIHI@ZEA$03P6AX0IIIHI@Z@rec@mkwvk@@SAX0IIIHI@ZP6AX0IIIHI@Z@rec@mkwvk@@SAXPEAUVkCommandBuffer_T@@IIIHI@Z` | render/draw-translation | 2.8 (2.6-3.0) | 0.55 | 0.1 | 2.8 | - | - | (generated) A Vulkan call wrapper of the renderer (its call-routing template): forwards one Vulkan function, counted or timed when profiling is on. |
 | `n_nvnCommandBufferEndRecording` | os/nvn-bridge | 2.5 (2.3-2.6) | 0.51 | 0.1 | 2.6 | 117 | 4.36 | Ends a command buffer's recording: copies the recorded commands into a pooled block that becomes the command handle. |
-| `nn::os::SignalLightEvent` | os/sync | 2.5 (2.3-2.7) | 0.49 | 0.0 | 2.6 | 543 | 0.91 | an SDK library function sets the event and wakes every thread sleeping on it. All sleepers are woken also for an auto-clear event that only one can take. |
-| `hos_now_ns` | os/threads | 2.3 (1.4-2.4) | 0.44 | 0.8 | 2.3 | - | - | The host clock in nanoseconds (QueryPerformanceCounter). Read by every spin and sleep loop turn. |
+| `nn::os::SignalLightEvent` | os/sync | 2.5 (2.3-2.7) | 0.49 | 0.0 | 2.6 | 543 | 0.91 | nn::os::SignalLightEvent: sets the event and wakes every thread sleeping on it. |
+| `hos_now_ns` | os/threads | 2.3 (1.4-2.4) | 0.44 | 0.8 | 2.3 | - | - | The host clock in nanoseconds (QueryPerformanceCounter). |
 | `a64_fpx_fma32_fma32` | runtime/float | 1.9 (1.9-2.0) | 0.38 | 1.9 | 1.9 | - | - | Two chained single-precision fused multiply-adds with the guest's rounding. |
-| `a64_fpx_mul32_fma32` | runtime/float | 1.8 (1.3-1.8) | 0.35 | 1.8 | 1.8 | - | - | A multiply followed by a fused multiply-add kept as the guest's two operations (single precision), so the rounding matches the console. The FPX helpers exist because results must be bit-exact: the game's simulation diverges otherwise. They are the price of exactness in vector-heavy code, not a defect. |
-| `mkwvk::replay` | render/replay-and-submit | 1.7 (1.6-2.2) | 0.34 | 1.2 | 45.4 | - | - | Walks a submission's recorded commands and replays each into Vulkan state and calls. The decode loop of the Presentation Thread's critical path. |
+| `a64_fpx_mul32_fma32` | runtime/float | 1.8 (1.3-1.8) | 0.35 | 1.8 | 1.8 | - | - | A multiply followed by a fused multiply-add kept as the guest's two operations (single precision), so the rounding matches the console. |
+| `mkwvk::replay` | render/replay-and-submit | 1.7 (1.6-2.2) | 0.34 | 1.2 | 45.4 | - | - | Walks a submission's recorded commands and replays each into Vulkan state and calls. |
 | `mkwvk::bind_descriptors` | render/descriptors | 1.6 (1.4-1.7) | 0.33 | 0.8 | 1.7 | - | - | Allocates or reuses the descriptor set for the writes build_descriptors made and binds it. |
 | `obj` | os/sync | 1.6 (1.3-1.7) | 0.32 | 1.6 | 5.1 | - | - | The per-thread cache in front of obj_lookup, after a virtual-core checkpoint. |
 | `VmaAllocator_T::AllocateVulkanMemory` | render/memory-and-mirrors | 1.4 (1.3-1.7) | 0.27 | 0.0 | 1.4 | - | - | (generated) The Vulkan memory allocator library (VmaAllocator_T::AllocateVulkanMemory): GPU memory for images and buffers. |
@@ -244,17 +244,17 @@ Every function in the order of its **owner** share (the work it asked for: its o
 | `mkwvk::begin_recording` | render/replay-and-submit | 1.3 (1.3-1.7) | 0.26 | 0.0 | 2.8 | - | - | The next recording slot, begun, for the submission that will signal value. |
 | `queue_put` | os/sync | 1.3 (1.1-1.3) | 0.25 | 0.0 | 1.4 | - | - | mode: 0 send (back), 1 jam (front). try: do not block. Returns 1 if done. |
 | `mkwvk::texture_view_of` | render/draw-translation | 1.2 (1.2-1.3) | 0.25 | 1.2 | 3.2 | - | - | The Vulkan image view for a texture handle as a binding needs it (view type, use, format), from a small cache keyed by the handle. |
-| `RtlQueryFeatureConfiguration (ntdll.dll)` | system/other | 1.2 (0.8-1.7) | 0.25 | 1.2 | 1.2 | - | - | An ntdll-internal function named by its nearest export (no symbols); no frame of ours in its stacks. Not identified. |
+| `RtlQueryFeatureConfiguration (ntdll.dll)` | system/other | 1.2 (0.8-1.7) | 0.25 | 1.2 | 1.2 | - | - | An ntdll-internal function named by its nearest export (no symbols); no frame of ours in its stacks. |
 | `mkwvk::mirror_sync` | render/memory-and-mirrors | 1.2 (1.2-1.6) | 0.24 | 0.8 | 1.4 | - | - | Copies the pages the CPU wrote in a pool since its mirror's last sync into the mirror (the upload command buffer). |
 | `vc_yield` | os/virtual-cores | 1.2 (1.0-1.5) | 0.23 | 0.2 | 1.4 | - | - | Virtual cores: gives the caller's core to a waiter allowed on it that is as good or better. |
-| `mkwvk::gpu_buffer_bind` | render/memory-and-mirrors | 1.2 (1.1-1.5) | 0.22 | 1.1 | 5.1 | - | - | The Vulkan buffer and offset for a guest GPU address range: finds the memory pool's mirror and brings it up to date. Called for every buffer binding of every draw; it leads into mirror_sync when the CPU wrote the pool since. |
+| `mkwvk::gpu_buffer_bind` | render/memory-and-mirrors | 1.2 (1.1-1.5) | 0.22 | 1.1 | 5.1 | - | - | The Vulkan buffer and offset for a guest GPU address range: finds the memory pool's mirror and brings it up to date. |
 | `mutex_lock` | os/sync | 1.1 (1.0-1.3) | 0.22 | 1.1 | 1.8 | - | - | Locks a guest mutex: one compare-and-swap when free, a short spin, then a sleep on the object's condition variable. |
 | `n_nvnCommandBufferAddControlMemory` | os/nvn-bridge | 1.0 (0.9-1.3) | 0.20 | 0.4 | 1.7 | 117 | 1.74 | nvnCommandBufferAddControlMemory: gives the command buffer new control memory and releases the recordings whose descriptors the old memory held. |
 | `mkwvk::stage_handle` | render/shaders-and-pipelines | 1.0 (0.8-1.0) | 0.20 | 0.9 | 2.2 | - | - | Evaluates a shader stage's small handle program: which texture handle the shader will read from its constants. |
 | `mkwvk::gpu_time_collect` | render/replay-and-submit | 1.0 (0.6-1.1) | 0.20 | 0.0 | 1.0 | - | - | Reads a finished recording's two GPU timestamp queries (the GPU time a frame the profile shows). |
-| `mkwvk::ReplayPin::ReplayPin` | render/replay-and-submit | 0.9 (0.8-1.0) | 0.19 | 0.0 | 0.9 | - | - | Moves the calling thread to the renderer's reserved core for the length of a replay, remembering the mask to put back. A SetThreadAffinityMask call, also when the thread already is on that core. |
-| `amdvlk64.dll` | driver | 0.9 (0.7-1.0) | 0.19 | 16.0 | 26.6 | - | - | AMD's Vulkan driver (user mode): command encoding, descriptor updates, pipeline binds, queue submits. No symbols. |
-| `mkwvk::program_for` | render/shaders-and-pipelines | 0.9 (0.8-1.2) | 0.18 | 0.9 | 5.7 | - | - | The translated shader program for the game's current shaders and state, from a per-thread cache of the last picks. Asked for every draw; most are answered by the last pick, the rest compare texture kinds (texture_answer). |
+| `mkwvk::ReplayPin::ReplayPin` | render/replay-and-submit | 0.9 (0.8-1.0) | 0.19 | 0.0 | 0.9 | - | - | Moves the calling thread to the renderer's reserved core for the length of a replay, remembering the mask to put back. |
+| `amdvlk64.dll` | driver | 0.9 (0.7-1.0) | 0.19 | 16.0 | 26.6 | - | - | AMD's Vulkan driver (user mode): command encoding, descriptor updates, pipeline binds, queue submits. |
+| `mkwvk::program_for` | render/shaders-and-pipelines | 0.9 (0.8-1.2) | 0.18 | 0.9 | 5.7 | - | - | The translated shader program for the game's current shaders and state, from a per-thread cache of the last picks. |
 | `mkwvk::answer_handle` | render/shaders-and-pipelines | 0.9 (0.8-0.9) | 0.18 | 0.9 | 1.0 | - | - | The texture handle behind one of a program's variant questions. |
 | `mkwvk::dynamic_state` | render/draw-translation | 0.7 (0.7-0.8) | 0.15 | 0.7 | 0.7 | - | - | Sets the Vulkan dynamic state that changed since the last draw (viewport, scissor, depth, stencil, blend constants). |
 
@@ -267,16 +267,16 @@ Every function in the order of its **owner** share (the work it asked for: its o
 | `mkwvk::submit_q` | render/replay-and-submit | 0.6 (0.6-0.6) | 0.13 | 0.0 | 58.2 | - | - | The renderer's side of nvnQueueSubmitCommands: takes the capture of guest memory for the submission and replays its command lists (on the calling thread in the default mode). |
 | `cmd_reserve_rec` | os/nvn-bridge | 0.6 (0.5-0.8) | 0.12 | 0.3 | 0.6 | - | - | Grows the command buffer's host segment when a command does not fit. |
 | `vc_release` | os/virtual-cores | 0.6 (0.5-0.9) | 0.12 | 0.1 | 0.6 | - | - | Virtual cores: gives the core back and wakes the best waiter. |
-| `a64_lookup` | runtime/indirect-calls | 0.6 (0.6-0.6) | 0.11 | 0.6 | 0.6 | - | - | Finds the host function of a guest address for an indirect call or jump (hash table). Behind a64_icall_site and a64_ijump_site when the call site's one-entry cache misses. |
-| `recomp_fp_estimate` | runtime/float | 0.6 (0.5-0.6) | 0.11 | 0.6 | 0.6 | - | - | The ARM reciprocal and reciprocal-square-root estimate instructions, bit-exact (table and integer arithmetic). x86 has no instruction with the same result; called from vector maths in the game's hot loops. |
-| `hos_vcore_checkpoint` | os/virtual-cores | 0.5 (0.4-0.7) | 0.11 | 0.5 | 0.5 | - | - | Virtual cores: at every an SDK library function call, gives the caller's core to a waiting thread of better priority (a flag test when nobody waits). |
+| `a64_lookup` | runtime/indirect-calls | 0.6 (0.6-0.6) | 0.11 | 0.6 | 0.6 | - | - | Finds the host function of a guest address for an indirect call or jump (hash table). |
+| `recomp_fp_estimate` | runtime/float | 0.6 (0.5-0.6) | 0.11 | 0.6 | 0.6 | - | - | The ARM reciprocal and reciprocal-square-root estimate instructions, bit-exact (table and integer arithmetic). |
+| `hos_vcore_checkpoint` | os/virtual-cores | 0.5 (0.4-0.7) | 0.11 | 0.5 | 0.5 | - | - | Virtual cores: at every nn::os call, gives the caller's core to a waiting thread of better priority (a flag test when nobody waits). |
 | `mkwvk::graphics_pipeline` | render/draw-translation | 0.5 (0.5-0.6) | 0.11 | 0.5 | 0.8 | - | - | The Vulkan pipeline for a program and the state baked into it, from the pipeline cache (compiles on a miss). |
 | `mkwvk::memory_begin_submission` | render/memory-and-mirrors | 0.5 (0.5-0.6) | 0.11 | 0.5 | 0.7 | - | - | Start of a submission's memory work: takes the capture made at submit and readies the mirrors. |
 | `$ehgcr_161_152` | render/draw-translation | 0.5 (0.4-0.6) | 0.10 | 0.2 | 1.0 | - | - | (generated) A compiler-made exception-handling label inside a renderer function (not a function of its own). |
 | `mkwvk::begin_pass` | render/draw-translation | 0.5 (0.5-0.6) | 0.10 | 0.1 | 0.7 | - | - | Begins a render pass for the current targets when they or their load state changed. |
 | `mkwvk::shadow_written_to` | render/memory-and-mirrors | 0.5 (0.2-0.5) | 0.10 | 0.4 | 0.5 | - | - | Adds pages to the list of pages written since the write-back shadows were taken. |
 | `?call@?$Route@$1?vkCmdPushDescriptorSetKHR@vkx@@3P6AXPEAUVkCommandBuffer_T@@W4VkPipelineBindPoint@@PEAUVkPipelineLayout_T@@IIPEBUVkWriteDescriptorSet@@@ZEA$1?pk_vkCmdPushDescriptorSetKHR@rec@mkwvk@@YAX012II3@ZP6AX012II3@Z@rec@mkwvk@@SAXPEAUVkCommandBuffer_T@@W4VkPipelineBindPoint@@PEAUVkPipelineLayout_T@@IIPEBUVkWriteDescriptorSet@@@Z` | render/draw-translation | 0.5 (0.5-0.6) | 0.10 | 0.0 | 0.5 | - | - | (generated) A Vulkan call wrapper of the renderer (its call-routing template): forwards one Vulkan function, counted or timed when profiling is on. |
-| `nn::os::UnlockMutex` | os/sync | 0.5 (0.5-0.5) | 0.09 | 0.3 | 0.6 | 13072 | 0.01 | an SDK library function object lookup, then mutex_unlock. |
+| `nn::os::UnlockMutex` | os/sync | 0.5 (0.5-0.5) | 0.09 | 0.3 | 0.6 | 13072 | 0.01 | nn::os::UnlockMutex: object lookup, then mutex_unlock. |
 
 </details>
 
@@ -554,62 +554,64 @@ The game's main thread (`sead::MainThread`) builds each frame's commands; the ga
 | nn.npln.Shared | 0.2 | 0.02 | 0.0 | 0.0 | 0.2 | 0.0 | 0.0 |
 | bake::ModuleMgr | 0.1 | 0.02 | 0.1 | 0.0 | 0.0 | 0.0 | 0.0 |
 
+Call counts come from `cpu-kok-stats-stats-0`, a run of the same scene with the HLE call counters on (`HOS_HLE_STATS=1`), 20 s of play at 78.1 fps: **calls a frame** = calls a second / that run's fps; **us a call** = the function's ms a frame (owner view) x 1000 / calls a frame.
+
 ### Functions: what each costs
 
 Every function in the order of its **owner** share (the work it asked for: its own instructions, and the system, C runtime and driver time below it); **self** is the time in its own instructions, **inclusive** the time with it anywhere in the stack (callees included). Listed until 90 % of the on-CPU time is covered; the first 40 rows are shown, the rest are folded below them.
 
-| function | category | owner: % of a core | ms a frame | self | inclusive | what it does |
-|---|---|---|---|---|---|---|
-| `lifted game code` | game/lifted | 214.4 (210.5-218.8) | 30.23 | 213.6 | 346.8 | All of the game's own code, translated from the Switch's ARM code to C ahead of time. It is one row here: a list of the game's functions is made from the game binary, so it stays on the developer's PC. |
-| `spin_until_set` | os/sync | 16.5 (16.3-17.3) | 2.29 | 16.5 | 19.2 | Spins for up to 20 us (HOS_SPIN_US) on an event's or queue's flag before the waiter sleeps. |
-| `mkwvk::guarded_copy` | render/memory-and-mirrors | 10.0 (9.3-12.7) | 1.41 | 0.0 | 10.0 | copy_nt behind a fault handler: a guest page unmapped meanwhile ends the copy instead of the game. |
-| `hos_cv_sleep` | os/sleep-and-timers | 9.8 (8.4-10.7) | 1.30 | 0.2 | 12.5 | A guest thread's sleep on a host condition variable: gives its virtual core up for the wait and takes one again after it (letting the lock go while it waits for the core). |
-| `vc_acquire` | os/virtual-cores | 6.9 (6.9-7.5) | 0.98 | 0.4 | 7.2 | Virtual cores: waits for one of the game's six cores before running game code; after the escape time (HOS_VCORE_ESCAPE_US, 2 s by default on this build) it runs without one and logs an escape. |
-| `mkwvk::submit_recording` | render/replay-and-submit | 5.7 (4.9-5.7) | 0.76 | 0.0 | 6.1 | Ends a replayed recording: flushes its draw state, adds the texture uploads and the memory copies recorded for it, and submits its Vulkan command buffer. |
-| `hos_sleep_ns` | os/sleep-and-timers | 5.6 (5.1-5.8) | 0.74 | 1.7 | 6.5 | A host sleep with the virtual core given up; under a millisecond it yields in a loop until the time (Windows' timer would wake 0.5 ms late). PR 2263 puts the game's own short sleeps on the timer on PCs with 6 logical processors or fewer. |
-| `collect_in` | os/nvn-bridge | 5.5 (5.0-6.2) | 0.77 | 5.4 | 5.5 | Reads and clears the lifted code's write marks over the GPU-visible memory ranges and returns the pages written since the last submission. Runs at every submission over every GPU-visible range (32 pages at a time while none is marked); its cost follows the size of the pools, not what was written. |
-| `obj_lookup` | os/sync | 4.1 (3.7-4.2) | 0.56 | 4.0 | 4.1 | Finds the host object of a guest mutex, event, queue or condition variable by its guest address in the shared table (lock-free probe; creates it on a miss). |
-| `mkwvk::present_out` | render/replay-and-submit | 3.8 (3.3-3.9) | 0.51 | 0.0 | 3.8 | Presents a swapchain image (vkQueuePresentKHR with the frame's present id), outside the queue lock. |
-| `nn::os::SignalLightEvent` | os/sync | 3.2 (3.0-3.5) | 0.44 | 0.1 | 3.6 | an SDK library function sets the event and wakes every thread sleeping on it. All sleepers are woken also for an auto-clear event that only one can take. |
-| `hos_now_ns` | os/threads | 2.9 (2.7-3.7) | 0.40 | 1.4 | 2.9 | The host clock in nanoseconds (QueryPerformanceCounter). Read by every spin and sleep loop turn. |
-| `mkwvk::build_descriptors` | render/descriptors | 2.7 (2.6-2.7) | 0.37 | 2.5 | 9.2 | Builds the descriptor writes of a draw or dispatch: for each binding of the program, the buffer range, texture view or sampler the game's state names. Reuse of the last draw's set already skips unchanged draws. |
-| `a64_fpx_mul32_fma32` | runtime/float | 2.3 (2.3-2.7) | 0.32 | 2.3 | 2.3 | A multiply followed by a fused multiply-add kept as the guest's two operations (single precision), so the rounding matches the console. The FPX helpers exist because results must be bit-exact: the game's simulation diverges otherwise. They are the price of exactness in vector-heavy code, not a defect. |
-| `obj` | os/sync | 2.3 (2.1-2.6) | 0.32 | 2.3 | 6.9 | The per-thread cache in front of obj_lookup, after a virtual-core checkpoint. |
-| `a64_fpx_fma32_fma32` | runtime/float | 2.0 (1.4-2.0) | 0.26 | 2.0 | 2.0 | Two chained single-precision fused multiply-adds with the guest's rounding. |
-| `?call@?$Route@$1?vkCmdDrawIndexed@vkx@@3P6AXPEAUVkCommandBuffer_T@@IIIHI@ZEA$1?pack@?$Value@$1?vkCmdDrawIndexed@vkx@@3P6AXPEAUVkCommandBuffer_T@@IIIHI@ZEA$03P6AX0IIIHI@Z@rec@mkwvk@@SAX0IIIHI@ZP6AX0IIIHI@Z@rec@mkwvk@@SAXPEAUVkCommandBuffer_T@@IIIHI@Z` | render/draw-translation | 1.7 (1.4-1.9) | 0.24 | 0.0 | 1.7 | (generated) A Vulkan call wrapper of the renderer (its call-routing template): forwards one Vulkan function, counted or timed when profiling is on. |
-| `n_nvnCommandBufferEndRecording` | os/nvn-bridge | 1.7 (1.6-1.7) | 0.22 | 0.2 | 1.8 | Ends a command buffer's recording: copies the recorded commands into a pooled block that becomes the command handle. |
-| `mutex_lock` | os/sync | 1.6 (1.4-2.0) | 0.23 | 1.5 | 2.3 | Locks a guest mutex: one compare-and-swap when free, a short spin, then a sleep on the object's condition variable. |
-| `vc_yield` | os/virtual-cores | 1.5 (1.4-1.9) | 0.21 | 0.3 | 1.7 | Virtual cores: gives the caller's core to a waiter allowed on it that is as good or better. |
-| `n_nvnCommandBufferAddControlMemory` | os/nvn-bridge | 1.5 (1.3-1.6) | 0.21 | 0.5 | 2.1 | nvnCommandBufferAddControlMemory: gives the command buffer new control memory and releases the recordings whose descriptors the old memory held. |
-| `queue_put` | os/sync | 1.5 (1.5-1.7) | 0.21 | 0.0 | 1.6 | mode: 0 send (back), 1 jam (front). try: do not block. Returns 1 if done. |
-| `mkwvk::draw` | render/draw-translation | 1.4 (1.2-1.5) | 0.20 | 0.9 | 17.6 | Replays one draw: program, pipeline, vertex streams, descriptors, dynamic state, then the Vulkan draw call. |
-| `RtlQueryFeatureConfiguration (ntdll.dll)` | system/other | 1.3 (1.2-1.4) | 0.18 | 1.3 | 1.3 | An ntdll-internal function named by its nearest export (no symbols); no frame of ours in its stacks. Not identified. |
-| `mkwvk::mirror_sync` | render/memory-and-mirrors | 1.3 (1.2-1.5) | 0.17 | 0.9 | 1.5 | Copies the pages the CPU wrote in a pool since its mirror's last sync into the mirror (the upload command buffer). |
-| `mkwvk::replay` | render/replay-and-submit | 1.2 (1.2-1.6) | 0.17 | 0.9 | 30.0 | Walks a submission's recorded commands and replays each into Vulkan state and calls. The decode loop of the Presentation Thread's critical path. |
-| `mkwvk::bind_descriptors` | render/descriptors | 1.2 (0.9-1.4) | 0.17 | 0.6 | 1.2 | Allocates or reuses the descriptor set for the writes build_descriptors made and binds it. |
-| `hos_gpu_guest_ranges` | os/nvn-bridge | 1.2 (1.1-1.3) | 0.16 | 0.0 | 1.2 | The merged list of guest memory ranges the GPU can reach, rebuilt (and sorted) whenever a mapping changed since the last call. |
-| `mkwvk::begin_recording` | render/replay-and-submit | 1.2 (1.1-1.2) | 0.16 | 0.0 | 2.2 | The next recording slot, begun, for the submission that will signal value. |
-| `VmaAllocator_T::AllocateVulkanMemory` | render/memory-and-mirrors | 1.1 (1.1-1.3) | 0.16 | 0.0 | 1.1 | (generated) The Vulkan memory allocator library (VmaAllocator_T::AllocateVulkanMemory): GPU memory for images and buffers. |
-| `mkwvk::import_pool` | render/memory-and-mirrors | 1.1 (1.0-1.1) | 0.14 | 0.0 | 1.1 | Imports a guest memory range as a Vulkan buffer over the same host memory (no copy), or reports why it cannot. |
-| `mkwvk::refresh_pool_ranges_locked` | render/memory-and-mirrors | 1.1 (0.9-1.2) | 0.14 | 0.9 | 1.8 | Rebuilds the list of GPU-visible memory ranges the capture scans. |
-| `nn::fs::OpenFile` | os/filesystem | 0.9 (0.9-1.2) | 0.12 | 0.0 | 1.1 | OpenFile(FileHandle*, char const* path, int mode): mode bit 0 read, bit 1 write, bit 2 append. |
-| `mkwvk::ReplayPin::ReplayPin` | render/replay-and-submit | 0.9 (0.8-0.9) | 0.12 | 0.0 | 0.9 | Moves the calling thread to the renderer's reserved core for the length of a replay, remembering the mask to put back. A SetThreadAffinityMask call, also when the thread already is on that core. |
-| `mkwvk::texture_view_of` | render/draw-translation | 0.9 (0.7-0.9) | 0.12 | 0.8 | 2.2 | The Vulkan image view for a texture handle as a binding needs it (view type, use, format), from a small cache keyed by the handle. |
-| `check_handle` | os/nvn-bridge | 0.8 (0.7-1.1) | 0.11 | 0.2 | 0.8 | Checks under a shared lock that a command handle is a live recording before it is used. |
-| `mkwvk::present_image` | render/replay-and-submit | 0.8 (0.6-0.9) | 0.11 | 0.0 | 1.0 | Puts the frame's picture on the swapchain: scaling, the overlays and the menu, then the present itself; remakes the swapchain when its format or size changed. |
-| `mkwvk::submit_q` | render/replay-and-submit | 0.8 (0.6-1.1) | 0.11 | 0.0 | 48.2 | The renderer's side of nvnQueueSubmitCommands: takes the capture of guest memory for the submission and replays its command lists (on the calling thread in the default mode). |
-| `hos_vcore_checkpoint` | os/virtual-cores | 0.8 (0.6-0.9) | 0.11 | 0.8 | 0.8 | Virtual cores: at every an SDK library function call, gives the caller's core to a waiting thread of better priority (a flag test when nobody waits). |
-| `mkwvk::gpu_time_collect` | render/replay-and-submit | 0.7 (0.7-0.8) | 0.10 | 0.0 | 0.7 | Reads a finished recording's two GPU timestamp queries (the GPU time a frame the profile shows). |
+| function | category | owner: % of a core | ms a frame | self | inclusive | calls a frame | us a call | what it does |
+|---|---|---|---|---|---|---|---|---|
+| `lifted game code` | game/lifted | 214.4 (210.5-218.8) | 30.23 | 213.6 | 346.8 | - | - | All of the game's own code, translated from the Switch's ARM code to C ahead of time. It is one row here: a list of the game's functions is made from the game binary, so it stays on the developer's PC. |
+| `spin_until_set` | os/sync | 16.5 (16.3-17.3) | 2.29 | 16.5 | 19.2 | - | - | Spins for up to 20 us (HOS_SPIN_US) on an event's or queue's flag before the waiter sleeps. |
+| `mkwvk::guarded_copy` | render/memory-and-mirrors | 10.0 (9.3-12.7) | 1.41 | 0.0 | 10.0 | - | - | copy_nt behind a fault handler: a guest page unmapped meanwhile ends the copy instead of the game. |
+| `hos_cv_sleep` | os/sleep-and-timers | 9.8 (8.4-10.7) | 1.30 | 0.2 | 12.5 | - | - | A guest thread's sleep on a host condition variable: gives its virtual core up for the wait and takes one again after it (letting the lock go while it waits for the core). |
+| `vc_acquire` | os/virtual-cores | 6.9 (6.9-7.5) | 0.98 | 0.4 | 7.2 | - | - | Virtual cores: waits for one of the game's six cores before running game code; after the escape time (HOS_VCORE_ESCAPE_US, 2 s by default on this build) it runs without one and logs an escape. |
+| `mkwvk::submit_recording` | render/replay-and-submit | 5.7 (4.9-5.7) | 0.76 | 0.0 | 6.1 | - | - | Ends a replayed recording: flushes its draw state, adds the texture uploads and the memory copies recorded for it, and submits its Vulkan command buffer. |
+| `hos_sleep_ns` | os/sleep-and-timers | 5.6 (5.1-5.8) | 0.74 | 1.7 | 6.5 | - | - | A host sleep with the virtual core given up; under a millisecond it yields in a loop until the time (Windows' timer would wake 0.5 ms late). |
+| `collect_in` | os/nvn-bridge | 5.5 (5.0-6.2) | 0.77 | 5.4 | 5.5 | - | - | Reads and clears the lifted code's write marks over the GPU-visible memory ranges and returns the pages written since the last submission. |
+| `obj_lookup` | os/sync | 4.1 (3.7-4.2) | 0.56 | 4.0 | 4.1 | - | - | Finds the host object of a guest mutex, event, queue or condition variable by its guest address in the shared table (lock-free probe; creates it on a miss). |
+| `mkwvk::present_out` | render/replay-and-submit | 3.8 (3.3-3.9) | 0.51 | 0.0 | 3.8 | - | - | Presents a swapchain image (vkQueuePresentKHR with the frame's present id), outside the queue lock. |
+| `nn::os::SignalLightEvent` | os/sync | 3.2 (3.0-3.5) | 0.44 | 0.1 | 3.6 | 575 | 0.77 | nn::os::SignalLightEvent: sets the event and wakes every thread sleeping on it. |
+| `hos_now_ns` | os/threads | 2.9 (2.7-3.7) | 0.40 | 1.4 | 2.9 | - | - | The host clock in nanoseconds (QueryPerformanceCounter). |
+| `mkwvk::build_descriptors` | render/descriptors | 2.7 (2.6-2.7) | 0.37 | 2.5 | 9.2 | - | - | Builds the descriptor writes of a draw or dispatch: for each binding of the program, the buffer range, texture view or sampler the game's state names. |
+| `a64_fpx_mul32_fma32` | runtime/float | 2.3 (2.3-2.7) | 0.32 | 2.3 | 2.3 | - | - | A multiply followed by a fused multiply-add kept as the guest's two operations (single precision), so the rounding matches the console. |
+| `obj` | os/sync | 2.3 (2.1-2.6) | 0.32 | 2.3 | 6.9 | - | - | The per-thread cache in front of obj_lookup, after a virtual-core checkpoint. |
+| `a64_fpx_fma32_fma32` | runtime/float | 2.0 (1.4-2.0) | 0.26 | 2.0 | 2.0 | - | - | Two chained single-precision fused multiply-adds with the guest's rounding. |
+| `?call@?$Route@$1?vkCmdDrawIndexed@vkx@@3P6AXPEAUVkCommandBuffer_T@@IIIHI@ZEA$1?pack@?$Value@$1?vkCmdDrawIndexed@vkx@@3P6AXPEAUVkCommandBuffer_T@@IIIHI@ZEA$03P6AX0IIIHI@Z@rec@mkwvk@@SAX0IIIHI@ZP6AX0IIIHI@Z@rec@mkwvk@@SAXPEAUVkCommandBuffer_T@@IIIHI@Z` | render/draw-translation | 1.7 (1.4-1.9) | 0.24 | 0.0 | 1.7 | - | - | (generated) A Vulkan call wrapper of the renderer (its call-routing template): forwards one Vulkan function, counted or timed when profiling is on. |
+| `n_nvnCommandBufferEndRecording` | os/nvn-bridge | 1.7 (1.6-1.7) | 0.22 | 0.2 | 1.8 | 155 | 1.45 | Ends a command buffer's recording: copies the recorded commands into a pooled block that becomes the command handle. |
+| `mutex_lock` | os/sync | 1.6 (1.4-2.0) | 0.23 | 1.5 | 2.3 | - | - | Locks a guest mutex: one compare-and-swap when free, a short spin, then a sleep on the object's condition variable. |
+| `vc_yield` | os/virtual-cores | 1.5 (1.4-1.9) | 0.21 | 0.3 | 1.7 | - | - | Virtual cores: gives the caller's core to a waiter allowed on it that is as good or better. |
+| `n_nvnCommandBufferAddControlMemory` | os/nvn-bridge | 1.5 (1.3-1.6) | 0.21 | 0.5 | 2.1 | 155 | 1.35 | nvnCommandBufferAddControlMemory: gives the command buffer new control memory and releases the recordings whose descriptors the old memory held. |
+| `queue_put` | os/sync | 1.5 (1.5-1.7) | 0.21 | 0.0 | 1.6 | - | - | mode: 0 send (back), 1 jam (front). try: do not block. Returns 1 if done. |
+| `mkwvk::draw` | render/draw-translation | 1.4 (1.2-1.5) | 0.20 | 0.9 | 17.6 | - | - | Replays one draw: program, pipeline, vertex streams, descriptors, dynamic state, then the Vulkan draw call. |
+| `RtlQueryFeatureConfiguration (ntdll.dll)` | system/other | 1.3 (1.2-1.4) | 0.18 | 1.3 | 1.3 | - | - | An ntdll-internal function named by its nearest export (no symbols); no frame of ours in its stacks. |
+| `mkwvk::mirror_sync` | render/memory-and-mirrors | 1.3 (1.2-1.5) | 0.17 | 0.9 | 1.5 | - | - | Copies the pages the CPU wrote in a pool since its mirror's last sync into the mirror (the upload command buffer). |
+| `mkwvk::replay` | render/replay-and-submit | 1.2 (1.2-1.6) | 0.17 | 0.9 | 30.0 | - | - | Walks a submission's recorded commands and replays each into Vulkan state and calls. |
+| `mkwvk::bind_descriptors` | render/descriptors | 1.2 (0.9-1.4) | 0.17 | 0.6 | 1.2 | - | - | Allocates or reuses the descriptor set for the writes build_descriptors made and binds it. |
+| `hos_gpu_guest_ranges` | os/nvn-bridge | 1.2 (1.1-1.3) | 0.16 | 0.0 | 1.2 | - | - | The merged list of guest memory ranges the GPU can reach, rebuilt (and sorted) whenever a mapping changed since the last call. |
+| `mkwvk::begin_recording` | render/replay-and-submit | 1.2 (1.1-1.2) | 0.16 | 0.0 | 2.2 | - | - | The next recording slot, begun, for the submission that will signal value. |
+| `VmaAllocator_T::AllocateVulkanMemory` | render/memory-and-mirrors | 1.1 (1.1-1.3) | 0.16 | 0.0 | 1.1 | - | - | (generated) The Vulkan memory allocator library (VmaAllocator_T::AllocateVulkanMemory): GPU memory for images and buffers. |
+| `mkwvk::import_pool` | render/memory-and-mirrors | 1.1 (1.0-1.1) | 0.14 | 0.0 | 1.1 | - | - | Imports a guest memory range as a Vulkan buffer over the same host memory (no copy), or reports why it cannot. |
+| `mkwvk::refresh_pool_ranges_locked` | render/memory-and-mirrors | 1.1 (0.9-1.2) | 0.14 | 0.9 | 1.8 | - | - | Rebuilds the list of GPU-visible memory ranges the capture scans. |
+| `nn::fs::OpenFile` | os/filesystem | 0.9 (0.9-1.2) | 0.12 | 0.0 | 1.1 | - | - | OpenFile(FileHandle*, char const* path, int mode): mode bit 0 read, bit 1 write, bit 2 append. |
+| `mkwvk::ReplayPin::ReplayPin` | render/replay-and-submit | 0.9 (0.8-0.9) | 0.12 | 0.0 | 0.9 | - | - | Moves the calling thread to the renderer's reserved core for the length of a replay, remembering the mask to put back. |
+| `mkwvk::texture_view_of` | render/draw-translation | 0.9 (0.7-0.9) | 0.12 | 0.8 | 2.2 | - | - | The Vulkan image view for a texture handle as a binding needs it (view type, use, format), from a small cache keyed by the handle. |
+| `check_handle` | os/nvn-bridge | 0.8 (0.7-1.1) | 0.11 | 0.2 | 0.8 | - | - | Checks under a shared lock that a command handle is a live recording before it is used. |
+| `mkwvk::present_image` | render/replay-and-submit | 0.8 (0.6-0.9) | 0.11 | 0.0 | 1.0 | - | - | Puts the frame's picture on the swapchain: scaling, the overlays and the menu, then the present itself; remakes the swapchain when its format or size changed. |
+| `mkwvk::submit_q` | render/replay-and-submit | 0.8 (0.6-1.1) | 0.11 | 0.0 | 48.2 | - | - | The renderer's side of nvnQueueSubmitCommands: takes the capture of guest memory for the submission and replays its command lists (on the calling thread in the default mode). |
+| `hos_vcore_checkpoint` | os/virtual-cores | 0.8 (0.6-0.9) | 0.11 | 0.8 | 0.8 | - | - | Virtual cores: at every nn::os call, gives the caller's core to a waiting thread of better priority (a flag test when nobody waits). |
+| `mkwvk::gpu_time_collect` | render/replay-and-submit | 0.7 (0.7-0.8) | 0.10 | 0.0 | 0.7 | - | - | Reads a finished recording's two GPU timestamp queries (the GPU time a frame the profile shows). |
 
 <details><summary>The other 5 functions up to 90 % of the on-CPU time</summary>
 
-| function | category | owner: % of a core | ms a frame | self | inclusive | what it does |
-|---|---|---|---|---|---|---|
-| `cmp_range` | os/nvn-bridge | 0.7 (0.6-0.7) | 0.10 | 0.7 | 0.7 | The comparison of hos_gpu_guest_ranges' sort. |
-| `nn::os::UnlockMutex` | os/sync | 0.7 (0.7-0.9) | 0.10 | 0.5 | 1.2 | an SDK library function object lookup, then mutex_unlock. |
-| `mkwvk::gpu_buffer_bind` | render/memory-and-mirrors | 0.7 (0.6-1.0) | 0.10 | 0.7 | 4.1 | The Vulkan buffer and offset for a guest GPU address range: finds the memory pool's mirror and brings it up to date. Called for every buffer binding of every draw; it leads into mirror_sync when the CPU wrote the pool since. |
-| `vc_release` | os/virtual-cores | 0.7 (0.6-1.1) | 0.09 | 0.1 | 0.8 | Virtual cores: gives the core back and wakes the best waiter. |
-| `mkwvk::stage_handle` | render/shaders-and-pipelines | 0.7 (0.4-0.7) | 0.09 | 0.6 | 1.1 | Evaluates a shader stage's small handle program: which texture handle the shader will read from its constants. |
+| function | category | owner: % of a core | ms a frame | self | inclusive | calls a frame | us a call | what it does |
+|---|---|---|---|---|---|---|---|---|
+| `cmp_range` | os/nvn-bridge | 0.7 (0.6-0.7) | 0.10 | 0.7 | 0.7 | - | - | The comparison of hos_gpu_guest_ranges' sort. |
+| `nn::os::UnlockMutex` | os/sync | 0.7 (0.7-0.9) | 0.10 | 0.5 | 1.2 | 13287 | 0.01 | nn::os::UnlockMutex: object lookup, then mutex_unlock. |
+| `mkwvk::gpu_buffer_bind` | render/memory-and-mirrors | 0.7 (0.6-1.0) | 0.10 | 0.7 | 4.1 | - | - | The Vulkan buffer and offset for a guest GPU address range: finds the memory pool's mirror and brings it up to date. |
+| `vc_release` | os/virtual-cores | 0.7 (0.6-1.1) | 0.09 | 0.1 | 0.8 | - | - | Virtual cores: gives the core back and wakes the best waiter. |
+| `mkwvk::stage_handle` | render/shaders-and-pipelines | 0.7 (0.4-0.7) | 0.09 | 0.6 | 1.1 | - | - | Evaluates a shader stage's small handle program: which texture handle the shader will read from its constants. |
 
 </details>
 
@@ -887,70 +889,72 @@ The game's main thread (`sead::MainThread`) builds each frame's commands; the ga
 | bake::ModuleMgr | 0.1 | 0.01 | 0.1 | 0.0 | 0.0 | 0.0 | 0.0 |
 | nn.npln.Callback | 0.1 | 0.01 | 0.0 | 0.0 | 0.1 | 0.0 | 0.0 |
 
+Call counts come from `cpu-tmp-stats-stats-0`, a run of the same scene with the HLE call counters on (`HOS_HLE_STATS=1`), 20 s of play at 96.8 fps: **calls a frame** = calls a second / that run's fps; **us a call** = the function's ms a frame (owner view) x 1000 / calls a frame.
+
 ### Functions: what each costs
 
 Every function in the order of its **owner** share (the work it asked for: its own instructions, and the system, C runtime and driver time below it); **self** is the time in its own instructions, **inclusive** the time with it anywhere in the stack (callees included). Listed until 90 % of the on-CPU time is covered; the first 40 rows are shown, the rest are folded below them.
 
-| function | category | owner: % of a core | ms a frame | self | inclusive | what it does |
-|---|---|---|---|---|---|---|
-| `lifted game code` | game/lifted | 172.9 (171.0-181.9) | 20.75 | 172.6 | 303.2 | All of the game's own code, translated from the Switch's ARM code to C ahead of time. It is one row here: a list of the game's functions is made from the game binary, so it stays on the developer's PC. |
-| `spin_until_set` | os/sync | 13.8 (12.8-16.0) | 1.65 | 13.8 | 16.0 | Spins for up to 20 us (HOS_SPIN_US) on an event's or queue's flag before the waiter sleeps. |
-| `hos_cv_sleep` | os/sleep-and-timers | 9.4 (7.9-9.5) | 1.13 | 0.3 | 11.9 | A guest thread's sleep on a host condition variable: gives its virtual core up for the wait and takes one again after it (letting the lock go while it waits for the core). |
-| `mkwvk::guarded_copy` | render/memory-and-mirrors | 8.9 (8.2-10.2) | 1.01 | 0.1 | 8.9 | copy_nt behind a fault handler: a guest page unmapped meanwhile ends the copy instead of the game. |
-| `vc_acquire` | os/virtual-cores | 6.0 (4.1-6.8) | 0.72 | 0.3 | 6.3 | Virtual cores: waits for one of the game's six cores before running game code; after the escape time (HOS_VCORE_ESCAPE_US, 2 s by default on this build) it runs without one and logs an escape. |
-| `mkwvk::submit_recording` | render/replay-and-submit | 6.0 (5.5-6.4) | 0.72 | 0.0 | 6.4 | Ends a replayed recording: flushes its draw state, adds the texture uploads and the memory copies recorded for it, and submits its Vulkan command buffer. |
-| `collect_in` | os/nvn-bridge | 5.6 (5.3-5.7) | 0.67 | 5.5 | 5.6 | Reads and clears the lifted code's write marks over the GPU-visible memory ranges and returns the pages written since the last submission. Runs at every submission over every GPU-visible range (32 pages at a time while none is marked); its cost follows the size of the pools, not what was written. |
-| `hos_sleep_ns` | os/sleep-and-timers | 4.5 (4.3-5.8) | 0.54 | 1.8 | 5.3 | A host sleep with the virtual core given up; under a millisecond it yields in a loop until the time (Windows' timer would wake 0.5 ms late). PR 2263 puts the game's own short sleeps on the timer on PCs with 6 logical processors or fewer. |
-| `mkwvk::present_out` | render/replay-and-submit | 3.9 (3.8-4.2) | 0.47 | 0.0 | 3.9 | Presents a swapchain image (vkQueuePresentKHR with the frame's present id), outside the queue lock. |
-| `nn::os::SignalLightEvent` | os/sync | 3.3 (3.0-3.8) | 0.40 | 0.1 | 3.6 | an SDK library function sets the event and wakes every thread sleeping on it. All sleepers are woken also for an auto-clear event that only one can take. |
-| `obj_lookup` | os/sync | 3.2 (3.2-4.3) | 0.38 | 3.2 | 3.2 | Finds the host object of a guest mutex, event, queue or condition variable by its guest address in the shared table (lock-free probe; creates it on a miss). |
-| `mkwvk::build_descriptors` | render/descriptors | 3.0 (2.2-3.1) | 0.36 | 2.8 | 9.8 | Builds the descriptor writes of a draw or dispatch: for each binding of the program, the buffer range, texture view or sampler the game's state names. Reuse of the last draw's set already skips unchanged draws. |
-| `a64_fpx_fma32_fma32` | runtime/float | 2.6 (2.5-2.7) | 0.31 | 2.6 | 2.6 | Two chained single-precision fused multiply-adds with the guest's rounding. |
-| `hos_now_ns` | os/threads | 2.3 (1.9-2.7) | 0.28 | 0.9 | 2.3 | The host clock in nanoseconds (QueryPerformanceCounter). Read by every spin and sleep loop turn. |
-| `?call@?$Route@$1?vkCmdDrawIndexed@vkx@@3P6AXPEAUVkCommandBuffer_T@@IIIHI@ZEA$1?pack@?$Value@$1?vkCmdDrawIndexed@vkx@@3P6AXPEAUVkCommandBuffer_T@@IIIHI@ZEA$03P6AX0IIIHI@Z@rec@mkwvk@@SAX0IIIHI@ZP6AX0IIIHI@Z@rec@mkwvk@@SAXPEAUVkCommandBuffer_T@@IIIHI@Z` | render/draw-translation | 2.2 (1.8-2.5) | 0.25 | 0.0 | 2.2 | (generated) A Vulkan call wrapper of the renderer (its call-routing template): forwards one Vulkan function, counted or timed when profiling is on. |
-| `n_nvnCommandBufferEndRecording` | os/nvn-bridge | 2.1 (2.0-2.5) | 0.25 | 0.2 | 2.3 | Ends a command buffer's recording: copies the recorded commands into a pooled block that becomes the command handle. |
-| `obj` | os/sync | 2.0 (1.7-2.2) | 0.23 | 2.0 | 5.5 | The per-thread cache in front of obj_lookup, after a virtual-core checkpoint. |
-| `mkwvk::draw` | render/draw-translation | 1.8 (1.7-2.0) | 0.21 | 1.0 | 20.4 | Replays one draw: program, pipeline, vertex streams, descriptors, dynamic state, then the Vulkan draw call. |
-| `hos_vi_native_presented` | os/display-and-pacing | 1.7 (0.0-1.9) | 0.20 | 0.0 | 1.7 | Called at every present: advances the frame clock and the frame-time average the game's time step uses, and writes the present trace when one is asked for. |
-| `a64_fpx_mul32_fma32` | runtime/float | 1.6 (1.6-1.7) | 0.20 | 1.6 | 1.6 | A multiply followed by a fused multiply-add kept as the guest's two operations (single precision), so the rounding matches the console. The FPX helpers exist because results must be bit-exact: the game's simulation diverges otherwise. They are the price of exactness in vector-heavy code, not a defect. |
-| `mkwvk::begin_recording` | render/replay-and-submit | 1.5 (1.4-1.6) | 0.19 | 0.0 | 2.8 | The next recording slot, begun, for the submission that will signal value. |
-| `mkwvk::replay` | render/replay-and-submit | 1.5 (1.2-1.5) | 0.18 | 0.9 | 32.7 | Walks a submission's recorded commands and replays each into Vulkan state and calls. The decode loop of the Presentation Thread's critical path. |
-| `n_nvnCommandBufferAddControlMemory` | os/nvn-bridge | 1.5 (1.5-1.8) | 0.18 | 0.7 | 2.2 | nvnCommandBufferAddControlMemory: gives the command buffer new control memory and releases the recordings whose descriptors the old memory held. |
-| `queue_put` | os/sync | 1.5 (1.1-1.6) | 0.18 | 0.0 | 1.5 | mode: 0 send (back), 1 jam (front). try: do not block. Returns 1 if done. |
-| `mutex_lock` | os/sync | 1.4 (1.3-1.5) | 0.16 | 1.4 | 1.9 | Locks a guest mutex: one compare-and-swap when free, a short spin, then a sleep on the object's condition variable. |
-| `RtlQueryFeatureConfiguration (ntdll.dll)` | system/other | 1.3 (0.9-1.6) | 0.16 | 1.3 | 1.3 | An ntdll-internal function named by its nearest export (no symbols); no frame of ours in its stacks. Not identified. |
-| `vc_yield` | os/virtual-cores | 1.3 (0.9-1.5) | 0.16 | 0.2 | 1.5 | Virtual cores: gives the caller's core to a waiter allowed on it that is as good or better. |
-| `mkwvk::mirror_sync` | render/memory-and-mirrors | 1.3 (1.3-1.7) | 0.15 | 0.9 | 1.7 | Copies the pages the CPU wrote in a pool since its mirror's last sync into the mirror (the upload command buffer). |
-| `check_handle` | os/nvn-bridge | 1.3 (1.2-1.3) | 0.15 | 0.3 | 1.3 | Checks under a shared lock that a command handle is a live recording before it is used. |
-| `mkwvk::bind_descriptors` | render/descriptors | 1.2 (1.0-1.5) | 0.14 | 0.4 | 1.2 | Allocates or reuses the descriptor set for the writes build_descriptors made and binds it. |
-| `mkwvk::gpu_time_collect` | render/replay-and-submit | 1.2 (0.7-1.2) | 0.13 | 0.0 | 1.2 | Reads a finished recording's two GPU timestamp queries (the GPU time a frame the profile shows). |
-| `mkwvk::refresh_pool_ranges_locked` | render/memory-and-mirrors | 1.1 (0.8-1.1) | 0.13 | 0.7 | 1.7 | Rebuilds the list of GPU-visible memory ranges the capture scans. |
-| `VmaAllocator_T::AllocateVulkanMemory` | render/memory-and-mirrors | 1.1 (0.9-1.2) | 0.13 | 0.0 | 1.1 | (generated) The Vulkan memory allocator library (VmaAllocator_T::AllocateVulkanMemory): GPU memory for images and buffers. |
-| `hos_gpu_guest_ranges` | os/nvn-bridge | 1.0 (0.7-1.2) | 0.12 | 0.0 | 1.0 | The merged list of guest memory ranges the GPU can reach, rebuilt (and sorted) whenever a mapping changed since the last call. |
-| `mkwvk::import_pool` | render/memory-and-mirrors | 1.0 (1.0-1.3) | 0.12 | 0.0 | 1.0 | Imports a guest memory range as a Vulkan buffer over the same host memory (no copy), or reports why it cannot. |
-| `mkwvk::present_image` | render/replay-and-submit | 0.9 (0.6-1.1) | 0.11 | 0.0 | 1.4 | Puts the frame's picture on the swapchain: scaling, the overlays and the menu, then the present itself; remakes the swapchain when its format or size changed. |
-| `mkwvk::texture_view_of` | render/draw-translation | 0.9 (0.8-0.9) | 0.11 | 0.9 | 2.2 | The Vulkan image view for a texture handle as a binding needs it (view type, use, format), from a small cache keyed by the handle. |
-| `amdvlk64.dll` | driver | 0.9 (0.7-0.9) | 0.10 | 13.9 | 24.5 | AMD's Vulkan driver (user mode): command encoding, descriptor updates, pipeline binds, queue submits. No symbols. |
-| `mkwvk::submit_q` | render/replay-and-submit | 0.8 (0.7-1.0) | 0.10 | 0.0 | 51.7 | The renderer's side of nvnQueueSubmitCommands: takes the capture of guest memory for the submission and replays its command lists (on the calling thread in the default mode). |
-| `nn::fs::OpenFile` | os/filesystem | 0.8 (0.8-1.1) | 0.10 | 0.0 | 1.0 | OpenFile(FileHandle*, char const* path, int mode): mode bit 0 read, bit 1 write, bit 2 append. |
+| function | category | owner: % of a core | ms a frame | self | inclusive | calls a frame | us a call | what it does |
+|---|---|---|---|---|---|---|---|---|
+| `lifted game code` | game/lifted | 172.9 (171.0-181.9) | 20.75 | 172.6 | 303.2 | - | - | All of the game's own code, translated from the Switch's ARM code to C ahead of time. It is one row here: a list of the game's functions is made from the game binary, so it stays on the developer's PC. |
+| `spin_until_set` | os/sync | 13.8 (12.8-16.0) | 1.65 | 13.8 | 16.0 | - | - | Spins for up to 20 us (HOS_SPIN_US) on an event's or queue's flag before the waiter sleeps. |
+| `hos_cv_sleep` | os/sleep-and-timers | 9.4 (7.9-9.5) | 1.13 | 0.3 | 11.9 | - | - | A guest thread's sleep on a host condition variable: gives its virtual core up for the wait and takes one again after it (letting the lock go while it waits for the core). |
+| `mkwvk::guarded_copy` | render/memory-and-mirrors | 8.9 (8.2-10.2) | 1.01 | 0.1 | 8.9 | - | - | copy_nt behind a fault handler: a guest page unmapped meanwhile ends the copy instead of the game. |
+| `vc_acquire` | os/virtual-cores | 6.0 (4.1-6.8) | 0.72 | 0.3 | 6.3 | - | - | Virtual cores: waits for one of the game's six cores before running game code; after the escape time (HOS_VCORE_ESCAPE_US, 2 s by default on this build) it runs without one and logs an escape. |
+| `mkwvk::submit_recording` | render/replay-and-submit | 6.0 (5.5-6.4) | 0.72 | 0.0 | 6.4 | - | - | Ends a replayed recording: flushes its draw state, adds the texture uploads and the memory copies recorded for it, and submits its Vulkan command buffer. |
+| `collect_in` | os/nvn-bridge | 5.6 (5.3-5.7) | 0.67 | 5.5 | 5.6 | - | - | Reads and clears the lifted code's write marks over the GPU-visible memory ranges and returns the pages written since the last submission. |
+| `hos_sleep_ns` | os/sleep-and-timers | 4.5 (4.3-5.8) | 0.54 | 1.8 | 5.3 | - | - | A host sleep with the virtual core given up; under a millisecond it yields in a loop until the time (Windows' timer would wake 0.5 ms late). |
+| `mkwvk::present_out` | render/replay-and-submit | 3.9 (3.8-4.2) | 0.47 | 0.0 | 3.9 | - | - | Presents a swapchain image (vkQueuePresentKHR with the frame's present id), outside the queue lock. |
+| `nn::os::SignalLightEvent` | os/sync | 3.3 (3.0-3.8) | 0.40 | 0.1 | 3.6 | 552 | 0.72 | nn::os::SignalLightEvent: sets the event and wakes every thread sleeping on it. |
+| `obj_lookup` | os/sync | 3.2 (3.2-4.3) | 0.38 | 3.2 | 3.2 | - | - | Finds the host object of a guest mutex, event, queue or condition variable by its guest address in the shared table (lock-free probe; creates it on a miss). |
+| `mkwvk::build_descriptors` | render/descriptors | 3.0 (2.2-3.1) | 0.36 | 2.8 | 9.8 | - | - | Builds the descriptor writes of a draw or dispatch: for each binding of the program, the buffer range, texture view or sampler the game's state names. |
+| `a64_fpx_fma32_fma32` | runtime/float | 2.6 (2.5-2.7) | 0.31 | 2.6 | 2.6 | - | - | Two chained single-precision fused multiply-adds with the guest's rounding. |
+| `hos_now_ns` | os/threads | 2.3 (1.9-2.7) | 0.28 | 0.9 | 2.3 | - | - | The host clock in nanoseconds (QueryPerformanceCounter). |
+| `?call@?$Route@$1?vkCmdDrawIndexed@vkx@@3P6AXPEAUVkCommandBuffer_T@@IIIHI@ZEA$1?pack@?$Value@$1?vkCmdDrawIndexed@vkx@@3P6AXPEAUVkCommandBuffer_T@@IIIHI@ZEA$03P6AX0IIIHI@Z@rec@mkwvk@@SAX0IIIHI@ZP6AX0IIIHI@Z@rec@mkwvk@@SAXPEAUVkCommandBuffer_T@@IIIHI@Z` | render/draw-translation | 2.2 (1.8-2.5) | 0.25 | 0.0 | 2.2 | - | - | (generated) A Vulkan call wrapper of the renderer (its call-routing template): forwards one Vulkan function, counted or timed when profiling is on. |
+| `n_nvnCommandBufferEndRecording` | os/nvn-bridge | 2.1 (2.0-2.5) | 0.25 | 0.2 | 2.3 | 157 | 1.60 | Ends a command buffer's recording: copies the recorded commands into a pooled block that becomes the command handle. |
+| `obj` | os/sync | 2.0 (1.7-2.2) | 0.23 | 2.0 | 5.5 | - | - | The per-thread cache in front of obj_lookup, after a virtual-core checkpoint. |
+| `mkwvk::draw` | render/draw-translation | 1.8 (1.7-2.0) | 0.21 | 1.0 | 20.4 | - | - | Replays one draw: program, pipeline, vertex streams, descriptors, dynamic state, then the Vulkan draw call. |
+| `hos_vi_native_presented` | os/display-and-pacing | 1.7 (0.0-1.9) | 0.20 | 0.0 | 1.7 | - | - | Called at every present: advances the frame clock and the frame-time average the game's time step uses, and writes the present trace when one is asked for. |
+| `a64_fpx_mul32_fma32` | runtime/float | 1.6 (1.6-1.7) | 0.20 | 1.6 | 1.6 | - | - | A multiply followed by a fused multiply-add kept as the guest's two operations (single precision), so the rounding matches the console. |
+| `mkwvk::begin_recording` | render/replay-and-submit | 1.5 (1.4-1.6) | 0.19 | 0.0 | 2.8 | - | - | The next recording slot, begun, for the submission that will signal value. |
+| `mkwvk::replay` | render/replay-and-submit | 1.5 (1.2-1.5) | 0.18 | 0.9 | 32.7 | - | - | Walks a submission's recorded commands and replays each into Vulkan state and calls. |
+| `n_nvnCommandBufferAddControlMemory` | os/nvn-bridge | 1.5 (1.5-1.8) | 0.18 | 0.7 | 2.2 | 157 | 1.13 | nvnCommandBufferAddControlMemory: gives the command buffer new control memory and releases the recordings whose descriptors the old memory held. |
+| `queue_put` | os/sync | 1.5 (1.1-1.6) | 0.18 | 0.0 | 1.5 | - | - | mode: 0 send (back), 1 jam (front). try: do not block. Returns 1 if done. |
+| `mutex_lock` | os/sync | 1.4 (1.3-1.5) | 0.16 | 1.4 | 1.9 | - | - | Locks a guest mutex: one compare-and-swap when free, a short spin, then a sleep on the object's condition variable. |
+| `RtlQueryFeatureConfiguration (ntdll.dll)` | system/other | 1.3 (0.9-1.6) | 0.16 | 1.3 | 1.3 | - | - | An ntdll-internal function named by its nearest export (no symbols); no frame of ours in its stacks. |
+| `vc_yield` | os/virtual-cores | 1.3 (0.9-1.5) | 0.16 | 0.2 | 1.5 | - | - | Virtual cores: gives the caller's core to a waiter allowed on it that is as good or better. |
+| `mkwvk::mirror_sync` | render/memory-and-mirrors | 1.3 (1.3-1.7) | 0.15 | 0.9 | 1.7 | - | - | Copies the pages the CPU wrote in a pool since its mirror's last sync into the mirror (the upload command buffer). |
+| `check_handle` | os/nvn-bridge | 1.3 (1.2-1.3) | 0.15 | 0.3 | 1.3 | - | - | Checks under a shared lock that a command handle is a live recording before it is used. |
+| `mkwvk::bind_descriptors` | render/descriptors | 1.2 (1.0-1.5) | 0.14 | 0.4 | 1.2 | - | - | Allocates or reuses the descriptor set for the writes build_descriptors made and binds it. |
+| `mkwvk::gpu_time_collect` | render/replay-and-submit | 1.2 (0.7-1.2) | 0.13 | 0.0 | 1.2 | - | - | Reads a finished recording's two GPU timestamp queries (the GPU time a frame the profile shows). |
+| `mkwvk::refresh_pool_ranges_locked` | render/memory-and-mirrors | 1.1 (0.8-1.1) | 0.13 | 0.7 | 1.7 | - | - | Rebuilds the list of GPU-visible memory ranges the capture scans. |
+| `VmaAllocator_T::AllocateVulkanMemory` | render/memory-and-mirrors | 1.1 (0.9-1.2) | 0.13 | 0.0 | 1.1 | - | - | (generated) The Vulkan memory allocator library (VmaAllocator_T::AllocateVulkanMemory): GPU memory for images and buffers. |
+| `hos_gpu_guest_ranges` | os/nvn-bridge | 1.0 (0.7-1.2) | 0.12 | 0.0 | 1.0 | - | - | The merged list of guest memory ranges the GPU can reach, rebuilt (and sorted) whenever a mapping changed since the last call. |
+| `mkwvk::import_pool` | render/memory-and-mirrors | 1.0 (1.0-1.3) | 0.12 | 0.0 | 1.0 | - | - | Imports a guest memory range as a Vulkan buffer over the same host memory (no copy), or reports why it cannot. |
+| `mkwvk::present_image` | render/replay-and-submit | 0.9 (0.6-1.1) | 0.11 | 0.0 | 1.4 | - | - | Puts the frame's picture on the swapchain: scaling, the overlays and the menu, then the present itself; remakes the swapchain when its format or size changed. |
+| `mkwvk::texture_view_of` | render/draw-translation | 0.9 (0.8-0.9) | 0.11 | 0.9 | 2.2 | - | - | The Vulkan image view for a texture handle as a binding needs it (view type, use, format), from a small cache keyed by the handle. |
+| `amdvlk64.dll` | driver | 0.9 (0.7-0.9) | 0.10 | 13.9 | 24.5 | - | - | AMD's Vulkan driver (user mode): command encoding, descriptor updates, pipeline binds, queue submits. |
+| `mkwvk::submit_q` | render/replay-and-submit | 0.8 (0.7-1.0) | 0.10 | 0.0 | 51.7 | - | - | The renderer's side of nvnQueueSubmitCommands: takes the capture of guest memory for the submission and replays its command lists (on the calling thread in the default mode). |
+| `nn::fs::OpenFile` | os/filesystem | 0.8 (0.8-1.1) | 0.10 | 0.0 | 1.0 | - | - | OpenFile(FileHandle*, char const* path, int mode): mode bit 0 read, bit 1 write, bit 2 append. |
 
 <details><summary>The other 13 functions up to 90 % of the on-CPU time</summary>
 
-| function | category | owner: % of a core | ms a frame | self | inclusive | what it does |
-|---|---|---|---|---|---|---|
-| `vc_release` | os/virtual-cores | 0.8 (0.8-1.0) | 0.09 | 0.2 | 0.8 | Virtual cores: gives the core back and wakes the best waiter. |
-| `hos_vcore_checkpoint` | os/virtual-cores | 0.7 (0.5-0.7) | 0.08 | 0.7 | 0.7 | Virtual cores: at every an SDK library function call, gives the caller's core to a waiting thread of better priority (a flag test when nobody waits). |
-| `mkwvk::texture_answer` | render/shaders-and-pipelines | 0.7 (0.7-0.8) | 0.08 | 0.7 | 0.8 | A texture's kind (the answer to a shader variant's question), cached by texture slot. |
-| `mkwvk::ReplayPin::ReplayPin` | render/replay-and-submit | 0.7 (0.7-1.4) | 0.09 | 0.0 | 0.7 | Moves the calling thread to the renderer's reserved core for the length of a replay, remembering the mask to put back. A SetThreadAffinityMask call, also when the thread already is on that core. |
-| `mkwvk::gpu_buffer_bind` | render/memory-and-mirrors | 0.7 (0.6-1.0) | 0.08 | 0.6 | 4.5 | The Vulkan buffer and offset for a guest GPU address range: finds the memory pool's mirror and brings it up to date. Called for every buffer binding of every draw; it leads into mirror_sync when the CPU wrote the pool since. |
-| `a64_lookup` | runtime/indirect-calls | 0.6 (0.5-0.7) | 0.08 | 0.6 | 0.6 | Finds the host function of a guest address for an indirect call or jump (hash table). Behind a64_icall_site and a64_ijump_site when the call site's one-entry cache misses. |
-| `mkwvk::answer_handle` | render/shaders-and-pipelines | 0.6 (0.6-0.8) | 0.08 | 0.6 | 0.7 | The texture handle behind one of a program's variant questions. |
-| `mkwvk::full_barrier` | render/textures | 0.6 (0.6-0.7) | 0.07 | 0.1 | 0.6 | Records a full pipeline barrier in the command buffer (left out when one was just recorded with no work since). |
-| `mkwvk::program_for` | render/shaders-and-pipelines | 0.6 (0.5-0.7) | 0.07 | 0.6 | 4.0 | The translated shader program for the game's current shaders and state, from a per-thread cache of the last picks. Asked for every draw; most are answered by the last pick, the rest compare texture kinds (texture_answer). |
-| `nn::os::UnlockMutex` | os/sync | 0.6 (0.6-0.8) | 0.07 | 0.5 | 0.9 | an SDK library function object lookup, then mutex_unlock. |
-| `mkwvk::stage_handle` | render/shaders-and-pipelines | 0.6 (0.5-0.6) | 0.07 | 0.6 | 1.4 | Evaluates a shader stage's small handle program: which texture handle the shader will read from its constants. |
-| `mkwvk::dynamic_state` | render/draw-translation | 0.6 (0.4-0.8) | 0.07 | 0.5 | 0.6 | Sets the Vulkan dynamic state that changed since the last draw (viewport, scissor, depth, stencil, blend constants). |
-| `recomp_fp_estimate` | runtime/float | 0.6 (0.5-0.8) | 0.07 | 0.6 | 0.6 | The ARM reciprocal and reciprocal-square-root estimate instructions, bit-exact (table and integer arithmetic). x86 has no instruction with the same result; called from vector maths in the game's hot loops. |
+| function | category | owner: % of a core | ms a frame | self | inclusive | calls a frame | us a call | what it does |
+|---|---|---|---|---|---|---|---|---|
+| `vc_release` | os/virtual-cores | 0.8 (0.8-1.0) | 0.09 | 0.2 | 0.8 | - | - | Virtual cores: gives the core back and wakes the best waiter. |
+| `hos_vcore_checkpoint` | os/virtual-cores | 0.7 (0.5-0.7) | 0.08 | 0.7 | 0.7 | - | - | Virtual cores: at every nn::os call, gives the caller's core to a waiting thread of better priority (a flag test when nobody waits). |
+| `mkwvk::texture_answer` | render/shaders-and-pipelines | 0.7 (0.7-0.8) | 0.08 | 0.7 | 0.8 | - | - | A texture's kind (the answer to a shader variant's question), cached by texture slot. |
+| `mkwvk::ReplayPin::ReplayPin` | render/replay-and-submit | 0.7 (0.7-1.4) | 0.09 | 0.0 | 0.7 | - | - | Moves the calling thread to the renderer's reserved core for the length of a replay, remembering the mask to put back. |
+| `mkwvk::gpu_buffer_bind` | render/memory-and-mirrors | 0.7 (0.6-1.0) | 0.08 | 0.6 | 4.5 | - | - | The Vulkan buffer and offset for a guest GPU address range: finds the memory pool's mirror and brings it up to date. |
+| `a64_lookup` | runtime/indirect-calls | 0.6 (0.5-0.7) | 0.08 | 0.6 | 0.6 | - | - | Finds the host function of a guest address for an indirect call or jump (hash table). |
+| `mkwvk::answer_handle` | render/shaders-and-pipelines | 0.6 (0.6-0.8) | 0.08 | 0.6 | 0.7 | - | - | The texture handle behind one of a program's variant questions. |
+| `mkwvk::full_barrier` | render/textures | 0.6 (0.6-0.7) | 0.07 | 0.1 | 0.6 | - | - | Records a full pipeline barrier in the command buffer (left out when one was just recorded with no work since). |
+| `mkwvk::program_for` | render/shaders-and-pipelines | 0.6 (0.5-0.7) | 0.07 | 0.6 | 4.0 | - | - | The translated shader program for the game's current shaders and state, from a per-thread cache of the last picks. |
+| `nn::os::UnlockMutex` | os/sync | 0.6 (0.6-0.8) | 0.07 | 0.5 | 0.9 | 9851 | 0.01 | nn::os::UnlockMutex: object lookup, then mutex_unlock. |
+| `mkwvk::stage_handle` | render/shaders-and-pipelines | 0.6 (0.5-0.6) | 0.07 | 0.6 | 1.4 | - | - | Evaluates a shader stage's small handle program: which texture handle the shader will read from its constants. |
+| `mkwvk::dynamic_state` | render/draw-translation | 0.6 (0.4-0.8) | 0.07 | 0.5 | 0.6 | - | - | Sets the Vulkan dynamic state that changed since the last draw (viewport, scissor, depth, stencil, blend constants). |
+| `recomp_fp_estimate` | runtime/float | 0.6 (0.5-0.8) | 0.07 | 0.6 | 0.6 | - | - | The ARM reciprocal and reciprocal-square-root estimate instructions, bit-exact (table and integer arithmetic). |
 
 </details>
 
@@ -1088,7 +1092,7 @@ Each row is priced from these runs: **cost** is the on-CPU time of every sample 
        --into docs/cpu-profile.md --section <scene key>
    ```
 
-   `--readobj` names Windows' system DLL exports; on Linux the system modules stay unnamed.
+   `--readobj` names Windows' system DLL exports. The script reads Windows captures with lld-link maps only; a Linux capture (`hookshot`, `hookshot_vk.so`) is refused with a message, not mislabelled.
 5. **Maintain the data files:**
    - When the report lists **unclassified** code, add a rule to `scripts/cpu_categories.py`.
    - When it lists functions **not yet described**, add a line to `scripts/cpu_functions.json`.
