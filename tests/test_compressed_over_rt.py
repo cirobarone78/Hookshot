@@ -4,7 +4,9 @@ texture_touch skips the upload of a new texture whose storage the GPU rendered i
 already holds what the GPU drew there. The GPU cannot render into a compressed format, so for ASTC, BC and ETC textures
 that storage only means render targets used it before; skipped, a boss or a new enemy whose textures were loaded there was
 drawn with an empty texture, all blue, for its first cutscene (from Shakoquo/Mako ff479e988d). Cuts texture_touch's decision
-out of the source as it is and checks it for each kind of format, with and without RX_VK_SKIP_COMPRESSED_OVER_RT=1.
+out of the source as it is and checks it for each kind of format, with and without RX_VK_SKIP_COMPRESSED_OVER_RT=1 (with
+gpu_owned_since stubbed: the decision alone). Then gpu_owned_since itself, cut out the same way: overlapping render-target
+ranges count their bytes once, so memory with a gap the GPU never drew is not taken as the GPU's.
 
 python -I -B tests/test_compressed_over_rt.py [--cxx g++]
 """
@@ -62,6 +64,35 @@ int main(int argc, char **) {
 '''
 
 
+# (gpu_owned_since as it is in the source, over a gpu_owned of the test's own: overlapping ranges count their bytes once)
+OWNED = r'''#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <map>
+static std::map<uint64_t, std::pair<uint64_t, uint32_t>> gpu_owned;
+FUNCTION
+#define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); return 1; } } while (0)
+static void set(std::initializer_list<std::pair<uint64_t, uint64_t>> r) {
+    gpu_owned.clear();
+    for (auto& x : r) gpu_owned[x.first] = {x.second, 5};
+}
+int main() {
+    set({{0x0, 0x3000}, {0x2000, 0x4000}});   /* (overlapping, with [0x4000, 0x5000) never drawn) */
+    CHECK(gpu_owned_since(0x1000, 0x4000) == 0);
+    set({{0x0, 0x3000}, {0x2000, 0x6000}});   /* (overlapping, covering it) */
+    CHECK(gpu_owned_since(0x1000, 0x4000) == 5);
+    set({{0x1000, 0x5000}});
+    CHECK(gpu_owned_since(0x1000, 0x4000) == 5);
+    set({{0x1000, 0x2000}, {0x3000, 0x5000}});   /* (a gap) */
+    CHECK(gpu_owned_since(0x1000, 0x4000) == 0);
+    set({});
+    CHECK(gpu_owned_since(0x1000, 0x4000) == 0);
+    std::printf("PASS: gpu_owned_since counts overlapping render-target ranges once: a gap never drawn is not the GPU's\n");
+    return 0;
+}
+'''
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cxx", default="g++")
@@ -88,6 +119,15 @@ def main():
         subprocess.run([cxx, "-std=c++17", "-D_CRT_SECURE_NO_WARNINGS", "-include", str(ENV_ON_H), "-Wall",
                         "-Wno-unused-function", "-Werror", str(tmp / "f.cpp"), "-o", str(exe)],
                        check=True)
+        fn = src[src.index("uint32_t gpu_owned_since(uint64_t gpu, uint64_t n) {"):]
+        fn = fn[:fn.index("\n}\n") + 3]
+        (tmp / "owned.cpp").write_text(OWNED.replace("FUNCTION", fn), encoding="utf-8")
+        owned = tmp / ("owned.exe" if os.name == "nt" else "owned")
+        subprocess.run([cxx, "-std=c++17", "-Wall", "-Werror", str(tmp / "owned.cpp"), "-o", str(owned)], check=True)
+        r = subprocess.run([str(owned)], capture_output=True, text=True)
+        print(r.stdout.strip())
+        if r.returncode:
+            raise SystemExit("FAIL:\n" + r.stdout + r.stderr)
         for extra in ({}, {"RX_VK_SKIP_COMPRESSED_OVER_RT": "1"}):
             env = {k: v for k, v in os.environ.items() if k != "RX_VK_SKIP_COMPRESSED_OVER_RT"}
             env.update(extra)

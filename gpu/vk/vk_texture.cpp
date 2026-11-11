@@ -1328,16 +1328,19 @@ void watch_tex(const Texture* tex, const char* what) {
 }
 /// Whether [gpu, gpu + n) is storage the GPU's images rendered last (covered by ranges render targets took), and the
 /// generation from which the CPU's writes would count (0: not the GPU's)
+/// (hookshot) The ranges can overlap (texture_rendered drops only the ones inside a new range), so the bytes they cover are
+/// counted once each: summed, two overlapping ranges counted their overlap twice and a range with a gap the GPU never drew
+/// read as covered, and a texture over it was never uploaded
 uint32_t gpu_owned_since(uint64_t gpu, uint64_t n) {
-    uint64_t covered = 0;
+    uint64_t covered = 0, reach = gpu;   // (reach: the end of what is counted so far; the ranges come in address order)
     uint32_t since = UINT32_MAX;
     auto it = gpu_owned.upper_bound(gpu);
     if (it != gpu_owned.begin()) --it;
     for (; it != gpu_owned.end() && it->first < gpu + n; ++it) {
         const uint64_t a = std::max(it->first, gpu), b = std::min(it->second.first, gpu + n);
         if (b <= a) continue;
-        covered += b - a;
         since = std::min(since, it->second.second);
+        if (b > std::max(a, reach)) covered += b - std::max(a, reach), reach = b;
     }
     return covered >= n && since != UINT32_MAX ? std::max(since, 1u) : 0;
 }
