@@ -25,6 +25,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <system_error>
 #include <vector>
 
 #include "vk_paths.h"
@@ -48,6 +49,18 @@
 #include "menu_restart.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
+#endif
+#include "pipeline_share.h"   // (Save my pipeline list: the zip for issue 2034)
+#ifndef _WIN32   // (Save my pipeline list: the desktop's programs. On Windows, shell32 and ole32 are loaded when it is used)
+#include <fcntl.h>
+#include <spawn.h>
+#include <csignal>
+#include <cerrno>
+#include <pthread.h>
+#include <sys/utsname.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char** environ;
 #endif
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
@@ -117,6 +130,7 @@ const char* tx_compact_menu_key(int v) {
     return names[std::clamp(v, 0, 1)];
 }
 const char* tx_hdr(int v) { return v == 1 ? "Expanded" : v == 2 ? "Native (the game's)" : "Off"; }
+const char* tx_tonemap(int v) { return v == 1 ? "PsychoV35" : "Vanilla"; }
 const char* tx_nits(int v) {
     static char b[24];
     snprintf(b, sizeof b, "%d nits", v);
@@ -278,7 +292,7 @@ const char* tx_percent(int v) {
     snprintf(b, sizeof b, "%d%%", v);
     return b;
 }
-/// The main screen's size, as host/hos_main.c takes its shape at the start (the Ultrawide row): false where it
+/// The main screen's size, as host/hos_main.c takes its shape at the start (the Aspect ratio row): false where it
 /// is not known (Linux: the sizes are shown as the 16:9 outputs)
 bool screen_size(uint32_t* w, uint32_t* h) {
 #ifdef _WIN32
@@ -334,7 +348,7 @@ int step_output_choice(int id, int dir) {
     return order[std::clamp(at + dir, 0, n - 1)];
 }
 /// The picture an Output resolution choice makes: a custom surround output takes its own shape;
-/// otherwise Ultrawide uses the screen's shape. Both keep at most hos_wide_max_px() pixels, matching
+/// otherwise the Aspect ratio at Monitor's shape takes the screen's. Both keep at most hos_wide_max_px() pixels, matching
 /// host/hos_main.c at startup (host/hos_wide_size.h); otherwise the
 /// 16:9 output. The game's own choice (0) as it is (its size comes from the game's graphics scale). *native: the screen's own size
 Out picture_for(int v, bool* native = nullptr) {
@@ -439,7 +453,7 @@ bool row_fixed(const int* value) {
 const char* tx_output_res(int v) {
     static char b[40];
     v = output_choice(v);
-    // (the picture this choice makes (picture_for: at the monitor's shape with Ultrawide on), "(native)"
+    // (the picture this choice makes (picture_for: at the monitor's shape when the Aspect ratio takes it), "(native)"
     // when it is the screen's own size; the game's own choice (0) keeps its name)
     bool native = false;
     const Out o = picture_for(v, &native);
@@ -462,7 +476,7 @@ const char* tx_text_size(int v) {
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];
     return t[v];
 }
-const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "Off (16:9)"; }
+const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }   // (the Aspect ratio row: a shape, not on or off)
 const char* tx_prompts(int v) {
     static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
     return t[std::min(std::max(v, 0), (int)HOS_PROMPT_N)];
@@ -807,11 +821,12 @@ Row rows[] = {
      "Whether a frame waits for the display's refresh before it is shown. Changes at once.", hn_vsync, false, true},
     {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_filter,
      "How the finished picture is scaled to the window, when its size differs from the Output resolution.", hn_filter},
-    {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
-     "The camera's shape on a screen wider or narrower than 16:9 (4:3, 16:10). Applies after a restart.", hn_ultrawide, true, true},
+    {TAB_GRAPHICS, "Aspect ratio", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
+     "The picture's shape: your monitor's (the default: wider on an ultrawide, narrower on 4:3 or 16:10), or the game's 16:9. "
+     "Applies after a restart.", hn_ultrawide, true, true},
     {TAB_GRAPHICS, "Ultrawide menus", &opts.wide_menus, 0, 2, 1, tx_wide_menus,
-     "With Ultrawide: the pause, item and map menus, and what shows beside them. Loading screens and pre-rendered movies, "
-     "which draw no world either, get the same sides. Changes at once.", hn_wide_menus, false, true},
+     "With the Aspect ratio at the monitor's shape: the pause, item and map menus, and what shows beside them. Loading "
+     "screens and pre-rendered movies, which draw no world either, get the same sides. Changes at once.", hn_wide_menus, false, true},
     {TAB_GRAPHICS, "HDR", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
      "HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at "
@@ -825,6 +840,10 @@ Row rows[] = {
      "The HDR picture's contrast around mid grey, as the RenoDX HDR mods grade it: above 100% deeper shadows and brighter "
      "highlights, which ease into the peak brightness; below it flatter. With Native the game's own HDR picture is graded too, "
      "under the peak brightness the game is told.",
+     nullptr, false, true},
+    {TAB_GRAPHICS, "HDR tone mapper", &opts.hdr_tonemap, 0, 1, 1, tx_tonemap,
+     "With Native, how the game's scene meets the peak brightness. Vanilla: the game's own curve. PsychoV35: RenoDX's "
+     "tone mapper, the same mid grey with highlights that roll off into the peak and keep their colour.",
      nullptr, false, true},
     {TAB_GRAPHICS, "Detail", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_GRAPHICS, "Anisotropic filtering", &opts.anisotropy, 0, 4, 1, tx_anisotropy,
@@ -961,6 +980,11 @@ Row rows[] = {
     {TAB_DEBUG, "Movement speed", nullptr, 0, 0, 0, nullptr,
      "How fast Link walks, runs and swims, as a multiple of his own speed. Choose with Left or Right.", nullptr, false, true, 11},
     {TAB_DEBUG, "Developer", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    // (hookshot, first under the heading: debug_rows lists only those) the zip for the "Submit your pipelines" issue: share_pipeline_list, pipeline_share.h
+    {TAB_DEBUG, "Save my pipeline list", nullptr, 0, 0, 0, nullptr,
+     "Helps remove first-load stutter for everyone: saves the pipelines your play built (shader hashes and draw state, no game "
+     "data) with a filled-in report as a zip in Downloads, copies the report and opens the \"Submit your pipelines\" issue. "
+     "Attach the zip there and paste the report. Nothing is uploaded for you."},
     {TAB_DEBUG, "Descriptor reuse", &opts.descriptor_reuse, 0, 1, 1, tx_onoff,
      "A draw keeps its descriptors while the texture slots it samples are unchanged, so streaming elsewhere in the game no longer "
      "rebuilds every set each frame. Applies after restart.", nullptr, true, true},
@@ -1207,7 +1231,8 @@ bool row_shown(int i) {
            (v != &opts.antilag || antilag_available()) &&
            (v != &opts.dlss || ur::upscaler_shown(upscalers_available())) &&
            (v != &opts.dlss_model || ur::model_shown(dlss_why() == DLSS_OK)) &&
-           ((v != &opts.hdr_white && v != &opts.hdr_peak && v != &opts.hdr_contrast) || opts.hdr != 0);
+           ((v != &opts.hdr_white && v != &opts.hdr_peak && v != &opts.hdr_contrast) || opts.hdr != 0) &&
+           (v != &opts.hdr_tonemap || opts.hdr == 2);
 }
 int tab_row_count(int t) {
     int c = 0;
@@ -1301,6 +1326,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
     if (r.value == &opts.handheld) return "handheld_profile";   // (the Profile row; host/nn_applet.c reads it at the start)
+    if (r.value == &opts.ultrawide) return "ultrawide";   // (the Aspect ratio row; host/hos_main.c reads it at the start)
     if (r.value == &opts.mesh_mode) return "mesh_shaders";   // (gpu/vk/vk_main.cpp reads it as the device is made)
     static char k[32];
     size_t n = 0;
@@ -1433,12 +1459,19 @@ void save() {
         // start must not take back to the preset's)
         fprintf(f, "memory_budget=%d\n", opts.budget);
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
-        // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on)
-        fprintf(f, "options_version=4\n");
+        // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on; 5: the
+        // Menu shortcut "Insert, F1 or Esc" by default, see menu_init; 6: the Aspect ratio's 16:9 from before moves on a
+        // screen narrower than 16:9, see menu_init and host/hos_wide_size.h)
+        fprintf(f, "options_version=6\n");
         fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
         for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the keys-only controls, HOS_KEY_*, have no pad_ line)
-            if (i < HOS_SW_N) fprintf(f, "pad_%s=%d\n", bind_names[i], host->binding(HOS_BIND_PAD, i, 0));
+            if (i < HOS_SW_N) {
+                const int alternate = host->binding(HOS_BIND_PAD, i, 1);
+                fprintf(f, "pad_%s=%d", bind_names[i], host->binding(HOS_BIND_PAD, i, 0));
+                if (alternate >= 0) fprintf(f, ",%d", alternate);
+                fputc('\n', f);
+            }
             fprintf(f, "key_%s=%d,%d\n", bind_names[i], host->binding(HOS_BIND_KEY, i, 0), host->binding(HOS_BIND_KEY, i, 1));
         }
         fclose(f);
@@ -1451,6 +1484,388 @@ void prompts_at_once(const Row& r) {
     if (r.value == &opts.prompts && host && host->prompts_live &&
         (host->prompts_live() & HOS_PROMPTS_LIVE_ALL) == HOS_PROMPTS_LIVE_ALL)
         restart_state.restart_value(restart_slot_of(r), *r.value);
+}
+
+
+// ---- (hookshot) Save my pipeline list (the Debug tab, under Developer): hookshot_pipeline_states.bin and the "Submit your pipelines" issue's
+// template, filled in from this run, zipped into the Downloads folder (pipeline_share.h; the builders do the same with
+// nx2/pipeline_share.py). Then the report on the clipboard, the folder shown and the issue opened in the browser, where the platform
+// has them; never with HOS_HEADLESS (no screen to show them on). Nothing is uploaded: the player attaches the zip ----
+namespace ps = pipeline_share;
+std::string share_said;    // (the help box's line after a save: where the zip went and what to do, or why there is none)
+std::string share_value;   // (the row's value after a save: Saved, or Not saved)
+constexpr const char* kShareSaidLongest = "Saved hookshot-pipelines-2026-12-31.zip (123456 pipelines) in Downloads. The report "
+    "is in the zip. Open github.com/NotRexed/Hookshot/issues/2034 and attach the zip to a comment, then paste the report and say "
+    "where you played.";   // (measure_help: the help box's room)
+std::string share_saved;   // (the first sentence: the zip's name, its pipelines and its folder)
+std::atomic<bool> share_busy{false};   // (the worker is copying and opening: presses wait for it)
+std::atomic<int> share_result{-1};     // (the worker's answer: 1 copied, 2 the issue opened; -1 none waiting)
+/// (menu_tick, each frame) the worker's answer into the help box's line
+void share_finish() {
+    const int r = share_result.exchange(-1);
+    if (r < 0) return;
+    share_said = share_saved + ((r & 1) ? "The report is copied. " : "The report is in the zip. ") +
+                 ((r & 2) ? "Issue 2034 is open in your browser: attach" : "Open github.com/NotRexed/Hookshot/issues/2034 and attach") +
+                 " the zip to a comment, then paste the report and say where you played.";
+    share_busy.store(false);
+    menu_refresh = true;
+}
+bool is_share_row(const Row& r) { return !r.value && r.tab == TAB_DEBUG && !strcmp(r.name, "Save my pipeline list"); }
+std::string game_folder() {
+    char exe[MAX_PATH];
+    const DWORD n = game_module_path(exe, MAX_PATH);
+    std::string dir(exe, n);
+    return dir.substr(0, dir.find_last_of("\\/") + 1);
+}
+bool is_dir(const std::string& p) {
+    const DWORD a = GetFileAttributesA(p.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+/// The mods the game loaded, by host/mods.c's rule: under the game folder's mods (or HOS_MODS), a folder holding romfs or exefs,
+/// up to four folders deep; names starting with '-' or '_' are off
+void share_find_mods(const std::string& dir, const std::string& name, int depth, std::vector<std::string>& out) {
+    if (depth > 0 && (is_dir(dir + "/romfs") || is_dir(dir + "/exefs"))) {
+        out.push_back(name);
+        return;
+    }
+    if (depth >= 4) return;
+    WIN32_FIND_DATAA fd;
+    HANDLE f = FindFirstFileA((dir + "/*").c_str(), &fd);
+    if (f == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == '.' || fd.cFileName[0] == '-' ||
+            fd.cFileName[0] == '_')
+            continue;
+        share_find_mods(dir + "/" + fd.cFileName, name.empty() ? fd.cFileName : name + "/" + fd.cFileName, depth + 1, out);
+    } while (FindNextFileA(f, &fd));
+    FindClose(f);
+}
+std::string share_os() {
+#ifdef _WIN32
+    using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOEXW*);
+    OSVERSIONINFOEXW v{};
+    v.dwOSVersionInfoSize = sizeof v;
+    const auto get = (RtlGetVersionFn)(void*)GetProcAddress(GetModuleHandleA("ntdll.dll"), "RtlGetVersion");
+    if (!get || get(&v) != 0) return "Windows";
+    // (Windows 11 is still 10.0, from build 22000; a server says so instead: wProductType VER_NT_WORKSTATION is 1)
+    const char* name = v.wProductType != 1 ? "Windows Server" : v.dwMajorVersion == 10 && v.dwBuildNumber >= 22000 ? "Windows 11"
+                       : v.dwMajorVersion == 10 ? "Windows 10" : "Windows";
+    char b[80];
+    snprintf(b, sizeof b, "%s (%lu.%lu.%lu)", name, v.dwMajorVersion, v.dwMinorVersion, v.dwBuildNumber);
+    return b;
+#else
+    std::string pretty;
+    for (const char* path : {"/etc/os-release", "/usr/lib/os-release"}) {
+        FILE* f = fopen(path, "r");
+        if (!f) continue;
+        char line[256];
+        while (fgets(line, sizeof line, f))
+            if (!strncmp(line, "PRETTY_NAME=", 12)) {
+                pretty = line + 12;
+                while (!pretty.empty() && (pretty.back() == '\n' || pretty.back() == '"' || pretty.back() == '\r')) pretty.pop_back();
+                if (!pretty.empty() && pretty[0] == '"') pretty.erase(0, 1);
+            }
+        fclose(f);
+        break;
+    }
+    utsname u{};
+    uname(&u);
+    return std::string(u.sysname) + " (" + (pretty.empty() ? "" : pretty + ", ") + "kernel " + u.release + ")";
+#endif
+}
+#ifdef _WIN32
+/// A function of shell32 or ole32, loaded at its first use: hookshot_vk.dll imports only kernel32, user32, gdi32, advapi32 and the
+/// UCRT (the DLSS workflow's import check), and these two are needed only here
+FARPROC share_proc(const wchar_t* dll, const char* name) {
+    HMODULE m = LoadLibraryExW(dll, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    return m ? GetProcAddress(m, name) : nullptr;
+}
+#endif
+/// The Downloads folder (where a browser's file picker opens), else the home folder, else the game folder. *words: how the menu
+/// names it: the folder's own name for Downloads, never the home folder's (that is the user's name)
+std::string share_downloads(std::string* words) {
+    *words = "";
+#ifdef _WIN32
+    using KnownFolderFn = HRESULT(WINAPI*)(const GUID&, DWORD, HANDLE, wchar_t**);
+    using FreeFn = void(WINAPI*)(void*);
+    static const auto known = (KnownFolderFn)(void*)share_proc(L"shell32.dll", "SHGetKnownFolderPath");
+    static const auto free_mem = (FreeFn)(void*)share_proc(L"ole32.dll", "CoTaskMemFree");
+    wchar_t* w = nullptr;
+    std::string out;
+    static const GUID downloads = {0x374DE290, 0x123F, 0x4565, {0x91, 0x64, 0x39, 0xC4, 0x92, 0x5E, 0x46, 0x7B}};   // (FOLDERID_Downloads)
+    if (known && SUCCEEDED(known(downloads, 0, nullptr, &w)) && w) {
+        char b[MAX_PATH * 4];
+        if (WideCharToMultiByte(CP_UTF8, 0, w, -1, b, sizeof b, nullptr, nullptr) > 0) out = b;
+    }
+    if (w && free_mem) free_mem(w);
+    if (!out.empty() && is_dir(out)) return out;
+    if (const char* home = getenv("USERPROFILE"); home && is_dir(home)) return *words = "your home folder", home;
+#else
+    const char* home = getenv("HOME");
+    if (home && *home) {
+        const char* conf = getenv("XDG_CONFIG_HOME");
+        const std::string path = (conf && *conf ? std::string(conf) : std::string(home) + "/.config") + "/user-dirs.dirs";
+        std::string text;
+        if (FILE* f = fopen(path.c_str(), "r")) {
+            char b[4096];
+            text.assign(b, fread(b, 1, sizeof b, f));
+            fclose(f);
+        }
+        const std::string d = ps::xdg_download_dir(text, home);
+        if (!d.empty() && is_dir(d)) return d;
+        if (is_dir(std::string(home) + "/Downloads")) return std::string(home) + "/Downloads";
+        if (is_dir(home)) return *words = "your home folder", home;
+    }
+#endif
+    *words = "the game folder";
+    return game_folder();
+}
+#ifndef _WIN32
+/// A program of the desktop's (xdg-open, wl-copy, ...), not waited for: false when it cannot start. input: its standard input
+bool share_spawn(std::vector<std::string> argv, const std::string* input = nullptr) {
+    int fds[2] = {-1, -1};
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (input) {
+        if (pipe2(fds, O_CLOEXEC)) return posix_spawn_file_actions_destroy(&fa), false;   // (no other child holds it open)
+        posix_spawn_file_actions_adddup2(&fa, fds[0], 0);
+        posix_spawn_file_actions_addclose(&fa, fds[1]);
+    } else {
+        posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    }
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addclosefrom_np(&fa, 3);   // (a browser or file manager keeps none of the game's files, nor a clipboard pipe)
+    std::vector<char*> args;
+    for (std::string& a : argv) args.push_back(a.data());
+    args.push_back(nullptr);
+    pid_t pid = 0;
+    const int err = posix_spawnp(&pid, args[0], &fa, nullptr, args.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    if (input) close(fds[0]);
+    if (err) {
+        if (input) close(fds[1]);
+        return false;
+    }
+    if (!input) {   // (xdg-open: reaped whenever it ends)
+        std::thread([pid] {
+            int status = 0;
+            waitpid(pid, &status, 0);
+        }).detach();
+        return true;
+    }
+    // (the clipboard's programs: given the text, and their exit waited for (they fork to keep the clipboard, the parent ends at once),
+    // so one that fails (wl-copy with a stale WAYLAND_DISPLAY) counts as failed and the next is tried. On the share worker. SIGPIPE
+    // is blocked on this thread while it writes: a program that exits before reading would otherwise end the game; the write
+    // then fails with EPIPE, and the signal it left pending is taken before the mask is put back)
+    sigset_t pipe_set, old;
+    sigemptyset(&pipe_set);
+    sigaddset(&pipe_set, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipe_set, &old);
+    bool wrote = true;
+    for (size_t at = 0; at < input->size();) {
+        const ssize_t n = write(fds[1], input->data() + at, input->size() - at);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            wrote = false;
+            break;
+        }
+        at += (size_t)n;
+    }
+    close(fds[1]);
+    const timespec now{0, 0};
+    while (sigtimedwait(&pipe_set, nullptr, &now) == SIGPIPE) {}
+    pthread_sigmask(SIG_SETMASK, &old, nullptr);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    return wrote && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+#endif
+bool share_clipboard(const std::string& text) {
+#ifdef _WIN32
+    const int n = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    bool open = false;   // (another program can hold the clipboard a moment: a few tries)
+    for (int i = 0; n > 0 && !open && i < 5; i++) open = OpenClipboard(app_window()) || (Sleep(20), false);
+    if (!open) return false;
+    EmptyClipboard();
+    bool ok = false;
+    if (HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, (size_t)n * sizeof(wchar_t))) {
+        if (auto* w = (wchar_t*)GlobalLock(g)) {
+            MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, w, n);
+            GlobalUnlock(g);
+            ok = SetClipboardData(CF_UNICODETEXT, g) != nullptr;
+        }
+        if (!ok) GlobalFree(g);
+    }
+    CloseClipboard();
+    return ok;
+#else
+    const char* wl = getenv("WAYLAND_DISPLAY");
+    const char* x = getenv("DISPLAY");
+    if (wl && *wl && share_spawn({"wl-copy"}, &text)) return true;
+    return x && *x && (share_spawn({"xclip", "-selection", "clipboard"}, &text) || share_spawn({"xsel", "-ib"}, &text));
+#endif
+}
+bool share_open(const std::string& what, bool select = false) {
+#ifdef _WIN32
+    std::wstring w(MultiByteToWideChar(CP_UTF8, 0, what.c_str(), -1, nullptr, 0), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, what.c_str(), -1, w.data(), (int)w.size());
+    w.resize(wcslen(w.c_str()));
+    using ShellExecuteFn = HINSTANCE(WINAPI*)(HWND, const wchar_t*, const wchar_t*, const wchar_t*, const wchar_t*, INT);
+    static const auto shell_execute = (ShellExecuteFn)(void*)share_proc(L"shell32.dll", "ShellExecuteW");
+    if (!shell_execute) return false;
+    if (select)   // (the folder, the zip chosen in it)
+    {
+        wchar_t windir[MAX_PATH];   // (%WINDIR%\explorer.exe, not whichever explorer.exe the search path finds first)
+        const DWORD n = GetEnvironmentVariableW(L"WINDIR", windir, MAX_PATH);
+        const std::wstring explorer = n && n < MAX_PATH ? std::wstring(windir) + L"\\explorer.exe" : L"explorer.exe";
+        return (INT_PTR)shell_execute(nullptr, L"open", explorer.c_str(), (L"/select,\"" + w + L"\"").c_str(), nullptr, SW_SHOWNORMAL) > 32;
+    }
+    return (INT_PTR)shell_execute(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL) > 32;
+#else
+    (void)select;
+    return share_spawn({"xdg-open", what});
+#endif
+}
+/// The zip at path, through <path>.new made fresh (never one that was there, nor a link's target) and moved over what was there
+bool share_write(const std::string& path, const std::string& data) {
+    const std::string part = path + ".new";
+#ifdef _WIN32
+    auto wide = [](const std::string& u) {
+        std::wstring w(MultiByteToWideChar(CP_UTF8, 0, u.c_str(), -1, nullptr, 0), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, u.c_str(), -1, w.data(), (int)w.size());
+        w.resize(wcslen(w.c_str()));
+        return w;
+    };
+    const std::wstring wpart = wide(part), wpath = wide(path);
+    DeleteFileW(wpart.c_str());   // (a run that stopped halfway)
+    HANDLE h = CreateFileW(wpart.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD done = 0;
+    bool ok = WriteFile(h, data.data(), (DWORD)data.size(), &done, nullptr) && done == data.size();
+    ok = CloseHandle(h) && ok;
+    ok = ok && MoveFileExW(wpart.c_str(), wpath.c_str(), MOVEFILE_REPLACE_EXISTING);
+#else
+    unlink(part.c_str());   // (a run that stopped halfway; a link is removed, not followed)
+    const int fd = open(part.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+    if (fd < 0) return false;
+    bool ok = true;
+    for (size_t at = 0; ok && at < data.size();) {
+        const ssize_t n = write(fd, data.data() + at, data.size() - at);
+        ok = n > 0, at += ok ? (size_t)n : 0;
+    }
+    ok = close(fd) == 0 && ok;
+    ok = ok && rename(part.c_str(), path.c_str()) == 0;
+#endif
+    if (!ok) {
+#ifdef _WIN32
+        DeleteFileW(wpart.c_str());
+#else
+        unlink(part.c_str());
+#endif
+    }
+    return ok;
+}
+/// The template's values from this run: the version, the OS, the GPU and its driver, the output, the upscaler and the 3D's size,
+/// frame generation and HDR as the menu has them now, and the mods
+std::vector<std::string> share_values(long long pipelines, bool v2) {
+    std::vector<std::string> v(ps::kFieldCount);
+    v[0] = HOOKSHOT_VERSION;
+    v[1] = share_os() + "; " + dev.props.deviceName + ", driver " + driver_text();
+    const Out o = shown_output();
+    v[2] = ps::output_text(o.w, o.h, opts.handheld != 0, output_choice(opts.output_res) == 0, opts.ultrawide != 0);
+    v[3] = std::string(tx_upscaler(opts.dlss)) + ", " + tx_resolution(opts.resolution);
+    v[4] = std::string(tx_framegen(std::clamp(opts.framegen, 0, 8))) + " / " + tx_hdr(opts.hdr);
+    std::vector<std::string> mods;
+    const char* env = getenv("HOS_MODS");
+    share_find_mods(env && *env ? std::string(env) : game_folder() + "mods", "", 0, mods);
+    std::sort(mods.begin(), mods.end(), [](const std::string& a, const std::string& b) {   // (case-insensitive, as the builders sort)
+        return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
+                                            [](char x, char y) { return tolower((unsigned char)x) < tolower((unsigned char)y); });
+    });
+    v[5] = ps::mods_text(mods);
+    v[7] = ps::pipelines_text(pipelines, v2);
+    return v;
+}
+/// Save my pipeline list: the zip, then the clipboard, the folder and the issue (share_said says what happened)
+void share_pipeline_list() {
+    if (share_busy.load()) return;   // (the last press is still opening things)
+    bool present = false;
+    const std::string list = state_list_snapshot(&present);
+    std::string why;
+    const long long n = ps::check_list(list, present, &why);
+    if (n < 0) {
+        share_said = why, share_value = "Not saved";
+        logf("menu: Save my pipeline list: %s", why.c_str());
+        return;
+    }
+    const std::string lines = ps::template_lines(share_values(n, !list.compare(0, 8, "HKSTATE2")));
+    const time_t now = time(nullptr);
+    tm t{};
+#ifdef _WIN32
+    localtime_s(&t, &now);
+#else
+    localtime_r(&now, &t);
+#endif
+    const std::string zip = ps::share_zip(list, lines, (uint16_t)((t.tm_year - 80) << 9 | (t.tm_mon + 1) << 5 | t.tm_mday),
+                                          (uint16_t)(t.tm_hour << 11 | t.tm_min << 5 | t.tm_sec / 2));
+    std::string where;
+    const std::string dir = share_downloads(&where), name = ps::zip_name(t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
+#ifdef _WIN32
+    const char* sep = "\\";   // (Explorer's /select takes back slashes only)
+#else
+    const char* sep = "/";
+#endif
+    const std::string path = dir + (dir.back() == '/' || dir.back() == '\\' ? "" : sep) + name;
+    const bool written = share_write(path, zip);
+    std::string folder = dir;   // (its name alone: no user name on screen)
+    while (folder.size() > 1 && (folder.back() == '/' || folder.back() == '\\')) folder.pop_back();
+    folder = folder.substr(folder.find_last_of("\\/") + 1);
+    if (!where.empty()) folder = where;
+    if (!written) {
+        share_said = "The zip could not be written in " + folder + ".", share_value = "Not saved";
+        logf("menu: Save my pipeline list: %s could not be written", name.c_str());
+        return;
+    }
+    share_value = "Saved";
+    share_saved = "Saved " + name + " (" + std::to_string(n) + " pipelines) in " + folder + ". ";
+    logf("menu: Save my pipeline list: %s, %lld pipelines, in %s", name.c_str(), n, folder.c_str());
+    if (env_on("HOS_HEADLESS")) {   // (a run without a window: nothing to show the browser or the folder on)
+        share_result.store(0);
+        share_finish();
+        return;
+    }
+    // (the clipboard, the folder and the browser on a worker of their own: ShellExecuteW and xdg-open can take hundreds of ms, and
+    // this is the present thread. Presses are ignored until it is done: share_busy)
+    share_busy.store(true);
+    share_said = share_saved + "Opening the issue...";
+    try {
+        std::thread([lines, path, dir] {
+#ifdef _WIN32
+            using CoInitFn = HRESULT(WINAPI*)(void*, DWORD);
+            using CoUninitFn = void(WINAPI*)();
+            static const auto co_init = (CoInitFn)(void*)share_proc(L"ole32.dll", "CoInitializeEx");
+            static const auto co_uninit = (CoUninitFn)(void*)share_proc(L"ole32.dll", "CoUninitialize");
+            // (ShellExecute wants COM on its thread: apartment-threaded, no OLE1 DDE)
+            const bool com = co_init && co_uninit && SUCCEEDED(co_init(nullptr, 0x2 /*COINIT_APARTMENTTHREADED*/ | 0x4 /*COINIT_DISABLE_OLE1DDE*/));
+#endif
+            const bool copied = share_clipboard(lines);
+#ifdef _WIN32
+            share_open(path, true);
+#else
+            (void)path;
+            share_open(dir);
+#endif
+            const bool opened = share_open(ps::kIssueUrl);
+#ifdef _WIN32
+            if (com) co_uninit();
+#endif
+            share_result.store((copied ? 1 : 0) | (opened ? 2 : 0));
+        }).detach();
+    } catch (const std::system_error&) {   // (no thread to be had: the zip is saved; say so, and the next press works)
+        share_result.store(0);
+        share_finish();
+    }
 }
 
 /// A row's new value v, as the arrows set it (dir: 1 up, -1 down, for the rows that skip or wrap), saved unless !keep
@@ -1533,12 +1948,15 @@ bool keys_only(int i) { return i < kControls && controls[i].button >= HOS_SW_N; 
 // a pad input's name on the controller of the button prompts (the Button prompts row's choice; Auto: the face in use),
 // else by its place
 const char* pad_name(int p) {
-    static const char* t[HOS_PROMPT_N + 1][HOS_PAD_N] = {   // (by place, then HOS_PROMPT_*)
-        {"Bottom button", "Right button", "Left button", "Top button", "Select / Back", "Home", "Start", "Left stick press",
-         "Right stick press", "L1 / LB", "R1 / RB", "D-pad up", "D-pad down", "D-pad left", "D-pad right", "L2 / LT", "R2 / RT"},
-        {"B", "A", "Y", "X", "Minus", "Home", "Plus", "Left stick press", "Right stick press", "L", "R", "D-pad up",
+    if (p < 0 || p >= HOS_PAD_N) return "None";
+    static const char* paddles[] = {"R4", "L4", "R5", "L5"};
+    if (p >= HOS_PAD_RPADDLE1) return paddles[p - HOS_PAD_RPADDLE1];
+    static const char* t[HOS_PROMPT_N + 1][HOS_PAD_RPADDLE1] = {   // (by place, then HOS_PROMPT_*)
+        {"Bottom button", "Right button", "Left button", "Top button", "Select / Back", "Home", "Start", "L stick press",
+         "R stick press", "L1 / LB", "R1 / RB", "D-pad up", "D-pad down", "D-pad left", "D-pad right", "L2 / LT", "R2 / RT"},
+        {"B", "A", "Y", "X", "Minus", "Home", "Plus", "L stick press", "R stick press", "L", "R", "D-pad up",
          "D-pad down", "D-pad left", "D-pad right", "ZL", "ZR"},
-        {"A", "B", "X", "Y", "View", "Xbox", "Menu", "Left stick press", "Right stick press", "LB", "RB", "D-pad up",
+        {"A", "B", "X", "Y", "View", "Xbox", "Menu", "L stick press", "R stick press", "LB", "RB", "D-pad up",
          "D-pad down", "D-pad left", "D-pad right", "LT", "RT"},
         {"Cross", "Circle", "Square", "Triangle", "Share", "PS", "Options", "L3", "R3", "L1", "R1", "D-pad up", "D-pad down",
          "D-pad left", "D-pad right", "L2", "R2"},
@@ -1547,7 +1965,7 @@ const char* pad_name(int p) {
         {"A", "B", "X", "Y", "View", "Steam", "Menu", "L3", "R3", "L1", "R1", "D-pad up", "D-pad down", "D-pad left",
          "D-pad right", "L2", "R2"}};
     const int face = opts.prompts ? opts.prompts - 1 : host && host->prompt_face ? host->prompt_face() : -1;
-    return p >= 0 && p < HOS_PAD_N ? t[face >= 0 && face < HOS_PROMPT_N ? face + 1 : 0][p] : "None";
+    return t[face >= 0 && face < HOS_PROMPT_N ? face + 1 : 0][p];
 }
 const char* key_name(int vk) {
     static char b[16];
@@ -1614,8 +2032,7 @@ const std::vector<int>& bindable_keys() {
 }
 int page = 0;          // 0 the options, 1 the controls, 3 the teleport list, 4 the inventory, 5 the restart question (2: was the
                        // debug tools' own page, now on the Debug tab)
-int csel = 0, ccol = 0;   // the page's row (kTop first: its own rows, then the controls, then reset) and column (0 the
-                          // gamepad, 1 the keyboard)
+int csel = 0, ccol = menu_hit::kCtlPrimary;   // the page's row (options, then bindings and reset) and binding column
 const int kTop = tab_row_count(TAB_PAGE);   // (Layout preset and Button prompts: a preset shows in the grid at once)
 int listening = 0;     // waiting for the new input: 1 a gamepad's, 2 a key
 bool listen_armed = false;   // (once what started it was let go)
@@ -1680,6 +2097,9 @@ float measure_help(ui::Ctx& c, float width) {
         for (int v = r.lo; r.value && r.hint && v <= r.hi; v++)
             for (int k = 0; const char* t = r.hint(v, k); k++)
                 hint = std::max(hint, ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, t, width - 18 * c.s, false));
+        if (is_share_row(r))   // (Save my pipeline list's line after a save: the longest it can be, or the one shown when longer)
+            hint = std::max(ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, kShareSaidLongest, width - 18 * c.s, false),
+                            share_said.empty() ? 0.f : ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, share_said.c_str(), width - 18 * c.s, false));
         if (r.help) most = std::max(most, ui::para(c, c.f.body, 18 * c.s, ImVec2(), 0, r.help, width, false) + (hint ? 14 * c.s + hint : 0));
     }
     return most;
@@ -1943,6 +2363,7 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
             return w + (tight ? 56 : 68) * s;
         }
         if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7 || r.value) return halves_w + pad;
+        if (is_share_row(r)) return ui::size_of(c.f.strong, px, "Not saved").x + (tight ? 56 : 60) * s;   // (Save, Saved, Not saved)
         const std::string v = r.cheat == 11 ? "1.25x" : cheat_value(r.cheat);   // (Movement speed: its widest, the cell kept still)
         const char* const says = cheat_button_text(r.cheat);
         return ui::size_of(c.f.strong, px, v.empty() ? says : v.c_str()).x + (cheat_chooses(r.cheat) ? 68 : tight ? 56 : 60) * s;   // (choice_cell keeps 48 for arrows either way)
@@ -2013,6 +2434,8 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
         } else if (r.value) {   // (Debug tools and the Developer rows: values of the options, Off and On)
             halves_cell(c, va, vb, std::string(r.text(r.lo)).c_str(), std::string(r.text(r.hi)).c_str(), *r.value == r.hi, selected,
                         row_fixed(r.value));
+        } else if (is_share_row(r)) {   // (Save my pipeline list: what the last press did)
+            choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value, selected, false, false);
         } else if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7) {
             halves_cell(c, va, vb, "Off", "On", cheat_value(r.cheat) == "On", selected, false);
         } else if (age_shown(r.cheat)) {   // (Link's age now: the other half switches)
@@ -2044,6 +2467,7 @@ void row_value_cell(ui::Ctx& c, const Row& r, ImVec2 va, ImVec2 vb, bool selecte
         choice_cell(c, va, vb, cheat_button_text(r.cheat), selected, false, false, r.cheat == 9);
     } else if (!r.value) {
         if (pending == &r) choice_cell(c, va, vb, "Press again to confirm", selected, false, false);
+        else if (is_share_row(r)) choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value, selected, false, false);   // (an action, not a page)
         else {
             choice_cell(c, va, vb, "", selected, false, false);
             ui::triangle(c, ImVec2(vb.x - 15 * s, mid), 10 * s, 1, selected ? ui::kGoldInk : ui::kInk);
@@ -2116,9 +2540,12 @@ void draw_options(ui::Ctx& c) {
     const int count = tab_row_count(cur_tab), sel = tab_selected[cur_tab];
     const Row& selr = rows[tab_row_to_global(cur_tab, sel)];
     const char* hint = selr.value && selr.hint ? selr.hint(*selr.value, -1) : nullptr;
+    if (is_share_row(selr) && !share_said.empty()) hint = share_said.c_str();   // (what the last save did)
     const std::string pending_line = (cur_tab == TAB_GRAPHICS || cur_tab == TAB_DEBUG) && restart_pending() ? restart_line(c, 16 * s, hx1 - hx0 - 66 * s) : "";
     static float help_tall = 0, help_tall_w = 0;
-    if (help_tall_w != hx1 - hx0) help_tall_w = hx1 - hx0, help_tall = measure_help(c, hx1 - hx0 - 48 * s);
+    static std::string help_said;   // (Save my pipeline list's line as measured: measured again when it changes)
+    if (help_tall_w != hx1 - hx0 || help_said != share_said)
+        help_tall_w = hx1 - hx0, help_said = share_said, help_tall = measure_help(c, hx1 - hx0 - 48 * s);
     // (a row that opens a page (Motion, Controls, Open debug tools): A or Enter opens it; Restart and Quit: A or Enter twice)
     const bool confirms = &selr == &rows[kRestartRow] || &selr == &rows[kQuitRow];
     ui::Prompt prompt_list[7] = {{ui::kUpDown, "Choose"}};
@@ -2132,7 +2559,7 @@ void draw_options(ui::Ctx& c) {
         if (const char* says = cheat_confirm(selr.cheat)) prompt_list[prompts_n++] = {ui::kConfirm, says};
         prompt_list[prompts_n++] = {ui::kCompact, "Compact", compact_key_name};
     } else {
-        prompt_list[prompts_n++] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : "Open"};
+        prompt_list[prompts_n++] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : is_share_row(selr) ? "Save" : "Open"};
     }
     if (cur_tab == TAB_MOTION) prompt_list[prompts_n++] = {ui::kBack, "Back"};   // (Esc: to Controls)
     else {
@@ -2244,7 +2671,7 @@ void draw_tune_bar(ui::Ctx& c) {
     if (r.cheat >= 0 && cheat_confirm(r.cheat)) {
         tune_prompts[1] = {ui::kConfirm, cheat_confirm(r.cheat)};
     } else if (!r.value && r.cheat < 0) {
-        tune_prompts[1] = {ui::kConfirm, confirms ? (pending == &r ? "Confirm" : r.name) : "Open"};
+        tune_prompts[1] = {ui::kConfirm, confirms ? (pending == &r ? "Confirm" : r.name) : is_share_row(r) ? "Save" : "Open"};
     }
     const float pw = ui::prompts(c, ImVec2(0, 0), tune_prompts, 4, false);
     const float px0 = bx0 + (bw - pw) * 0.5f;
@@ -2252,6 +2679,7 @@ void draw_tune_bar(ui::Ctx& c) {
 }
 
 void draw_controls(ui::Ctx& c) {
+    using enum menu_hit::CtlColumn;
     // (the page's own rows first, kTop of them (the layout preset, the button prompts), then a row per control and Reset to
     // defaults: one list, csel its selection)
     const float s = c.s, hh = title_banner(c, "Controls", nullptr);
@@ -2269,8 +2697,9 @@ void draw_controls(ui::Ctx& c) {
     const char* title = page_row ? page_row->name : sel_i < kControls ? controls[sel_i].name : "Reset to defaults";
     const char* help = listening ? (listening == 1 ? "Press the gamepad button to use. Esc cancels." : "Press the key to use. Esc cancels.")
                        : page_row ? page_row->help
-                                  : "Which gamepad button and which keys press each of the Switch's buttons. Enter binds the one "
-                                    "selected; Delete clears it. The game's button icons follow after a restart.";
+                                  : "Either gamepad input or an assigned key presses the selected Switch button. Enter binds the "
+                                    "selected input and Delete clears it. A button's only gamepad input stays with it: it does not move into "
+                                    "another's empty Input 2. The game's button icons follow after a restart.";
     const char* hint = page_row ? (page_row->hint ? page_row->hint(*page_row->value, -1) : nullptr)
                                 : "Gamepad: the D-pad moves, A binds, B goes back.";
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
@@ -2282,12 +2711,16 @@ void draw_controls(ui::Ctx& c) {
         help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), title, help, hint, nullptr, 0, page_row && restart_changed(*page_row),
                  hh + 18 * s, bar_top - 12 * s);
     }
-    const float rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, pad_x = rx0 + (rx1 - rx0) * 0.36f, key_x = rx0 + (rx1 - rx0) * 0.68f;
+    const float rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, width = rx1 - rx0;
+    const float pad_x = rx0 + width * 0.32f, key_x = rx0 + width * 0.75f;
+    const float col_x[] = {pad_x, (pad_x + key_x) * 0.5f, key_x, rx1};
     float top = hh + 22 * s;
-    ui::text_mid(c, c.f.body, 15 * s, rx0 + 20 * s, top + 10 * s, ui::kDim, "Button");
-    ui::text_mid(c, c.f.body, 15 * s, pad_x + 14 * s, top + 10 * s, ui::kDim, "Gamepad");
-    ui::text_mid(c, c.f.body, 15 * s, key_x + 14 * s, top + 10 * s, ui::kDim, "Keyboard");
-    top += 26 * s;
+    ui::text_mid_centre(c, c.f.body, 15 * s, col_x[kCtlAlternate], top + 8 * s, ui::kDim, "Gamepad");
+    ui::text_mid(c, c.f.body, 15 * s, rx0 + 20 * s, top + 27 * s, ui::kDim, "Button");
+    const char* titles[kCtlColumns] = {"Input 1", "Input 2", "Keyboard"};
+    for (int col = kCtlPrimary; col < kCtlColumns; col++)
+        ui::text_mid_centre(c, c.f.body, 15 * s, (col_x[col] + col_x[col + 1]) * 0.5f, top + 27 * s, ui::kDim, titles[col]);
+    top += 43 * s;
     const float rh = 36 * s, pitch = 42 * s;
     int shown = 0;
     const float first = scroll_rows(kControlsSlot, n, csel, top, bottom, pitch, &shown);
@@ -2316,23 +2749,25 @@ void draw_controls(ui::Ctx& c) {
         const Control& ctl = controls[i];
         name_cell(c, ImVec2(rx0, y), ImVec2(pad_x, y + rh), ctl.name, sel, false, 17);
         hits.add(rx0, y0, pad_x, y1, menu_hit::kCtlRow, i);
-        for (int col = 0; col < 2; col++) {   // (two value cells, a gap between them, each drawn as the tabs' values are)
-            const float a = col ? key_x + 3 * s : pad_x, b = col ? rx1 : key_x - 3 * s;
-            std::string v = col == 0 ? (keys_only(i) ? "-" : pad_name(host->binding(HOS_BIND_PAD, ctl.button, 0))) : keys_text(ctl.button);
-            const bool here = sel && col == ccol;
+        const bool keys = keys_only(i);
+        for (int col = kCtlPrimary; col < kCtlColumns; col++) {
+            const bool keyboard = col == kCtlKeyboard, disabled = keys && !keyboard;
+            const float a = col_x[col] + (col == kCtlPrimary ? 0 : 3 * s), b = col_x[col + 1] - (keyboard ? 0 : 3 * s);
+            const std::string v = keyboard ? keys_text(ctl.button) : disabled ? "-" : pad_name(host->binding(HOS_BIND_PAD, ctl.button, col));
+            const bool here = sel && col == (keys ? kCtlKeyboard : ccol);
             const ImVec2 va(a, y), vb(b, y + rh);
             if (here && listening) {   // (waiting for the new input: amber, the outline as a selected value's)
                 const float in = 4 * s;
                 c.d->AddRectFilled(va, vb, ui::kCellDark);
                 c.d->AddRect(va, vb, ui::kEdge, 0, std::max(1.0f, s));
                 c.d->AddRectFilled(va + ImVec2(in, in), vb - ImVec2(in, in), ui::kListen);
-                ui::text_mid_centre(c, c.f.strong, 16.5f * s, (a + b) * 0.5f, y + rh * 0.5f, ui::kInkBright,
-                                    col == 0 ? "Press a button..." : "Press a key...");
+                const std::string prompt = fit(c, c.f.strong, 16.5f * s, b - a - 2 * in, keyboard ? "Press key" : "Press button", false);
+                ui::text_mid_centre(c, c.f.strong, 16.5f * s, (a + b) * 0.5f, y + rh * 0.5f, ui::kInkBright, prompt.c_str());
                 ui::glow(c, va, vb);
             } else {
-                choice_cell(c, va, vb, v, here, false, false, col == 0 && keys_only(i));
+                choice_cell(c, va, vb, v, here, false, false, disabled);
             }
-            if (!(col == 0 && keys_only(i))) hits.add(a, y0, b, y1, menu_hit::kCtlCell, i, 0, 0, 0, 0, col);
+            if (!disabled) hits.add(a, y0, b, y1, menu_hit::kCtlCell, i, 0, 0, 0, 0, col);
         }
     }
     c.d->PopClipRect();
@@ -3118,6 +3553,18 @@ void menu_init() {
         // (Descriptor reuse is on by default from options_version 4: a file from before wrote its 0 whether chosen or not, as
         // the off default it then was; fewer stutters and a better 1% low in the field, the flash checks clean, 2026-11-10)
         if (version < 4) opts.descriptor_reuse = 1;
+        // (Esc opens the menu by default from options_version 5, as a PC game's pause menu: a file from before wrote its
+        // Menu shortcut 0, Insert or F1, whether chosen or not, and moves to Insert, F1 or Esc, where Insert and F1 still
+        // work. F1 only was chosen: kept)
+        if (version < 5 && opts.menu_shortcut == 0) opts.menu_shortcut = 2;
+        // (the Aspect ratio from options_version 6: a file from before wrote ultrawide=0, the 16:9 default then, whether
+        // chosen or not. On a screen narrower than 16:9 host/hos_main.c starts the game at the monitor's shape for it
+        // (host/hos_wide_size.h hos_aspect_on), and the row follows what the host started with: a picture narrower than
+        // 16:9 there. On Linux too, where the menu has no screen size of its own)
+        if (version < 6 && opts.ultrawide == 0 && host && host->aspect_ratio) {
+            const float started = host->aspect_ratio();
+            if (started > 1.0f && started < 16.0f / 9.0f * 0.99f) opts.ultrawide = 1;
+        }
     }
     first_start = !has_options;
     // An opt-in profile for 4 GB cards: keep existing options authoritative, but make a first run usable on
@@ -3200,6 +3647,7 @@ void menu_set_gpu_count(int count) {
 }
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
+bool scene_tonemap_on() { return dev.hdr && opts.hdr == 2 && opts.hdr_tonemap == 1; }
 // (the tools off on the Debug tab: flight, the free camera and heart protection put away; -1, heart protection never set, is the
 // host's own HOS_OOT_PROTECT_HEARTS)
 int menu_heart_protection() {
@@ -3336,10 +3784,33 @@ int menu_setting(int index, MkwVkSetting* out) {
         if (bridge_row(i) && n++ == index) return bridge_fill(i, out), 1;
     return 0;
 }
+/// A row whose choices are not in the order of their numbers (the output sizes go by width, the Render resolution's slider by
+/// size, the Upscaler by engine), walked in the arrows' own order to the value asked for: one way, then the other, each way
+/// until at() holds, the row stops at an end (state() unchanged) or it comes round to where that way began. A value none of
+/// its steps reach here leaves the row as it was. state(): all a step changes (the Render resolution's Native moves the
+/// Upscaler, not the value); step(dir): one arrow press. Stepping towards the number stopped short: from 2048x1152, 1920x1080
+/// (3) went on to 5120x1440 (4), and from DLSS Auto any Render resolution stopped at Native, which leaves the value as it was
+template <class State, class At, class Step>
+bool walk_to(State state, At at, Step step, int limit) {
+    const auto start = state();
+    for (const int dir : {1, -1}) {
+        const auto from = state();
+        for (int k = 0; k < limit && !at(); k++) {
+            const auto was = state();
+            step(dir);
+            if (state() == was || state() == from) break;
+        }
+        if (at()) return true;
+    }
+    for (int k = 0; k < limit && state() != start; k++) step(1);   // (back where it was: an end-stopped row is at its first)
+    return false;
+}
+
 /// The settings row whose ini key is key, set to value as the menu's Left and Right set it (set_row: cut to its range, the
 /// Quality preset made Custom unless the row is exempt, a restart noted, kept in the options file). The rows the arrows step
-/// through a list of their own (the Upscaler, Render resolution, the output resolution) are stepped towards value until they
-/// reach it or go no further. out: the row as it is now. 1 set, 0 no such row, -1 nothing to choose on this PC (row_fixed)
+/// through a list of their own (the Upscaler, Render resolution, the output resolution) are walked to value: walk_to. out: the
+/// row as it is now. 1 set, 0 no such row, -1 nothing to choose on this PC (row_fixed), -2 none of a list row's steps reach
+/// value here (the row and the rest as they were)
 int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
     bridge_probe_first();
     std::lock_guard lk(menu_mu);
@@ -3350,12 +3821,29 @@ int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
     if (row_fixed(r.value)) return bridge_fill(i, out), -1;
     const int want = std::min(std::max(value, r.lo), r.value == &opts.pad_layout ? std::min(r.hi, 2) : r.hi);   // (3: Custom, shown only)
     if (r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.output_res) {
-        const int dir = want >= *r.value ? 1 : -1;
-        for (int k = 0; k <= r.hi - r.lo + 1 && *r.value != want; k++) {
-            const int was = *r.value;
-            set_row(r, was + dir * r.step, dir, false);
-            if (*r.value == was || (dir > 0 ? *r.value > want : *r.value < want)) break;   // (no further, or past it)
+        // (the Render resolution's Native is a place of its own, DLAA or FSR 4's native AA, whatever the value it kept; the
+        // Upscaler that runs, as set_row steps it: a saved DLAA that cannot run here is the game's own, and its values count)
+        const auto native = [&] { return r.value == &opts.resolution && ur::full_scale(upscaler()); };
+        const int render = opts.resolution, upscaler_was = opts.dlss;
+        // (a value none of the steps reach: everything the steps on the way changed is put back, the Quality preset and the
+        // rows the environment holds too)
+        const Options opts_was = opts;
+        EnvOverride env_was[sizeof env_overrides / sizeof env_overrides[0]];
+        std::copy(std::begin(env_overrides), std::end(env_overrides), env_was);
+        const mr::State restart_was = restart_state;
+        if (!walk_to([&] { return std::pair(native() ? -1 : *r.value, opts.dlss); }, [&] { return *r.value == want && !native(); },
+                     [&](int dir) { set_row(r, *r.value + dir * r.step, dir, false); }, 64)) {
+            opts = opts_was;
+            std::copy(std::begin(env_was), std::end(env_was), env_overrides);
+            restart_state = restart_was;
+            samplers_changed();
+            menu_refresh = true;
+            bridge_fill(i, out);
+            return -2;
         }
+        // (each Upscaler on the way snapped the Render resolution to its own steps: snapped once, from where it was, as one
+        // step there would, and as it was when the Upscaler is. FSR 3.1 to DLSS through Off and the game's own took 58 % to 50 %)
+        if (r.value == &opts.dlss) opts.resolution = opts.dlss == upscaler_was ? render : ur::snap_render(upscaler(), render);
         save();
     } else if (want != *r.value) {
         set_row(r, want, want > *r.value ? 1 : -1);
@@ -3451,6 +3939,7 @@ void cheat_press(int i, const bool* press, bool& changed) {
 
 void menu_tick() {
     std::lock_guard lk(menu_mu);   // (the control bridge's settings: menu_setting_set)
+    share_finish();   // (Save my pipeline list's worker, done)
     fullscreen_tick();
     enum { K_N = 17 };
     static bool held[K_N];
@@ -3583,8 +4072,9 @@ void menu_tick() {
         restart_state.choose_later(now);
         open_now = false, page = 0, tune_mode = false, changed = true;
     };
-    // (Menu shortcut "Insert, F1 or Esc": Esc on a closed menu opens it, the keyboard's alone (the
-    // gamepad's back is Esc only while it is open, above). The press that opened it does not go back a page below. No
+    // (Menu shortcut "Insert, F1 or Esc", the default: Esc on a closed menu opens it, the keyboard's and RX_VK_MENU_SCRIPT's
+    // ESC alone (the gamepad's back is Esc only while it is open, above). The press that opened it does not go back a page
+    // below; with the compact menu key held it opens the compact bar, as Insert and F1 do (tune_mode). No
     // control can be bound to Esc, so nothing in play changes; the window gives the captured mouse back on the close)
     const bool esc_opens = opts.menu_shortcut == 2 && press[5] && !open_now.load();
     if (esc_opens) press[5] = false;
@@ -3621,6 +4111,7 @@ void menu_tick() {
             PostMessageA(app_window(), WM_APP + 9, 0, 0);
         }
     } else if (open_now.load() && page == 1) {   // (hookshot) the Controls page
+        using enum menu_hit::CtlColumn;
         if (!can_bind()) page = 0;
         else if (listening) {
             if (press[5] || prof_now() > listen_end) listening = 0, changed = true;   // (Esc, or nothing for a while)
@@ -3629,7 +4120,7 @@ void menu_tick() {
                 else if (const uint32_t p = pad_press & ~(1u << HOS_PAD_GUIDE) & ~(1u << HOS_PAD_TOUCHPAD)) {
                     int bit = 0;
                     while (!(p >> bit & 1)) bit++;
-                    host->bind(HOS_BIND_PAD, controls[csel - kTop].button, 0, bit);
+                    host->bind(HOS_BIND_PAD, controls[csel - kTop].button, ccol, bit);
                     listening = 0, changed = true;
                     opts.pad_layout = detect_pad_layout();
                     save();
@@ -3668,29 +4159,33 @@ void menu_tick() {
                 if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
                 if (ptr.wheel) wheel_rows[kControlsSlot] += ptr.wheel, changed = true;   // (scrolls; the selection stays)
             }
-            if (press[5]) page = 0, changed = true;
-            const int n = kTop + kControls + 1, i = csel - kTop;   // (i: the control's, or reset's)
+            const int n = kTop + kControls + 1;
             if (press[1]) csel = (csel + n - 1) % n, changed = true;
             if (press[2]) csel = (csel + 1) % n, changed = true;
-            if (i < 0 && (press[3] || press[4] || press[7])) {   // (the page's own rows: Enter as Right)
+            const int i = csel - kTop;   // (i: the control's, or reset's)
+            if (press[5]) page = 0, changed = true;
+            else if (i < 0 && (press[3] || press[4] || press[7])) {   // (the page's own rows: Enter as Right)
                 Row& r = rows[tab_row_to_global(TAB_PAGE, csel)];   // (Custom is only what the bindings are: set_row skips it)
                 set_row(r, *r.value + (press[3] ? -r.step : r.step), press[3] ? -1 : 1);
                 changed = true;
             } else if (i >= 0) {
-                if ((press[3] || press[4]) && i < kControls && !keys_only(i)) ccol ^= 1, changed = true;
-                if (keys_only(i)) ccol = 1;   // (the stick's and the camera's directions: keys only)
+                if ((press[3] || press[4]) && i < kControls && !keys_only(i)) {
+                    ccol = (ccol + kCtlColumns + (press[3] ? -1 : 1)) % kCtlColumns;
+                    changed = true;
+                }
+                const int col = keys_only(i) ? kCtlKeyboard : ccol;
                 if (press[7]) {
                     if (i == kControls) {
                         host->bind(HOS_BIND_PAD, -1, 0, 0);
                         opts.pad_layout = 0;
                         save();
                     }
-                    else listening = ccol ? 2 : 1, listen_armed = false, listen_end = prof_now() + 6000000000LL;
+                    else listening = col == kCtlKeyboard ? 2 : 1, listen_armed = false, listen_end = prof_now() + 6000000000LL;
                     changed = true;
                 }
                 if ((press[8] || press[9]) && i < kControls) {
-                    if (ccol == 0) {
-                        host->bind(HOS_BIND_PAD, controls[i].button, 0, -1);
+                    if (col != kCtlKeyboard) {
+                        host->bind(HOS_BIND_PAD, controls[i].button, col, -1);
                         opts.pad_layout = detect_pad_layout();
                     }
                     else for (int k = 0; k < 2; k++) host->bind(HOS_BIND_KEY, controls[i].button, k, 0);
@@ -3854,7 +4349,8 @@ void menu_tick() {
             }
         } else if (r.cheat >= 0) cheat_press(r.cheat, press, changed);   // (a debug tool: on the Debug tab itself)
         else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
-        else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
+        else if (press[7] && is_share_row(r)) share_pipeline_list(), press[7] = false, changed = true;
+        else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = menu_hit::kCtlPrimary, changed = true;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
             if (press[7]) press[4] = true;
             set_row(r, *r.value + (press[4] ? r.step : -r.step), press[4] ? 1 : -1);
