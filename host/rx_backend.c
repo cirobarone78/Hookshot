@@ -10,6 +10,7 @@
 
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/dlss_math.h"
+#include "control.h"
 
 /* the WebGPU renderer (gpu/render, renamed) */
 int wgr_start(void *hwnd);
@@ -167,6 +168,16 @@ int hos_vk_take_key_press(int key) {
 #define host_take_key_press NULL
 #endif
 
+/* (hookshot) the FPS counter's Breakdown: this thread's sleeps so far (host/hos_thread.c) */
+extern _Thread_local int64_t hos_slept_ns[2];
+extern volatile int64_t hos_poll_slept_ns, hos_acquire_slept_ns;
+extern volatile int hos_fps_timing;
+static void host_fps_timing(int on) { __atomic_store_n(&hos_fps_timing, on != 0, __ATOMIC_RELAXED); }
+static void host_slept_ns(int64_t out[2]) {
+    out[0] = __atomic_load_n(&hos_poll_slept_ns, __ATOMIC_RELAXED);
+    out[1] = hos_slept_ns[1] + __atomic_load_n(&hos_acquire_slept_ns, __ATOMIC_RELAXED);
+}
+
 static const MkwVkHost vk_host = {
     MKWVK_API_VERSION, host_log, hos_guest_base, hos_guest_size, hos_gpu_ptr, nvn_gpu_guest, nvn_gpu_read,
     nvn_gpu_write, host_collect, host_free_pages, host_mark_written, hos_ticks, hos_now_ns, nvn_tex_layout,
@@ -174,7 +185,7 @@ static const MkwVkHost vk_host = {
     hos_gpu_maps_generation, nvn_vmap_generation, hos_reserved_cpus, host_collect_in, host_guest_alloc,
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
     hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, hos_prompts_face,
-    host_romfs_dir, host_wide_menus,
+    host_romfs_dir, host_wide_menus, host_slept_ns, host_fps_timing,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
@@ -447,6 +458,36 @@ int rx_guest_imported(uint64_t lo, uint64_t hi) {
 /* (nvn_native.c: the CPU set an event's value) in order with the submits, for the GPU's waits on it */
 int rx_option(int id, int otherwise) { return vk && vk->option ? vk->option(id) : otherwise; }
 void rx_option_set(int id, int value) { if (vk && vk->option_set) vk->option_set(id, value); }
+/* (hookshot) the control bridge (host/control.c): the Vulkan back end's, none with WebGPU (0) */
+int rx_control_frame_info(int64_t *presents, int64_t *draws, int *width, int *height) {
+    if (!vk || !vk->frame_info) return 0;
+    vk->frame_info(presents, draws, width, height);
+    return 1;
+}
+int rx_control_shot(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx) {
+    return vk && vk->shot ? vk->shot(path, after, done, ctx) : 0;
+}
+#define CTL_SAME(f) (sizeof ((HosControlSetting *)0)->f == sizeof ((MkwVkSetting *)0)->f)
+_Static_assert(CTL_SAME(key) && CTL_SAME(name) && CTL_SAME(text) && CTL_SAME(tab), "control.h and vk_api.h: one setting");
+static void control_setting_copy(HosControlSetting *to, const MkwVkSetting *from) {   /* (the same fields, field by field) */
+    memcpy(to->key, from->key, sizeof to->key), memcpy(to->name, from->name, sizeof to->name);
+    memcpy(to->text, from->text, sizeof to->text), memcpy(to->tab, from->tab, sizeof to->tab);
+    to->value = from->value, to->lo = from->lo, to->hi = from->hi, to->step = from->step;
+    to->restart = from->restart, to->fixed = from->fixed;
+}
+int rx_control_setting(int index, HosControlSetting *out) {
+    MkwVkSetting s;
+    if (!vk || !vk->setting || !vk->setting(index, &s)) return 0;
+    control_setting_copy(out, &s);
+    return 1;
+}
+int rx_control_setting_set(const char *key, int value, HosControlSetting *out) {
+    MkwVkSetting s;
+    memset(&s, 0, sizeof s);
+    const int r = vk && vk->setting_set ? vk->setting_set(key, value, &s) : 0;
+    if (r) control_setting_copy(out, &s);
+    return r;
+}
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
     if (vk && vk->nvn_event_signal) vk->nvn_event_signal(gpu, value);
 }
