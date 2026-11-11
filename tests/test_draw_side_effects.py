@@ -81,6 +81,8 @@ bool targets_persistent(const Targets& at) { return at.persistent; }
 bool exposure_log_on() { return false; }
 void exposure_note(NvnState&, const Program&) {}
 void ensure_layout(Program&) {}
+// These cases use non-fallback programs, whose topology stays unchanged.
+int pipeline_topology(const Program&, int drawn) { return drawn; }
 PipeEntry* graphics_pipeline(const Program&, NvnState&, const Targets&, int, const unsigned char*) { return &pipe_entry; }
 void decision(const Program* cp, const Targets& at) {
     NvnState s; DrawArgs d; int cmd = 0, topo = 0; unsigned char types[8]{};
