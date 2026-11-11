@@ -1454,6 +1454,19 @@ void prompts_at_once(const Row& r) {
 namespace ps = pipeline_share;
 std::string share_said;    // (the help box's line after a save: where the zip went and what to do, or why there is none)
 std::string share_value;   // (the row's value after a save: Saved, or Not saved)
+std::string share_saved;   // (the first sentence: the zip's name, its pipelines and its folder)
+std::atomic<bool> share_busy{false};   // (the worker is copying and opening: presses wait for it)
+std::atomic<int> share_result{-1};     // (the worker's answer: 1 copied, 2 the issue opened; -1 none waiting)
+/// (menu_tick, each frame) the worker's answer into the help box's line
+void share_finish() {
+    const int r = share_result.exchange(-1);
+    if (r < 0) return;
+    share_said = share_saved + ((r & 1) ? "The report is copied. " : "The report is in the zip. ") +
+                 ((r & 2) ? "Issue 2034 is open in your browser: attach" : "Open github.com/NotRexed/Hookshot/issues/2034 and attach") +
+                 " the zip to a comment, then paste the report and say where you played.";
+    share_busy.store(false);
+    menu_refresh = true;
+}
 bool is_share_row(const Row& r) { return !r.value && r.tab == TAB_DEBUG && !strcmp(r.name, "Save my pipeline list"); }
 std::string game_folder() {
     char exe[MAX_PATH];
@@ -1662,6 +1675,7 @@ std::vector<std::string> share_values(long long pipelines, bool v2) {
 }
 /// Save my pipeline list: the zip, then the clipboard, the folder and the issue (share_said says what happened)
 void share_pipeline_list() {
+    if (share_busy.load()) return;   // (the last press is still opening things)
     bool present = false;
     const std::string list = state_list_snapshot(&present);
     std::string why;
@@ -1704,21 +1718,40 @@ void share_pipeline_list() {
         logf("menu: Save my pipeline list: %s could not be written", name.c_str());
         return;
     }
-    const bool show = !env_on("HOS_HEADLESS");   // (a run without a window: nothing to show the browser or the folder on)
-    const bool copied = show && share_clipboard(lines);
-#ifdef _WIN32
-    if (show) share_open(path, true);
-#else
-    if (show) share_open(dir);
-#endif
-    const bool opened = show && share_open(ps::kIssueUrl);
     share_value = "Saved";
-    share_said = "Saved " + name + " (" + std::to_string(n) + " pipelines) in " + folder + ". " +
-                 (copied ? "The report is copied. " : "The report is in the zip. ") +
-                 (opened ? "Issue 2034 is open in your browser: attach" : "Open github.com/NotRexed/Hookshot/issues/2034 and attach") +
-                 " the zip to a comment, then paste the report and say where you played.";
-    logf("menu: Save my pipeline list: %s, %lld pipelines, in %s%s%s", name.c_str(), n, folder.c_str(), copied ? ", copied" : "",
-         opened ? ", the issue opened" : "");
+    share_saved = "Saved " + name + " (" + std::to_string(n) + " pipelines) in " + folder + ". ";
+    logf("menu: Save my pipeline list: %s, %lld pipelines, in %s", name.c_str(), n, folder.c_str());
+    if (env_on("HOS_HEADLESS")) {   // (a run without a window: nothing to show the browser or the folder on)
+        share_result.store(0);
+        share_finish();
+        return;
+    }
+    // (the clipboard, the folder and the browser on a worker of their own: ShellExecuteW and xdg-open can take hundreds of ms, and
+    // this is the present thread. Presses are ignored until it is done: share_busy)
+    share_busy.store(true);
+    share_said = share_saved + "Opening the issue...";
+    std::thread([lines, path, dir] {
+#ifdef _WIN32
+        using CoInitFn = HRESULT(WINAPI*)(void*, DWORD);
+        using CoUninitFn = void(WINAPI*)();
+        static const auto co_init = (CoInitFn)(void*)share_proc(L"ole32.dll", "CoInitializeEx");
+        static const auto co_uninit = (CoUninitFn)(void*)share_proc(L"ole32.dll", "CoUninitialize");
+        // (ShellExecute wants COM on its thread: apartment-threaded, no OLE1 DDE)
+        const bool com = co_init && co_uninit && SUCCEEDED(co_init(nullptr, 0x2 /*COINIT_APARTMENTTHREADED*/ | 0x4 /*COINIT_DISABLE_OLE1DDE*/));
+#endif
+        const bool copied = share_clipboard(lines);
+#ifdef _WIN32
+        share_open(path, true);
+#else
+        (void)path;
+        share_open(dir);
+#endif
+        const bool opened = share_open(ps::kIssueUrl);
+#ifdef _WIN32
+        if (com) co_uninit();
+#endif
+        share_result.store((copied ? 1 : 0) | (opened ? 2 : 0));
+    }).detach();
 }
 
 /// A row's new value v, as the arrows set it (dir: 1 up, -1 down, for the rows that skip or wrap), saved unless !keep
@@ -3639,6 +3672,7 @@ void cheat_press(int i, const bool* press, bool& changed) {
 
 void menu_tick() {
     std::lock_guard lk(menu_mu);   // (the control bridge's settings: menu_setting_set)
+    share_finish();   // (Save my pipeline list's worker, done)
     fullscreen_tick();
     enum { K_N = 17 };
     static bool held[K_N];

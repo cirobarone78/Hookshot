@@ -278,6 +278,14 @@ def check_sources():
     assert "ps::share_zip(" in body and "state_list_snapshot(" in body and "ps::check_list(" in body
     assert 'env_on("HOS_HEADLESS")' in body, "a run without a window would open the browser"
     assert body.find("ps::check_list(") < body.find("ps::share_zip("), "the list is zipped before it is checked"
+    # the clipboard and the opens on a worker (the present thread must not wait on ShellExecuteW or xdg-open), COM on it for
+    # ShellExecuteW, and a press while it works is ignored
+    assert body.split("\n", 1)[1].lstrip().startswith("if (share_busy.load()) return;"), "a second press runs again"
+    worker = body[body.find("std::thread(["):]
+    assert body.find("std::thread([") > body.find('env_on("HOS_HEADLESS")'), "the opens are not on the worker"
+    for call in ("share_clipboard(", "share_open(ps::kIssueUrl)", '"CoInitializeEx"', "co_uninit()", "share_result.store("):
+        assert call in worker, "the worker lacks " + call
+    assert "share_finish();" in menu[menu.find("void menu_tick() {"):][:400], "menu_tick never collects the worker's answer"
     spawn = menu[menu.find("bool share_spawn("):]
     spawn = spawn[:spawn.index("\n}\n")]
     assert "pipe2(fds, O_CLOEXEC)" in spawn and "addclosefrom_np(&fa, 3)" in spawn, \
