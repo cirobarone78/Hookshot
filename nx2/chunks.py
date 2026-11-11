@@ -116,12 +116,34 @@ def _available_gb():
     return None
 
 
+def _no_fork():
+    """No fork() here (Windows), or HOOKSHOT_LIFT_NO_FORK=1 (to try the Windows path elsewhere)"""
+    return os.environ.get("HOOKSHOT_LIFT_NO_FORK") == "1" or "fork" not in multiprocessing.get_all_start_methods()
+
+
+def file_jobs():
+    """Processes for the per-file passes (split_big, edit_c): as emit_jobs, but where there is no fork too. Their workers take a
+    file's path and read the file themselves, so they start as new processes (spawn) where they cannot be forked: the three passes
+    over the 1.5 GB of C took ~30 s in one process on Windows"""
+    if os.environ.get("HOOKSHOT_LIFT_JOBS"):
+        return max(1, int(os.environ["HOOKSHOT_LIFT_JOBS"]))
+    try:
+        n = len(os.sched_getaffinity(0))
+    except AttributeError:
+        n = os.cpu_count() or 1
+    n = max(1, min(16, n))
+    gb = _available_gb()
+    if gb is not None:
+        n = max(1, min(n, int(gb // 2)))
+    return n
+
+
 def emit_jobs():
     """Processes for the emit: HOOKSHOT_LIFT_JOBS, else the cores this process may use (at most 16; each holds its run's
     texts and the pages of the lift it touches), and at most one per 2 GB of available memory: a Steam Deck (16 GB) ran
     out with 8, and the system's out-of-memory handling stopped the lift ("lift.py stopped (signal 15): BrokenPipeError")
     or one worker (the update then sat at "jump tables" for good). 1 where there is no fork"""
-    if "fork" not in multiprocessing.get_all_start_methods():
+    if _no_fork():
         return 1
     if os.environ.get("HOOKSHOT_LIFT_JOBS"):
         return max(1, int(os.environ["HOOKSHOT_LIFT_JOBS"]))
@@ -298,10 +320,9 @@ def split_big(gen_dir, files, budget=None, jobs=None):
     cost: code_NNN.c, code_NNN_1.c ... A chunk of the giant functions took 350 s, alone at the end of the build, where a chunk of
     ordinary functions takes 45; the boundaries kept in chunks.txt also let chunks grow (44 MB beside 25). The first part keeps the
     name, so seed_from_gen and the boundaries are as before. Writes chunk_costs.txt for every chunk; returns the new parts' paths.
-    Each chunk is read (1.5 GB in all) and cut in a process of its own (jobs: emit_jobs(); one where there is no fork): 5 s on
-    one core before"""
+    Each chunk is read (1.5 GB in all) and cut in a process of its own (jobs: file_jobs()): 5 s on one core before"""
     budget = budget or a64_lift.CHUNK_BYTES
-    jobs = emit_jobs() if jobs is None else jobs
+    jobs = file_jobs() if jobs is None else jobs
     made, costs = [], {}
     for parts, cost, line in _each(_split_one, [(gen_dir, path, budget) for path in files], jobs):
         made += parts
@@ -355,10 +376,12 @@ def _each(fn, items, jobs):
     from concurrent.futures import ProcessPoolExecutor
     out = [None] * len(items)
     got = [False] * len(items)
+    spawn = _no_fork()   # (new processes, which import this module again: Windows)
     gc.collect()
     gc.freeze()   # (as parallel_emit: the lift's objects out of the collector's sight, the pages shared with the children)
     try:
-        with ProcessPoolExecutor(max_workers=min(jobs, len(items)), mp_context=multiprocessing.get_context("fork")) as pool:
+        with ProcessPoolExecutor(max_workers=min(jobs, len(items)),
+                                 mp_context=multiprocessing.get_context("spawn" if spawn else "fork")) as pool:
             futures = [pool.submit(fn, x) for x in items]
             for i, f in enumerate(futures):
                 try:
@@ -390,7 +413,7 @@ def _side_run(fn, conn):
 def start_side(fn):
     """fn() started in a forked process, beside what the lift does next; None where there is no fork or one process is asked for
     (HOOKSHOT_LIFT_JOBS=1). end_side(side, fn) waits for it and gives its result"""
-    if emit_jobs() <= 1:
+    if _no_fork() or emit_jobs() <= 1:
         return None
     ctx = multiprocessing.get_context("fork")
     mine, theirs = ctx.Pipe(duplex=False)
@@ -423,13 +446,13 @@ def edit_c(gen, stats, supported, whole=True, took=None, jobs=None):
     standalone lift fails when an output-size edit finds no place), then, last, the page marks of each group of stores shared
     (a64_lift.mark_groups), which changes that text. stats: the lift's, for its report.
     Each file's edits are its own; only the counts are over all of them. So the files go through two passes, each a process per
-    file (jobs: emit_jobs(), one where there is no fork): the patches; then, after the counts' rules (oot_patches.report: the step
+    file (jobs: file_jobs(); new processes where there is no fork): the patches; then, after the counts' rules (oot_patches.report: the step
     divides both or neither), the output size and the groups. Five passes over the 1.5 GB of C on one core took a minute. The
     files and the lines printed are the one-process ones, byte for byte (tests/test_mark_groups.py)"""
     import oot_native_resolution
     import oot_patches
     took = took or (lambda what: None)
-    jobs = emit_jobs() if jobs is None else jobs
+    jobs = file_jobs() if jobs is None else jobs
     paths = sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c")))
     done = _each(_edit_patches, [(p, supported) for p in paths], jobs)
     native = []
