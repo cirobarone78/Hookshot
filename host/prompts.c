@@ -827,7 +827,8 @@ static int live_layouts(const char *dir, int face, const int *bind) {
     const uint8_t *q = (const uint8_t *)hos_guest_range(lay.base, sizeof lay_head);
     /* (the game let the memory go: nothing written there. Unlike the textures' pool (tex_lock), nothing holds the region
        from here to the writes: the game frees its resources' regions on its own thread, with no hook here, so a region let
-       go in that moment is not seen. put_runs' guard still leaves alone every run whose bytes are no longer the file's) */
+       go in that moment is not seen. A new run is still written only where the bytes are the file's (put_runs, guarded); the
+       last change's bytes put back are not checked so) */
     if (!q || memcmp(q, lay_head, sizeof lay_head)) {
         hos_log("prompts: the layouts at %#llx are no longer there: they change at the next start", (unsigned long long)lay.base);
         lay.base = 0;
