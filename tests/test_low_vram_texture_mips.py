@@ -33,6 +33,9 @@ def main():
     source = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8-sig")
     mip = block(source, "{   // huge textures leave out their top levels:")
     policy = block(source, "bool low_vram_texture_mips(") if "bool low_vram_texture_mips(" in source else ""
+    # (the Texture detail row's sizes, texture_detail_dims, and their struct)
+    policy = ("struct DetailDims { uint32_t max_dim; uint64_t skip_from_mb; };\n" + block(source, "DetailDims texture_detail_dims(") +
+              "\n" + policy)
     fixture = r'''
 #include <algorithm>
 #include <cstdint>
@@ -50,7 +53,7 @@ struct Texture {
     VkImageType type = VK_IMAGE_TYPE_2D;
 };
 struct { bool sparse_images = false; VkPhysicalDevice physical{}; } dev;
-struct { int preset = 1; } opts;
+struct { int preset = 1; int texture_detail = 0; } opts;
 uint64_t allowed;
 bool query_ok;
 bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* = nullptr) {
@@ -75,6 +78,7 @@ void check_image(const Texture& x, int skip, int width, int levels) {
 int main(int argc, char** argv) {
     CHECK(argc == 12);
     opts.preset = std::atoi(argv[1]);
+    if (const char* e = std::getenv("TEST_TEXTURE_DETAIL")) opts.texture_detail = std::atoi(e);
     allowed = std::strtoull(argv[2], nullptr, 10) << 20;
     query_ok = std::atoi(argv[3]) != 0;
     nvn_tex t{}; t.d.samples = 1;
@@ -121,6 +125,15 @@ int main(int argc, char** argv) {
          {"RX_VK_TEX_MAX_DIM": "512", "RX_VK_TEX_SKIP_MB": "2"}, (3, 384, 9, 2, 341, 9), 0),
         ("threshold-without-dimension-override", 2, 3674, 1,
          {"RX_VK_TEX_SKIP_MB": "2"}, (1, 1536, 11, 0, 1365, 11), 0),
+    ]
+    # (the Texture detail row: Full keeps the game's size on a small card, Medium and Low trim on any card)
+    cases += [
+        ("detail-full-small-budget", 1, 3674, 1, {"TEST_TEXTURE_DETAIL": "1"}, original, 0),
+        ("detail-medium-large-budget", 2, 7500, 1, {"TEST_TEXTURE_DETAIL": "2"}, minimum, 0),
+        ("detail-low-large-budget", 2, 7500, 1, {"TEST_TEXTURE_DETAIL": "3"}, (2, 768, 10, 2, 341, 9), 0),   # (768: under 8 MB, kept)
+        ("detail-auto-large-budget", 2, 7500, 1, {"TEST_TEXTURE_DETAIL": "0"}, original, 0),
+        ("detail-medium-dimension-override", 2, 7500, 1, {"TEST_TEXTURE_DETAIL": "2", "RX_VK_TEX_MAX_DIM": "2048"},
+         (1, 1536, 11, 0, 1365, 11), 0),
     ]
     for value in ("0", "off", "false", "no", "OFF", "FaLsE", " no \t", ""):
         cases.append(("disabled-" + repr(value), 1, 3674, 1,
