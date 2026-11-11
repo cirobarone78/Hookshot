@@ -1,63 +1,210 @@
-# The version, tag and changelog entry for a push to main (stable) or next (release candidates). The tag starts the
-# Linux AppImage and Windows builder workflows, which publish the GitHub release with their files. The rules and the one-time v0.1.0 tag are in
-# docs/versioning.md. No game data is involved.
+# Releases with release-please (docs/versioning.md). Every release is first a release candidate:
+# - On every push to main, release-please keeps one release pull request open: the next release candidate (2.1.0-rc.1,
+#   then 2.1.0-rc.2 of the same version), from the Conventional Commit titles of the pull requests merged since the last
+#   one, and its CHANGELOG.md entry.
+# - Merging that pull request tags the merge commit and makes the release candidate as a draft. This workflow then
+#   builds its files with the Linux AppImage and Windows builder workflows, which attach them, and publishes it as a
+#   prerelease once all of them are there.
+# - Promote (this workflow started by hand, with the release candidate to promote): its version is tagged on the same
+#   commit and built and published the same way, as the latest release, with the notes of its release candidates. Then
+#   .release-please-manifest.json gets the version, so the next release pull request proposes the next version's first
+#   release candidate.
+# No game data is involved.
 name: Release
 
 on:
   push:
-    branches: [main, next]
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      rc:
+        description: >-
+          Promote: the release candidate to publish as its version (v2.1.0-rc.2 is published as v2.1.0). Empty: the
+          newest release candidate.
+        type: string
+        required: false
 
 permissions:
   contents: read
 
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  release:
-    # (a manual run on a branch, not on a tag: semantic-release needs a release branch)
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # (the release commit and the tag are pushed back)
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # (one at a time, in order; only this job, so the builds of a release never hold up the next push. A push that waits
+    # behind another one's is replaced by the newer one, which reads the same commits and makes any release they make)
+    concurrency:
+      group: release-please-${{ github.ref }}
+      cancel-in-progress: false
+    # (the release pull request and its branch; the tag and the draft release)
     permissions:
       contents: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
     steps:
-      - name: Checkout
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ github.token }}
+          target-branch: ${{ github.ref_name }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # (started by hand on main: the release candidate checked, the version's tag on its commit and its draft release with
+  # the release candidates' notes, scripts/release_promote.sh)
+  promote:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: release-promote
+      cancel-in-progress: false
+    # (the tag and the draft release)
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.promote.outputs.tag }}
+      rc: ${{ steps.promote.outputs.rc }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RC: ${{ inputs.rc }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: promote
+        run: scripts/release_promote.sh prepare "$RC"
+
+  # (called here, not started by the tag: a tag made with GITHUB_TOKEN starts no workflow. A release candidate's files and
+  # its version's are built the same way, from the same commit when it is promoted)
+  linux:
+    needs: [release-please, promote]
+    if: ${{ !cancelled() && (needs.release-please.outputs.created == 'true' || needs.promote.outputs.tag != '') }}
+    uses: ./.github/workflows/linux-appimage.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag || needs.promote.outputs.tag }}
+    # (id-token and attestations: the build provenance of the files)
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+  windows:
+    needs: [release-please, promote]
+    if: ${{ !cancelled() && (needs.release-please.outputs.created == 'true' || needs.promote.outputs.tag != '') }}
+    uses: ./.github/workflows/windows-builder.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag || needs.promote.outputs.tag }}
+    # (id-token and attestations: the build provenance of the files)
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+  # The draft becomes the release players see, with every file attached: the setup and the builder's update check read
+  # the latest release's hookshot-setup.txt. Before that, the release gets SHA256SUMS (the SHA-256 of every file, signed
+  # like the files) and the "Which file do I download?" table under its notes (scripts/release_files.sh). A release
+  # candidate (2.1.0-rc.1) is a prerelease, never "latest"; a promoted version is the latest release. To attach the files
+  # again, re-run the failed jobs of this run: the files are replaced.
+  publish:
+    needs: [release-please, promote, linux, windows]
+    if: ${{ !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # (id-token and attestations: SHA256SUMS's build provenance)
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.release-please.outputs.tag || needs.promote.outputs.tag }}
+      WINDOWS_BY_HAND: ${{ vars.CI_RELEASE_WINDOWS == 'false' }}
+    steps:
+      - if: env.WINDOWS_BY_HAND == 'true'
+        run: >-
+          echo "::notice::$TAG stays a draft: upload HookshotBuilder.exe and hookshot-setup.txt, run
+          scripts/release_files.sh finish $TAG, then publish it."
+      - if: env.WINDOWS_BY_HAND != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # the last release tag and the commits since it are part of the analysis
-          fetch-depth: 0
-          # the release commit and the tag are pushed with this token; RELEASE_TOKEN lets the tag start the AppImage
-          # and Windows builder workflows, which publish the GitHub release
-          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - name: SHA256SUMS and the table of the files
+        if: env.WINDOWS_BY_HAND != 'true'
+        run: scripts/release_files.sh finish "$TAG" SHA256SUMS
+      - name: Every file is there
+        if: env.WINDOWS_BY_HAND != 'true'
+        run: >-
+          scripts/release_files.sh check "$TAG" hookshot-linux.txt hookshot-setup.txt HookshotBuilder.exe
+          "Hookshot-$TAG-x86_64.AppImage" "Hookshot-$TAG-x86_64.AppImage.zsync"
+      - if: env.WINDOWS_BY_HAND != 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          node-version: 24
-
-      - name: Release tooling
-        run: npm install --no-audit --no-fund --ignore-scripts
-
-      # semantic-release starts at 1.0.0 when it finds no tag. The first version is 0.1.0, tagged by hand on the merge
-      # that introduces the scheme, so nothing is released before that tag exists.
-      - name: First release tag
-        id: first
+          subject-path: SHA256SUMS
+      - name: Publish the release
+        if: env.WINDOWS_BY_HAND != 'true'
         run: |
-          if git describe --tags --match 'v[0-9]*' >/dev/null 2>&1; then
-            echo "released=true" >> "$GITHUB_OUTPUT"
+          if [[ $TAG == *-* ]]; then
+            gh release edit "$TAG" --draft=false --prerelease --latest=false
           else
-            echo "released=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No version tag yet. Tag the first release by hand (docs/versioning.md)."
+            gh release edit "$TAG" --draft=false --prerelease=false --latest
           fi
 
-      # RELEASE_TOKEN is a fine-grained personal access token with contents: write. It is preferred over GITHUB_TOKEN
-      # because a tag pushed by GITHUB_TOKEN does not start the workflows that publish the release.
-      # Without the secret, run them by hand and attach their artifacts.
-      - name: semantic-release
-        if: steps.first.outputs.released == 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-        run: npx semantic-release
+  # After a promotion: .release-please-manifest.json gets the version (scripts/release_promote.sh record), so the next
+  # release pull request proposes the next version's first release candidate, and CHANGELOG.md the version's entry.
+  # Pushed to main; where main takes no direct push (branch protection), a small pull request instead, to merge before
+  # the release pull request. Then the release pull request is made again from the new manifest.
+  record:
+    needs: [promote, publish]
+    if: ${{ !cancelled() && needs.promote.result == 'success' && needs.publish.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.promote.outputs.tag }}
+      RC: ${{ needs.promote.outputs.rc }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          # (the push below)
+          persist-credentials: true
+      - name: Manifest and changelog
+        id: record
+        run: |
+          scripts/release_promote.sh record "$TAG" "$RC"
+          if git diff --quiet; then echo "nothing to record"; exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          title="chore(release): record ${TAG#v} as released"
+          git commit -qam "$title" -m "$RC is published as $TAG. The next release pull request proposes the next version's release candidate."
+          if git push origin "HEAD:refs/heads/$GITHUB_REF_NAME"; then
+            echo "pushed=true" >>"$GITHUB_OUTPUT"
+          else
+            branch=release-promote--$TAG
+            git push --force origin "HEAD:refs/heads/$branch"
+            gh pr create --base "$GITHUB_REF_NAME" --head "$branch" --title "$title" --body "$RC is published as $TAG.
+          This sets \`.release-please-manifest.json\` to ${TAG#v} and adds its entry to \`CHANGELOG.md\`, so the next release
+          pull request proposes the next version's first release candidate. Merge it before the release pull request.
+          (Opened by the Release workflow: $GITHUB_REF_NAME took no direct push.)"
+            echo "::notice::$GITHUB_REF_NAME took no direct push: merge the pull request from $branch before the release pull request"
+          fi
+      # (the push above was made with GITHUB_TOKEN, which starts no workflow: the release pull request is made again here)
+      - if: steps.record.outputs.pushed == 'true'
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ github.token }}
+          target-branch: ${{ github.ref_name }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true
