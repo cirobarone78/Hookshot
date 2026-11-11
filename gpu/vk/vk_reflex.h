@@ -54,7 +54,7 @@ void reflex_game_submitted();
 /// GPU work belongs to, so the driver times that frame's rendering (its GPU end) from it. frame: kReflexThisFrame the frame
 /// being made (the game's rendering); a frame reflex_frame gave (a batch held since, frame generation's set); 0 none (a made
 /// frame's copy). `next` itself when Reflex is off, the frame is not marked or was presented already, or
-/// RX_VK_REFLEX_SUBMIT_IDS=0. The struct is the calling thread's until its next call: take it right before the submit
+/// RX_VK_REFLEX_SUBMIT_IDS=0 (or false, off, no). The struct is the calling thread's until its next call: take it right before the submit
 const void* reflex_submit_id(const void* next, uint64_t frame = kReflexThisFrame);
 
 } // namespace mkwvk

@@ -404,6 +404,9 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
     si.pSignalSemaphoreInfos = nsig ? signals : nullptr;
     std::lock_guard lk(dev.present_mu);   // (one queue: submits and presents take turns)
     if (batch_on()) {
+        // (NVIDIA Reflex: the batch is tagged with the game frame its first command buffer belongs to, read here. A batch that
+        // spans two game frames counts as the first's; one begun before the frame's sleep returned (reflex_frame() 0) goes
+        // untagged. Batching is on by default only with RADV, so on NVIDIA this matters only with RX_VK_BATCH=1)
         if (pend.cbs.empty()) batch_next++, pend_since = std::chrono::steady_clock::now(), pend.reflex = reflex_frame();
         for (uint32_t i = 0; i < n; i++) pend.cbs.push_back(cb[i]);
         if (signal_value) pend.signal = std::max(pend.signal, signal.value), pend.any_signal = true;
