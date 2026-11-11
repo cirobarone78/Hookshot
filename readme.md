@@ -548,6 +548,8 @@ each grow files need one table with all their entries, in the mod that sorts las
 entries into that table (each file gets the larger of the two), so your controller's icons stay in texts; the log says
 `(with the button prompts' sizes merged in)` after the table's line. A table it cannot read that way (not the game's
 format, or a zstd frame that does not give its size) is used as it is, with the Switch's icons.
+If a mod includes tables for several game versions, the prompts use the table name from the game's own RomFS,
+not the first table found in the mod. Other versions' tables do not change the prompts' font or its size entries.
 
 ## Build from source
 
