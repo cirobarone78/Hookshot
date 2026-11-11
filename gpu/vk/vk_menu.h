@@ -93,6 +93,8 @@ struct Options {
     int debug_tools = 0;   // (hookshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
     int volume = 100;     // (hookshot) the game's sound in percent, 0 to 100 (host/nn_audio.c: HOS_OPT_VOLUME, 27)
     int mute_background = 0;   // (hookshot) no sound while another window has the focus (host/nn_audio.c: HOS_OPT_MUTE_BACKGROUND, 28)
+    int item_buttons = 0;  // (hookshot) Item assignable buttons (host/oot_item_buttons.c): 1 on, A, B, X and Y use an item each while the hotkey is held; each save's are in its slot folder's item_buttons.ini
+    int item_hotkey = 0;   // (hookshot) their hotkey, the Switch's shoulder button held for them: 0 L, 1 R (the other one still opens the game's quick-switch menu)
     int mic = 1;          // (hookshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
 };
 extern Options opts;
