@@ -18,6 +18,7 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
+ENV_ON_H = ROOT / "gpu" / "vk" / "compat" / "hookshot_env.h"
 
 FIXTURE = r'''#include <atomic>
 #include <initializer_list>
@@ -32,7 +33,6 @@ struct Texture { bool uploaded = false, astc = false, bc = false; VkFormat forma
                  uint64_t gpu = 0x1000, guest_size = 0x4000; uint32_t id = 1, width = 64, height = 64, layers = 1; int nvn_format = 0; };
 static int logs;
 static void logf(const char *, ...) { logs++; }
-static bool env_on(const char *n) { const char *v = std::getenv(n); return v && *v && std::strcmp(v, "0"); }   /* (compat/hookshot_env.h) */
 static uint32_t gpu_owned_since(uint64_t, uint64_t) { return 7; }   /* (render targets took this storage) */
 static uint32_t decide(Texture *tex) {
     static const bool upload_all = false;
@@ -83,7 +83,10 @@ def main():
         tmp = Path(tmp)
         (tmp / "f.cpp").write_text(FIXTURE.replace("DECISION", decision), encoding="utf-8")
         exe = tmp / ("f.exe" if os.name == "nt" else "f")
-        subprocess.run([cxx, "-std=c++17", "-Wall", "-Wno-unused-function", "-Werror", str(tmp / "f.cpp"), "-o", str(exe)],
+        # (env_on from the renderer's own header; _CRT_SECURE_NO_WARNINGS: Windows' C runtime marks getenv deprecated, and
+        # -Werror made that an error with clang on Windows)
+        subprocess.run([cxx, "-std=c++17", "-D_CRT_SECURE_NO_WARNINGS", "-include", str(ENV_ON_H), "-Wall",
+                        "-Wno-unused-function", "-Werror", str(tmp / "f.cpp"), "-o", str(exe)],
                        check=True)
         for extra in ({}, {"RX_VK_SKIP_COMPRESSED_OVER_RT": "1"}):
             env = {k: v for k, v in os.environ.items() if k != "RX_VK_SKIP_COMPRESSED_OVER_RT"}
