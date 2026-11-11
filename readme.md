@@ -252,6 +252,10 @@ value and cannot be changed, so remove the line to choose in the menu.)
 This is a workaround for some artifacts, not a general lighting fix. It can substantially increase graphics-memory
 use and cause stalls when the card runs out of headroom. To undo it, turn the row off (and remove any `RX_VK_ASTC_RGBA8` line from `hookshot_env.txt`) and restart the game.
 
+`RX_VK_ASTC_BC7=1` keeps those big ASTC textures as BC7 instead of BC3. Both are 8 bits a texel, so the graphics memory
+is the same; BC7's mode 6 keeps the colours' gradients and alpha much better, and the textures look cleaner where BC3
+shows bands or blocks. Off unless set; `RX_VK_ASTC_RGBA8=1` above still wins when both are set.
+
 ## In-game menu
 
 By default, press <kbd>Insert</kbd>, <kbd>F1</kbd> or <kbd>Esc</kbd> in game. On a controller, press Home or Select and
