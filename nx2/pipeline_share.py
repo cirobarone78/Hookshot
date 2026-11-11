@@ -311,10 +311,23 @@ def make_zip(folder, out_dir=None, day=None):
     out_dir = out_dir or downloads_dir()
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, zip_name(day))
-    with zipfile.ZipFile(out + ".new", "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr(LIST, data)
-        z.writestr(REPORT, NOTE + "\n" + text)
-    os.replace(out + ".new", out)
+    part = out + ".new"
+    try:
+        os.unlink(part)   # (a run that stopped halfway; a link is removed, not followed)
+    except FileNotFoundError:
+        pass
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        with os.fdopen(os.open(part, flags, 0o644), "wb") as f, zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr(LIST, data)
+            z.writestr(REPORT, NOTE + "\n" + text)
+        os.replace(part, out)
+    except BaseException:
+        try:
+            os.unlink(part)
+        except OSError:
+            pass
+        raise
     return out, text, len(recs)
 
 

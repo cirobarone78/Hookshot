@@ -145,6 +145,13 @@ def check_python(tmp):
     src = (ROOT / "nx2" / "pipeline_share.py").read_text(encoding="utf-8")
     mz = src[src.find("def make_zip("):src.find("def main(")]
     assert mz.count("read_list(") == 1 and "open(path" not in mz, "make_zip reads the list more than once"
+    # the part file is made fresh: a link left at <zip>.new is replaced, not followed
+    if hasattr(os, "symlink") and os.name != "nt":
+        target = t / "elsewhere.txt"
+        target.write_text("keep", encoding="utf-8")
+        os.symlink(target, Path(path + ".new"))
+        share.make_zip(str(g), str(out), day=share.datetime.date(2026, 11, 11))
+        assert target.read_text(encoding="utf-8") == "keep" and not os.path.lexists(path + ".new"), "the zip was written through a link"
     # older logs: the driver from its number; no log: the version file; settings: handheld, DLAA, the game's own output
     (g / "hookshot_log.txt").write_text("[hos host] vk: NVIDIA GeForce RTX 3090, Vulkan 1.4, driver 0x9b118180; mesh shaders yes\n",
                                         encoding="utf-8")
