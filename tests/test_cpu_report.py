@@ -140,8 +140,10 @@ def main():
         if not row(md2.split("## By category: who executes it")[0], "**unclassified**") or row(md2, "os/sync"):
             failures.append("CONTROL: with no rules, everything should be unclassified")
         # (what may be published: no guest map, so no guest address and no game subsystem; lifted code is one row)
-        pub = run(Path(t), guest=False)
-        # (a Linux capture names hookshot / hookshot_vk.so, whose maps are not read: refused, even with Windows maps present)
+        pub = run(Path(t), guest=False, samples=SAMPLES + ["6 Thread_8000abcd|hookshot.exe+1010"])   # (an unnamed thread)
+        if re.search(r"Thread_[0-9a-fA-F]{8}", pub) or "unnamed thread" not in pub:
+            failures.append("without --guest-map an unnamed thread's guest entry address must not be printed")
+# (a Linux capture names hookshot / hookshot_vk.so, whose maps are not read: refused, even with Windows maps present)
         try:
             run(Path(t), samples=["0 sead::MainThread|hookshot+1010;hookshot+2020"])
             failures.append("a Linux capture should be refused, not mislabelled")

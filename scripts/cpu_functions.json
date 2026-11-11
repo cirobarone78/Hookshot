@@ -362,7 +362,7 @@
   "source": "read"
  },
  "hos_mods_romfs": {
-  "does": "nn_fs.c: the mod file for a RomFS path (\"UI/x.zs\", no mount, no leading slash), or 0.",
+  "does": "nn_fs.c: the mod file for a RomFS path (no mount, no leading slash), or 0.",
   "source": "read"
  },
  "hos_now_ns": {
@@ -1163,7 +1163,7 @@
   "source": "read"
  },
  "n_nvnCommandBufferBindTexturesDeferred": {
-  "does": "NVN 55 *Deferred binds (what the inline fast paths call: always, see nvn_cmd.inline_cur): the console driver only records the game's handle array and reads it at submit; the game fills material tables after recording.",
+  "does": "Binds textures by a handle array that is read when the command buffer is submitted, not when it is recorded.",
   "source": "read"
  },
  "n_nvnCommandBufferEndRecording": {

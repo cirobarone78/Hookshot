@@ -295,7 +295,7 @@ These 55 functions cover 90.0 % of the on-CPU time (the median of the runs; 279.
 | gmd::SaveDataMgr | `nn::os::ReceiveLightMessageQueue from lifted game code` | 100.0 |
 | aglTextureDataMgr::Replace | `nn::os::ReceiveLightMessageQueue from lifted game code` | 100.0 |
 | ConcenteredRenderer::Prepare | `nn::os::ReceiveLightMessageQueue from lifted game code` | 100.0 |
-| Thread_824c2960 | `hos_cv_sleep from lifted game code` | 100.0 |
+| unnamed thread | `hos_cv_sleep from lifted game code` | 100.0 |
 | npln-grpc_default-executor | `hos_thread_wait from lifted game code` | 100.0 |
 | npln-grpc_resolver-executor | `hos_thread_wait from lifted game code` | 100.0 |
 | nn.npln.GrpcDispatcher | `nn::socket::detail::Poll from lifted game code` | 100.0 |
@@ -631,7 +631,7 @@ These 45 functions cover 90.1 % of the on-CPU time (the median of the runs; 328.
 | gmd::SaveDataMgr | `nn::os::ReceiveLightMessageQueue from lifted game code` | 100.0 |
 | aglTextureDataMgr::Replace | `nn::os::ReceiveLightMessageQueue from lifted game code` | 100.0 |
 | ConcenteredRenderer::Prepare | `nn::os::ReceiveLightMessageQueue from lifted game code` | 100.0 |
-| Thread_824c2960 | `hos_cv_sleep from lifted game code` | 100.0 |
+| unnamed thread | `hos_cv_sleep from lifted game code` | 100.0 |
 | npln-grpc_default-executor | `hos_thread_wait from lifted game code` | 100.0 |
 | npln-grpc_resolver-executor | `hos_thread_wait from lifted game code` | 100.0 |
 | NfcDevice[0] | `nn::os::ReceiveLightMessageQueue from lifted game code` | 100.0 |
@@ -972,7 +972,7 @@ These 53 functions cover 90.2 % of the on-CPU time (the median of the runs; 289.
 | OpusDecoder | `nn::os::ReceiveLightMessageQueue from lifted game code` | 100.0 |
 | aglTextureDataMgr::Replace | `nn::os::ReceiveLightMessageQueue from lifted game code` | 100.0 |
 | ConcenteredRenderer::Prepare | `nn::os::ReceiveLightMessageQueue from lifted game code` | 100.0 |
-| Thread_824c2960 | `hos_cv_sleep from lifted game code` | 100.0 |
+| unnamed thread | `hos_cv_sleep from lifted game code` | 100.0 |
 | npln-grpc_default-executor | `hos_thread_wait from lifted game code` | 100.0 |
 | npln-grpc_resolver-executor | `hos_thread_wait from lifted game code` | 100.0 |
 | nn.npln.GrpcDispatcher | `nn::socket::detail::Poll from lifted game code` | 100.0 |

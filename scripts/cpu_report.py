@@ -247,6 +247,8 @@ def analyse(path, names, fps=None, window=None, cands=()):
             if window and not (window[0] <= ms / 1000.0 <= window[1]):
                 continue
             thread = re.sub(r"\d+$", "N", parts[1]) if parts[1].startswith(("ModuleSystemWorker", "BaseProcExecutor", "NavMeshCAStepDepWorker")) else parts[1]
+            if not names.game_detail:   # (an unnamed thread is logged by its guest entry address: not published)
+                thread = re.sub(r"^Thread_[0-9a-fA-F]+$", "unnamed thread", thread)
             instants.add(ms)
             named = [names.of(fr) for fr in frames.split(";") if fr]
             if not named:
