@@ -69,6 +69,26 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertIn(": 10;", frame[frame.index('getenv("RX_VK_DEAD_EVERY")'):])
         self.assertIn("frame_no % (dead_targets ? dead_every : 600)", frame)
 
+    def test_a_pile_of_dead_targets_is_swept_every_present_and_only_swept(self):
+        """(#2180) While a pile is on, the presents between two regular passes run the pass too, as a sweep: dead targets
+        alone, whatever the budget says. A pile is on for ten presents after a regular pass that saw one."""
+        frame = block(self.tex, "void texture_frame(uint64_t completed)")
+        self.assertIn('getenv("RX_VK_PILE_FAST")', frame)
+        gate = frame.index("if (extra && !(pile_fast && frame_no < pile_until)) return;")
+        self.assertLess(frame.index("const bool extra = frame_no % 10 != 0;"), gate)
+        # (an extra pass is a sweep, so the budget's and the hold's passes keep their pace; it needs the dead targets' rule)
+        sweep = frame.index("const bool sweep = total_bytes <= budget || extra;")
+        self.assertLess(gate, sweep)
+        self.assertLess(sweep, frame.index("const bool by_hold = evict_to != 0 && !sweep;"))
+        self.assertIn("(extra && !dead_targets) || (sweep && !extra && frame_no % (dead_targets ? dead_every : 600))", frame)
+        self.assertIn("if (sweep && !overwritten) continue;", frame)
+        # (what turns a pile on: a regular pass alone, by what its ten presents let go or made new)
+        rule = frame[frame.index("if (pile_fast && dead_targets) {"):]
+        self.assertIn("if (pile_window >= 64 || made_new >= 64) pile_until = frame_no + 10;", rule)
+        self.assertLess(rule.index("if (extra) {"), rule.index("pile_until = frame_no + 10;"))
+        self.assertIn("a pile of dead render targets: %llu extra passes so far", rule)
+        self.assertIn("if (n && !extra) {", rule)   # (an extra pass writes no "textures retired" line: the pile's line counts them)
+
     def test_a_pooled_image_is_taken_before_one_is_made_and_still_cleared_from_undefined(self):
         make = block(self.tex, "Texture* create(const Key& key")
         take = make.index("pool_take(pool_key, x.image, x.allocation, x.views)")
@@ -90,13 +110,15 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertLess(loop.index("if (it->pool_key) {"), loop.index("destroy_image(it->image, it->allocation);"))
         self.assertIn("pool_put(*it);", loop[:loop.index("destroy_image(")])
         trim = frame.index("pool_trim();")
-        self.assertLess(trim, frame.index("if (frame_no % 10) return;"))   # (every present, not every tenth)
+        self.assertLess(trim, frame.index("const bool extra = frame_no % 10 != 0;"))   # (every present, not every tenth)
         self.assertIn("pool_pressed = known && pressure > allowed / 10 * 9;", frame)
 
     def test_the_trim_is_bounded_a_present_and_gives_back_idle_and_excess_images(self):
         trim = block(self.tex, "size_t pool_trim()")
         self.assertIn("pool_pressed ? 0 : pool_cap()", trim)
-        self.assertIn("pool_pressed ? 64 : 16", trim)
+        # (64 a present when VRAM is short, and while the pool holds twice its bound: a pile of dead targets, #2180)
+        self.assertIn("pool_pressed || (fast_drain && pool_bytes > cap * 2) ? 64 : 16", trim)
+        self.assertIn('getenv("RX_VK_POOL_DRAIN")', trim)
         self.assertIn("frame_no - v[i].since <= 120", trim)
         self.assertIn("pool_bytes <= cap", trim)
         self.assertIn("pool_destroy(v[i]);", trim)

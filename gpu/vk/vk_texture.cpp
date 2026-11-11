@@ -325,7 +325,11 @@ void pool_put(Dead& d) {
 size_t pool_trim() {
     std::lock_guard lk(pool_mu);
     const uint64_t cap = pool_pressed ? 0 : pool_cap();
-    const size_t most = pool_pressed ? 64 : 16;
+    // (#2180) and 64 a present once the pool holds twice its bound. A pile of dead targets (a door opened into Castle
+    // Town's guard room at 3840x2160: 1,500-2,400 textures retired a second) came in faster than 16 a present took them out: the
+    // pool held 696 images, 1,505 MB, against its 256 MB bound while VRAM went to 14,198 of 14,540 MB. RX_VK_POOL_DRAIN=0: as before
+    static const bool fast_drain = !getenv("RX_VK_POOL_DRAIN") || atoi(getenv("RX_VK_POOL_DRAIN")) != 0;
+    const size_t most = pool_pressed || (fast_drain && pool_bytes > cap * 2) ? 64 : 16;
     size_t n = 0;
     for (auto it = target_pool.begin(); it != target_pool.end() && n < most;) {
         auto& v = it->second;
@@ -3867,7 +3871,17 @@ void texture_frame(uint64_t completed) {
     // may have (other programs use the GPU too). The least recently used go first, down to 7/8 of it; nothing the
     // last 8 presents used, nothing recorded work may still read.
     static uint64_t own = 0;
-    if (frame_no % 10) return;
+    // (#2180) while a pile of dead render targets is on, a pass every present, not every tenth, and those extra
+    // passes take dead targets alone (never a live texture, whatever the budget says: the budget's own passes keep their pace,
+    // so its squeeze cannot ratchet ten times faster). Every tenth present left up to 13 presents' worth of a frame's scratch
+    // targets in the cache at once: entering Castle Town's guard room at 3840x2160 the rendered textures went from 1,148 to
+    // 4,341 MB and the render targets' blocks from 2,176 to 6,528 MB in nine seconds, VRAM 14,198 of 14,540 MB. A pile is on
+    // for ten presents after a regular pass whose ten presents let 64 or more shifted targets go, or made 64 or more target
+    // images new. RX_VK_PILE_FAST=0: as before
+    static const bool pile_fast = !getenv("RX_VK_PILE_FAST") || atoi(getenv("RX_VK_PILE_FAST")) != 0;
+    static uint64_t pile_until, pile_window, pile_passes, pile_let_go, pile_logged_at;
+    const bool extra = frame_no % 10 != 0;   // (a pass between the regular ones: only while a pile is on)
+    if (extra && !(pile_fast && frame_no < pile_until)) return;
     uint64_t used = 0, allowed = 0, block_free = 0;
     const bool known = vram_usage(&used, &allowed, &block_free);
     if (!own)   // (RX_VK_VRAM_MB, else 70% of what the driver allows the process at the first look)
@@ -4046,7 +4060,7 @@ void texture_frame(uint64_t completed) {
     }
     static const bool no_evict = env_on("RX_VK_NO_EVICT");   // (an experiment: nothing evicted)
     // (hookshot) under the budget, every 600 presents: the render targets drawn over since (below), unused for 120
-    const bool sweep = total_bytes <= budget;
+    const bool sweep = total_bytes <= budget || extra;   // (#2180: an extra pass is a sweep, the dead targets alone)
     // (hookshot-amd) and every 60 presents for the render targets drawn over by one at another start (below): OoT makes a frame's
     // transient targets (768 x 432 RGBA16F, 1536 x 864) in a scratch heap whose offsets shift with what came before them in the
     // frame, so turning the camera made new ones each frame ~1.2 MB from the last, each a new image. Left for the 600-present
@@ -4058,7 +4072,7 @@ void texture_frame(uint64_t completed) {
     // ordered in 0.3 ms, 251 chosen in 0.2 (RTX 5070, Ryzen 7 9800X3D)
     static const uint64_t dead_every =
         getenv("RX_VK_DEAD_EVERY") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_DEAD_EVERY"))) : 10;
-    if (no_evict || (sweep && frame_no % (dead_targets ? dead_every : 600))) return;
+    if (no_evict || (extra && !dead_targets) || (sweep && !extra && frame_no % (dead_targets ? dead_every : 600))) return;
     std::vector<std::pair<uint64_t, Texture*>> order;
     order.reserve(textures.size());
     for (auto& kv : textures) order.push_back({kv.second->last_frame, kv.second.get()});
@@ -4312,13 +4326,34 @@ void texture_frame(uint64_t completed) {
             ++it;
         }
     }
+    if (pile_fast && dead_targets) {   // (#2180, above: the pile's own count and line, every 600 presents at most)
+        uint64_t shifted_now = 0;
+        for (const Evict& e : evict) shifted_now += e.shifted;
+        pile_window += shifted_now;
+        if (extra) {
+            pile_passes++, pile_let_go += shifted_now;
+        } else {
+            // (or 64 or more target images made new in those ten presents: over the budget a regular
+            // pass stops at the excess before it reaches the dead targets, and their count alone would miss the pile)
+            static uint64_t pile_made_at;
+            const uint64_t made_new = st_pool_made - pile_made_at;
+            pile_made_at = st_pool_made;
+            if (pile_window >= 64 || made_new >= 64) pile_until = frame_no + 10;
+            pile_window = 0;
+        }
+        if (pile_passes && frame_no >= pile_logged_at + 600) {
+            pile_logged_at = frame_no;
+            logf("vk: a pile of dead render targets: %llu extra passes so far, %llu targets let go in them (RX_VK_PILE_FAST=0: off)",
+                 (unsigned long long)pile_passes, (unsigned long long)pile_let_go);
+        }
+    }
     if (n_dead && frame_no >= dead_logged_at + 600) {   // (the dead transient targets let go so far, every 600 presents)
         dead_logged_at = frame_no;
         logf("vk: render targets drawn over from another start, let go: %llu so far (%llu MB)", (unsigned long long)n_dead,
              (unsigned long long)(b_dead >> 20));
     }
     const size_t n = order.size() - textures.size();
-    if (n) {
+    if (n && !extra) {   // (#2180: not on an extra pass, ~60 lines a second while a pile lasts; the pile's line has their count)
         char why[160];
         evict_reason::describe(tally, why, sizeof why);
         logf("vk: %zu textures retired (%zu left, %llu MB): %s", n, textures.size(), (unsigned long long)(total_bytes >> 20), why);
