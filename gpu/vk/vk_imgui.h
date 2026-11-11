@@ -30,9 +30,9 @@ void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h);
 void record_to(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h);
 /// A present with nothing drawn: what record let go is destroyed once the GPU is done with it, all the same
 void idle();
-/// The glyphs (printable ASCII) of every font at these pixel sizes, baked a few sizes a frame from the next begin on: the
-/// menu's sizes, before it is first opened (no hitch then). Replaces the sizes asked for before; these stay marked used on
-/// every frame drawn, so ImGui does not let them go before the menu opens
-void prebake(const float* px, int n);
+/// The glyphs (printable ASCII plus optional UTF-8 text for the active UI language) of every font at these pixel sizes,
+/// baked a few sizes a frame from the next begin on: the menu's sizes, before it is first opened (no hitch then). Replaces
+/// the sizes asked for before; these stay marked used on every frame drawn, so ImGui does not let them go before the menu opens
+void prebake(const float* px, int n, const char* extra_utf8 = nullptr);
 
 } // namespace mkwvk::ui

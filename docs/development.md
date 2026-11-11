@@ -109,6 +109,8 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `RX_VK_MENU_SCRIPT=<seconds>:<key>,...` | Timed Insert menu keys: `INS`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `ESC`, `ENTER`, `TABL`, `TABR` |
 | `RX_VK_UI_PROMPTS=pad` or `keys` | The menu's button prompts for a controller or the keys, whatever was used last (screenshots) |
 | `RX_VK_UI_GAME_FONT=0` | The menu, the counter and the start-up screen in the included Libertinus, not the game's own font |
+| `RX_VK_UI_LANG=<code>` | UI overlay and start-up language override (`en-US`, `fr`, `de`, `es`, `ja`, ...; default: `HOS_LANGUAGE` or `language.txt`) |
+| `RX_VK_UI_FONT=<path>` | Fallback TTF/TTC font file merged when the menu font lacks glyphs for the active UI language |
 
 The presses are `<seconds>:<button>[+<button>...][/<ms>]`, separated by commas, for example `2:A,5.5:LUP/1500,9:ZL+R`.
 The buttons are `A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN`, and the sticks pushed to their edge `LUP
