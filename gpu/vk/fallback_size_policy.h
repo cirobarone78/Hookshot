@@ -31,6 +31,20 @@ inline uint32_t spirv_phis(const uint32_t* words, size_t count) {
     return phis;
 }
 
+// RX_VK_FALLBACK_PHI_LIMIT's value: decimal digits only (no sign, no space, nothing after), at most 4294967295. false for
+// anything else, which the caller ignores with a warning: atoi/strtoul read "off" as 0 (no limit) and "-1" as 4294967295
+inline bool parse_limit(const char* text, uint32_t& out) {
+    if (!text || !*text) return false;
+    uint64_t v = 0;
+    for (const char* c = text; *c; c++) {
+        if (*c < '0' || *c > '9') return false;
+        v = v * 10 + (uint64_t)(*c - '0');
+        if (v > 0xFFFFFFFFull) return false;
+    }
+    out = (uint32_t)v;
+    return true;
+}
+
 // A fallback compute stage not to give the driver: RADV on GCN 1-4, over the limit (0: no limit). Its draws are left out, as
 // for a pipeline the driver refuses.
 inline bool too_big(bool radv_gcn, uint32_t phis, uint32_t limit) { return radv_gcn && limit && phis > limit; }

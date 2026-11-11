@@ -17,10 +17,12 @@ def check_source():
                                     "st.phis = fallback_size::spirv_phis(spirv.data(), spirv.size());"],
         "gpu/vk/vk_main.cpp": ["dev.radv_gcn = drv.driverID == VK_DRIVER_ID_MESA_RADV && !f11.storageInputOutput16;"],
         "gpu/vk/vk_draw.cpp": ['#include "fallback_size_policy.h"',
-                               "fallback_size::too_big(dev.radv_gcn, st.phis, phi_limit)", "RX_VK_FALLBACK_PHI_LIMIT"],
+                               "fallback_size::too_big(dev.radv_gcn, st.phis, phi_limit)", "RX_VK_FALLBACK_PHI_LIMIT",
+                               "fallback_size::parse_limit(e, limit)"],
+        "gpu/vk/vk_main.cpp#log": ['RADV on GCN 1-4: %s', 'dev.radv_gcn ? "yes" : "no"'],
     }
     for path, wanted in needles.items():
-        src = (ROOT / path).read_text(encoding="utf-8")
+        src = (ROOT / path.split("#")[0]).read_text(encoding="utf-8")
         for needle in wanted:
             if needle not in src:
                 raise SystemExit(path + " no longer has: " + needle)

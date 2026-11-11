@@ -42,6 +42,17 @@ int main() {
     expect(spirv_phis(bad.data(), bad.size()) == 0, "not SPIR-V: 0");
     expect(spirv_phis(two.data(), 3) == 0, "shorter than a header: 0");
 
+    uint32_t limit = 7;
+    expect(parse_limit("50000", limit) && limit == 50000, "a number");
+    expect(parse_limit("0", limit) && limit == 0, "0: no limit");
+    expect(parse_limit("4294967295", limit) && limit == 4294967295u, "the largest");
+    limit = 7;
+    expect(!parse_limit("4294967296", limit) && limit == 7, "past 32 bits: refused, unchanged");
+    expect(!parse_limit("-1", limit), "negative: refused (strtoul wraps it)");
+    expect(!parse_limit("off", limit), "not a number: refused (atoi reads it as 0, no limit)");
+    expect(!parse_limit("12k", limit) && !parse_limit(" 5", limit) && !parse_limit("", limit) && !parse_limit(nullptr, limit),
+           "trailing text, a space, empty, unset: refused");
+
     expect(!too_big(true, 29372, kRadvGcnPhiLimit), "the biggest mesh programs RADV GCN builds (29,400 phis): built");
     expect(too_big(true, 79947, kRadvGcnPhiLimit), "the two it never finishes (80,000 phis): left out");
     expect(!too_big(false, 79947, kRadvGcnPhiLimit), "another driver or GFX9 on: built whatever the size");

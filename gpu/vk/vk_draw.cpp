@@ -5921,8 +5921,18 @@ bool fallback_compute_pipelines(Program& p) {
     // (hookshot) none of its stages given to a compiler that would never finish one: RADV on GCN 1-4 grew past 25 GB on the two
     // biggest mesh programs and kept the memory on its thread (fallback_size_policy.h). Left out, as a refused one is below.
     // RX_VK_FALLBACK_PHI_LIMIT=<n>: another limit, 0 none
-    static const uint32_t phi_limit = getenv("RX_VK_FALLBACK_PHI_LIMIT") ? (uint32_t)strtoul(getenv("RX_VK_FALLBACK_PHI_LIMIT"), nullptr, 10)
-                                                                         : fallback_size::kRadvGcnPhiLimit;
+    static const uint32_t phi_limit = [] {
+        uint32_t limit = fallback_size::kRadvGcnPhiLimit;
+        const char* e = getenv("RX_VK_FALLBACK_PHI_LIMIT");
+        if (e && !fallback_size::parse_limit(e, limit)) {
+            limit = fallback_size::kRadvGcnPhiLimit;
+            logf("vk: RX_VK_FALLBACK_PHI_LIMIT=%s is not a number from 0 to 4294967295: ignored", e);
+        }
+        if (dev.radv_gcn || e)
+            logf("vk: mesh fallback compute stages with more than %u phis are not built on RADV GCN 1-4 cards%s", limit,
+                 limit ? "" : " (0: none left out)");
+        return limit;
+    }();
     for (size_t i = 0; i < p.stages.size(); i++) {
         const Stage& st = p.stages[i];
         if (st.vk_stage != VK_SHADER_STAGE_COMPUTE_BIT || !fallback_size::too_big(dev.radv_gcn, st.phis, phi_limit)) continue;
