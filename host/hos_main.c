@@ -60,17 +60,30 @@ uint64_t hos_space_end;
 #define IMAGE_BASE hos_image_base   /* (the lift's: Eden's layout) */
 
 #ifdef _WIN32
+/* (hookshot) and one "power:" line in the log saying whether Windows took it, as totk-pc-recomp's start-up does
+   (valentderah/totk-pc-recomp 320a41e0dc, MIT): a report from a laptop then shows whether EcoQoS could still slow the game */
 static void no_power_throttling(void) {
     const char *e = getenv("HOS_POWER_THROTTLING");
-    if (e && atoi(e)) return;
+    if (e && atoi(e)) {
+        hos_log("power: HOS_POWER_THROTTLING=%s: Windows may throttle the game (EcoQoS) as it likes", e);
+        return;
+    }
     typedef BOOL(WINAPI * SetInfo)(HANDLE, int, LPVOID, DWORD);
     SetInfo set = (SetInfo)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetProcessInformation");
-    if (!set) return;
-    struct { ULONG version, control, state; } s = {1, 0x1 | 0x4, 0};
-    if (!set(GetCurrentProcess(), 4, &s, sizeof s)) {
-        s.control = 0x1;
-        set(GetCurrentProcess(), 4, &s, sizeof s);
+    if (!set) {
+        hos_log("power: this Windows has no power throttling to opt out of (no SetProcessInformation)");
+        return;
     }
+    struct { ULONG version, control, state; } s = {1, 0x1 | 0x4, 0};
+    if (set(GetCurrentProcess(), 4, &s, sizeof s)) {
+        hos_log("power: Windows power throttling off (EcoQoS, and the timer resolution while the window is hidden)");
+        return;
+    }
+    const DWORD err = GetLastError();
+    s.control = 0x1;   /* (Windows 10 before 21H2 knows only the execution speed) */
+    if (set(GetCurrentProcess(), 4, &s, sizeof s)) hos_log("power: Windows power throttling off (EcoQoS)");
+    else hos_log("power: Windows refused the power throttling opt-out (error %lu, then %lu): EcoQoS may slow the game",
+                 (unsigned long)err, (unsigned long)GetLastError());
 }
 #endif
 
