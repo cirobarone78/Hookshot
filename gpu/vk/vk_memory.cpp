@@ -13,6 +13,7 @@
 #include <map>
 #include <set>
 #include <memory>
+#include <new>
 #include <mutex>
 #include <vector>
 #include <condition_variable>
@@ -805,7 +806,51 @@ struct Capture {
     size_t nbytes = 0;
     std::vector<uint32_t> late;      // (indices into pages: copied again by the replay once late_value is done)
     uint64_t late_value = 0;
+    // (hookshot) "shadow staging": the texture pages of this capture, copied from guest memory into ordinary cached RAM too, for
+    // take_capture's texture shadow to read instead of the buffer above (often write-combined here: CPU reads ~0.3 GB/s).
+    // sidx[i] = the staging slot of pages[i] (4 KB a slot), or -1: that page is read from the buffer. Empty sidx: no staging.
+    std::unique_ptr<uint8_t[]> stage;
+    size_t stage_bytes = 0;
+    std::vector<int32_t> sidx;
+    bool buf_cached = false;   // (its capture buffer's memory is HOST_CACHED: for the staging log line)
 };
+// (the staging blocks, kept for the next capture: a fresh 20 MB block is ~5000 page faults on the game's thread)
+std::mutex stage_mu;   // (a leaf lock)
+std::vector<std::pair<std::unique_ptr<uint8_t[]>, size_t>> stage_free;
+size_t stage_free_bytes = 0;
+bool stage_on() {   // (RX_VK_SHADOW_STAGE=0 / off / false / no: the shadow reads the capture buffer, as before)
+    static const bool on = [] { const char* e = getenv("RX_VK_SHADOW_STAGE"); return !e || !env_value_off(e); }();   // (on unless an off value: env_value_off)
+    return on;
+}
+bool stage_get(Capture& c, size_t need) {   // (a block of at least need bytes into c: a kept one, else a new one)
+    {
+        std::lock_guard lk(stage_mu);
+        size_t best = stage_free.size();
+        for (size_t i = 0; i < stage_free.size(); i++)
+            if (stage_free[i].second >= need && (best == stage_free.size() || stage_free[i].second < stage_free[best].second)) best = i;
+        if (best < stage_free.size()) {
+            c.stage = std::move(stage_free[best].first), c.stage_bytes = stage_free[best].second;
+            stage_free_bytes -= c.stage_bytes;
+            stage_free.erase(stage_free.begin() + best);
+            return true;
+        }
+    }
+    const size_t sz = (need + (1u << 20) - 1) & ~size_t((1u << 20) - 1);   // (rounded to 1 MB: blocks of near sizes fit each other)
+    c.stage.reset(new (std::nothrow) uint8_t[sz]);
+    c.stage_bytes = c.stage ? sz : 0;
+    return c.stage != nullptr;
+}
+void stage_put(Capture& c) {   // (the block back to the kept ones, at most four and 96 MB; else freed)
+    c.sidx.clear();
+    if (!c.stage) return;
+    std::lock_guard lk(stage_mu);
+    static const bool low_spec = env_on("RX_VK_LOW_SPEC");   // (RAM the tight resource there: no block kept)
+    if (!low_spec && stage_free.size() < 4 && stage_free_bytes + c.stage_bytes <= (96ull << 20)) {
+        stage_free_bytes += c.stage_bytes;
+        stage_free.emplace_back(std::move(c.stage), c.stage_bytes);
+    }
+    c.stage.reset(), c.stage_bytes = 0;
+}
 std::mutex cap_mu;
 std::deque<std::unique_ptr<Capture>> captures;
 std::vector<std::unique_ptr<Capture>> spare;   // (taken ones, their buffers kept)
@@ -1373,6 +1418,8 @@ struct CopyPart {
     uint8_t* ok;
     const CopyPair* pairs = nullptr;
     int* left = nullptr;   // (the caller's parts not done yet (copy_helpers.mu): a caller waits for its own, not another's too)
+    uint8_t* stage = nullptr;       // (guest copies only: the pages with sidx[i] >= 0 are copied into stage + sidx[i] * 4096 first, and out from there)
+    const int32_t* sidx = nullptr;
 };
 void copy_part(const CopyPart& w) {
     if (w.pairs) {
@@ -1386,12 +1433,46 @@ void copy_part(const CopyPart& w) {
         if (ga + 4096 > gsize) { i++; continue; }
         int64_t j = i + 1;
         while (j < w.i1 && w.pages[j] == w.pages[j - 1] + 1 && ((uint64_t)w.pages[j] << kPageShift) + 4096 <= gsize) j++;
-        if (guarded_copy(w.out + (uint64_t)i * 4096, base + ga, (SIZE_T)(j - i) * 4096)) {
-            std::memset(w.ok + i, 1, (size_t)(j - i));
+        // (a run in out alone; a run of staged pages: guest memory into the staging first, then out from the staging, so the two
+        // hold the same bytes even if the game writes the page meanwhile; a page that fails is ok = 0 in both and not used)
+        auto plain = [&](int64_t a, int64_t b) {
+            if (guarded_copy(w.out + (uint64_t)a * 4096, base + ((uint64_t)w.pages[a] << kPageShift), (SIZE_T)(b - a) * 4096)) {
+                std::memset(w.ok + a, 1, (size_t)(b - a));
+            } else {
+                for (int64_t q = a; q < b; q++)
+                    w.ok[q] = guarded_copy(w.out + (uint64_t)q * 4096, base + ((uint64_t)w.pages[q] << kPageShift), 4096);
+                copy_fence();
+            }
+        };
+        auto staged = [&](int64_t a, int64_t b) {
+            uint8_t* const st = w.stage + (uint64_t)w.sidx[a] * 4096;
+            if (guarded_copy(st, base + ((uint64_t)w.pages[a] << kPageShift), (SIZE_T)(b - a) * 4096)) {
+                std::memcpy(w.out + (uint64_t)a * 4096, st, (size_t)(b - a) * 4096);
+                std::memset(w.ok + a, 1, (size_t)(b - a));
+            } else {
+                for (int64_t q = a; q < b; q++) {
+                    uint8_t* const sq = w.stage + (uint64_t)w.sidx[q] * 4096;
+                    const bool good = guarded_copy(sq, base + ((uint64_t)w.pages[q] << kPageShift), 4096);
+                    if (good) std::memcpy(w.out + (uint64_t)q * 4096, sq, 4096);
+                    w.ok[q] = good;
+                }
+                copy_fence();
+            }
+        };
+        if (!w.sidx) {
+            plain(i, j);
         } else {
-            for (int64_t q = i; q < j; q++)
-                w.ok[q] = guarded_copy(w.out + (uint64_t)q * 4096, base + ((uint64_t)w.pages[q] << kPageShift), 4096);
-            copy_fence();
+            for (int64_t q = i; q < j;) {   // (split at the staged / not staged edges; staged slots are consecutive for adjacent pages)
+                int64_t r = q + 1;
+                if (w.sidx[q] >= 0) {
+                    while (r < j && w.sidx[r] == w.sidx[r - 1] + 1) r++;
+                    staged(q, r);
+                } else {
+                    while (r < j && w.sidx[r] < 0) r++;
+                    plain(q, r);
+                }
+                q = r;
+            }
         }
         i = j;
     }
@@ -1429,7 +1510,7 @@ int capture_copy_helpers() {   // (copy_pages and copy_pairs share one pool of h
 /// queued before them (copy_pairs runs with pools_mu and shadow_mu held, copy_pages' guest copies can take milliseconds)
 void copy_split(CopyPart whole, int64_t n) {
     const int helpers = capture_copy_helpers();
-    if (!helpers || n < 128) return copy_part({whole.pages, 0, n, whole.out, whole.ok, whole.pairs});
+    if (!helpers || n < 128) { whole.i0 = 0, whole.i1 = n; return copy_part(whole); }
     const int k = helpers + 1;
     int left = k - 1;
     auto part = [&](int i) {
@@ -1460,13 +1541,17 @@ void copy_split(CopyPart whole, int64_t n) {
     }
     copy_helpers.done.wait(lk, [&] { return left == 0; });
 }
-void copy_pages(const uint32_t* pages, int64_t n, uint8_t* out, uint8_t* ok) {   // (one capture at a time: submit_order_mu)
-    copy_split({pages, 0, n, out, ok}, n);
+void copy_pages(const uint32_t* pages, int64_t n, uint8_t* out, uint8_t* ok, uint8_t* stage = nullptr, const int32_t* sidx = nullptr) {   // (one capture at a time: submit_order_mu)
+    CopyPart w{pages, 0, n, out, ok};
+    w.stage = stage, w.sidx = sidx;
+    copy_split(w, n);
 }
 /// (hookshot) n 4 KB copies on the capture's copy helpers too: the texture shadow's (take_capture), thousands of pages a submit
 /// for OoT's game thread, which copied them one after another
 void copy_pairs(const CopyPair* pairs, int64_t n) {
-    copy_split({nullptr, 0, n, nullptr, nullptr, pairs}, n);
+    CopyPart w{nullptr, 0, n, nullptr, nullptr};
+    w.pairs = pairs;
+    copy_split(w, n);
 }
 
 std::unique_ptr<Capture> capture_make();
@@ -1490,12 +1575,14 @@ std::unique_ptr<Capture> capture_make() {
     if (!c) c = std::make_unique<Capture>();
     c->pages.clear(), c->copied.clear(), c->slots.clear(), c->nbytes = 0, c->late.clear(), c->late_value = 0;
     if (c->map) cap_buf_free(c->buffer, c->alloc, c->map, c->bsize), c->buffer = VK_NULL_HANDLE, c->map = nullptr;
+    stage_put(*c);
     // (only the pools mirrored in VRAM, the ones the mirrors are filled from, and only their part of the write marks:
     // every written page was taken at first (hundreds of MB a submit where the game streams its world), and the whole
     // collection, over every GPU range, is ~20 ms: 4 of them a frame on the game's thread made it crawl. The replay's
     // collection takes the rest, as before)
     // (the list the replay publishes when it makes mirrors: pools_mu here waited ~40 ms a submit for the replay)
     static thread_local std::vector<std::pair<uint64_t, uint64_t>> mirrored;
+    static thread_local std::vector<std::pair<uint64_t, uint64_t>> texr;   // (tex_cap_ranges, sorted and merged: the staged pages)
     {   // (and the texture storage the replay uploads from: see "texture storage in the capture"; and the small pools)
         std::lock_guard lk(cap_ranges_mu);
         captures_made++;
@@ -1514,6 +1601,14 @@ std::unique_ptr<Capture> capture_make() {
                 else
                     mirrored.push_back(r);
             }
+            texr = tex_cap_ranges;
+            std::sort(texr.begin(), texr.end());
+            size_t m = 0;
+            for (const auto& r : texr) {
+                if (m && r.first <= texr[m - 1].second) texr[m - 1].second = std::max(texr[m - 1].second, r.second);
+                else texr[m++] = r;
+            }
+            texr.resize(m);
         }
     }
     captures_seen.store(true, std::memory_order_relaxed);
@@ -1555,7 +1650,27 @@ std::unique_ptr<Capture> capture_make() {
             cap_buf_get((uint64_t)n * 4096, c->buffer, c->alloc, c->map, c->bsize)) {
             static thread_local std::vector<uint8_t> ok;
             ok.assign((size_t)n, 0);
-            copy_pages(pages, n, (uint8_t*)c->map, ok.data());
+            // (shadow staging: the pages in the texture ranges are also copied into c->stage, from guest memory first and the buffer
+            // from there. Not the late pages: take_capture copies those again into the buffer after the GPU wait, so the buffer is
+            // where their newer bytes are, and they stay unstaged (sidx -1: the shadow reads them from the buffer; a few a take))
+            // (only where the capture buffer is not cached memory: a cached one the shadow reads as fast as the staging, and the
+            // extra copy would be the game thread's for nothing)
+            c->buf_cached = host_cached(c->alloc);
+            if (stage_on() && !texr.empty() && !c->buf_cached) {
+                c->sidx.assign((size_t)n, -1);
+                int32_t tn = 0;
+                size_t lj = 0;
+                for (int64_t i = 0; i < n; i++) {
+                    while (lj < c->late.size() && c->late[lj] < (uint32_t)i) lj++;
+                    if (lj < c->late.size() && c->late[lj] == (uint32_t)i) continue;
+                    const uint64_t g = (uint64_t)pages[i] << kPageShift;
+                    auto it = std::upper_bound(texr.begin(), texr.end(), std::make_pair(g, ~uint64_t(0)));
+                    if (it != texr.begin() && g < std::prev(it)->second) c->sidx[(size_t)i] = tn++;
+                }
+                if (!tn || !stage_get(*c, (size_t)tn * 4096)) c->sidx.clear();
+            }
+            copy_pages(pages, n, (uint8_t*)c->map, ok.data(), c->sidx.empty() ? nullptr : c->stage.get(),
+                       c->sidx.empty() ? nullptr : c->sidx.data());
             for (int64_t i = 0; i < n; i++)
                 if (ok[i]) c->copied.push_back(pages[i]), c->slots.push_back((uint32_t)i);
             c->nbytes = (size_t)n * 4096;
@@ -1682,6 +1797,8 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                 }
             }
             bool swept = false;
+            static int64_t st_takes, st_from_stage, st_from_map, st_cached;   // (the shadow copies by source and the takes whose buffer was cached, logged every 600 takes; shadow_mu)
+            int64_t from_stage = 0, from_map = 0;
             static thread_local std::vector<CopyPair> pairs;   // (the copies, made together once the slots are known)
             pairs.clear();
             size_t i = 0;
@@ -1707,10 +1824,20 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                     shadow_n++;
                 }
                 slot.seq = shadow_seq;
-                pairs.push_back({slot.b.get(), (const uint8_t*)c->map + (uint64_t)c->slots[i] * 4096});
+                // (the staging, ordinary RAM, when it holds the page; else the capture buffer, maybe write-combined)
+                const int32_t sx = c->sidx.empty() ? -1 : c->sidx[c->slots[i]];
+                if (sx >= 0) pairs.push_back({slot.b.get(), (const uint8_t*)c->stage.get() + (uint64_t)sx * 4096}), from_stage++;
+                else pairs.push_back({slot.b.get(), (const uint8_t*)c->map + (uint64_t)c->slots[i] * 4096}), from_map++;
             }
             // (shadow_mu still held: no slot taken here goes before its copy; the sweep above drops only older ones)
             if (!pairs.empty()) copy_pairs(pairs.data(), (int64_t)pairs.size());
+            st_from_stage += from_stage, st_from_map += from_map, st_cached += c->buf_cached ? 1 : 0;
+            if (++st_takes % 600 == 0) {
+                logf("vk: shadow staging (600 takes): %lld shadow copies from staging, %lld from the capture buffer; capture buffers: %lld "
+                     "host-cached, %lld not (write-combined: staged)%s", (long long)st_from_stage, (long long)st_from_map,
+                     (long long)st_cached, (long long)(600 - st_cached), stage_on() ? "" : " (RX_VK_SHADOW_STAGE=0)");
+                st_from_stage = st_from_map = 0, st_cached = 0;
+            }
             for (; i < c->copied.size(); i++)   // (the shadow full: the copied pages not replaced lose their old copies)
                 if (in_tex_merged((uint64_t)c->copied[i] << 12)) shadow_erase(c->copied[i]);
         }
@@ -1725,6 +1852,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         for (size_t i = 0; i < c->copied.size(); i++) cap_entry_set(c->copied[i], CapEntry{g, c->slots[i]});
     }
     cap_view_bump();
+    stage_put(*c);   // (the shadow's copies from it are done: copy_pairs returned)
     if (c->map) cap_buf_free(c->buffer, c->alloc, c->map, c->bsize), c->buffer = VK_NULL_HANDLE, c->map = nullptr;
     {
         std::lock_guard lk(cap_mu);

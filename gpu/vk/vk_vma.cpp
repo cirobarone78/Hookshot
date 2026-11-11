@@ -267,6 +267,11 @@ bool create_buffer_cached(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
     if (mapped) *mapped = info.pMappedData;
     return true;
 }
+bool host_cached(VmaAllocation allocation) {
+    VkMemoryPropertyFlags f = 0;
+    if (allocation) vmaGetAllocationMemoryProperties(vma, allocation, &f);
+    return (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0;
+}
 void flush_mapped(VmaAllocation allocation, uint64_t size) {
     if (size) vmaFlushAllocation(vma, allocation, 0, size);
 }
