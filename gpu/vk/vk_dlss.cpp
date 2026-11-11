@@ -489,7 +489,8 @@ struct Fg {
     uint32_t fw = 0, fh = 0;          // (the picture its feature was made for)
     int create_failures = 0;
     bool closed = false;
-    // (read without mu, each present: a feature held (dlss_fg_idle), and NGX's answer a no (dlss_fg_runs))
+    // (read without mu, each present: a feature held (dlss_fg_idle), and NGX's answer a no or its feature given up after
+    // three failed creations (dlss_fg_runs))
     std::atomic<bool> held{false}, start_failed{false};
     // this frame's inputs (dlss_fg_inputs): the depth and motion copied, the camera NGX's way
     FgImage depth, motion;
@@ -834,6 +835,8 @@ int dlss_fg_frames(VkCommandBuffer cmd, VkImage color, VkImageView color_view, u
             g.create_failures++;
             logf("vk: DLSS Frame Gen (NGX): the feature was not made for %ux%u (%#x)%s", w, h, (unsigned)r,
                  g.create_failures >= 3 ? ": off" : "");
+            // (given up: dlss_fg_runs says no from here, so V-Sync Auto goes back to its mode without DLSS-G)
+            if (g.create_failures >= 3) g.start_failed = true;
             return g.refused++, 0;
         }
         g.fw = w, g.fh = h;
