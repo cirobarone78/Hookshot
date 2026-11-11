@@ -90,7 +90,8 @@ struct TemporalImage {
     VkFormat format = VK_FORMAT_UNDEFINED;
     uint32_t width = 0, height = 0;
 };
-/// One frame's evaluation. color: the scene as the network samples it (tonemapped, square-root encoded: LDR, RGBA16F);
+/// One frame's evaluation. color: the scene as the network samples it (tonemapped, square-root encoded: LDR, RGBA16F; linear
+/// light past 1 with the game's native HDR for an engine whose hdr() says it takes that, its output then linear as well);
 /// depth: R32F in [0, 1], not reversed (reversed, 1 - d, for an engine with fsr_depth where the projection puts the near
 /// plane at 0: FSR 3.1; depth_reversed says so); motion: RG16F in render pixels, towards the frame before, the jitter taken off. They
 /// are as large as the engine asked (in_w x in_h), the frame's part at the top left. output: RGBA16F, at the output's size
@@ -125,6 +126,10 @@ struct TemporalEngine {
     void (*release)();
     /// Its own video memory for the status line, in bytes (0: not known)
     uint64_t (*memory)();
+    /// Whether what prepare made takes HDR colour (past 1: the game's native HDR), which the chain then gives it as linear
+    /// light, unclamped, and takes back linear; null or false: LDR colour, square-root encoded, clamped to 0..1 (an LDR
+    /// engine fed more would misread it)
+    bool (*hdr)() = nullptr;
     /// (hookshot) The depth as FSR's own passes take it: reversed (1 at the near plane) where the game's projection puts the near
     /// plane at 0 (fsr3_math.h camera_from_projection's flip_depth). AMD FSR 3.1 (vk_fsr3.cpp): its passes are built for that
     bool fsr_depth = false;
