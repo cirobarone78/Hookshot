@@ -574,9 +574,17 @@ bool memory_init() {
 }
 
 /// Refresh the guest's pool table (no Vulkan work: pools are imported as they are used)
+std::atomic<int64_t> memsync_lock_wait_ns{0};
+std::atomic<int64_t> memsync_part_ns[3];
 void memory_sync() {
     static std::mutex sync_mu;   // (called from every thread that touches memory)
+    const auto w0 = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> sync_lk(sync_mu);
+    struct Waited {   // (diagnostics: only the lock waits, added up; nothing else changes)
+        std::chrono::steady_clock::time_point t;
+        ~Waited() {}
+    } waited{w0};
+    memsync_lock_wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - waited.t).count();
     const uint32_t g = host->maps_generation();
     if (g == generation) return;
     generation = g;
@@ -592,7 +600,9 @@ void memory_sync() {
         next.push_back(p);
     }
     std::sort(next.begin(), next.end(), [](const GuestPool& a, const GuestPool& b) { return a.lo < b.lo; });
+    const auto w1 = std::chrono::steady_clock::now();
     std::lock_guard lk(pools_mu);
+    memsync_lock_wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - w1).count();
     guest_pools.swap(next);
     guest_pools_gen.fetch_add(1, std::memory_order_relaxed);
     last_pool = nullptr;
@@ -852,6 +862,7 @@ bool sync_live() {
     static const bool v = env_on("RX_VK_SYNC_LIVE");
     return v;
 }
+std::atomic<bool> cap_shutting_down{false};     // (set under cap_free_mu when the process starts to exit: after it no worker touches cap_free)
 std::mutex cap_free_mu;   // (the submitting threads take buffers from cap_free, the replay gives them back)
 uint64_t cap_free_bytes = 0;   // (cap_free_mu)
 // (the spare buffers: 12 and, on a card of 6 GB or less, 32 MB of them; RX_VK_CAP_SPARE_MB=<n>: that many, 0: as before.
@@ -864,9 +875,14 @@ uint64_t cap_spare_max() {
     }();
     return v;
 }
-void cap_buf_free(VkBuffer buffer, VmaAllocation alloc, void* map, uint64_t size) {
+void cap_buf_free(VkBuffer buffer, VmaAllocation alloc, void* map, uint64_t size, bool from_worker = false) {
     std::lock_guard lk(cap_free_mu);
-    if (cap_free.size() < 12 && size <= (64ull << 20) && cap_free_bytes + size <= cap_spare_max()) {
+    if (from_worker && cap_shutting_down.load()) return;
+    // (hookshot, RX 7800 XT: buffers up to 256 MB are kept for the next capture, not only up to 64 MB: a new one costs ~100 ms of
+    // vkAllocateMemory on AMD's driver. RX_VK_CAPTURE_KEEP_OLD=1: as before)
+    static const bool keep_old = getenv("RX_VK_CAPTURE_KEEP_OLD") != nullptr;
+    if (cap_free.size() < 12 && size <= (keep_old ? 64ull << 20 : 256ull << 20) &&
+        cap_free_bytes + size <= std::min<uint64_t>(cap_spare_max(), keep_old ? ~0ull : 768ull << 20)) {
         cap_free.push_back({buffer, alloc, map, size});
         cap_free_bytes += size;
     } else {
@@ -885,10 +901,86 @@ uint64_t cap_buf_size(uint64_t need) {
     static const uint64_t min = (getenv("RX_VK_CAP_MIN_MB") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_CAP_MIN_MB"))) : 2u) << 20;
     uint64_t s = min;
     while (s < need && s < (16ull << 20)) s <<= 1;
-    return s >= need ? s : (need + (1u << 20) - 1) & ~((1ull << 20) - 1);
+    if (s >= need) return s;
+    // (hookshot: above 16 MB in classes of 32, 64, 128 and 256 MB, so that a buffer given back fits the next capture)
+    static const bool keep_old = getenv("RX_VK_CAPTURE_KEEP_OLD") != nullptr;
+    if (!keep_old)
+        for (const uint64_t cm : {32, 64, 128, 192, 256})   // (stutter: 192 added, a 130-158 MB capture took the 256 MB class)
+            if ((uint64_t)cm << 20 >= need) return (uint64_t)cm << 20;
+    return (need + (1u << 20) - 1) & ~((1ull << 20) - 1);
+}
+// (hookshot, RX_VK_CAP_PREWARM, on by default since the stutter fix; =0: off) The big capture buffers made ahead, on a worker thread. A capture of a scene load holds
+// 16 to 256 MB of the pages the game wrote (texture storage), and its buffer was made on the game's thread, inside capture_make:
+// AMD's driver commits and clears a host-visible memory object when it is allocated, ~0.8 ms a MB, and the log's isolated spikes
+// ("memory sync ... capture 66.8", "capture 107.7", "capture 22.6", "capture 17.4": 5 in a session, each at a load, none in steady
+// play) are that, in proportion to the class (128, 64 and 32 MB classes, and 128, 64 MB). The spares only come back from a capture
+// retired past the 24 kept ones, of whatever size that one was, so a big class is rarely there when a load asks for it. With this
+// a spare of each class of 32, 64 and 128 MB is made in the background once, and again as soon as one is taken.
+bool cap_prewarm_on() {
+    // (stutter: on by default now; RX_VK_CAP_PREWARM=0 turns it off. The log at the scene loads: "capture ... the buffer of 32/64/256 MB 13-41 ms")
+    static const bool v = [] {
+        const char* e = getenv("RX_VK_CAP_PREWARM");
+        const bool on = !e || atoi(e) != 0;
+        logf("vk: capture buffer prewarm (32, 64, 128 MB spares made on a worker) %s (RX_VK_CAP_PREWARM)", on ? "on" : "off");
+        return on;
+    }();
+    return v;
+}
+std::atomic<int> cap_prewarm_busy{0};
+std::atomic<int> cap_prewarm_class_busy[4]{};   // (32, 64, 128 and 192 MB spares being made)
+void cap_exit_note() {
+    std::lock_guard lk(cap_free_mu);   // (a worker inside cap_buf_free finishes first; one after this sees the flag under the same mutex)
+    cap_shutting_down = true;
+}
+int cap_prewarm_index(uint64_t size) { return size <= (32ull << 20) ? 0 : size <= (64ull << 20) ? 1 : size <= (128ull << 20) ? 2 : size <= (192ull << 20) ? 3 : -1; }
+void cap_spare_make(uint64_t size, int index) {
+    VkBuffer b = VK_NULL_HANDLE;
+    VmaAllocation a = nullptr;
+    void* m = nullptr;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!cap_shutting_down.load() && create_buffer_cached(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, b, a, &m, !getenv("RX_VK_CAP_BLOCKS")) && m) {
+        static std::atomic<int> told{0};
+        if (told++ < 8)
+            logf("vk: a %llu MB capture buffer made ahead in %.1f ms, off the game's thread (RX_VK_CAP_PREWARM)", (unsigned long long)(size >> 20),
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        // (a spare, within the same limits as any other: past them it is let go. Not once the process is exiting: the list and the device
+        // may be going, and the memory goes with the process)
+        cap_buf_free(b, a, m, size, true);
+    }
+    cap_prewarm_class_busy[index]--;
+    cap_prewarm_busy--;
+}
+/// A spare of at least `size` (32, 64 or 128 MB classes only) is there, or one of its class is being made (cap_free_mu held)
+void cap_prewarm_class(uint64_t size) {
+    if (!cap_prewarm_on()) return;
+    const int index = cap_prewarm_index(size);
+    if (index < 0 || size > cap_spare_max()) return;   // (not the 256 MB class, and not past what spares may hold)
+    static const uint64_t kCls[4] = {32, 64, 128, 192};
+    const uint64_t cls = kCls[index];
+    const uint64_t bytes = cls << 20;
+    for (const FreeBuf& f : cap_free)
+        if (f.size >= bytes) return;
+    if (cap_prewarm_class_busy[index].load() > 0 || cap_prewarm_busy.load() >= 3) return;   // (three at a time: each commits its memory)
+    static const bool exit_hook = [] { return std::atexit(cap_exit_note) == 0; }();
+    (void)exit_hook;
+    cap_prewarm_busy++;
+    cap_prewarm_class_busy[index]++;
+    try {
+        std::thread(cap_spare_make, bytes, index).detach();
+    } catch (...) {   // (no thread: no spare, the capture goes on)
+        cap_prewarm_class_busy[index]--;
+        cap_prewarm_busy--;
+    }
 }
 bool cap_buf_get(uint64_t need, VkBuffer& buffer, VmaAllocation& alloc, void*& map, uint64_t& size) {
     std::lock_guard lk(cap_free_mu);
+    if (cap_prewarm_on()) {
+        static bool first = true;
+        if (first) {   // (the first capture: the classes a load asks for)
+            first = false;
+            for (uint64_t c : {32ull << 20, 64ull << 20, 128ull << 20, 192ull << 20}) cap_prewarm_class(c);
+        }
+    }
     size_t best = cap_free.size();
     for (size_t i = 0; i < cap_free.size(); i++)
         if (cap_free[i].size >= need && (best == cap_free.size() || cap_free[i].size < cap_free[best].size)) best = i;
