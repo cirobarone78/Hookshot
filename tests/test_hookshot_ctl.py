@@ -91,8 +91,14 @@ def serve(f):
             if req.get("to") is None:
                 r.update(destinations=[{"index": 0, "child": "KokiriForest_Child", "adult": "KokiriForest_Adult"},
                                        {"index": 1, "child": None, "adult": "GerudoFortress_Adult"}])
+            elif req.get("to") == "refuse":
+                r = {"id": rid, "ok": False, "frame": frame[0], "error": "refused",
+                     "message": "the game refused the teleport: a map is loading"}
             else:
                 r.update(teleport=1, child=None, adult="GerudoFortress_Adult")
+                r.update(sent=None if req.get("wait") is False else True)
+                if r["sent"]:
+                    r.update(map="GerudoFortress_Adult")
         elif cmd in ("press", "stick", "sequence"):
             r.update(start=frame[0], end=frame[0] + req.get("frames", 8))
         elif cmd == "shot":
@@ -240,6 +246,36 @@ class HookshotCtl(unittest.TestCase):
         ctl("sequence", "0:LUP/2000,2:A", "--hos", env=self.env, check=0)
         self.assertEqual(self.last("sequence")["units"], "hos")
         self.assertEqual(ctl("release", env=self.env, check=0).stdout.strip(), "released 2")
+        self.assertNotIn("all", self.last("release"))
+        self.assertEqual(ctl("release", "--all", env=self.env, check=0).stdout.strip(), "released 2 (every client's)")
+        self.assertIs(self.last("release")["all"], True)
+
+    def test_input_waits_as_long_as_the_bridge(self):
+        # (without --timeout the bridge's default holds: 30 s plus the input's frames at 10 fps. The client waited 70 s
+        # for any reply and gave up on long inputs the game was still pressing)
+        sys.path.insert(0, str(CTL.parent))
+        try:
+            import hookshot_ctl
+        finally:
+            sys.path.pop(0)
+        waits = []
+
+        class Fake(hookshot_ctl.Bridge):
+            def __init__(self):
+                self.next_id, self.pending, self.sock = 0, b"", None
+
+            def send(self, obj):
+                self.sent = obj
+
+            def line(self, timeout):
+                waits.append(timeout)
+                return {"id": self.sent["id"], "ok": True}
+
+        b = Fake()
+        b.request("stick", stick="L", x=0, y=1, frames=36000)
+        b.request("status")
+        b.request("press", timeout=5, buttons="A")
+        self.assertEqual(waits, [3610, 70, 15])
 
     def test_shot(self):
         r = ctl("shot", "out.png", env=self.env, check=0)
@@ -261,10 +297,21 @@ class HookshotCtl(unittest.TestCase):
         self.assertRegex(r.stdout, r"(?m)^  1  -\s+GerudoFortress_Adult$")
         self.assertNotIn("to", self.last("teleport"))
         r = ctl("teleport", "1", env=self.env, check=0)
-        self.assertIn("teleport 1 asked for", r.stdout)
-        self.assertEqual(self.last("teleport")["to"], 1)
+        self.assertEqual(r.stdout.strip(), "teleport 1 sent: to GerudoFortress_Adult")
+        self.assertEqual((self.last("teleport")["to"], self.last("teleport")["timeout"]), (1, 10))
+        self.assertNotIn("wait", self.last("teleport"))
         ctl("teleport", "gerudofortress_adult", env=self.env, check=0)
         self.assertEqual(self.last("teleport")["to"], "gerudofortress_adult")
+        r = ctl("teleport", "1", "--no-wait", env=self.env, check=0)
+        self.assertIn("teleport 1 asked for", r.stdout)
+        self.assertIs(self.last("teleport")["wait"], False)
+        r = ctl("teleport", "1", "--arrive", "30", env=self.env, check=0)   # (sent, then wait map for its map)
+        self.assertRegex(r.stdout, r"^teleport 1: in GerudoFortress_Adult after 3 frames")
+        self.assertEqual((self.last("wait")["event"], self.last("wait")["map"], self.last("wait")["timeout"]),
+                         ("map", "GerudoFortress_Adult", 30))
+        r = ctl("teleport", "refuse", env=self.env, check=1)
+        self.assertIn("refused: the game refused the teleport: a map is loading", r.stderr)
+        ctl("teleport", "--arrive", "5", env=self.env, check=2)
         r = ctl("option", "set", "nope", "1", env=self.env, check=1)
         self.assertIn("not_found", r.stderr)
         r = ctl("raw", '{"cmd":"fly"}', env=self.env, check=1)

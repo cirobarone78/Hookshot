@@ -9,11 +9,11 @@ steer it and read its state from a shell, a test or a coding agent. Standard lib
     press A+B [--frames 8] [--exclusive]        buttons held for some frames (the reply once they are let go)
     stick L 0 1 [--frames 60]                   a stick at x, y (-1 to 1)
     sequence '0:A/8,60:A/8' [--hos]             steps, <at>:<buttons>[/<frames held>] (--hos: HOS_INPUT_SCRIPT's s and ms)
-    release                                     every queued input let go
+    release [--all]                             this client's queued inputs let go (and those of clients gone)
     shot [out.png] [--after FRAME]              a PNG of the next present; prints its path
     wait in_play [--timeout 120]                also: present --frames N, frame --frame N, state --state S,
                                                 loading_start, loading_end, change, map [--map NAME]
-    teleport [INDEX|MAP]                        (OoT) the debug teleport; none: the destinations
+    teleport [INDEX|MAP] [--arrive SECS]        (OoT) the debug teleport: sent or refused; none: the destinations
     option get [NAME]  /  option set NAME VALUE the Insert menu's settings
     saves  /  slots [--thumbs DIR]              the save folder the game uses; its slots, newest first
     watch [--events present,state,log,map] [--every 60] [--log TEXT] [--count N]
@@ -124,7 +124,9 @@ class Bridge:
             time.sleep(0.002)
 
     def request(self, cmd, timeout=None, **args):
-        """The reply to one request (events that come meanwhile are dropped)"""
+        """The reply to one request (events that come meanwhile are dropped). Without a timeout the bridge's own default
+        holds (for an input: 30 s plus its frames at 10 fps, so a long one can take hours): the client then waits as
+        long as the bridge can (an hour at most), unless the connection ends"""
         self.next_id += 1
         rid = self.next_id
         req = {"id": rid, "cmd": cmd}
@@ -132,7 +134,7 @@ class Bridge:
         if timeout is not None:
             req["timeout"] = timeout
         self.send(req)
-        wait = (timeout if timeout is not None else 60) + 10
+        wait = (timeout if timeout is not None else 3600 if cmd in ("press", "stick", "sequence") else 60) + 10
         while True:
             msg = self.line(wait)
             if msg is None:
@@ -219,7 +221,8 @@ def format_bytes(data, fmt):
 def connect(a, timeout=10.0):
     path = a.sock or os.environ.get("HOS_CONTROL")
     if not path:
-        raise Failed("no socket: --sock, or HOS_CONTROL", 2)
+        raise Failed("no socket: give --sock PATH or set HOS_CONTROL (hookshot_ctl.py launch GAME_DIR starts a game "
+                     "with the bridge on and prints its socket)", 2)
     return Bridge(path, timeout)
 
 
@@ -255,9 +258,12 @@ def run(a):
         if a.command == "status":
             r = check(b.request("status"))
             win = r.get("window") or {}
-            show(a, r, lambda r: "frame %d  fps %.1f  state %s  draws %s  window %s  map %s  %s" % (
+            g = r.get("game") or {}
+            flags = " ".join(n for n, on in (("event", g.get("event")), ("loading", g.get("loading"))) if on)
+            show(a, r, lambda r: "frame %d  fps %.1f  state %s  draws %s  window %s  map %s%s  %s" % (
                 r["frame"], r["fps"], r["state"], "-" if r.get("draws") is None else "%.0f" % r["draws"],
                 "%dx%d" % (win["width"], win["height"]) if win else "-", plain_text(r.get("map") or "-"),
+                " (%s%s)" % (plain_text(g.get("age", "?")), ", " + flags if flags else "") if g else "",
                 plain_text(r.get("version", ""))))
         elif a.command in ("press", "stick", "sequence"):
             args = {"exclusive": True if a.exclusive else None, "wait": False if a.no_wait else None}
@@ -271,7 +277,8 @@ def run(a):
             show(a, r, lambda r: "queued %d input(s) at frame %d" % (r["queued"], r["frame"]) if "queued" in r
                  else "frames %d to %d (now %d)" % (r["start"], r["end"], r["frame"]))
         elif a.command == "release":
-            show(a, check(b.request("release")), lambda r: "released %d" % r["released"])
+            show(a, check(b.request("release", all=True if a.all else None)),
+                 lambda r: "released %d%s" % (r["released"], " (every client's)" if a.all else ""))
         elif a.command == "shot":
             path = os.path.abspath(a.path) if a.path else None   # (the bridge would take it as the socket folder's)
             r = check(b.request("shot", timeout=a.timeout, path=path, after=a.after))
@@ -283,13 +290,22 @@ def run(a):
                                                                      "  map %s" % plain_text(r["map"]) if "map" in r else ""))
         elif a.command == "teleport":
             to = None if a.to is None else int(a.to) if a.to.isdigit() else a.to
-            r = check(b.request("teleport", to=to))
+            if to is None and (a.arrive or a.no_wait):
+                raise Failed("teleport: --arrive and --no-wait go with a destination", 2)
+            r = check(b.request("teleport", to=to, wait=False if a.no_wait else None,
+                                timeout=None if to is None else a.timeout))
             if "destinations" in r:
                 show(a, r, lambda r: "\n".join("%3d  %-28s %s" % (d["index"], plain_text(d["child"] or "-"),
                                                                   plain_text(d["adult"] or "-")) for d in r["destinations"]))
-            else:
-                show(a, r, lambda r: "teleport %d asked for (child %s, adult %s): wait map to see it taken" % (
+            elif not r.get("sent"):
+                show(a, r, lambda r: "teleport %d asked for (child %s, adult %s): wait map to see it arrive" % (
                     r["teleport"], plain_text(r["child"] or "-"), plain_text(r["adult"] or "-")))
+            elif not a.arrive:
+                show(a, r, lambda r: "teleport %d sent: to %s" % (r["teleport"], plain_text(r.get("map") or "-")))
+            else:   # (and until the game is in that map: the arrival)
+                w = check(b.request("wait", timeout=a.arrive, event="map", map=r.get("map")))
+                show(a, dict(r, arrived=w), lambda r: "teleport %d: in %s after %d frames (frame %d)" % (
+                    r["teleport"], plain_text(w["map"]), w["waited"], w["frame"]))
         elif a.command == "option":
             if a.action == "get":
                 r = check(b.request("option_get", name=a.name))
@@ -442,6 +458,8 @@ def launch(a):
                                                                      dir=os.environ.get("XDG_RUNTIME_DIR") or None)
     os.makedirs(run_dir, mode=0o700, exist_ok=True)
     sock = a.sock or ("hookshot-control-%d" % os.getpid() if WINDOWS else os.path.join(run_dir, "control.sock"))
+    if not WINDOWS:
+        sock = os.path.abspath(sock)   # (the game runs in its own folder: a relative path would be bound there)
     env = dict(os.environ, HOS_CONTROL=sock)
     if a.slot and not a.save:
         raise Failed("--slot goes with --save", 2)
@@ -521,7 +539,8 @@ def main(argv=None):
     q.add_argument("--exclusive", action="store_true")
     q.add_argument("--no-wait", action="store_true")
     q.add_argument("--timeout", type=float)
-    sub.add_parser("release")
+    q = sub.add_parser("release", help="let go of this client's queued inputs and those of clients gone")
+    q.add_argument("--all", action="store_true", help="every client's, also those still connected")
     q = sub.add_parser("shot")
     q.add_argument("path", nargs="?")
     q.add_argument("--after", type=int, help="the first present after this frame")
@@ -551,6 +570,9 @@ def main(argv=None):
                    help="read: how to print the bytes")
     q = sub.add_parser("teleport", help="(OoT) the debug teleport: a destination's index or map; none lists them")
     q.add_argument("to", nargs="?")
+    q.add_argument("--timeout", type=float, default=10, help="seconds for the game to take it (it does in play)")
+    q.add_argument("--arrive", type=float, metavar="SECS", help="then wait up to SECS until the game is in the map")
+    q.add_argument("--no-wait", action="store_true", help="reply once asked, without whether the game took it")
     sub.add_parser("saves", help="the save folder the game uses: its files, newest slot first")
     q = sub.add_parser("slots", help="the save slots: last written, sizes, scene; * the newest (Continue's)")
     q.add_argument("--thumbs", metavar="DIR", help="each slot's file-select picture written there as slot_NN.jpg")
