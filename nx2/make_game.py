@@ -1117,6 +1117,39 @@ def folder_language(out):
     return None
 
 
+def system_language(name=None):
+    """The game language closest to the system's own, as the Windows builder's window picks its first one: the exact one, then the same
+    family; None when the game has none of it. name: the system's, "de-DE" or "pt_BR.UTF-8" (asked for when not given)"""
+    if name is None and os.name == "nt":
+        import ctypes
+        buf = ctypes.create_unicode_buffer(85)
+        name = buf.value if ctypes.windll.kernel32.GetUserDefaultLocaleName(buf, 85) else ""
+    elif name is None:   # (the first of these that is set, as gettext reads them)
+        name = next((v for v in map(os.environ.get, ("LC_ALL", "LC_MESSAGES", "LANG")) if v), "")
+    name = re.split("[.@]", name)[0].replace("_", "-")
+    family = name.split("-")[0].lower()
+    for code, _ in LANGUAGES:
+        if code.lower() == name.lower():
+            return code
+    if family == "zh":
+        return "zh-Hant" if any(t in name for t in ("TW", "HK", "MO", "Hant")) else "zh-Hans"
+    if family == "es" and name.lower() not in ("es", "es-es"):
+        return "es-419"
+    if family == "pt":
+        return "pt-BR"
+    return next((code for code, _ in LANGUAGES if code == family), None)
+
+
+def build_language(a, out):
+    """The language a build writes to the folder's language.txt: the one asked for (--language); else the one the folder has,
+    from the build before or the player's own change to the file; else, in a launcher's build (--prepare: no window to choose
+    one in), the system's own; else English (US). An update keeps the folder's, whatever was asked."""
+    kept = folder_language(out)
+    if a.update and kept:
+        return kept
+    return a.language or kept or (system_language() if a.prepare else None) or "en-US"
+
+
 def profile_readable(prof):
     """(linux) the profile is made by a recent clang (the Windows tools'): an older one, the system's, cannot read it and stops the
     build. Then the game is built without it (a little slower in play), not at all"""
@@ -1414,7 +1447,8 @@ def parse_args():
                    if os.name != "nt" else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
     # (HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the AppImage's builds pass no --jobs)
     p.add_argument("--jobs", type=int)
-    p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
+    p.add_argument("--language", help="the game's language: a code from LANGUAGES, written to language.txt. Not given: the one the "
+                                      "folder has; else the system's with --prepare; else en-US")
     p.add_argument("--check", action="store_true")
     p.add_argument("--game", help="your copy: a .nup file, or a folder with romfs and exefs in it (the same as --nup, or --romfs and --exefs)")
     p.add_argument("--prepare", action="store_true", help="for RecompLauncher: no window, progress lines, --out ~/Games/Hookshot unless given")
@@ -1549,11 +1583,11 @@ def main(a=None):
         return check(a, a.work)
     if a.update:
         a.out = a.update
-        a.language = folder_language(a.update) or a.language
     if not a.out or not (a.update or a.nup or (a.romfs and a.exefs)):
         fail("needs --out, and --nup or --romfs with --exefs")
     out = os.path.abspath(a.out)
     work = os.path.abspath(a.work)
+    a.language = build_language(a, out)   # (now: the folder's own language.txt is still the one the player left)
     warn_slow_disk(out, work)   # (a warning, not a stop: a hard drive still builds, only much slower)
     check_writable(out)
     # (linux) the compiler probe waits until the compile. The game-free cache test stops at the lift, and a missing
