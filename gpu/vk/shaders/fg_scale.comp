@@ -60,11 +60,14 @@ vec3 sharpen(vec3 c, vec3 n, vec3 s, vec3 w, vec3 e, float amount) {
     // (and no further than the lightest and darkest pixel around it: an edge gets steeper, no halo beside it)
     return clamp(sharp, lo, hi);
 }
-// AMD FidelityFX CAS, Contrast Adaptive Sharpening (MIT, AMD's ffx_cas.h): its filter without scaling, over the 3x3 neighbourhood
-// one picture pixel apart. a b c / d e f / g h i, e the pixel (here the filtered one). The lobe's weight comes from how far the
-// neighbourhood is from black and white, softened by a square root, so soft areas sharpen most and edges that already have
-// contrast least: it brings back the detail a temporal upscaler (DLSS, FSR) softens. amount 0 to 1 is CAS's sharpness, the
-// peak -1/8 to -1/5
+// AMD FidelityFX CAS, Contrast Adaptive Sharpening: ported from ffx_cas.h, its filter without scaling.
+// Copyright (C) 2024 Advanced Micro Devices, Inc. (FidelityFX SDK 1.1.4). MIT licence: the permission notice is in
+// third_party/fidelityfx-sdk/LICENSE.txt.
+// Over the 3x3 neighbourhood one picture pixel apart: a b c / d e f / g h i, e the pixel (here the filtered one). The lobe's weight
+// comes from how far the neighbourhood is from black and white, softened by a square root, so soft areas sharpen most and edges
+// that already have contrast least: it brings back the detail a temporal upscaler (DLSS, FSR) softens. amount 0 to 1 is CAS's
+// sharpness, the peak -1/8 to -1/5. (Not AMD's: CAS's sharpness 0 is already a full -1/8 lobe, so the slider's first step, 0 to
+// 0.1, fades the lobe in from nothing, as the Gentle sharpen starts; from 0.1 on it is AMD's mapping)
 vec3 cas(vec3 a, vec3 b, vec3 c, vec3 d, vec3 e, vec3 f, vec3 g, vec3 h, vec3 i, float amount) {
     vec3 mn = min(min(min(d, e), min(f, b)), h);
     const vec3 mn2 = min(mn, min(min(a, c), min(g, i)));
@@ -74,7 +77,7 @@ vec3 cas(vec3 a, vec3 b, vec3 c, vec3 d, vec3 e, vec3 f, vec3 g, vec3 h, vec3 i,
     mx += mx2;
     const vec3 amp = sqrt(clamp(min(mn, 2.0 - mx) / max(mx, vec3(1.0 / 1024.0)), 0.0, 1.0));
     const float peak = -1.0 / mix(8.0, 5.0, clamp(amount, 0.0, 1.0));
-    const vec3 w = amp * peak;
+    const vec3 w = amp * peak * clamp(amount * 10.0, 0.0, 1.0);
     return clamp((b * w + d * w + f * w + h * w + e) / (1.0 + 4.0 * w), 0.0, 1.0);
 }
 // beside a menu: what the game draws there (a menu's neighbouring pages, the frame of play) out of focus, a little dimmed, so the
