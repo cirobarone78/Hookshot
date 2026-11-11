@@ -392,6 +392,11 @@ struct RecordingRes {
     uint64_t before = 0;           // (what the recording used of the streams before this one)
     uint32_t idle = 0;             // (recordings of the slot that stayed in the first stream)
     std::unordered_map<const void*, std::pair<VkBuffer, uint64_t>> c1_at;   // (c1 of a stage: uploaded once a recording)
+    // (hookshot-deck) a uniform buffer copied as submitted (RX_VK_UB_SNAPSHOT), by its address and size: the copy serves the
+    // recording's later draws of it while the capture view is the same, as a read then would give the same bytes.
+    // RX_VK_UB_SNAPSHOT_REUSE=0: a copy for every binding
+    struct UbSnap { uint64_t addr, n, view; VkBuffer buf; uint64_t at; };
+    std::unordered_map<uint64_t, UbSnap> ub_snap;
 };
 // (a recording's first stream: one for each of the kRecordings slots. RX_VK_STREAM_MB=<n>: that size, 2 by default; a recording
 // that needs more is given a bigger stream for the rest of it (RX_VK_STREAM_GROW_OFF=1: draws are skipped instead, and the default
@@ -2644,19 +2649,41 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
                 FINE_N(FC_UBO_OVERLAY, 1);
                 return {cur->stream, at, n};
             }
-        // (RX_VK_UB_SNAPSHOT=1: the contents as they are now, in the stream, not the pool the GPU reads later)
-        static const bool snapshot = getenv("RX_VK_UB_SNAPSHOT") != nullptr;
+        // (RX_VK_UB_SNAPSHOT=1: the contents as they are now, in the stream, not the pool the GPU reads later.
+        // hookshot-deck: on by default without buffer mirrors (integrated GPUs). There a pool binding is the game's own
+        // memory, which it rewrites right after the submit while the GPU still runs: the Steam Deck drew giant HUD hearts,
+        // white and orange slabs and stretched geometry in 8-10 of 40 gameplay screenshots, none of 40 with the copy.
+        // A mirror is synced at the submit, so it needs no copy. RX_VK_UB_SNAPSHOT=0: the pool, as before)
+        static const bool snapshot = [] {
+            const char* e = getenv("RX_VK_UB_SNAPSHOT");
+            const bool on = e ? atoi(e) != 0 || !*e : !memory_mirrors_on();
+            logf("vk: uniform buffers %s (RX_VK_UB_SNAPSHOT=%d)", on ? "copied as submitted" : "bound in place", on ? 1 : 0);
+            return on;
+        }();
         BufferRef b = snapshot ? BufferRef{} : gpu_buffer_bind(u.addr, n, false);
         if (b && b.offset % align == 0) return {b.buffer, b.offset, n};
+        static const bool snap_reuse = !getenv("RX_VK_UB_SNAPSHOT_REUSE") || atoi(getenv("RX_VK_UB_SNAPSHOT_REUSE")) != 0;
+        const uint64_t snap_key = u.addr * 0x9E3779B97F4A7C15ull ^ n;
+        const uint64_t view = snapshot && snap_reuse ? memory_capture_view() : 0;
+        static std::atomic<int64_t> snap_hits{0};
+        if (view) {
+            auto it = cur->ub_snap.find(snap_key);
+            if (it != cur->ub_snap.end() && it->second.addr == u.addr && it->second.n == n && it->second.view == view) {
+                snap_hits.fetch_add(1, std::memory_order_relaxed);
+                return {it->second.buf, it->second.at, n};
+            }
+        }
         const uint64_t at = stream_alloc(n, align);   // (unaligned or outside the pools: copied into the stream)
         if (at == UINT64_MAX) return bi;
         FINE_N(FC_UBO_STREAM, 1);
         // (as the submission had it, not as the game has rewritten it since: the captures' pages)
         memory_read_as_submitted(u.addr, cur->mapped + at, n);
-        static int64_t copied;
-        if (++copied % 5000 == 1)
-            logf("vk: uniform buffer %#llx +%#llx copied into the stream (%s; %lld so)", (unsigned long long)u.addr,
-                 (unsigned long long)n, b ? "unaligned" : "outside the pools", (long long)copied);
+        if (view) cur->ub_snap[snap_key] = {u.addr, n, view, cur->stream, at};
+        static std::atomic<int64_t> copied{0};
+        if (copied.fetch_add(1, std::memory_order_relaxed) % 5000 == 0)
+            logf("vk: uniform buffer %#llx +%#llx copied into the stream (%s; %lld so, %lld reused copies)", (unsigned long long)u.addr,
+                 (unsigned long long)n, b ? "unaligned" : "outside the pools", (long long)copied.load(std::memory_order_relaxed),
+                 (long long)snap_hits.load(std::memory_order_relaxed));
         return {cur->stream, at, n};
     }
     return bi;
@@ -4466,6 +4493,7 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
              (unsigned long long)stream_grown.load(), (unsigned long long)(stream_extra.load() >> 20));
     r.used = 0, r.before = 0;
     r.c1_at.clear();
+    r.ub_snap.clear();
     cur = &r;
     pass() = Pass{};
     work_since_barrier = false;

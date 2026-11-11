@@ -1768,7 +1768,17 @@ uint64_t done_max = 0, signaled = 0;                // (the newest value recorde
 int64_t st_stops, st_resumed, st_forced_waits, st_forced[4], st_resume_captures;   // (made to go by: presents, releases, waits, time)
 double st_stopped_max_ms;
 bool event_waits_on() {
-    static const bool v = !getenv("RX_VK_EVENT_WAITS") || atoi(getenv("RX_VK_EVENT_WAITS")) != 0;
+    // (hookshot-deck: off by default without buffer mirrors (integrated GPUs). There the replay runs far behind the game, and a
+    // submission stopped at a wait resolved its texture handles against registrations the game had made since: on the Steam
+    // Deck the hearts and button glyphs came out black, misplaced or as other HUD text in most frames, and the exposure
+    // stepped (luminance spread 8.6 over 80 shots, one blown-out frame). Off: every heart right in 80 of 80, spread 1.4, at
+    // ~1.5 fps less. RX_VK_EVENT_WAITS=1 / 0: on / off anywhere)
+    static const bool v = [] {
+        const char* e = getenv("RX_VK_EVENT_WAITS");
+        const bool on = e ? atoi(e) != 0 : memory_mirrors_on();
+        logf("vk: queues %s (RX_VK_EVENT_WAITS=%d)", on ? "ordered by their events" : "replayed in submit order", on ? 1 : 0);
+        return on;
+    }();
     return v;
 }
 int hold_ms() {
