@@ -291,7 +291,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | Tab | Option | Choices | Default |
 |---|---|---|---|
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) | Custom |
-| | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440, 5120x2880 (after a restart) | 2048x1152 |
+| | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440, 5120x2880, your own size (after a restart) | 2048x1152 |
+| | Custom output size | A size of your own, typed as `<width>x<height>` (after a restart) | None |
 | | Profile | Docked, Handheld (after a restart) | Docked |
 | | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below), Off (no upscaling) | Game's own |
 | | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (shown where DLSS runs; used by DLSS and DLAA) | Transformer (K) |
@@ -388,12 +389,14 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   cameras to the frame's shape and keeps the HUD and movies in the middle 16:9; at 16:9, the game's 16:9 picture is
   stretched across the 32:9 output, sharp but wide. Options saved by an older version at 16:9, the default then, move to
   Monitor's shape on a screen narrower than 16:9 (16:10 such as the Steam Deck's, or 4:3), where 16:9 only adds bars above
-  and below; an ultrawide keeps its 16:9. For a size the menu does not offer (3440x1440, 2560x1080, ...), set
-  `output_res=<width>x<height>` in `hookshot_options.ini`: each side a multiple of 8, at least 640x360, at most 5120x2880's
-  pixels, and between 5:4 and 48:9 in shape; anything else uses the game's 2048x1152. The menu then offers it as its own
-  choice. With the **Aspect ratio** at Monitor's shape, a picture wider than 16:9 is kept to 5120x2160's pixels, so above
-  that a wide size is not a native frame. A custom output wider than 32:9 also sets the camera shape, even when the OS
-  reports a single 16:9 primary monitor. For three 16:9 monitors, use `5760x1080` or `7680x1440` and a window or logical display
+  and below; an ultrawide keeps its 16:9. For a size the menu does not offer (3440x1440, 2560x1080, ...), type it in
+  **Custom output size** (Enter or A to edit it, Enter or A again to set it, Esc or B to leave it as it was; Ctrl+V
+  pastes), or set `output_res=<width>x<height>` in `hookshot_options.ini`: each side a multiple of 8, at least 640x360, at
+  most 5120x2880's pixels, and between 5:4 and 48:9 in shape. The menu says why it refuses a size; in the file, anything
+  else uses the game's 2048x1152. The Output resolution row then offers it as its own choice. With the **Aspect ratio**
+  at Monitor's shape, a picture wider than 16:9 is kept to 5120x2160's pixels, so above that a wide size is not a native
+  frame. A custom output wider than 32:9 also sets the camera shape, even when the OS reports a single 16:9 primary
+  monitor. For three 16:9 monitors, use `5760x1080` or `7680x1440` and a window or logical display
   that spans all three. Both render at full size: 7680x1440 has 5120x2160's pixels, the most a wide picture takes.
   For one run, set `HOS_OUTPUT_RES` to a size, such as `HOS_OUTPUT_RES=3840x2160`.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest
