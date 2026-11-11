@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.astro/
+# Content and assets copied from the repository by prepare-content.mjs.
+src/content/docs/generated/
+public/assets/
+public/progress-feed.json
+public/progress-feed.json.*.tmp

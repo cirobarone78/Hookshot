@@ -1,0 +1,43 @@
+{
+  "issue:2245": {
+    "title": "Crash after the opening scene on Linux with an AMD graphics card",
+    "summary": "A player using Linux and an AMD Radeon RX 6600 XT reports that version 2.1.0 closes after the opening scene, before the Great Deku Tree appears. The report includes a graphics-driver reset. The cause and a fix have not been verified here.",
+    "platforms": [
+      "Linux"
+    ],
+    "area": "Crashes or startup",
+    "impact": "Crashes",
+    "reviewedAt": "2026-11-11T20:51:44.158030+00:00",
+    "sourceUpdatedAt": "2026-11-11T18:46:25Z",
+    "sources": [
+      "https://github.com/NotRexed/Hookshot/issues/2245"
+    ]
+  },
+  "issue:2298": {
+    "title": "Missing shopkeeper may stop early progress",
+    "summary": "A Windows player reports that the Kokiri Shop cannot be used in version 2.1.0 because its shopkeeper is missing. This may prevent buying the Deku Shield needed to continue. This is a reported problem, not an independently reproduced finding.",
+    "platforms": [
+      "Windows"
+    ],
+    "area": "Graphics",
+    "impact": "Blocked progression",
+    "reviewedAt": "2026-11-11T20:51:44.158030+00:00",
+    "sourceUpdatedAt": "2026-11-11T14:06:08Z",
+    "sources": [
+      "https://github.com/NotRexed/Hookshot/issues/2298"
+    ]
+  },
+  "issue:2412": {
+    "title": "The game slows down after travelling between areas",
+    "summary": "A Windows player with an RTX 5070 reports that version 2.1.0 becomes much slower after travelling between areas. The report includes rising graphics-memory use, but its proposed cause has not been confirmed here.",
+    "platforms": [
+      "Windows"
+    ],
+    "area": "Performance",
+    "reviewedAt": "2026-11-11T20:51:44.158030+00:00",
+    "sourceUpdatedAt": "2026-11-11T19:57:54Z",
+    "sources": [
+      "https://github.com/NotRexed/Hookshot/issues/2412"
+    ]
+  }
+}

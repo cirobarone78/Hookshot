@@ -25,6 +25,8 @@
   <a href="#license">License</a>
 </p>
 
+[Documentation](docs/README.md) · [Common issues and answers](docs/common-issues.md) · [Report a bug](https://github.com/NotRexed/Hookshot/issues/new/choose)
+
 Hookshot is a static recompilation. The game's code is translated to C and compiled into a Windows or Linux program,
 the console's system software is reimplemented, and the Switch 2 graphics are rebuilt on Vulkan. All of this happens
 **on your PC, from your own copy of the game**.

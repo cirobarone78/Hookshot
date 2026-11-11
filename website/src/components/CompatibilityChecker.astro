@@ -1,0 +1,113 @@
+---
+const options = [
+  { name: 'game', label: 'Game version', values: [['supported', 'Program 0400486024DEC000 · update v131072 · build e0f3ccfa'], ['other', 'A different game version']] },
+  { name: 'os', label: 'Operating system', values: [['windows', 'Windows 10 / 11 (64-bit)'], ['linux-appimage', 'Linux (64-bit) — AppImage'], ['linux-source', 'Linux (64-bit) — build from source'], ['other', 'Another OS or 32-bit system']] },
+  { name: 'gpu', label: 'Graphics card', values: [['nvidia', 'NVIDIA GeForce RTX 20 series or newer'], ['amd', 'AMD Radeon RX 6000 series or newer'], ['intel', 'Intel Arc'], ['deck', 'Steam Deck (LCD or OLED)'], ['legacy', 'A card without mesh shaders'], ['other', 'Another GPU']] },
+  { name: 'driver', label: 'Current driver supports Vulkan 1.3 and mesh shaders', values: [['yes', 'Yes — I have checked both'], ['no', 'No — one or both are missing']] },
+];
+---
+<div class="compatibility-tool not-content">
+  <form id="compatibility-form">
+    <fieldset>
+      <legend>Your game and hardware</legend>
+      <p class="form-help">Choose what you know. Leave anything uncertain as “Not sure.”</p>
+      <div class="compatibility-fields">
+        {options.map(field => <label class:list={{ 'wide-field': field.name === 'game' }} for={`compat-${field.name}`}>
+          <span>{field.label}</span>
+          <select id={`compat-${field.name}`} name={field.name}>
+            <option value="unknown">Not sure</option>
+            {field.values.map(([value, label]) => <option value={value}>{label}</option>)}
+          </select>
+        </label>)}
+      </div>
+      <div id="linux-fields" class="compatibility-fields" hidden>
+        <label for="compat-glibc"><span>glibc 2.35 or newer</span><select id="compat-glibc" name="glibc"><option value="unknown">Not sure</option><option value="yes">Yes</option><option value="no">No</option></select></label>
+        <label id="avx2-field" for="compat-avx2"><span>CPU supports AVX2</span><select id="compat-avx2" name="avx2"><option value="unknown">Not sure</option><option value="yes">Yes</option><option value="no">No</option></select></label>
+      </div>
+      <div class="compatibility-fields memory-fields">
+        <label for="compat-ram"><span>System RAM (GB)</span><input id="compat-ram" name="ram" type="number" min="0.1" step="any" placeholder="e.g. 16" inputmode="decimal" /></label>
+        <label for="compat-vram"><span>Dedicated VRAM (GB)</span><input id="compat-vram" name="vram" type="number" min="0.1" step="any" placeholder="e.g. 8" inputmode="decimal" aria-describedby="shared-memory-note" /></label>
+        <label for="compat-disk"><span>Free build space (GB)</span><input id="compat-disk" name="disk" type="number" min="0.1" step="any" placeholder="e.g. 60" inputmode="decimal" /></label>
+      </div>
+      <p id="shared-memory-note" class="form-help">For shared-memory GPUs such as Steam Deck, leave VRAM blank. System RAM is not the same as dedicated VRAM.</p>
+    </fieldset>
+    <div class="checker-actions"><button class="button-primary" type="submit">Check compatibility <span aria-hidden="true">→</span></button><button class="checker-reset" type="reset">Reset</button></div>
+  </form>
+  <noscript><p>Enable JavaScript to use the checker. The requirements and source links below are still available.</p></noscript>
+  <section id="compatibility-result" tabindex="-1" aria-labelledby="compatibility-result-title" hidden>
+    <p class="eyebrow">YOUR RESULT</p>
+    <h2 id="compatibility-result-title"></h2>
+    <p>This compares your answers with the documented requirements. It does not test your PC, validate game files, or predict frame rate and stability.</p>
+    <ul id="compatibility-results"></ul>
+  </section>
+</div>
+<script>
+  import { checkCompatibility } from '../lib/compatibility.mjs';
+  const form = document.querySelector<HTMLFormElement>('#compatibility-form')!;
+  const result = document.querySelector<HTMLElement>('#compatibility-result')!;
+  const list = document.querySelector('#compatibility-results')!;
+  const os = form.elements.namedItem('os') as HTMLSelectElement;
+  const linuxFields = document.querySelector<HTMLElement>('#linux-fields')!;
+  const avx2Field = document.querySelector<HTMLElement>('#avx2-field')!;
+  function updateFields() {
+    linuxFields.hidden = !os.value.startsWith('linux-');
+    avx2Field.hidden = os.value !== 'linux-appimage';
+  }
+  const labels = { pass: 'Meets requirement', block: 'Unsupported', warning: 'Check before building', unknown: 'Not checked', note: 'Build note' };
+  form.addEventListener('change', () => { updateFields(); result.hidden = true; });
+  form.addEventListener('input', () => { result.hidden = true; });
+  form.addEventListener('reset', () => {
+    result.hidden = true;
+    queueMicrotask(updateFields);
+  });
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const report = checkCompatibility(Object.fromEntries(new FormData(form)));
+    result.dataset.status = report.status;
+    document.querySelector('#compatibility-result-title')!.textContent = report.title;
+    list.replaceChildren(...report.rows.map(row => {
+      const item = document.createElement('li');
+      item.dataset.level = row.level;
+      const badge = document.createElement('span');
+      badge.className = 'result-label';
+      badge.textContent = labels[row.level as keyof typeof labels];
+      const title = document.createElement('h3');
+      title.textContent = row.title;
+      const text = document.createElement('p');
+      text.textContent = row.text;
+      item.append(badge, title, text);
+      return item;
+    }));
+    result.hidden = false;
+    result.focus({ preventScroll: true });
+    result.scrollIntoView({ behavior: 'instant', block: 'start' });
+  });
+  updateFields();
+</script>
+<style>
+  .compatibility-tool { margin-block: 2rem; }
+  form { padding: 1.5rem; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+  fieldset { padding: 0; margin: 0; border: 0; min-width: 0; }
+  legend { font-size: 1.25rem; font-weight: 600; }
+  .form-help { font-size: .85rem; color: var(--sl-color-gray-2); margin: .6rem 0 1.2rem; }
+  .compatibility-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; margin-bottom: 1.2rem; }
+  .memory-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .wide-field { grid-column: 1 / -1; }
+  label { display: grid; gap: .4rem; align-content: start; font-size: .85rem; font-weight: 600; }
+  select, input { width: 100%; min-width: 0; padding: .7rem; border: 1px solid var(--sl-color-gray-4); border-radius: 5px; background: var(--sl-color-bg); color: var(--sl-color-text); font: inherit; }
+  input:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+  .checker-actions { display: flex; gap: 1.5rem; align-items: center; flex-wrap: wrap; }
+  button { cursor: pointer; }
+  .checker-reset { border: 0; padding: .6rem 0; background: none; color: var(--sl-color-text); text-decoration: underline; font: inherit; font-size: .85rem; }
+  #compatibility-result { margin-top: 2rem; padding: 1.5rem; border: 1px solid var(--gold); border-radius: 10px; scroll-margin-top: 6rem; }
+  #compatibility-result h2 { margin: .6rem 0; font: 600 1.7rem/1.3 var(--hookshot-font-heading); }
+  #compatibility-result > p { font-size: .9rem; }
+  #compatibility-results { list-style: none; padding: 0; margin: 1.5rem 0 0; }
+  #compatibility-results :global(li) { padding: 1rem 0; border-top: 1px solid var(--border); }
+  #compatibility-results :global(h3) { font-size: 1rem; margin: .25rem 0; }
+  #compatibility-results :global(p) { font-size: .9rem; margin: 0; }
+  #compatibility-results :global(.result-label) { color: var(--gold); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+  #compatibility-results :global([data-level='pass'] .result-label) { color: var(--sl-color-text-accent); }
+  [hidden] { display: none !important; }
+  @media (max-width: 42rem) { .compatibility-fields, .memory-fields { grid-template-columns: 1fr; } form, #compatibility-result { padding: 1rem; } }
+</style>

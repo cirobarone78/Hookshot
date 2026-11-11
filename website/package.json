@@ -1,0 +1,23 @@
+{
+  "name": "hookshot-docs-preview",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/prepare-content.mjs && astro dev --host 127.0.0.1",
+    "build": "node scripts/prepare-content.mjs && astro build",
+    "build:preview": "node scripts/build-preview.mjs",
+    "preview": "astro preview --host 127.0.0.1",
+    "progress:sync": "node scripts/sync-progress.mjs",
+    "progress:serve": "node scripts/serve-progress.mjs",
+    "check": "node scripts/check-site.mjs && node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "0.42.10",
+    "@astrojs/markdown-remark": "7.3.0",
+    "astro": "7.4.10"
+  },
+  "engines": {
+    "node": ">=22.23.4"
+  }
+}

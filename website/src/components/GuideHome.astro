@@ -1,0 +1,35 @@
+---
+const base = import.meta.env.BASE_URL.replace(/\/$/, '') + '/';
+const guides = [
+  { n: '01', icon: 'compass', title: 'Installation', text: 'Build and run Hookshot on Windows or Linux using your own copy of the game.', href: 'getting-started', footer: 'Installation guide' },
+  { n: '02', icon: 'sliders', title: 'Graphics and controls', text: 'Set the resolution, upscaler, frame rate, and input bindings.', href: 'graphics-and-controls', footer: 'Graphics & controls' },
+  { n: '03', icon: 'book', title: 'Updates and saves', text: 'Install updates, back up saves, or transfer them from another compatible port.', href: 'updates-and-saves', footer: 'Updates & saves' },
+];
+const paths = {
+  compass: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM16 8l-2 6-6 2 2-6 6-2Z',
+  sliders: 'M4 7h5m4 0h7M4 17h10m4 0h2M9 4v6m4-6v6M14 14v6m4-6v6',
+  book: 'M12 5v16M3 4c4-1 7 0 9 2 2-2 5-3 9-2v15c-4-1-7 0-9 2-2-2-5-3-9-2V4Z',
+};
+---
+<div class="home-content not-content">
+  <section class="community-strip"><div><p class="eyebrow">PROJECT PROGRESS</p><h2>What’s being worked on?</h2><p>Search reported problems, feature requests, proposed changes and recent releases.</p></div><a class="button-secondary" href={`${base}progress/`}>Progress & updates <span aria-hidden="true">→</span></a></section>
+  <aside class="own-copy-note" aria-label="Game files notice"><span aria-hidden="true">◇</span><p><strong>We do not host, store, or distribute any game files.</strong> This site and repository contain no ROMs, game dumps, or decryption keys. You must supply your own supported copy of the game; Hookshot builds it locally on your computer.</p></aside>
+  <section class="community-strip"><div><p class="eyebrow">BEFORE YOU BUILD</p><h2>Check your build compatibility</h2><p>Compare your game version and PC with Hookshot’s requirements.</p></div><a class="button-secondary" href={`${base}compatibility/`}>Check compatibility <span aria-hidden="true">→</span></a></section>
+  <section class="antivirus-feature" aria-labelledby="antivirus-title"><p class="eyebrow">WINDOWS DEFENDER</p><h2 id="antivirus-title">Is Hookshot a virus?</h2><p>The maintainer identifies the reported Defender alerts as false positives. Read the evidence, code-signing status, and options for reviewing and building the open-source project yourself.</p><a href={`${base}antivirus/`}>Read about antivirus alerts <span aria-hidden="true">→</span></a></section>
+  <div class="section-heading"><p class="eyebrow">GETTING STARTED</p><h2>Setup and settings</h2></div>
+  <div class="quest-grid">
+    {guides.map((g) => <a class="quest-card" href={`${base}guides/${g.href}/`}>
+      <div class="quest-card-top"><span class="quest-icon"><svg viewBox="0 0 24 24" width="25" height="25" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d={paths[g.icon as keyof typeof paths]} /></svg></span><span class="quest-number">{g.n}</span></div>
+      <h3>{g.title}</h3><p>{g.text}</p><div class="quest-link">{g.footer}<span aria-hidden="true">↗</span></div>
+    </a>)}
+  </div>
+  <section class="help-board" aria-labelledby="help-title">
+    <div class="help-board-intro"><p class="eyebrow">TROUBLESHOOTING</p><h2 id="help-title">Common issues</h2><p>Answers from GitHub issue responses, with links to the original reports. The linked trackers have the current status and advice.</p><a href={`${base}guides/common-issues/`}>View all 11 answers <span aria-hidden="true">→</span></a></div>
+    <div class="help-questions">
+      <a href={`${base}guides/common-issues/#gohma-walks-into-a-wall-or-stops-attacking`}><span><span class="status-badge workaround">ISSUE RESPONSE</span><strong>Gohma stops attacking</strong></span><span aria-hidden="true">↗</span></a>
+      <a href={`${base}guides/common-issues/#the-hud-ghosts-or-shimmers-with-frame-generation`}><span><span class="status-badge workaround">ISSUE RESPONSE</span><strong>Frame-generation ghosting</strong></span><span aria-hidden="true">↗</span></a>
+      <a href={`${base}guides/common-issues/#the-game-closes-immediately-after-play`}><span><span class="status-badge investigating">ISSUE TRACKER</span><strong>Game closes after Play</strong></span><span aria-hidden="true">↗</span></a>
+    </div>
+  </section>
+  <section class="community-strip"><div><p class="eyebrow">CONTRIBUTING</p><h2>Help improve Hookshot</h2><p>Report a bug, share a pipeline list, or correct the documentation.</p></div><a class="button-secondary" href={`${base}guides/reporting-and-contributing/`}>How to contribute <span aria-hidden="true">→</span></a></section>
+</div>

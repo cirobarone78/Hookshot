@@ -1,0 +1,11 @@
+---
+import DefaultFooter from '@astrojs/starlight/components/Footer.astro';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '') + '/';
+---
+<DefaultFooter />
+<div class="field-footer">
+  <p><strong>HOOKSHOT</strong> <span>Community documentation</span></p>
+  <nav aria-label="Footer"><a href={`${base}about/`}>About this preview</a><a href="https://github.com/NotRexed/Hookshot/issues/new/choose">Report a bug ↗</a><a href="https://github.com/NotRexed/Hookshot">Source ↗</a></nav>
+  <p>We do not host, store, or distribute any game files, ROMs, game dumps, or decryption keys. You must provide your own copy.</p>
+  <small>Independent community project. Not affiliated with Nintendo. Built with Astro Starlight.</small>
+</div>

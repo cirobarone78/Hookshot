@@ -1,0 +1,21 @@
+---
+import Search from '@astrojs/starlight/components/Search.astro';
+import ThemeSelect from '@astrojs/starlight/components/ThemeSelect.astro';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '') + '/';
+---
+<div class="field-header">
+  <a class="field-brand" href={base} aria-label="Hookshot documentation home">
+    <img src={`${base}assets/hookshot.png`} alt="" width="38" height="38" />
+    <span>HOOKSHOT<small>DOCUMENTATION</small></span>
+  </a>
+  <div class="field-search"><Search /></div>
+  <a class="problem-search-link" data-problem-search href={`${base}progress/#problem-search`}>
+    <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg>
+    Search for your problem
+  </a>
+  <div class="field-header-actions">
+    <a class="github-link" href="https://github.com/NotRexed/Hookshot">GitHub <span aria-hidden="true">↗</span></a>
+    <a class="bug-link" href="https://github.com/NotRexed/Hookshot/issues/new/choose">Report a bug <span aria-hidden="true">↗</span></a>
+    <ThemeSelect />
+  </div>
+</div>

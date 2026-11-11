@@ -1,0 +1,38 @@
+---
+const base = import.meta.env.BASE_URL.replace(/\/$/, '') + '/';
+---
+<section class="adventure-hero" aria-labelledby="_top">
+  <div class="hero-landscape" aria-hidden="true">
+    <svg viewBox="0 0 1000 520" preserveAspectRatio="xMidYMax slice"><defs><linearGradient id="mist" x2="0" y2="1"><stop stop-color="#437b61" stop-opacity="0"/><stop offset="1" stop-color="#437b61" stop-opacity=".24"/></linearGradient></defs><path d="M0 340L126 240L240 307L410 185L550 320L690 220L805 330L900 235L1000 315V520H0Z" fill="url(#mist)"/><path d="M0 440L150 360L250 404L430 310L560 390L710 340L850 419L1000 332V520H0Z" fill="#24513e" opacity=".38"/><path d="M0 480Q260 405 520 477T1000 445V520H0Z" fill="#0b231c" opacity=".55"/></svg>
+  </div>
+  <div class="hero-copy">
+    <p class="eyebrow"><span class="tiny-diamond" aria-hidden="true"></span> COMMUNITY DOCUMENTATION</p>
+    <h1 id="_top" data-page-title>Hookshot<br /><em>documentation.</em></h1>
+    <p class="hero-intro">A Native Recompilation Of The Legend Of Zelda: Ocarina Of Time Nintendo Switch 2 Remake</p>
+    <p class="hero-credit">by <a href="https://github.com/NotRexed">NotRexed</a></p>
+    <a class="release-badge" id="latest-release" href="https://github.com/NotRexed/Hookshot/releases/latest"><span class="release-dot" aria-hidden="true"></span><span id="latest-release-label">View latest stable release</span><span aria-hidden="true">↗</span></a>
+    <div class="hero-actions">
+      <a class="button-primary" href={`${base}guides/getting-started/`}>Install Hookshot <span aria-hidden="true">→</span></a>
+      <a class="button-secondary" href={`${base}progress/`}>Progress & updates <span aria-hidden="true">→</span></a>
+      <a class="button-secondary" href={`${base}guides/common-issues/`}>Common issues</a>
+    </div>
+    <div class="hero-meta"><span>WINDOWS & LINUX</span><span aria-hidden="true">·</span><span>UNOFFICIAL PREVIEW</span></div>
+  </div>
+  <div class="hero-art" aria-hidden="true">
+    <div class="relic-orbit orbit-one"></div><div class="relic-orbit orbit-two"></div>
+    <span class="orbit-star star-one">✦</span><span class="orbit-star star-two">✧</span>
+    <img src={`${base}assets/hookshot.png`} width="292" height="277" alt="" fetchpriority="high" />
+  </div>
+</section>
+<script>
+  import { getLatestRelease } from '../lib/latest-release.mjs';
+  const link = document.querySelector<HTMLAnchorElement>('#latest-release');
+  const label = document.querySelector('#latest-release-label');
+  if (link && label) {
+    getLatestRelease().then(release => {
+      if (!release) return;
+      label.textContent = `Latest stable release: ${release.version}`;
+      link.href = release.url;
+    });
+  }
+</script>
