@@ -79,6 +79,9 @@ static const char *desired_language(void) {
     else hos_log("oe: language %s (%s)", lang, from);
     return lang;
 }
+/* (linux) the language chosen, and language.txt written when it is missing, before the sandbox makes the game folder
+   read-only (host/hos_main.c, host/posix/sandbox_linux.c) */
+void hos_language_init(void) { (void)desired_language(); }
 HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
     uint64_t v = 0;
     memcpy(&v, desired_language(), strlen(desired_language()));

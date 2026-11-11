@@ -8554,6 +8554,18 @@ void pipeline_cache_save(bool force) {
                             logf("vk: pipeline cache saved (%zu KB)", n >> 10);
                         }
                     }
+#if !defined(_WIN32)
+                    // (linux: the sandbox lets the game write its own state files but make no new file in its folder
+                    // (host/posix/sandbox_linux.c): the cache in place. Cut short by a crash, the driver's header check drops it)
+                    else if (FILE* g = fopen(pcache_path.c_str(), "wb")) {
+                        bool ok = fwrite(data.data(), 1, n, g) == n;
+                        ok = fclose(g) == 0 && ok;
+                        if (ok) {
+                            pcache_saved_size = n;
+                            logf("vk: pipeline cache saved in place (%zu KB)", n >> 10);
+                        }
+                    }
+#endif
                 }
             }
         } catch (const std::exception& e) {

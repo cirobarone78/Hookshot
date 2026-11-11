@@ -2831,7 +2831,6 @@ void menu_init() {
         protect_hearts.store(hearts && !strcmp(hearts, "1"));
     }
     if (FILE* f = fopen(ini_path().c_str(), "r")) {
-        has_options = true;
         char line[80];
         bool has_resolution = false;
         bool v2 = false;
@@ -2842,6 +2841,7 @@ void menu_init() {
             char* eq = strchr(line, '=');
             if (!eq) continue;
             *eq = 0;
+            has_options = true;   // (an empty file is none: Linux's sandbox makes it empty, host/posix/sandbox_linux.c)
             for (Row& r : rows) {
                 if (!r.value || strcmp(line, ini_key(r))) continue;
                 const int v = atoi(eq + 1);
