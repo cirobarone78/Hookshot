@@ -23,7 +23,7 @@ def main():
         assert options["start_new_session"]
         processes.append(subprocess.Popen(command, **options))
 
-    namespace = dict(HERE=str(BUILDER), os=os,
+    namespace = dict(HERE=str(BUILDER), os=os, chosen_profile=lambda folder: "0000000000000002",
                      linux_update=SimpleNamespace(game_exe=lambda folder: str(Path(folder) / "hookshot")),
                      make_game=SimpleNamespace(game_env=lambda: dict(os.environ)),
                      subprocess=SimpleNamespace(Popen=launch, DEVNULL=subprocess.DEVNULL))
@@ -36,6 +36,7 @@ def main():
             '#!/bin/sh\n'
             'printf "stdout sentinel\\n"\n'
             'printf "stderr sentinel\\n" >&2\n'
+            'printf "%s" "$HOOKSHOT_PROFILE" > profile\n'
             'head -c 1048576 /dev/zero >&2\n'
             'touch completed\n'
             'exit 73\n', encoding="utf-8")
@@ -48,6 +49,7 @@ def main():
         data = log.read_bytes()
         assert data == b"stderr sentinel\n" + bytes(65536 - len(b"stderr sentinel\n")) + b"\nHookshot exited with status 73\n"
         assert (folder / "completed").is_file() and log.stat().st_mode & 0o777 == 0o600
+        assert (folder / "profile").read_text(encoding="utf-8") == "0000000000000002"   # (the profile chosen in the launcher)
         assert not list(folder.glob(".hookshot-startup.*"))
 
         # A non-writable destination must not prevent the game from running.
@@ -58,7 +60,7 @@ def main():
         processes[-1].wait(timeout=10)
         assert (folder / "completed").is_file() and not list(log.iterdir())
         assert not list(folder.glob(".hookshot-startup.*"))
-    print("PASS: detached Play, bounded stderr, exit status, concurrent launches and publication failure")
+    print("PASS: detached Play, the chosen profile, bounded stderr, exit status, concurrent launches and publication failure")
 
 
 if __name__ == "__main__":

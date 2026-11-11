@@ -168,6 +168,33 @@ with `--update <game folder>`.
 
 </details>
 
+### Profiles, and saves from emulators
+
+On Linux, the launcher (`hookshot` in the game folder, or the application menu's **Hookshot**; the builder's **Play**
+opens it too) has a **Profile** choice above **Play**, so that several people can play on one PC, each with saves of
+their own. **Play** starts the game with the profile chosen. **New profile** makes one, which starts at an empty file
+select. **Manage** renames the chosen profile, imports a save into it, exports its save, opens its save folder, or
+removes it. Removing a profile does not delete its saves: they are moved to `save-backups` in the saves folder.
+
+**Import a save** copies a save from an emulator (or a save's own folder: `account.sav` and `slot_*`) into the chosen
+profile. The launcher lists the saves it finds in the emulators' usual folders, each with the emulator and its user's
+name; **Other folder** takes any other one: the emulator's data folder, a portable `user` folder, or the save folder
+itself. The copy is the one [Using a save from an emulator](docs/saves.md) describes (`scripts/oot_saves.py`): only the
+save's files are copied, nothing is copied while a game or emulator runs, the emulator's save is only read, and the
+profile's saves are copied to `save-backups` first. When the folder has saves of several of the emulator's users, the
+launcher asks whose save to import.
+
+**Export** copies the profile's save into a new folder, `Hookshot save - <name> - <date and time>`, in a folder you
+choose. It never writes into an emulator and replaces nothing. **Import**'s **Other folder** takes that folder back, in
+any profile or on another PC; to play it in an emulator, copy its contents there by hand ([Copy by
+hand](docs/saves.md#copy-by-hand)).
+
+The default profile, first on the list and marked "(default)", has the saves from before profiles; it is called
+"Player" until you rename it. The game plays it when it is started without the launcher, so it cannot be removed. A game
+folder built before profiles came shows no **Profile** choice: build it again (**Update**) to get it. Profiles are kept
+in `profiles.txt` in the saves folder (`~/.local/share/hookshot`); a profile's saves are `save/<its id>`. The Windows
+launcher has no profiles yet: it plays the default profile.
+
 ### Latest development build
 
 Want a fix before it is in a release? The

@@ -6,7 +6,9 @@ python -I -B tests/test_oot_saves.py
 import contextlib
 import importlib.util
 import io
+import json
 import os
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -137,6 +139,14 @@ class Discovery(Case):
         for root in (data, save.parent, save):
             self.assertEqual(oot.find_saves(str(root)), {uuid: str(save)}, root)
 
+    def test_copied_user_folders_under_any_name(self):
+        # (Eden's user folders copied out, into a folder of the player's naming: each found by its id. A folder that is not
+        # named as a user is, Eden's mods folder load/<title id> among them, is no user)
+        copied = self.tmp / "eden-saves"
+        make_save(copied / PROFILE / oot.TITLE, b"COPY")
+        (copied / "load" / oot.TITLE).mkdir(parents=True)
+        self.assertEqual(oot.find_saves(str(copied)), {PROFILE: str(copied / PROFILE / oot.TITLE)})
+
     def test_unrelated_folders_are_not_saves(self):
         (self.tmp / "junk" / "a" / "0").mkdir(parents=True)
         (self.tmp / "junk" / "b" / "save" / UID).mkdir(parents=True)
@@ -165,6 +175,48 @@ class Discovery(Case):
         self.assertEqual(self.backup_dirs(), [])
         code, out, err = self.run_main("export", "lichii", "--profile", other.lower())
         self.assertEqual(code, 0, err)
+
+    def test_saves_lists_each_user_for_the_launchers(self):
+        # (Hookshot's launchers ask whose save when an emulator folder has several users', and pass the id as --profile)
+        other = "11111111111111111111111111111111"
+        make_save(eden_save(self.data / "eden", other), b"O", slots=("slot_00", "slot_01", "slot_02"))
+        eden = str(self.data / "eden")
+        code, out, err = self.run_main("saves", "--from", eden)
+        self.assertEqual(code, 0, err)
+        found = json.loads(out)
+        self.assertEqual([s["id"] for s in found], sorted([PROFILE, other]))
+        by_id = {s["id"]: s for s in found}
+        self.assertEqual(by_id[other]["path"], str(eden_save(self.data / "eden", other)))
+        self.assertTrue(by_id[other]["label"].startswith(other + ": 3 slots, last saved "), by_id[other]["label"])
+        self.assertTrue(by_id[PROFILE]["label"].startswith(PROFILE + ": 1 slot, "), by_id[PROFILE]["label"])
+        new = self.data / "hookshot" / "save" / ("5a3c9e1f0b7d2468" + "0" * 15 + "2")
+        code, out, err = self.run_main("import", "--from", eden, "--profile", other, "--hookshot", str(new))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tree(new), tree(eden_save(self.data / "eden", other)))
+        code, out, err = self.run_main("saves", "--from", str(self.tmp / "nothing-here"))
+        self.assertEqual(code, 1)
+        self.assertIn("no folder at", err)
+
+    def test_saves_of_the_usual_folders_name_the_users(self):
+        # (Hookshot's launcher offers these without a folder chosen: each with the name the emulator gives its user, from
+        # Eden's user list. Eden's mods folder, load/<title id>, is not a user)
+        data = bytearray(0x650)
+        struct.pack_into("<QQ", data, 0x10, int(PROFILE[16:], 16), int(PROFILE[:16], 16))
+        data[0x10 + 40:0x10 + 44] = "Zoë".encode()[:4]
+        users = self.data.joinpath("eden", "nand", "system", "save", "8000000000000010", "su", "avators", "profiles.dat")
+        users.parent.mkdir(parents=True)
+        users.write_bytes(bytes(data))
+        (self.data / "eden" / "load" / oot.TITLE).mkdir(parents=True)
+        code, out, err = self.run_main("saves")
+        self.assertEqual(code, 0, err)
+        found = json.loads(out)
+        self.assertEqual([(s["id"], s["user"], s["folder"]) for s in found], [(PROFILE, "Zoë", str(self.data / "eden"))])
+        self.assertTrue(found[0]["label"].startswith("Zoë (FEDCBA98…): 1 slot, last saved "), found[0]["label"])
+        self.assertTrue(found[0]["label"].endswith(" · Lichii / Frizti (Fritchii) / Orchid / PokeDinner / Eden"),
+                        found[0]["label"])
+        code, out, err = self.run_main("list")
+        self.assertIn("%s (Zoë)" % PROFILE, out)
+        self.assertNotIn("load", out)
 
     def test_list(self):
         make_save(self.home / "Games" / "Ocarina" / "profile" / "save" / ACCOUNT, b"NX")
@@ -330,6 +382,53 @@ class Copy(Case):
         self.assertEqual(code, 1)
         self.assertEqual(tree(self.li), before)
 
+    def test_into_a_new_launcher_profile(self):
+        # (a profile Hookshot's launcher added has no save folder yet: an import makes it; an export from it has nothing)
+        new = self.data / "hookshot" / "save" / ("5a3c9e1f0b7d2468" + "0" * 15 + "2")
+        code, out, err = self.run_main("import", "lichii", "--hookshot", str(new))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tree(new), tree(self.li))
+        self.assertEqual(self.backup_dirs(), [])
+        other = new.parent / ("5a3c9e1f0b7d2468" + "0" * 15 + "3")
+        code, out, err = self.run_main("export", "lichii", "--hookshot", str(other))
+        self.assertEqual(code, 1)
+        self.assertFalse(other.exists())
+        code, out, err = self.run_main("import", "lichii", "--hookshot", str(self.tmp / "save-not" / UID))
+        self.assertEqual(code, 1)   # (only a folder of Hookshot's layout, save/<id>, may be one that has no save)
+
+    def test_empty_file_refused(self):
+        (self.li / "slot_00" / "progress.sav").write_bytes(b"")
+        before = tree(self.hs)
+        code, out, err = self.run_main("import", "lichii")
+        self.assertEqual(code, 1)
+        self.assertIn("is empty", err)
+        self.assertEqual(tree(self.hs), before)
+
+    def test_failed_copy_puts_the_target_back(self):
+        before = tree(self.hs)
+        real = oot.shutil.copy2
+        calls = []
+
+        def fail_once(*a, **k):   # (the first loose file, after the slots were replaced)
+            calls.append(a)
+            if len(calls) == 1:
+                raise OSError("disk full")
+            return real(*a, **k)
+        with mock.patch.object(oot.shutil, "copy2", fail_once):
+            code, out, err = self.run_main("import", "lichii")
+        self.assertEqual(code, 1)
+        self.assertIn("as it was before", err)
+        self.assertEqual(tree(self.hs), before)
+
+    def test_failed_copy_into_a_new_launcher_profile_leaves_no_folder(self):
+        # (an empty save folder would read to the game as a save that exists)
+        new = self.data / "hookshot" / "save" / ("5a3c9e1f0b7d2468" + "0" * 15 + "2")
+        with mock.patch.object(oot.shutil, "copy2", mock.Mock(side_effect=OSError("disk full"))):
+            code, out, err = self.run_main("import", "lichii", "--hookshot", str(new))
+        self.assertEqual(code, 1)
+        self.assertIn("as it was before", err)
+        self.assertFalse(new.exists())
+
 
 class NX2navi(Case):
     def setUp(self):
@@ -402,7 +501,8 @@ class Guard(Case):
     def test_linux_processes_and_appimages(self):
         real = self.real()
         procs = {"10": ("orchid", "/opt/orchid/orchid"), "11": ("AppRun", "/home/x/eglantine-linux-x86_64.AppImage"),
-                 "12": ("ocarina", "./ocarina"), "13": ("bash", "/bin/bash")}
+                 "12": ("ocarina", "./ocarina"), "13": ("bash", "/bin/bash"),
+                 "14": ("Hookshot-2.0.1", "/home/x/Hookshot-2.0.11-x86_64.AppImage")}
 
         def fake_open(path, *a, **k):
             pid, what = path.split("/")[2:4]
@@ -412,7 +512,11 @@ class Guard(Case):
         with mock.patch.object(real, "WINDOWS", False), \
              mock.patch.object(real.os, "listdir", return_value=list(procs) + ["self"]), \
              mock.patch("builtins.open", fake_open):
-            self.assertEqual(real.running_games(), ["NX2navi", "Orchid", "PokeDinner or Eglantine"])
+            with mock.patch.dict(os.environ, {"APPIMAGE": ""}):
+                self.assertEqual(real.running_games(), ["Hookshot", "NX2navi", "Orchid", "PokeDinner or Eglantine"])
+            # (Hookshot's launcher runs this from its AppImage: that AppImage's runtime is not a game)
+            with mock.patch.dict(os.environ, {"APPIMAGE": "/tmp/.mount/../home/x/Hookshot-2.0.11-x86_64.AppImage"}):
+                self.assertEqual(real.running_games(), ["NX2navi", "Orchid", "PokeDinner or Eglantine"])
 
 
 if __name__ == "__main__":

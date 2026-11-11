@@ -55,13 +55,29 @@ Eden's save path, under that data folder: `nand/user/save/0000000000000000/<prof
 - Not listed: Ryujinx and its forks (Ryubing, ...) do not run Switch 2 games. Any other program that keeps these files
   works through `--from`/`--to` with the folder that holds them.
 
+## Copy from Hookshot's launcher
+
+The launcher's **Manage** menu imports a save into the chosen profile
+([profiles](../readme.md#profiles-and-saves-from-emulators)); it never writes into an emulator (its **Export** copies the
+profile's save into a new folder of its own). Import runs the script below with `--hookshot` set to that
+profile's save folder and `--backup-dir` to `save-backups` in Hookshot's saves folder; a new profile's empty save folder
+is filled by an import. It first lists the saves in the emulators' usual folders (the table above), each with the
+emulator and the name it gives that user: `saves` lists them (as JSON). **Other folder** chooses any other folder; when
+that folder has saves of several of the emulator's users, the launcher asks whose: `saves --from <folder>` lists them.
+The one chosen is passed on as `--profile`.
+
+The users' names come from the emulator's user list, `nand/system/save/8000000000000010/su/avators/profiles.dat` in its
+data folder (Eden and the programs that use its folder, Eglantine; the format is yuzu's, from `profile_manager.cpp`):
+each user's id there is the name of their save folder. Without that file (NX2navi, a save copied on its own), a save is
+shown by its id. `list` shows the names too.
+
 ## Copy with the script
 
 `scripts/oot_saves.py` (Python 3, nothing to install) copies the slots, `account.sav` and `option.sav` one way, after
 backing up the side it overwrites. From the Hookshot folder (or a clone):
 
 ```sh
-python -I scripts/oot_saves.py list              # every save it finds, its slots and when each was saved
+python -I scripts/oot_saves.py list              # every save it finds, its user's name, its slots and when each was saved
 python -I scripts/oot_saves.py import lichii     # Lichii -> Hookshot
 python -I scripts/oot_saves.py export lichii     # Hookshot -> Lichii
 python -I scripts/oot_saves.py import --from ~/Downloads/my-save   # any folder holding a save -> Hookshot

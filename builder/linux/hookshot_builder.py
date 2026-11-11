@@ -4,9 +4,12 @@ with the compiler, sysroot and libraries it brings in the environment.
 
     hookshot_builder.py                     the window. Its button is Build, Update, Play, or Update builder
     hookshot_builder.py --play              the game built last time, if there is one (else the window)
-    hookshot_builder.py --launch <folder>   that folder's launcher: Play, and Update when a newer release is out
+    hookshot_builder.py --launch <folder>   that folder's launcher: Play with a profile (profiles.py), and Update when a newer
+                                            release is out
     hookshot_builder.py --update <folder>   download the new release (only parts that changed) and build the folder again
 """
+import contextlib
+import io
 import math
 import os
 import queue
@@ -25,7 +28,10 @@ ROOT = os.environ.get("HOOKSHOT_TOOLS") or os.path.dirname(os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
 sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
+sys.path.append(os.path.join(ROOT, "scripts"))   # (last: nothing there takes the place of a module the builder means)
 import linux_update  # noqa: E402  (the release check and the part download)
+import profiles  # noqa: E402  (the launcher's profiles)
+import oot_saves  # noqa: E402  (a profile's saves in and out: the copy docs/saves.md describes)
 import make_game  # noqa: E402  (LANGUAGES, BUILD_ID)
 import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
 
@@ -110,6 +116,12 @@ def game_ready(folder):
     return linux_update.game_exe(folder) is not None
 
 
+def chosen_profile(folder, cfg=None):
+    """the profile Play starts the game with: the one chosen last, while it is still on the list"""
+    uid = (load_config() if cfg is None else cfg).get("profile", "")
+    return uid if any(uid == p[0] for p in profiles.load(profiles.user_dir(folder))) else profiles.DEFAULT
+
+
 def play(folder):
     """the game, on its own (it outlives this window), from its folder. The launcher already asked about updates."""
     exe = linux_update.game_exe(folder)
@@ -117,6 +129,7 @@ def play(folder):
         return
     env = make_game.game_env()   # (as make_game's shader preparation and hookshot-launch: the game's own SDL, the system's libraries)
     env["HOOKSHOT_NO_UPDATE_CHECK"] = "1"
+    env["HOOKSHOT_PROFILE"] = chosen_profile(folder)
     exe = os.path.abspath(exe)
     options = dict(cwd=folder, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -136,6 +149,26 @@ def desktop_exec(path):
     for char in ('"', "`", "$"):
         escaped = escaped.replace(char, "\\\\" + char)
     return '"%s"' % escaped.replace("%", "%%")
+
+
+def chooser_command(kind, title, start, environ=os.environ, which=shutil.which):
+    """The desktop's own file chooser, for kind "folder" or "nup" (the game's .nup): kdialog on KDE, zenity elsewhere
+    (the other when that one is missing), at the desktop's size and in its light or dark look, which Tk's own dialog has
+    neither of. None: neither is here, and Tk's dialog is used. Each prints the path chosen; exit 1 is Cancel."""
+    kde = "KDE" in environ.get("XDG_CURRENT_DESKTOP", "").upper().split(":")
+    for tool in ("kdialog", "zenity") if kde else ("zenity", "kdialog"):
+        path = which(tool)
+        if not path:
+            continue
+        if tool == "kdialog":
+            if kind == "folder":
+                return [path, "--title", title, "--getexistingdirectory", start]
+            return [path, "--title", title, "--getopenfilename", start, "Switch 2 game package (*.nup)"]
+        args = [path, "--file-selection", "--title=" + title, "--filename=" + os.path.join(start, "")]
+        if kind == "folder":
+            return args + ["--directory"]
+        return args + ["--file-filter=Switch 2 game package | *.nup", "--file-filter=All files | *"]
+    return None
 
 
 APP_ID = "io.github.NotRexed.Hookshot"   # (the game's window names itself so: host/posix/display_sdl.c's HOS_APP_ID)
@@ -207,6 +240,7 @@ def ui_scale(screen_height, dpi=None, environ=os.environ):
 # pixels, its rounded buttons, fields and cards. Tk draws no rounded corners or alpha, so they are painted into images here,
 # antialiased and laid over the colour they sit on, and ttk's clam theme draws everything else ----
 PAGE, RAISED, RAISED_HOVER, LINE_STRONG = "#14161a", "#1c1f24", "#23272d", "#3d434c"
+LINE = "#2c3037"   # (a line on Raised: the popup lists' separator)
 INK, INK_SOFT, INK_FAINT = "#edeff2", "#a2a9b3", "#6e7681"
 BRAND, BRAND_HOVER, BRAND_INK = "#3d63e6", "#4b70f0", "#dfe6ff"
 GO, GO_HOVER, GO_INK, BAD = "#5fb08a", "#70c09a", "#06150e", "#e2776b"
@@ -370,6 +404,7 @@ class Builder(tk.Tk):
         self.time_text = tk.StringVar()
         self.page = None
         self.build_button = None
+        self.busy = False   # (a desktop file chooser is open: run_chooser)
         if update is not None:
             self.after(200, self.begin_update)
         elif launch:
@@ -451,10 +486,10 @@ class Builder(tk.Tk):
             s.configure(name, **options)
 
         # buttons: Quiet (also every plain ttk button, the dialogs' among them), Primary (blue: the step's action), Go (green: Play)
-        def button(style, fill, hover, line, hover_line, focus_line, foreground, font, padding, radius=8, disabled=None):
+        def button(style, fill, hover, line, hover_line, focus_line, foreground, font, padding, radius=8, disabled=None, under=PAGE):
             r, w = px(radius), px(1)
             n = 2 * r + 6
-            image = {k: self.photo("%s-%s" % (style, k), n, n, PAGE, framed(n, n, r, f, l, w))
+            image = {k: self.photo("%s-%s" % (style, k), n, n, under, framed(n, n, r, f, l, w))
                      for k, f, l in (("normal", fill, line), ("hover", hover, hover_line), ("focus", fill, focus_line),
                                      ("disabled", disabled or fill, disabled or line))}
             s.element_create(style + ".box", "image", image["normal"], ("disabled", image["disabled"]),
@@ -517,6 +552,25 @@ class Builder(tk.Tk):
         s.map("TCombobox", fieldbackground=[("readonly", GLASS)], foreground=[("readonly", INK)],
               selectbackground=[("readonly", GLASS)], selectforeground=[("readonly", INK)])
         s.configure("ComboboxPopdownFrame", background=RAISED, bordercolor=LINE_STRONG, relief="solid", borderwidth=1)
+        # a choice that opens a list (the launcher's profile; the Windows builder's ComboBox Choice): the field, its chevron
+        s.element_create("Hs.choice", "image", field, ("pressed", field_focus), ("active", field_hover), ("focus", field_focus),
+                         border=r + 2, padding=0, sticky="nsew")
+        s.layout("Choice.TButton", [("Hs.choice", {"sticky": "nsew", "children": [
+            ("Hs.chevron", {"side": "right", "sticky": ""}),
+            ("Button.padding", {"sticky": "nsew", "children": [("Button.label", {"sticky": "nsew"})]})]})])
+        s.configure("Choice.TButton", foreground=INK, font="HsUi", padding=(px(12), px(7), px(4), px(7)), anchor="w")
+        s.map("Choice.TButton", foreground=[("disabled", INK_FAINT)])
+        # its list, and the Manage menu's (the Windows builder's: Raised in LineStrong, radius 8, padding 4; rows 10/7,
+        # RaisedHover under the mouse, BrandInk for the one chosen)
+        r, n = px(8), px(8) * 2 + 6
+        self.photo("popup", n, n, PAGE, framed(n, n, r, RAISED, LINE_STRONG, px(1)))
+        s.element_create("Hs.popup", "image", self.images["popup"], border=r + 2, padding=0, sticky="nsew")
+        s.layout("Popup.TFrame", [("Hs.popup", {"sticky": "nsew", "children": [("Frame.padding", {"sticky": "nsew"})]})])
+        s.configure("Popup.TFrame", background=RAISED)
+        button("Item", RAISED, RAISED_HOVER, RAISED, RAISED_HOVER, RAISED_HOVER, INK, "HsNote", (px(10), px(7)), radius=6,
+               under=RAISED)
+        s.configure("Item.TButton", anchor="w")
+        s.configure("Chosen.Item.TButton", foreground=BRAND_INK)
 
         # cards (the found list's, the build's steps on Windows)
         r, n = px(10), px(10) * 2 + 6
@@ -688,7 +742,7 @@ class Builder(tk.Tk):
         ttk.Label(f, text="Pick your game files and where the game goes. Hookshot does the rest, once.", style="Sub.TLabel",
                   wraplength=px(800)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
         if game_ready(self.cfg.get("out")):
-            ttk.Button(f, text="Play the game built in %s" % self.cfg["out"], command=lambda: self.play_and_close(self.cfg["out"])).grid(
+            ttk.Button(f, text="Play the game built in %s" % self.cfg["out"], command=lambda: self.play_or_choose(self.cfg["out"])).grid(
                 row=2, column=0, columnspan=3, sticky="w", pady=(px(16), 0))
         self.section(f, "Game files", 3, columnspan=3)
         kinds = ttk.Frame(f, style="Card.TFrame", padding=px(5))
@@ -762,8 +816,64 @@ class Builder(tk.Tk):
         ttk.Entry(f, textvariable=var, font="HsMono").grid(row=row, column=1, sticky="we", pady=self.px(3))
         ttk.Button(f, text=button, command=browse, cursor="hand2").grid(row=row, column=2, padx=(self.px(10), 0), pady=self.px(3))
 
+    def ask_path(self, kind, title, start=None):
+        """a folder (kind "folder") or the game's .nup ("nup"), from the desktop's own chooser (chooser_command), or Tk's
+        when there is none or it could not open. "" when cancelled"""
+        start = start if start and os.path.isdir(start) else os.path.expanduser("~")
+        command = chooser_command(kind, title, start)
+        if command:
+            answer = self.run_chooser(command)
+            if answer is not None:
+                return answer
+        if kind == "folder":
+            return filedialog.askdirectory(parent=self, title=title, initialdir=start)
+        return filedialog.askopenfilename(parent=self, title=title, initialdir=start,
+                                          filetypes=[("Switch 2 game package", "*.nup"), ("All files", "*")])
+
+    def run_chooser(self, command):
+        """runs the desktop's chooser (run_waiting). The path; "" when cancelled; None when the chooser could not run"""
+        def run():
+            try:
+                done = subprocess.run(command, env=make_game.game_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                      text=True, encoding="utf-8", errors="surrogateescape")
+                return done.stdout.rstrip("\n") if done.returncode == 0 else "" if done.returncode == 1 else None
+            except OSError:
+                return None
+        return self.run_waiting(run, "Choose in the window that opened…")
+
+    def run_waiting(self, work, text):
+        """work() on a thread of its own while this window waits under a veil saying text, which takes its clicks (and
+        Enter: self.busy), so it keeps drawing meanwhile. What work returns; what it raises is raised here"""
+        result = []
+
+        def run():
+            try:
+                result.append((True, work()))
+            except BaseException as error:   # (raised again below: a work that never answered would leave the veil up)
+                result.append((False, error))
+        veil = tk.Frame(self, background=PAGE, cursor="watch")
+        veil.place(x=0, y=0, relwidth=1, relheight=1)
+        ttk.Label(veil, text=text, style="Sub.TLabel").place(relx=0.5, rely=0.5, anchor="center")
+        self.busy = True
+        threading.Thread(target=run, daemon=True).start()
+        finished = tk.BooleanVar(self, False)
+
+        def check():
+            if result:
+                finished.set(True)
+            else:
+                self.after(100, check)
+        check()
+        self.wait_variable(finished)
+        veil.destroy()
+        self.busy = False
+        ok, value = result[0]
+        if not ok:
+            raise value
+        return value
+
     def pick_file(self, var):
-        p = filedialog.askopenfilename(title="Your game's .nup", filetypes=[("Switch 2 game package", "*.nup"), ("All files", "*")])
+        p = self.ask_path("nup", "Your game's .nup", os.path.dirname(var.get()))
         if p:
             var.set(p)
             self.source_picked = True
@@ -771,7 +881,7 @@ class Builder(tk.Tk):
             self.check_version()
 
     def pick_dir(self, var):
-        p = filedialog.askdirectory(title="Choose a folder", initialdir=var.get() or os.path.expanduser("~"))
+        p = self.ask_path("folder", "Choose a folder", var.get())
         if p:
             var.set(p)
             if var is self.exefs:
@@ -907,15 +1017,338 @@ class Builder(tk.Tk):
         ttk.Label(f, text=folder, style="Sub.TLabel", wraplength=px(600), justify="center").pack(pady=(px(8), 0))
         self.launch_status = tk.StringVar(value="Checking for updates...")
         ttk.Label(f, textvariable=self.launch_status, style="Note.TLabel", wraplength=px(600), justify="center").pack(pady=(px(16), 0))
+        if profiles.supported(folder):   # (a game built before profiles plays the default profile's saves whichever is chosen)
+            self.show_profile_row(f, folder)
         buttons = ttk.Frame(f)
         buttons.pack(pady=(px(28), 0))
         self.launch_update = ttk.Button(buttons, text="Update", style="Primary.TButton", cursor="hand2",
                                         command=lambda: self.begin_update(folder))
-        ttk.Button(buttons, text="Play", style="Go.TButton", image=self.images["play"], compound="left", cursor="hand2",
-                   command=lambda: self.play_and_close(folder)).pack(side="right", padx=px(4))
+        play_button = ttk.Button(buttons, text="Play", style="Go.TButton", image=self.images["play"], compound="left",
+                                 cursor="hand2", command=lambda: self.play_and_close(folder))
+        play_button.pack(side="right", padx=px(4))
+        play_button.focus_set()   # (Enter plays, with the profile above)
+        def enter(event):
+            # (a button with the focus is pressed: Enter on Update or Manage is not Play. Play has it at first)
+            if self.page is not page or self.busy:
+                return
+            if isinstance(event.widget, ttk.Button) and event.widget is not play_button:
+                event.widget.invoke()
+            else:
+                self.play_and_close(folder)
+        self.bind("<Return>", enter)
         ttk.Button(f, text="Open the game folder", style="Link.TButton", cursor="hand2",
                    command=lambda: subprocess.Popen(["xdg-open", folder])).pack(pady=(px(22), 0))
         self.lookup_latest()
+
+    # ---- the launcher's profiles (profiles.py) ----
+    def show_profile_row(self, f, folder):
+        """the profile Play starts the game with, right above Play, with New profile beside it. What changes the chosen profile
+        is wanted rarely: it is in the Manage menu, out of Play's way, with Remove last and apart"""
+        px = self.px
+        self.user = profiles.user_dir(folder)
+        ttk.Label(f, text="PROFILE", style="Section.TLabel").pack(pady=(px(24), px(8)))
+        row = ttk.Frame(f)
+        row.pack()
+        self.profile_box = ttk.Button(row, style="Choice.TButton", width=24, cursor="hand2",
+                                      command=lambda: self.popup(self.profile_box, [
+                                          (profiles.shown_name(u, n), lambda i=i: self.pick_profile(i), i == self.profile_index)
+                                          for i, (u, n) in enumerate(self.profile_list)]))
+        self.profile_box.pack(side="left")
+        manage = ttk.Button(row, text="Manage", cursor="hand2", command=lambda: self.popup(manage, self.manage_rows()))
+        manage.pack(side="left", padx=(px(8), 0))
+        ttk.Button(row, text="New profile…", cursor="hand2", command=self.new_profile).pack(side="left", padx=(px(8), 0))
+        self.profile_note = tk.StringVar()   # (what the last action did; empty until then)
+        ttk.Label(f, textvariable=self.profile_note, style="Small.TLabel", wraplength=px(600), justify="center").pack(pady=(px(8), 0))
+        self.show_profiles(chosen_profile(folder, self.cfg))
+
+    def manage_rows(self):
+        """the Manage menu, naming the profile its actions change"""
+        uid, name = self.current_profile()
+        rows = [("Rename %s…" % name, self.rename_profile), ("Import a save into %s…" % name, self.import_profile_save),
+                ("Export %s's save…" % name, self.export_profile_save), ("Open %s's save folder" % name, self.open_profile_folder),
+                None]
+        if uid == profiles.DEFAULT:
+            return rows + [("The default profile cannot be removed", None)]
+        return rows + [("Remove %s…" % name, self.remove_profile)]
+
+    def popup(self, anchor, rows):
+        """A list under anchor in the theme's look (the Windows builder's ComboBox list): rows are (text, command, chosen),
+        a command of None for a row that cannot be chosen, or None for a line between rows. It closes on a choice, on a click
+        anywhere else, on Escape, and when the window moves."""
+        px = self.px
+        box = tk.Toplevel(self, background=RAISED)
+        box.withdraw()
+        box.overrideredirect(True)
+        box.transient(self)
+        card = ttk.Frame(box, style="Popup.TFrame", padding=px(4))   # (inside its line: a frame's padding is its own, not the style's)
+        card.pack(fill="both", expand=True)
+
+        def close(event=None):
+            if box.winfo_exists():
+                box.grab_release()
+                box.destroy()
+            self.unbind("<Configure>", moved)
+
+        def choose(command):
+            close()
+            command()
+        for row in rows:
+            if row is None:
+                tk.Frame(card, height=max(1, px(1)), background=LINE).pack(fill="x", padx=px(6), pady=px(4))
+                continue
+            text, command, *chosen = row
+            item = ttk.Button(card, text=text, style="Chosen.Item.TButton" if chosen and chosen[0] else "Item.TButton",
+                              cursor="hand2" if command else "", takefocus=False,
+                              command=(lambda c=command: choose(c)) if command else None)
+            if not command:
+                item.state(["disabled"])
+            item.pack(fill="x")
+        box.update_idletasks()
+        width = max(anchor.winfo_width(), box.winfo_reqwidth())
+        box.geometry("%dx%d+%d+%d" % (width, box.winfo_reqheight(), anchor.winfo_rootx(),
+                                      anchor.winfo_rooty() + anchor.winfo_height() + px(4)))
+        box.deiconify()
+        box.lift()
+
+        def outside(event):
+            x, y = event.x_root - box.winfo_rootx(), event.y_root - box.winfo_rooty()
+            if not (0 <= x < box.winfo_width() and 0 <= y < box.winfo_height()):
+                close()
+        box.bind("<ButtonPress>", outside)
+        box.bind("<Escape>", close)
+        moved = self.bind("<Configure>", lambda event: close() if event.widget is self else None, add="+")
+        box.wait_visibility()
+        box.grab_set()
+        box.focus_set()
+
+    def show_profiles(self, uid):
+        self.profile_list = profiles.load(self.user)
+        ids = [p[0] for p in self.profile_list]
+        self.pick_profile(ids.index(uid) if uid in ids else 0)
+
+    def pick_profile(self, index):
+        self.profile_index = index if 0 <= index < len(self.profile_list) else 0
+        uid, name = self.current_profile()
+        self.profile_box.configure(text=profiles.shown_name(uid, name))
+        self.cfg["profile"] = uid
+        save_config(self.cfg)
+
+    def current_profile(self):
+        return self.profile_list[self.profile_index]
+
+    def ask_name(self, title, prompt, initial="", action="OK"):
+        """a profile's name, in the theme's look; None when cancelled"""
+        px = self.px
+        box = tk.Toplevel(self, background=PAGE)
+        box.title(title)
+        box.transient(self)
+        box.resizable(False, False)
+        f = ttk.Frame(box, padding=px(24))
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text=title, style="Title.TLabel").pack(anchor="w")
+        ttk.Label(f, text=prompt, style="Sub.TLabel", wraplength=px(420)).pack(anchor="w", pady=(px(6), px(14)))
+        text = tk.StringVar(box, initial)
+        entry = ttk.Entry(f, textvariable=text, width=36, font="HsUi")
+        entry.pack(fill="x")
+        entry.select_range(0, "end")
+        answer = []
+
+        def done(ok):
+            if ok:
+                answer.append(text.get())
+            box.destroy()
+        buttons = ttk.Frame(f)
+        buttons.pack(fill="x", pady=(px(20), 0))
+        ttk.Button(buttons, text=action, style="Primary.TButton", cursor="hand2", command=lambda: done(True)).pack(
+            side="right", padx=(px(8), 0))
+        ttk.Button(buttons, text="Cancel", cursor="hand2", command=lambda: done(False)).pack(side="right")
+        box.bind("<Return>", lambda event: done(True))
+        box.bind("<Escape>", lambda event: done(False))
+        box.protocol("WM_DELETE_WINDOW", lambda: done(False))
+        self.center(box)
+        entry.focus_set()
+        box.grab_set()
+        self.wait_window(box)
+        return answer[0] if answer else None
+
+    def center(self, box):
+        """a dialog over the middle of the window"""
+        box.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - box.winfo_reqwidth()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - box.winfo_reqheight()) // 3
+        box.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        box.wait_visibility()
+
+    def profile_error(self, error):
+        messagebox.showerror("Hookshot", str(error), parent=self)
+
+    def new_profile(self):
+        name = self.ask_name("New profile", "Its saves start empty: the game starts it at an empty file select.",
+                             action="Create")
+        if name is None:
+            return
+        try:
+            uid = profiles.add(self.user, name)
+        except (OSError, ValueError) as error:
+            return self.profile_error(error)
+        self.show_profiles(uid)
+        self.profile_note.set("%s has no saves yet: the game starts at an empty file select. Manage, Import a save brings one in."
+                              % profiles.clean_name(name))
+
+    def rename_profile(self):
+        uid, old = self.current_profile()
+        name = self.ask_name("Rename profile", "The new name for %s." % old, old, action="Rename")
+        if name is None:
+            return
+        try:
+            profiles.rename(self.user, uid, name)
+        except (OSError, ValueError) as error:
+            return self.profile_error(error)
+        self.show_profiles(uid)
+
+    def remove_profile(self):
+        uid, name = self.current_profile()
+        if uid == profiles.DEFAULT:
+            return self.profile_error("%s is the default profile and cannot be removed: the game plays it when it is started "
+                                      "without the launcher." % name)
+        if "Hookshot" in oot_saves.running_games():   # (the game still running on these saves writes them out again)
+            return self.profile_error("Close Hookshot first: the game, still running, can write the saves again.")
+        if not messagebox.askyesno("Hookshot", "Remove the profile %s?\n\nIts saves are not deleted: they are moved to %s."
+                                   % (name, os.path.join(self.user, "save-backups")), parent=self):
+            return
+        try:
+            moved = profiles.remove(self.user, uid)
+        except (OSError, ValueError) as error:
+            return self.profile_error(error)
+        self.show_profiles(profiles.DEFAULT)
+        self.profile_note.set("Removed %s.%s" % (name, " Its saves are in %s" % moved if moved else ""))
+
+    def open_profile_folder(self):
+        path = profiles.folder_to_show(self.user, self.current_profile()[0])
+        if not path:
+            return self.profile_error("There are no saves yet: the game makes %s at its first start." % self.user)
+        subprocess.Popen(["xdg-open", path])
+
+    def choose_emulator_save(self, found, other=False):
+        """which save to import: found is oot_saves.emulator_saves's list (other: True, the emulators' usual folders, with
+        Other folder for any folder) or saves_in's (one folder's users). The saves are a card of rows, as the form's choice
+        of game files. Returns the save chosen, "other", or None"""
+        px = self.px
+        box = tk.Toplevel(self, background=PAGE)
+        box.title("Import a save")
+        box.transient(self)
+        box.resizable(False, False)
+        f = ttk.Frame(box, padding=px(24))
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="Import a save", style="Title.TLabel").pack(anchor="w")
+        if other and found:
+            text = "Saves found in the emulators' usual folders. Choose the one to import, or Other folder for one elsewhere."
+        elif other:
+            text = ("No emulator save was found in the usual folders (%s). Choose its folder with Other folder: an emulator's "
+                    "data folder, its portable user folder, or the save folder itself."
+                    % ", ".join(sorted(set(os.path.join(d, "") for p in oot_saves.EMULATORS for d in oot_saves.folders(p)))))
+        else:
+            text = "This folder has saves of %d users of the emulator. Choose the one to import." % len(found)
+        ttk.Label(f, text=text, style="Sub.TLabel", wraplength=px(640)).pack(anchor="w", pady=(px(6), px(14)))
+        pick = tk.IntVar(box, 0)
+        chosen = []
+
+        def done(answer):
+            if answer == "ok" and found:
+                chosen.append(found[pick.get()])
+            elif answer == "other":
+                chosen.append("other")
+            box.destroy()
+        if found:
+            card = ttk.Frame(f, style="Card.TFrame", padding=px(5))
+            card.pack(fill="x")
+            card.columnconfigure(0, weight=1)
+            for i, save in enumerate(found):
+                if i:
+                    tk.Frame(card, height=max(1, px(1)), background=GLASS_LINE).grid(row=2 * i - 1, column=0, sticky="we",
+                                                                                     padx=px(12))
+                row = ttk.Radiobutton(card, text=save["label"], value=i, variable=pick, style="Row.TRadiobutton", cursor="hand2")
+                row.grid(row=2 * i, column=0, sticky="we")
+                row.bind("<Double-Button-1>", lambda event: done("ok"))
+        buttons = ttk.Frame(f)
+        buttons.pack(fill="x", pady=(px(20), 0))
+        if found:
+            ttk.Button(buttons, text="Import", style="Primary.TButton", cursor="hand2", command=lambda: done("ok")).pack(
+                side="right", padx=(px(8), 0))
+        ttk.Button(buttons, text="Cancel", cursor="hand2", command=lambda: done(None)).pack(side="right")
+        if other:
+            ttk.Button(buttons, text="Other folder…", cursor="hand2", command=lambda: done("other")).pack(side="left")
+        box.bind("<Return>", lambda event: done("ok" if found else "other"))
+        box.bind("<Escape>", lambda event: done(None))
+        box.protocol("WM_DELETE_WINDOW", lambda: done(None))
+        self.center(box)
+        box.focus_set()
+        box.grab_set()
+        self.wait_window(box)
+        return chosen[0] if chosen else None
+
+    def import_profile_save(self):
+        """an emulator's save (or a save's folder) into the profile. The emulators' usual folders are looked through first,
+        each save shown with the emulator's name for its user; Other folder chooses any folder. The copy is
+        scripts/oot_saves.py's, with the profile's save folder as Hookshot's side: it copies only the save's files, refuses
+        while a game runs and backs up the profile's saves first, to save-backups here. Nothing of the emulator's changes"""
+        uid, name = self.current_profile()
+        saves = profiles.save_dir(self.user, uid)
+        backups = os.path.join(self.user, "save-backups")
+        try:
+            found = oot_saves.emulator_saves()
+        except (oot_saves.Fail, OSError):
+            found = []
+        save = self.choose_emulator_save(found, other=True)
+        if save == "other":
+            chosen = self.ask_path("folder", "The save to import: its folder, or an emulator's data or save folder")
+            if not chosen:
+                return
+            # (an emulator keeps a save for each of its users: with several, the player says whose, passed on as --profile)
+            try:
+                listed = oot_saves.saves_in(chosen)
+            except oot_saves.Fail as error:
+                return self.profile_error(error)
+            save = listed[0] if len(listed) == 1 else self.choose_emulator_save(listed)
+        if not save:
+            return
+        whose = "%s's save" % save["user"] if save.get("user") else "the save"
+        if not messagebox.askyesno("Hookshot", "Import %s in %s into the profile %s?\n\nThe profile's saves now, if it has "
+                                   "any, are copied to %s first." % (whose, save["path"], name, backups), parent=self):
+            return
+        def copy():
+            # (each value joined to its option: an id or a folder that starts with "-" is not taken for an option. The output
+            # is this process's while the copy runs: nothing else here prints meanwhile, the window waits under its veil)
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = oot_saves.main(["import", "--from=" + save["folder"], "--profile=" + save["id"], "--hookshot=" + saves,
+                                           "--backup-dir=" + backups])
+            except OSError as error:   # (oot_saves reports a copy that failed; a backup that could not be made is this)
+                return 1, out.getvalue(), "The copy failed: %s" % error
+            except SystemExit:   # (its arguments refused: argparse's reason is the last line, after the usage)
+                return 1, out.getvalue(), (err.getvalue().strip().splitlines() or [""])[-1]
+            return code, out.getvalue(), err.getvalue()
+        code, out, err = self.run_waiting(copy, "Copying the save…")
+        if code:
+            return self.profile_error(err.strip().removeprefix("error: ") or "The copy failed.")
+        done = (out.strip().splitlines() or [""])[-1].removeprefix("Done.").strip()   # (where the backup went)
+        self.profile_note.set("Imported into %s.%s" % (name, " " + done if done else ""))
+
+    def export_profile_save(self):
+        """the profile's save, copied into a new folder of its own in the folder the player chooses: never into an emulator,
+        and nothing there is replaced. That folder is a save Import (Other folder) takes, here or on another PC"""
+        uid, name = self.current_profile()
+        if "Hookshot" in oot_saves.running_games():   # (a save the game is writing could be copied half old, half new)
+            return self.profile_error("Close Hookshot first: the game, still running, can be writing the save.")
+        chosen = self.ask_path("folder", "Where %s's save goes (a new folder is made in it)" % name)
+        if not chosen:
+            return
+        try:
+            path = profiles.export(self.user, uid, name, chosen)
+        except (OSError, ValueError) as error:
+            return self.profile_error(error)
+        self.profile_note.set("Exported %s's save to %s" % (name, path))
 
     def track_id(self):
         return next((k for k, v in TRACK_NAMES.items() if v == self.track.get()), "release")
@@ -1000,7 +1433,7 @@ class Builder(tk.Tk):
         if mode == "up-to-date":
             folder = os.path.expanduser(self.out.get().strip())
             if game_ready(folder):
-                self.play_and_close(folder)
+                self.play_or_choose(folder)
             return
         if mode in ("update-game", "update-builder"):
             game, _kept = linux_update.game_version(os.path.expanduser(self.out.get().strip()))
@@ -1227,7 +1660,7 @@ class Builder(tk.Tk):
             except (OSError, ValueError):   # (no menu entry; the game is built)
                 pass
             ttk.Button(self.buttons, text="Play", style="Go.TButton", image=self.images["play"], compound="left", cursor="hand2",
-                       command=lambda: self.play_and_close(folder)).pack(side="right", padx=self.px(4))
+                       command=lambda: self.play_or_choose(folder)).pack(side="right", padx=self.px(4))
             ttk.Button(self.buttons, text="Open folder", cursor="hand2",
                        command=lambda: subprocess.Popen(["xdg-open", folder])).pack(side="right", padx=self.px(4))
             self.heading.configure(text="Your game is ready")
@@ -1243,6 +1676,15 @@ class Builder(tk.Tk):
         if self.proc and self.proc.poll() is None:
             os.killpg(self.proc.pid, signal.SIGTERM)
             self.error = "Build cancelled. You can start again from the same folder."
+
+    def play_or_choose(self, folder):
+        """Play from the builder's pages: the launcher's page first, where the profile Play starts is shown and profiles are
+        made and changed (the builder's own pages have none of that). A game built before profiles: at once"""
+        if profiles.supported(folder):
+            self.launch_folder, self.build_button = folder, None
+            self.show_launch(folder)
+        else:
+            self.play_and_close(folder)
 
     def play_and_close(self, folder):
         play(folder)

@@ -1492,6 +1492,10 @@ static int game_main(int argc, char **argv) {
     if (getenv("HOS_TRACE")) hos_trace = 1;
     if (!hos_user_dir) hos_user_dir = "user";
     CreateDirectoryA(hos_user_dir, NULL);
+    {   /* (hookshot) the user the game plays, the launcher's profile: its list is in the user folder (host/nn_applet.c) */
+        void hos_account_init(void);
+        hos_account_init();
+    }
     if (!reserve_guest()) {
         fprintf(stderr, "cannot reserve the guest window\n");
         return 1;
