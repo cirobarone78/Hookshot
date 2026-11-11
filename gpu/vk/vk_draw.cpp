@@ -7519,7 +7519,7 @@ constexpr int64_t kSeedTimeSlack = 20'000'000;   // (two seconds in FILETIME tic
 #else
 constexpr int64_t kSeedTimeSlack = 2'000'000'000;
 #endif
-enum class PrepareWhy { None, First, Translator, Seed };
+enum class PrepareWhy { None, First, Translator, Seed, Baked };   // (Baked: prepare_run's, see there)
 /// The seed's size and write time (false: there is none). Windows keeps native 100 ns FILETIME ticks: converting that
 /// epoch to nanoseconds overflows int64_t. Other platforms keep filesystem-clock nanoseconds
 bool seed_file_id(const std::string& path, uint64_t* size, int64_t* time) {
@@ -7628,6 +7628,10 @@ PrepareWhy prepare_check(const std::string& path, const std::string& seed, uint6
 /// to choose), with the stage libraries or without, and what warm_libraries builds of them (kWarmRecipe, to be counted up when that
 /// changes: vk_draw.cpp is not in the translator's stamp)
 constexpr uint32_t kWarmRecipe = 2;   // (2: the libraries are in our pipeline cache)
+/// (hookshot) The record's warmed word after an offline bake (prepare_run's bake_workers): every seed program translated, no driver's
+/// part made and no state list noted. Never a warmed_stamp (a hash): the game's prepare (prepare_run's baked) keeps the programs the
+/// cache has, translates only what it lacks, and makes the driver's part and the state list's notes
+constexpr uint64_t kWarmedBaked = 1;
 uint64_t warmed_stamp(bool libraries) {
     uint64_t h = program_cache_stamp();
     const auto add = [&h](const void* d, size_t n) {
@@ -7746,18 +7750,33 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
 /// background: in play, behind the game: a few workers at idle priority, translation only (the driver's part is left to first use:
 /// its compiler crashing in here would take the game with it)
 /// refresh_states: Builder preparation also imports state lists when the seed is already prepared
-bool prepare_run(void (*progress)(size_t done, size_t total), bool background, bool refresh_states) {
+/// bake_workers: (hookshot) an offline bake at the build (mkwvk_bake, vk_main.cpp), on that many workers: the translation alone, into
+/// the bake's own folder, and nothing of the driver's (no pipeline, no pipeline cache, no state list: those need this PC's driver and
+/// the game's folder). Its record says "translated, the driver's part not made" (kWarmedBaked), which the game's own prepare takes as
+/// baked: it keeps what the bake kept, translates only what is missing, and makes the driver's part
+bool prepare_run(void (*progress)(size_t done, size_t total), bool background, bool refresh_states, unsigned bake_workers) {
+    const bool bake = bake_workers != 0;
     const auto t0 = std::chrono::steady_clock::now();
     const std::string path = prepared_path();
     PreparedFor prepared_for;
     double hash_ms = 0;
-    const PrepareWhy why = prepare_check(path, seed_path(), program_cache_stamp(), &prepared_for, &hash_ms);
+    PrepareWhy why = prepare_check(path, seed_path(), program_cache_stamp(), &prepared_for, &hash_ms);
     const bool libraries = gpl_wanted() && !env_on("RX_VK_NO_WARM");
     const uint64_t warmed = warmed_stamp(libraries);
     const std::string warming = path + ".warming";
     if (hash_ms > 0)
         logf("vk: the shader list was hashed (%.0f MB in %.0f ms): written since the last check, or too close to it to go by its time",
              prepared_for.seed_size / 1048576.0, hash_ms);
+    if (why == PrepareWhy::None && bake) return true;   // (translated already: nothing to bake)
+    // (hookshot) Baked at the build: every seed program is translated and kept, nothing of the driver's is made and no state list
+    // noted. A prepare as any first start's, but a compute program with kept variants is taken as the bake left it (the bake tried
+    // every answer, as seed_compute here would again), and a graphics program kept is passed over as always: what the bake did not
+    // keep (a cache cut short, made again for another GPU, or deleted since) is translated now, as without a bake
+    if (why == PrepareWhy::None && prepared_for.warmed == kWarmedBaked && !bake) why = PrepareWhy::Baked;
+    const bool baked = why == PrepareWhy::Baked;
+    if (baked)
+        logf("vk: the shaders were translated at the build (baked): the programs kept are used as they are, only those not kept are "
+             "translated now");
     if (why == PrepareWhy::None && !env_on("RX_VK_PREPARE_AGAIN")) {
         // A Builder run can add pipeline states without changing the shader seed.
         if (env_on("RX_VK_SEED_CHECK")) {
@@ -7799,9 +7818,9 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     // nothing: a kept library costs memory, and our pipeline cache would be read in whole at every start. A driver whose compiler
     // crashes on one of them (it happens: TotK Recomp's issue 30) would crash here at every start: the file says this step began and
     // did not end, and the next start goes without it. Those libraries are then built when a draw first needs them
-    bool warm = libraries && !background;
-    bool warm_cs = !env_on("RX_VK_NO_WARM") && !background;
-    if (background) {
+    bool warm = libraries && !background && !bake;
+    bool warm_cs = !env_on("RX_VK_NO_WARM") && !background && !bake;
+    if (background || bake) {
     } else if (FILE* f = fopen(warming.c_str(), "rb")) {
         fclose(f);
         warm = warm_cs = false;
@@ -7809,7 +7828,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     } else if (warm || warm_cs) {
         if (FILE* w = fopen(warming.c_str(), "wb")) fclose(w);
     }
-    pcache_init();   // (once, here: the workers below build compute pipelines into it)
+    if (!bake) pcache_init();   // (once, here: the workers below build compute pipelines into it)
     std::atomic<size_t> next{0}, done{0}, made{0}, libs{0}, variants{0}, asking{0}, capped{0};
     // (hookshot) The compute programs first: each is its texture variants, up to 64 translations and as many driver compiles, seconds
     // to tens of seconds on one worker, where a graphics program is a few milliseconds. In the seed's order they were spread over its
@@ -7859,7 +7878,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
             const size_t k = order[i / 3];
             if (seed_is_compute(k)) {   // (hookshot) a compute program with each of its texture variants, each warmed
                 if (i % 3 == 0) {
-                    const SeedVariants v = seed_compute(k, 64, warm_compute);
+                    const SeedVariants v = seed_compute(k, 64, warm_compute, baked);
                     made += v.variants != 0, variants += v.variants, asking += v.variants > 1, capped += v.capped && v.variants;
                 }
                 done++;
@@ -7890,7 +7909,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     const unsigned cpus = usable_cpus();
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     const unsigned quarter = std::clamp(std::max(1u, std::thread::hardware_concurrency()) / 4, 2u, 4u);
-    const unsigned workers = background ? std::min(quarter, cpus) : std::clamp(half_cpus(), 1u, 32u);
+    const unsigned workers = bake ? bake_workers : background ? std::min(quarter, cpus) : std::clamp(half_cpus(), 1u, 32u);
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
@@ -7898,7 +7917,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         if (next.load() >= total + threads.size()) break;
     }
     for (std::thread& t : threads) t.join();
-    if (!background) state_list_prepare(nullptr);   // (in play it is too late for the precompile: an update's is state_list_run, before)
+    if (!background && !bake) state_list_prepare(nullptr);   // (in play it is too late for the precompile: an update's is state_list_run, before)
     if (!env_on("RX_VK_SEED_CHECK")) seed_close();
     if (prepare_stopped()) {   // (closed: what was made is in the program cache already, the rest is made at the next start)
         logf("vk: shader preparation stopped at %zu of %zu (the window was closed): the next start goes on from there", done.load(),
@@ -7908,8 +7927,8 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     }
     int64_t translated = 0, failed = 0;
     shader_stats(&translated, &failed);
-    logf("vk: prepared %zu shader programs%s (%zu new, %lld failed, %zu compute pipelines; %zu compute variants, %zu programs with "
-         "texture variants, %zu at the limit) in %.1f s", programs, background ? " in play" : "", made.load(), (long long)failed, libs.load(), variants.load(),
+    logf("vk: %s %zu shader programs%s (%zu new, %lld failed, %zu compute pipelines; %zu compute variants, %zu programs with "
+         "texture variants, %zu at the limit) in %.1f s", bake ? "baked" : "prepared", programs, background ? " in play" : "", made.load(), (long long)failed, libs.load(), variants.load(),
          asking.load(), capped.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     if (warm) {
         // (translated, whatever becomes of the libraries: a start that is closed in them goes on with them alone)
@@ -7920,9 +7939,11 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
             return false;
         }
     }
-    if (!background) remove(warming.c_str());
-    // (the driver's part left out, by a start that ended in it or in play, is not tried again for this driver: as before)
+    if (!background && !bake) remove(warming.c_str());
+    // (the driver's part left out, by a start that ended in it or in play, is not tried again for this driver: as before. A bake
+    // made none of it: the game's prepare makes it)
     prepared_for.warmed = warmed;
+    if (bake) prepared_for.warmed = kWarmedBaked;
     prepared_write(path, prepared_for);
     return true;
 }

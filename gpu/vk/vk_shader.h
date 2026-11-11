@@ -89,6 +89,7 @@ std::string program_code_keys(const NvnState& s);   // (hookshot) " stage:key" f
 const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t color_types[8]);   // (program_for without its cache)
 void program_wait(const Program* p);
 uint64_t program_cache_stamp();   // (what the kept programs and pipelines are good for)
+uint64_t program_cache_file_stamp(const std::string& path);   // (a program cache file's stamp, as written: 0 none)
 size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const std::function<void(Program&)>& fn,
                                bool computes = true, bool fallbacks = false);   // (computes: and every kept compute program)
 /// The precompile of every shader of the game (hookshot_shaders.bin, from nx2/shader_census.py): how many programs it names, 0: none
@@ -104,7 +105,9 @@ struct SeedVariants {
     size_t variants = 0, questions = 0;
     bool kept = false, failed = false, capped = false;
 };
-SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program&)>& made);
+/// kept_whole: (hookshot, after a bake) a compute program with any kept variant is left as it is: its kept variants are all its
+/// answers' (the bake tried them all), not only what play met
+SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program&)>& made, bool kept_whole = false);
 /// (hookshot, the prediction: vk_predict.cpp) a kept graphics program variant as hookshot_programs.bin has it: each stage's SPIR-V
 struct KeptProgram {
     uint64_t key = 0, variant = 0;

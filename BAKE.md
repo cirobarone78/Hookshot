@@ -1,4 +1,29 @@
-# BAKE — offline NVN2 shader bake (developer tooling)
+# BAKE — offline NVN2 shader bake
+
+## The bake the build runs (nx2/bake.py live)
+
+`nx2/make_game.py` translates the game's shaders beside its C compile, on the player's own PC from their own files
+(`start_bake` / `finish_bake`): the shader list (`nx2/shader_census.py`) and the Vulkan back end (`nx2/build.py` with
+`RX_VK_ONLY`, objects shared with the full build) come first, then `nx2/bake.py live` loads that back end and calls its
+`mkwvk_bake` (`gpu/vk/vk_main.cpp`) at idle priority in `<game>/.hookshot_bake/`. That is the game's own `prepare_run`
+(translation only: no pipeline, no pipeline cache, no state list), so its `hookshot_programs.bin` has the game's stamp and
+the game's bytes by construction. Once the game is built, `live_install` moves the cache, its index and the prepare's
+record into the folder; the record's `warmed` word says "baked" (`kWarmedBaked`), and the game's prepare (the build's
+`--prepare-shaders`, or the first start) keeps every program the cache has, translates only what it lacks (a cache
+cut short, deleted, or made for another GPU or translator: the stamp then differs and it starts again) and makes the
+driver's part. Off by default (`HOOKSHOT_BAKE=1` turns it on; never without the prepare): on a cold 12-thread build it
+moved ~60 s of translation out of the prepare but cost as much in the build (see `bake_skipped` in make_game.py).
+Tests: `tests/test_bake_live.py`.
+
+Why not the copies below (`bake_ds`, `gpu/shaderbatch.cpp`): the cache's stamp (`vk_shader.cpp disk_stamp`) is the
+translator's sources AND this GPU (mesh shaders, subgroup lanes and pinned stages, the matrix layout measured on the device,
+the depth mode, the C++ library's layouts, the stamped switches). A copy can't compute the GPU's half without the GPU,
+and it fell behind the back end's translation and record format (`put_head`'s questions and mesh-fallback words): the
+game refused its banks, first by the stamp, then by the record head. The sections below describe that developer tooling.
+
+---
+
+## Developer tooling (the copies)
 
 Branch `bake-merge` from `main` 15ec28d. Merges the four `bake-*` race
 entries into one shippable, CPU-only, repo-only toolset: ROM/container

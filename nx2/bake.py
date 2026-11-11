@@ -1,4 +1,23 @@
-"""Local bake-everything skeleton: ROM seed in, batch combo list + bank out.
+"""Offline shader bake: the first start's shader translation done at the build, and the older bake-everything skeleton.
+
+The bake the build runs (nx2/make_game.py, beside the game's compile; the `live` command below and the live_* functions):
+
+    python3 -I nx2/bake.py live --lib <hookshot_vk.so|.dll> --folder <game>/.hookshot_bake --into <game> [--workers N]
+
+It loads the Vulkan back end the build just made and calls its mkwvk_bake (gpu/vk/vk_main.cpp): the game's own prepare
+(vk_draw.cpp prepare_run), translation only, from the player's shader list (hookshot_shaders.bin, made by nx2/shader_census.py
+from their own romfs) on this PC's GPU, into a program cache (hookshot_programs.bin + .idx) and the prepare's record
+(hookshot_prepared.bin) in a folder of its own. live_install moves them into the game folder once the build is done; the game's
+prepare (--prepare-shaders at the build's end, or the first start) then finds every program translated and makes only the
+driver's part. Nothing of the game leaves the PC, and nothing is shipped.
+
+Why the back end itself and not a copy of its translator (nx2/bake_ds, gpu/shaderbatch.cpp): the program cache is good for one
+stamp (vk_shader.cpp disk_stamp), which holds the translator's sources AND this GPU's profile (mesh shaders, subgroup lanes,
+the matrix layout measured on the device, the depth mode, the C++ library's layouts, the stamped switches). A copy can't know the
+GPU's half without the GPU, and every change to the back end's translation or record format left the copies behind: the game
+refused their banks (first the stamp, then the record head). The back end's own code writes the same bytes the game would.
+
+Local bake-everything skeleton (developer tooling): ROM seed in, batch combo list + bank out.
 
 End-to-end CPU-only pass (no Vulkan device, no game files needed for the
 skeleton itself):
@@ -45,11 +64,16 @@ Synthetic-data test: tests/test_bake_skeleton.py.
 """
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
+import shutil
 import struct
+import subprocess
 import sys
+import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -440,6 +464,162 @@ def census_cmd(romfs: str, out: str):
             os.path.join(HERE, "shader_census.py"), romfs, "--out", out]
 
 
+# ---- the bake at the build (see the top): driven by nx2/make_game.py ----
+LIVE_FOLDER = ".hookshot_bake"   # (in the game folder: on its drive, so live_install's moves are renames)
+LIVE_FILES = ("hookshot_programs.bin", "hookshot_programs.idx", "hookshot_prepared.bin")   # (what it makes, as the game names them)
+LIVE_COPIED = ("hookshot_options.ini",)   # (the game's settings it reads as the game does: the GPU chosen in the Insert menu)
+
+
+def live_folder(out):
+    return os.path.join(out, LIVE_FOLDER)
+
+
+def live_workers(cpus=None):
+    """Translating threads: half the CPUs, as the game's own prepare (vk_draw.cpp prepare_run), at least one, at most 32"""
+    cpus = cpus or os.cpu_count() or 2
+    return max(1, min(32, cpus // 2))
+
+
+def _link_or_copy(src, dst):
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def live_stage(out, lib):
+    """The bake's folder, made new: the shader list (linked), the game's settings, and its own copy of the back end (the build
+    links hookshot_vk again later, and Windows can't replace a DLL that is loaded). None: there is nothing to bake from, or the
+    folder can't be made (an earlier bake still has it open)"""
+    seed = os.path.join(out, "hookshot_shaders.bin")
+    if not os.path.isfile(seed) or not os.path.isfile(lib):
+        return None
+    folder = live_folder(out)
+    try:
+        if os.path.isdir(folder):
+            shutil.rmtree(folder)
+        os.makedirs(folder)
+        _link_or_copy(seed, os.path.join(folder, "hookshot_shaders.bin"))
+        for name in LIVE_COPIED:
+            if os.path.isfile(os.path.join(out, name)):
+                shutil.copy2(os.path.join(out, name), os.path.join(folder, name))
+        shutil.copy2(lib, os.path.join(folder, os.path.basename(lib)))
+    except OSError as e:
+        print("bake: the bake's folder %s could not be made (%s): the game translates its shaders in its prepare" % (folder, e),
+              flush=True)
+        return None
+    return os.path.join(folder, os.path.basename(lib))
+
+
+def live_cmd(lib, out, workers):
+    return [sys.executable, "-I", "-u", "-X", "utf8", os.path.abspath(__file__), "live", "--lib", lib, "--folder", live_folder(out),
+            "--into", out, "--workers", str(workers)]
+
+
+def _idle():
+    """(linux, in the bake's process before it starts) only the CPU time nothing else wants (SCHED_IDLE): the compile beside it keeps
+    its speed. And it ends with the build that started it"""
+    try:
+        os.sched_setscheduler(0, os.SCHED_IDLE, os.sched_param(0))
+    except (AttributeError, OSError):
+        with contextlib.suppress(OSError):
+            os.nice(19)
+    try:
+        import ctypes
+        ctypes.CDLL(None, use_errno=True).prctl(1, 9)   # (PR_SET_PDEATHSIG, SIGKILL)
+    except (OSError, AttributeError):
+        pass
+
+
+class Live:
+    """The bake, started (live_start) and running beside the build: its lines read on a thread of their own"""
+
+    def __init__(self, proc, out, log):
+        self.proc, self.out, self.log = proc, out, log
+        self.done, self.total, self.result = 0, 0, None
+        self.started = time.time()
+        self.thread = threading.Thread(target=self._read, daemon=True)
+        self.thread.start()
+
+    def _read(self):
+        for line in self.proc.stdout:
+            line = line.rstrip()
+            if line.startswith("@@bake "):
+                words = line.split()
+                if len(words) == 3 and words[1].isdigit() and words[2].isdigit():
+                    self.done, self.total = int(words[1]), int(words[2])
+                    continue
+                self.result = " ".join(words[1:])
+            if self.log:
+                self.log("bake: " + line)
+
+    def wait(self, progress=None):
+        """Until it ends; progress(fraction) as it goes. True: baked (or nothing to bake), its files ready for live_install"""
+        while self.proc.poll() is None:
+            if progress and self.total:
+                progress(self.done / self.total)
+            time.sleep(0.5)
+        self.thread.join(5)
+        self.seconds = time.time() - self.started
+        return self.proc.returncode == 0 and self.result in ("done", "current")
+
+
+def live_start(lib, out, workers=None, log=print, env=None):
+    """The bake's process, at idle priority, in the game's environment (env); None when it could not start"""
+    workers = workers or live_workers()
+    kw = {}
+    if os.name == "nt":
+        kw["creationflags"] = 0x00000040   # (IDLE_PRIORITY_CLASS)
+    else:
+        kw["preexec_fn"] = _idle
+    try:
+        proc = subprocess.Popen(live_cmd(lib, out, workers), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                encoding="utf-8", errors="replace", bufsize=1, env=env, cwd=live_folder(out), **kw)
+    except OSError as e:
+        print("bake: could not start (%s): the game translates its shaders in its prepare" % e, flush=True)
+        return None
+    return Live(proc, out, log)
+
+
+def live_install(out):
+    """The baked program cache and the prepare's record into the game folder (the build's new files are in place). False: nothing
+    was baked (the folder's cache was current), and nothing moved"""
+    folder = live_folder(out)
+    made = os.path.isfile(os.path.join(folder, LIVE_FILES[0])) and os.path.isfile(os.path.join(folder, LIVE_FILES[2]))
+    if made:
+        # (the record last: a cache without its record is translated again where needed, a record without its cache would say
+        # programs are kept that are not)
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(os.path.join(out, LIVE_FILES[2]))
+        for name in LIVE_FILES:
+            src = os.path.join(folder, name)
+            if os.path.isfile(src):
+                os.replace(src, os.path.join(out, name))
+            elif name != LIVE_FILES[2]:   # (no index: the game makes it again from the cache)
+                with contextlib.suppress(FileNotFoundError):
+                    os.remove(os.path.join(out, name))
+    live_clear(out)
+    return made
+
+
+def live_clear(out):
+    shutil.rmtree(live_folder(out), ignore_errors=True)
+
+
+def live_main(a):
+    import ctypes
+    enc = (lambda p: p.encode("mbcs")) if os.name == "nt" else os.fsencode
+    try:
+        lib = ctypes.CDLL(os.path.abspath(a.lib))
+        bake = lib.mkwvk_bake
+    except (OSError, AttributeError) as e:
+        print("@@bake no bake in %s: %s" % (a.lib, e), flush=True)
+        return 4
+    bake.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+    bake.restype = ctypes.c_int
+    return bake(enc(os.path.abspath(a.folder)), enc(os.path.abspath(a.into)) if a.into else None, a.workers or live_workers())
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -470,8 +650,15 @@ def main(argv=None):
                    help="additionally record the strict-layout (no-flag) "
                         "spirv-val count for information only; the gate is "
                         "the shipping build's uniformBufferStandardLayout")
+    lv = sub.add_parser("live", help="the bake at the build: the back end's own translation into a program cache (see the top)")
+    lv.add_argument("--lib", required=True, help="hookshot_vk.so / hookshot_vk.dll, the build's")
+    lv.add_argument("--folder", required=True, help="the bake's folder, with hookshot_shaders.bin in it (live_stage)")
+    lv.add_argument("--into", default=None, help="the game folder: a program cache there made for this GPU and translator is kept")
+    lv.add_argument("--workers", type=int, default=0)
     a = p.parse_args(argv)
 
+    if a.cmd == "live":
+        return live_main(a)
     if a.cmd == "stamp":
         print(translator_stamp())
         return 0

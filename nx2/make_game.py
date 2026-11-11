@@ -25,6 +25,7 @@ and one plain line the builders also read (older ones only show it): "the shader
 build's last step, the shaders' preparation, was skipped or failed and is left to the game's first start (NOT_PREPARED)
 """
 import argparse
+import atexit
 import contextlib
 import errno
 import filecmp
@@ -52,6 +53,7 @@ STARTED = time.time()   # (the build's total time, kept in build_times.json and 
 sys.path[:0] = [HERE, os.path.join(ROOT, "third_party", "a64-kit", "tools")]   # (python -I leaves the script folder off)
 import toolchain as _toolchain
 import disk as _disk
+import bake as _bake
 # (hookshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (HOOKSHOT_MINGW, or llvm-mingw
 # beside the builder), to run under Proton or copy to a Windows PC
 LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt"
@@ -1235,6 +1237,74 @@ def link_or_copy(src, dst):
             say("progress", "%.3f" % (i / max(1, len(files))))
 
 
+def bake_skipped(a, environ=None):
+    """Why the shaders are not translated during the build (the bake, nx2/bake.py), or None: they are. HOOKSHOT_BAKE=1 turns it on;
+    never without the prepare (the same switches: it is the prepare's first half).
+    Off by default: measured on a 12-thread cold build (Ryzen 7900X half, RTX 3090) build + prepare took 1521 s with it and 1512 s
+    without. The bake's 60 s of translation moved out of the prepare (235 s -> 179 s, the rest is the compute pipelines' driver
+    compiles), but the build gained as much: the back end built before the lift (23 s) and the lift slowed by the bake on the
+    same cores (102 s -> 137 s, SMT siblings), and it holds ~4.5 GB while it runs"""
+    environ = os.environ if environ is None else environ
+    why = prepare_skipped(a, environ)
+    if why:
+        return why
+    if environ.get("HOOKSHOT_BAKE", "0") in ("", "0"):
+        return "HOOKSHOT_BAKE=1 is not set"
+    return None
+
+
+def start_bake(a, out, romfs, work, env):
+    """(hookshot) The shaders translated beside the game's compile, not after it: the shader list (nx2/shader_census.py), the Vulkan
+    back end (nx2/build.py RX_VK_ONLY: its objects are the full build's own, compiled once), then the bake (nx2/bake.py live) on
+    the CPU time the compile leaves (idle priority). Its program cache goes into the folder once the build is done (finish_bake),
+    and the prepare then makes only the driver's part. Returns the running bake, or None (the prepare translates, as before), and
+    whether the shader list is made already"""
+    why = bake_skipped(a)
+    if why:
+        print("the shaders are not translated during the build (%s)" % why, flush=True)
+        return None, False
+    seed = os.path.join(out, "hookshot_shaders.bin")
+    if run(shader_census_cmd(romfs, seed), check=False, output=sys.stderr):
+        return None, False   # (tried again at the end, as before)
+    lib = os.environ.get("HOOKSHOT_VK_PREBUILT", "")
+    if not lib or os.environ.get("HOOKSHOT_NGX_SDK"):
+        t = time.time()
+        # (its @@ lines are the full build's to say: this one's would count its files twice)
+        if run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], dict(env, RX_VK_ONLY="1"), check=False,
+               show=lambda line: None if line.startswith("@@") else line):
+            print("the Vulkan back end did not build on its own: the shaders are translated after the build", flush=True)
+            return None, True
+        lib = os.path.join(work, "sa", "build", BESIDE[1])
+        print("the Vulkan back end for the shader bake: %.0f s" % (time.time() - t), flush=True)
+    staged = _bake.live_stage(out, lib)
+    if not staged:
+        return None, True
+    baking = _bake.live_start(staged, out, log=lambda line: print(line, flush=True), env=game_env())
+    if baking:
+        print("the shaders are being translated beside the compile (%d threads, idle priority)" % _bake.live_workers(), flush=True)
+        # (a build that stops ends it too; on Linux its own parent-death signal does, on Windows this)
+        atexit.register(lambda: baking.proc.poll() is None and baking.proc.kill())
+    return baking, True
+
+
+def finish_bake(baking, out):
+    """The bake waited for (the game is built by now) and its program cache moved into the folder; False: the prepare translates"""
+    if not baking:
+        return False
+    say("stage", "shaders", "Preparing shaders")
+    ok = baking.wait(lambda f: say("progress", "%.3f" % f))
+    if not ok:
+        _bake.live_clear(out)
+        print("the shader bake ended without a result (%s, exit status %s): the shaders are translated in the prepare"
+              % (baking.result or "no word", baking.proc.returncode), flush=True)
+        return False
+    if _bake.live_install(out):
+        print("the shaders were translated during the build (the bake took %.0f s in all)" % baking.seconds, flush=True)
+    else:
+        print("the shaders translated before are still good: nothing baked", flush=True)
+    return True
+
+
 def shader_census_cmd(romfs, out):
     """The shader list, under the same UTF-8 mode as the other steps. -I alone follows the console's code page, and an
     archive name that page cannot print stopped this step: the game then compiled its shaders as it played."""
@@ -1712,6 +1782,8 @@ def main(a=None):
     if os.path.exists(os.path.join(work, "hookshot_pieces.prof")) and profile_readable(os.path.join(work, "hookshot_pieces.prof")):
         env["RX_PGO"] = os.path.join(work, "hookshot_pieces.prof")
 
+    baking, seed_made = start_bake(a, out, romfs, work, env)
+
     say("stage", "lift", "Translating the game to PC code")
     # (the same game, tools and settings as the lift before: its C is what this lift would write, and nothing recompiles from it. A
     # rebuild after a change to host/ alone skips the minutes of the lift)
@@ -1881,7 +1953,7 @@ def main(a=None):
         place_fsr_runtime(out)
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
-    if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
+    if not seed_made and run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
     # (hookshot) the button prompts of other controllers (host/prompts.c): the game's icon font redrawn per controller, with fontTools.
     # Without it the game shows its own icons
@@ -1945,6 +2017,7 @@ def main(a=None):
     if skipped:
         not_prepared(skipped)
     else:
+        finish_bake(baking, out)
         prepare_shaders([os.path.join(game_dir, BESIDE[0]), "--prepare-shaders"], out)
     say("done", out)
 

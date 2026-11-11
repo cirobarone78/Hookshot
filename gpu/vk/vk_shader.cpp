@@ -2100,13 +2100,24 @@ bool seed_is_compute(size_t i) {
 // answer it can get, and an answer that changes the SPIR-V makes a variant. Variants of two answers and more are taken fewest first, up
 // to cap: one of them is the variant play makes, which still_valid then finds kept. All go to hookshot_programs.bin, as play keeps them,
 // and each new one is given to made (its modules live until it returns)
-SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program&)>& made) {
+SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program&)>& made, bool kept_whole) {
     static const uint8_t no_types[8]{};
     SeedVariants r;
     const SeedStage* cs = nullptr;
     for (const uint32_t k : seed.programs[i])
         if ((seed.stages[k].stage & 7) == 5) cs = &seed.stages[k];
     if (!cs || !cs->end) return r;
+    if (kept_whole) {
+        bool have;
+        {
+            std::lock_guard lk(disk_mu);
+            have = disk_records.count(cs->key) != 0;
+        }
+        // (their driver's part as for new ones: each kept variant given to made, which builds its pipeline for the driver's
+        // cache. Left to the precompile, the ~10,000 compute pipelines took it 396 s where it took 190 s, on fewer threads)
+        if (have && made) program_cache_borrow(cs->key, made);
+        if (have || loaded_variants(cs->key, nullptr)) return r.kept = true, r;
+    }
     // (the variants kept already, by play or an earlier prepare: the others are
     // still asked for, as a kept base says nothing of them)
     std::unordered_set<uint64_t> variants;

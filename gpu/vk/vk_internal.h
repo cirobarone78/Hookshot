@@ -305,7 +305,7 @@ bool invalidate_lost_surface(VkResult result);   // (dev.present_mu held)
 bool replay_start();                          // vk_replay.cpp
 bool precompile_wanted();                     // vk_draw.cpp
 void precompile_run(void (*progress)(size_t done, size_t total));
-bool prepare_run(void (*progress)(size_t done, size_t total), bool background, bool refresh_states = false);
+bool prepare_run(void (*progress)(size_t done, size_t total), bool background, bool refresh_states = false, unsigned bake_workers = 0);
 bool prepare_is_update();
 void prepare_background();
 void state_list_run();                        // (an update: the state list's pipelines noted before precompile_run)

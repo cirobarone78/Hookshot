@@ -88,6 +88,17 @@ bool disk_listing = false;
 bool disk_on = false;
 std::atomic<int64_t> st_cache_hits{0};
 constexpr uint32_t kDiskMagic = 0x31505348;
+/// (hookshot) A program cache file's stamp as its head has it (0: no file, or not a program cache): the bake (vk_main.cpp mkwvk_bake)
+/// keeps a game folder's cache that is good for this translator and GPU already
+uint64_t program_cache_file_stamp(const std::string& path) {
+    uint32_t head[2]{};
+    uint64_t stamp = 0;
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return 0;
+    const bool ok = fread(head, 4, 2, f) == 2 && fread(&stamp, 8, 1, f) == 1 && head[0] == kDiskMagic;
+    fclose(f);
+    return ok ? stamp : 0;
+}
 constexpr uint32_t kIdxMagic = 0x58495048;   // ("HPIX", then a version and the cache's stamp; 20 bytes a record: key, size, kind)
 constexpr uint32_t kIdxVersion = 1;
 constexpr size_t kIdxEntry = 20;

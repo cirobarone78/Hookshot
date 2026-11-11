@@ -12,10 +12,23 @@
 #include <windows.h>
 #undef min
 #undef max
+#include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace mkwvk {
+/// (hookshot) The folder an offline bake (mkwvk_bake, vk_main.cpp) works in, in place of the executable's: a bake runs in the build's
+/// own process, and its files (the shader list it reads, the program cache it writes) are in a folder of their own. Empty: the
+/// executable's folder, as always
+inline std::string& game_folder_override() {
+    static std::string folder;
+    return folder;
+}
 inline DWORD game_module_path(char* buf, DWORD size) {
+    if (const std::string& f = game_folder_override(); !f.empty()) {   // (a file name the folder's files are found beside)
+        const int n = snprintf(buf, size, "%s/hookshot_bake", f.c_str());
+        return n > 0 && (DWORD)n < size ? (DWORD)n : 0;
+    }
     DWORD n = GetModuleFileNameA(nullptr, buf, size);
     if (!n || n >= size) return n;
     char* name = buf + n;

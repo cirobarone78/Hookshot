@@ -28,6 +28,7 @@
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
+#include "vk_shader.h"
 
 namespace vkx {
 #define VKX_DEFINE(f) PFN_##f f;
@@ -1308,6 +1309,125 @@ void mkwvk_close_asked(void) {
         if (WaitForSingleObject(prep_ended, 10000) != WAIT_OBJECT_0) logf("vk: the preparation did not stop within 10 s: closing anyway");
     }
     dlss_fg_close();   // (NVIDIA DLSS Frame Generation through NGX: its feature let go before the process exits, vk_dlss.cpp)
+}
+
+// ---- (hookshot) The offline bake (nx2/bake.py, run by nx2/make_game.py beside the game's compile): the first start's shader
+// translation (prepare_run's), done at the build from the player's own shader list, on this PC's GPU, by this back end's own
+// translator. No game and no executable of the game: the build loads this library on its own and calls mkwvk_bake. What it writes
+// is the program cache the game itself writes, made by the same code with the same stamp (disk_stamp: this GPU, this translator),
+// so the game takes it as its own; anything else it does not take (another GPU, another build), and translates as before ----
+namespace mkwvk {
+namespace {
+// (what the translation asks of the executable: the log and the depth mode. The game's own starts before it knows the mode with
+// OoT's, near is -w (host/nvn_native.c), as a --prepare-shaders run does; the rest is never asked for without a game)
+void bake_log(const char* line) {
+    printf("%s\n", line);
+    fflush(stdout);
+}
+template <class R> R zero() { return R{}; }
+uint8_t* bake_null_ptr() { return nullptr; }
+uint8_t* bake_gpu_ptr(uint64_t, uint64_t* avail) {
+    if (avail) *avail = 0;
+    return nullptr;
+}
+uint64_t bake_u64(uint64_t) { return 0; }
+int bake_io(uint64_t, const void*, uint64_t) { return 0; }
+int bake_read(uint64_t, void*, uint64_t) { return 0; }
+int64_t bake_collect(uint32_t** pages) {
+    if (pages) *pages = nullptr;
+    return 0;
+}
+int64_t bake_collect_in(const uint64_t (*)[2], int, uint32_t** pages) { return bake_collect(pages); }
+void bake_free_pages(uint32_t*) {}
+void bake_mark(const void*, uint64_t) {}
+void bake_tex_layout(const nvn_texdesc*, nvn_texlayout* o) { *o = nvn_texlayout{}; }
+uint64_t bake_level_offset(const nvn_texdesc*, unsigned) { return 0; }
+int bake_bpb(int, int* bw, int* bh) {
+    if (bw) *bw = 1;
+    if (bh) *bh = 1;
+    return 0;
+}
+void bake_tiles(const nvn_texdesc*, unsigned, unsigned* h, unsigned* d) {
+    if (h) *h = 1;
+    if (d) *d = 1;
+}
+uint32_t bake_stride(const nvn_texdesc*) { return 0; }
+int bake_depth_minus_w() { return 1; }
+int bake_pools(uint64_t (*)[2], int) { return 0; }
+void bake_watch(uint64_t, uint64_t) {}
+int bake_binding(int, int, int) { return -1; }
+void bake_bind(int, int, int, int) {}
+int bake_key(int) { return 0; }
+int bake_pointer(MkwVkPointer* o) {
+    if (o) *o = MkwVkPointer{};
+    return 0;
+}
+const char* bake_mic_name(int) { return ""; }
+void bake_mic_select(int, const char*, int) {}
+void bake_flush() {}
+int bake_face() { return -1; }
+const char* bake_romfs() { return ""; }
+float bake_wide(uint32_t) { return 0.0f; }
+void bake_slept(int64_t out[2]) { out[0] = out[1] = 0; }
+void bake_fps_timing(int) {}
+const MkwVkHost bake_host = {
+    MKWVK_API_VERSION, bake_log, bake_null_ptr, zero<uint64_t>, bake_gpu_ptr, bake_u64, bake_read, bake_io, bake_collect,
+    bake_free_pages, bake_mark, zero<uint64_t>, zero<int64_t>, bake_tex_layout, bake_level_offset, bake_bpb, bake_tiles, bake_stride,
+    bake_depth_minus_w, bake_pools, zero<uint32_t>, zero<uint32_t>, zero<uint64_t>, bake_collect_in, bake_u64, bake_watch,
+    zero<uint32_t>, bake_binding, bake_bind, zero<float>, bake_key, bake_pointer, zero<int>, bake_mic_name, bake_mic_select,
+    zero<int>, bake_flush, bake_face, bake_romfs, bake_wide, bake_slept, bake_fps_timing, zero<int>,
+};
+// (every member set: a host made for an older MkwVkHost would leave the new ones null, and the back end calls them)
+static_assert(sizeof(bake_host) == offsetof(MkwVkHost, prompts_live) + sizeof(bake_host.prompts_live),
+              "bake_host: MkwVkHost has members the bake does not set");
+} // namespace
+} // namespace mkwvk
+
+/// folder: the bake's own folder, with the shader list (hookshot_shaders.bin) in it; the program cache and the prepare's record
+/// (hookshot_programs.bin, .idx, hookshot_prepared.bin) are written there. into: the game folder they are for (or null): a program
+/// cache there made for this translator and GPU already is kept, and nothing is baked. workers: the translating threads.
+/// 0 baked (or nothing to bake: "@@bake current"), 2 no shader list or nothing translated, 3 no usable Vulkan here
+extern "C"
+#ifdef _WIN32
+__declspec(dllexport)
+#else
+__attribute__((visibility("default")))
+#endif
+int mkwvk_bake(const char* folder, const char* into, int workers) {
+    using namespace mkwvk;
+    if (!folder || !*folder) return 2;
+    host = &bake_host;
+    game_folder_override() = folder;
+    if (!load_global() || !create_instance() || !pick_device() || !create_device()) {
+        printf("@@bake no usable Vulkan here\n");
+        fflush(stdout);
+        return 3;
+    }
+    logf("vk: bake: %s, Vulkan %u.%u, driver %#x; mesh shaders %s; cache stamp %016llx", dev.props.deviceName,
+         VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion), dev.props.driverVersion,
+         dev.mesh_shader ? "yes" : dev.mesh_fallback ? "fallback" : "no", (unsigned long long)program_cache_stamp());
+    if (into && *into) {
+        const std::string kept = std::string(into) + "/hookshot_programs.bin";
+        if (program_cache_file_stamp(kept) == program_cache_stamp()) {
+            logf("vk: bake: %s is made for this translator and GPU already: nothing baked", kept.c_str());
+            printf("@@bake current\n");
+            fflush(stdout);
+            return 0;
+        }
+    }
+    const auto progress = [](size_t done, size_t total) {
+        static size_t last = 0;
+        if (total && done * 20 / total != last) last = done * 20 / total, printf("@@bake %zu %zu\n", done, total), fflush(stdout);
+    };
+    const unsigned n = (unsigned)std::clamp(workers, 1, 64);
+    if (!prepare_run(progress, false, false, n)) {
+        printf("@@bake nothing baked\n");
+        fflush(stdout);
+        return 2;
+    }
+    printf("@@bake done\n");
+    fflush(stdout);
+    return 0;
 }
 
 extern "C"
