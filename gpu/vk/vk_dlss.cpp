@@ -77,6 +77,7 @@ struct State {
     uint32_t feature_rw = 0, feature_rh = 0, feature_ow = 0, feature_oh = 0;   // (its largest render size, its output)
     uint32_t min_rw = 0, min_rh = 0;
     unsigned feature_preset = ~0u;   // (the preset it was made with: another one from the menu makes it again)
+    bool feature_aa = false;
     uint64_t features_made = 0;      // (how many times: a feature made again in play costs a stall, so each says why)
 };
 State& st() {
@@ -277,12 +278,12 @@ unsigned wanted_preset() {
 
 /// DLSS's feature for this output size and preset, made when either changes (cmd: its creation's work): the engine's
 /// prepare (vk_temporal.h)
-int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh, uint32_t* in_w, uint32_t* in_h,
-            const char** fail) {
+int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh, bool native_aa,
+            uint32_t* in_w, uint32_t* in_h, const char** fail) {
     State& s = st();
     const unsigned preset = wanted_preset();
     if (s.feature && s.feature_ow == ow && s.feature_oh == oh && rw <= s.feature_rw && rh <= s.feature_rh &&
-        rw >= s.min_rw && rh >= s.min_rh && s.feature_preset == preset)
+        rw >= s.min_rw && rh >= s.min_rh && s.feature_preset == preset && (!native_aa || s.feature_aa))
         return *in_w = s.feature_rw, *in_h = s.feature_rh, 1;
     // (why it is made: in the log with its time, so a stall in play can be matched with one)
     char why[160];
@@ -293,6 +294,7 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     else if (s.feature_preset != preset)
         snprintf(why, sizeof why, "preset %c, was %c (the DLSS model row)", upscaler_rows::preset_letter(preset),
                  upscaler_rows::preset_letter(s.feature_preset));
+    else if (native_aa && !s.feature_aa) snprintf(why, sizeof why, "the native anti-aliasing mode was selected");
     else
         snprintf(why, sizeof why, "the render size %ux%u left its range, %ux%u to %ux%u", rw, rh, s.min_rw, s.min_rh,
                  s.feature_rw, s.feature_rh);
@@ -358,6 +360,7 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     }
     s.feature_rw = max_w, s.feature_rh = max_h, s.feature_ow = ow, s.feature_oh = oh, s.min_rw = min_w, s.min_rh = min_h;
     s.feature_preset = preset;
+    s.feature_aa = mode == NVSDK_NGX_PerfQuality_Value_DLAA;
     s.features_made++;
     logf("vk: NVIDIA DLSS: feature %llu made (%s; frame %llu, %.1f ms of CPU): %ux%u (%ux%u to %ux%u) -> %ux%u, mode %d, "
          "preset %c%s", (unsigned long long)s.features_made, why, (unsigned long long)texture_frame_no(), made_ms, rw, rh,
