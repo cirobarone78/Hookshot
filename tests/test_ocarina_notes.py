@@ -167,7 +167,14 @@ int main(int argc, char **argv) {
     hos_oc_wait = 2;
     oc_notes();
     CHECK(oc_pad_word(raww) == raww);
-    /* (h) a mouse button is never a note: a note row does not accept one */
+    /* (h) the lesson kind (2) teaches the game's own note buttons: they stay, the remaps go over them */
+    hos_oc_wait = 1;
+    oc_notes();
+    hos_oc_last_kind = 2;
+    CHECK((oc_pad_word(raww) & (1ULL << HOS_SW_R)) != 0 && (oc_pad_word(raww) & (1ULL << HOS_SW_L)) != 0);
+    hos_oc_last_kind = 1;
+    CHECK((oc_pad_word(raww) & (1ULL << HOS_SW_L)) == 0);
+    /* (i) a mouse button is never a note: a note row does not accept one */
     hos_bind(HOS_BIND_KEY, HOS_KEY_OC_NOTE_A, 1, VK_LBUTTON);
     CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_OC_NOTE_A, 1) == 0);
     hos_bind(HOS_BIND_KEY, HOS_SW_Y, 0, VK_LBUTTON);   /* a normal row still takes the mouse button */

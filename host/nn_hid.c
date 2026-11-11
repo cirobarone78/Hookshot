@@ -930,7 +930,9 @@ static uint64_t oc_pad_word(uint64_t buttons) {
     if (rx_option(1, 0) || pad_after_menu || !game_in_front()) return buttons;
     static const uint64_t note_to[5] = {1ULL << HOS_SW_L, 1ULL << HOS_SW_R, 1ULL << HOS_SW_A,
                                         1ULL << HOS_SW_Y, 1ULL << HOS_SW_X};
-    uint64_t w = buttons & ~(note_to[0] | note_to[1] | note_to[2] | note_to[3] | note_to[4]);
+    uint64_t w = buttons;
+    if (hos_oc_last_kind != 2)   /* (the lesson kind teaches the game's own note buttons, so they stay) */
+        w &= ~(note_to[0] | note_to[1] | note_to[2] | note_to[3] | note_to[4]);
     for (int i = 0; i < 5; i++)
         if (hos_oc_note_bits & (1ULL << i)) w |= note_to[i];
     return w;
