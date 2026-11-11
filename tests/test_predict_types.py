@@ -6,7 +6,8 @@ the seed makes each skinned program three times, for float and for unsigned inte
 one layout their signature's notes had most, and a draw with that layout has one of the three keys: the other two pipelines could
 never be looked up. Each is a program of its own modules, a full driver compile. Now a candidate whose types differ from what the
 module declares (an integer where it has a float, a float where it has an integer, the other signedness) is left out; scaled types
-are let through (float or integer by the GPU).
+are let through (float or integer by the GPU). The signature fallback picks the most common class that fits (candidates), so the
+other variants get a layout of their own types rather than none.
 
 Checked here: Locations, spirv_locations and types_fit, extracted unmodified, on hand-made SPIR-V; and in the source, that the
 prediction filters both its vertex and output candidates with them, that predict_run builds each pipeline_key once, and that a
@@ -52,9 +53,12 @@ def body(text, marker):
 
 
 CHECK = r'''
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 namespace Shader {
 enum class AttributeType : uint8_t { Float, SignedInt, UnsignedInt, SignedScaled, UnsignedScaled, Disabled };
@@ -112,6 +116,20 @@ int main() {
     std::vector<uint32_t> cut(w.begin(), w.begin() + 12);             // (a cut module: what was read)
     cut.push_back(op(59, 9));
     (void)spirv_locations(cut, 1);
+    // (the signature fallback: the most common class that fits, not the most common then filtered to nothing)
+    Seen sig, exact;
+    const Class common{1, 6, 2}, rare{1, 6, 1}, other{3};
+    for (uint64_t k = 0; k < 3; k++) sig.add(common, {k, 0});
+    sig.add(rare, {9, 0});
+    const auto only = [](const Class& want) { return [want](const Class& c) { return c == want; }; };
+    const auto all = [](const Class&) { return true; };
+    const auto none = [](const Class&) { return false; };
+    CHECK(candidates(nullptr, &sig, all) == std::vector<Class>{common});
+    CHECK(candidates(nullptr, &sig, only(rare)) == std::vector<Class>{rare});
+    CHECK(candidates(nullptr, &sig, none).empty());
+    CHECK(candidates(nullptr, nullptr, all).empty());
+    exact.add(other, {5, 0}), exact.add(common, {5, 1});
+    CHECK(candidates(&exact, &sig, none) == (std::vector<Class>{other, common}));   // (an exact module's: all, filtered after)
     std::printf("PASS: the types of a module's locations and the candidates they fit\n");
     return 0;
 }
@@ -126,10 +144,13 @@ def main():
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     shader = _with_cache(ROOT / "gpu/vk/vk_shader.cpp")
     pieces = [body(predict, "struct Locations {"), body(predict, "Locations spirv_locations("), body(predict, "bool types_fit(")]
+    # (the signature fallback's pick, with what it needs: Class, its hashes, Seen)
+    pieces += [body(predict, "uint64_t fnv("), "using Class = std::vector<uint32_t>;", body(predict, "struct ClassHash {"),
+               body(predict, "struct PairHash {"), body(predict, "struct Seen {"), body(predict, "template <class Fits>")]
 
     decide = body(predict, "std::vector<std::unique_ptr<PipeNote>> predict_pipelines(")
-    for need in ("types_fit(f.vs_in, f.vs_locs", "types_fit(f.fs_out, f.fs_locs", "!vertex_fits(f, *vdonor.at(v))",
-                 "!output_fits(f, *odonor.at(o))", "counts.notes_unfit +=",
+    for need in ("types_fit(f.vs_in, f.vs_locs", "types_fit(f.fs_out, f.fs_locs", "vertex_fits(f, *vdonor.at(v))",
+                 "output_fits(f, *odonor.at(o))", "counts.notes_unfit +=", "candidates(vx, vs, vfit)", "candidates(fx, fs, ofit)",
                  "attribute_type_of(", "note_color_types("):
         if need not in decide:
             raise SystemExit("FAIL: predict_pipelines does not filter its candidates by their types (%s)" % need)

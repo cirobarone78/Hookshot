@@ -8030,8 +8030,9 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     logf("vk: predicted %zu pipelines from %zu notes for %zu program variants no note names: %zu made, %zu the same pipeline as "
          "another, in %.1f s (%.1f s deciding them, %.1f s building them on %zu threads); left out as no draw could ask for them: %zu "
          "by their vertex input types, %zu by their colour output types (%zu program variants with none left; %zu notes whose own "
-         "types do not fit)%s", predicted.size(), notes.size(), programs, made.load(), same.load(), all_s, decide_s, all_s - decide_s,
-         threads.size(), left_out.vertex_types, left_out.output_types, left_out.variants_unfit, left_out.notes_unfit,
+         "types do not fit; %zu took a less common layout or targets that fit)%s", predicted.size(), notes.size(), programs, made.load(),
+         same.load(), all_s, decide_s, all_s - decide_s, threads.size(), left_out.vertex_types, left_out.output_types,
+         left_out.variants_unfit, left_out.notes_unfit, left_out.refit,
          out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)"
          : prepare_stopped() ? " (stopped: the window was closed; the driver keeps what was built)" : "");
     if (!prepare_stopped() && !out_of_time.load()) predicted_sample_write(predicted);

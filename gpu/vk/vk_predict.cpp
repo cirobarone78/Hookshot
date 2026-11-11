@@ -117,14 +117,19 @@ struct Seen {
         it->second.insert(pv);
     }
 };
-/// Every class of an exact module, else the one most program variants of the signature had
-std::vector<Class> candidates(const Seen* exact, const Seen* sig) {
+/// Every class of an exact module, else, of the signature's classes that fit the program (fits: its types), the one most program
+/// variants had. (The fit is asked before the most common is picked: the skinned programs' bone-input variants share a signature,
+/// and the class most of its notes had fits only one of them. Picked first and filtered after, the others got no prediction at all,
+/// 7,555 variants on the shipped list, where main had given them one of their own modules, which the driver's cache then held)
+template <class Fits>
+std::vector<Class> candidates(const Seen* exact, const Seen* sig, const Fits& fits) {
     if (exact && !exact->order.empty()) return exact->order;
     if (!sig || sig->order.empty()) return {};
     const Class* best = nullptr;
     size_t most = 0;
     for (const Class& c : sig->order)
-        if (sig->by.at(c).size() > most) most = sig->by.at(c).size(), best = &c;
+        if (sig->by.at(c).size() > most && fits(c)) most = sig->by.at(c).size(), best = &c;
+    if (!best) return {};
     return {*best};
 }
 
@@ -186,15 +191,23 @@ std::vector<std::unique_ptr<PipeNote>> predict_pipelines(const std::vector<std::
     *programs = 0;
     for (const auto& [pv, f] : faces) {
         if (noted.count(pv)) continue;
-        std::vector<Class> vc = candidates(find(vh, f.vs), find(vsig, f.vs_locs));
-        std::vector<Class> oc = candidates(find(fh, f.fs), find(fsig, f.fs_locs));
-        if (vc.empty() || oc.empty()) continue;
+        const auto vfit = [&](const Class& v) { return vertex_fits(f, *vdonor.at(v)); };
+        const auto ofit = [&](const Class& o) { return output_fits(f, *odonor.at(o)); };
+        const auto any = [](const Class&) { return true; };
+        const Seen *vx = find(vh, f.vs), *vs = find(vsig, f.vs_locs), *fx = find(fh, f.fs), *fs = find(fsig, f.fs_locs);
+        // (what the fallback took before the fit was asked, its most common class: only to count the picks the fit changed)
+        const std::vector<Class> vc0 = candidates(vx, vs, any), oc0 = candidates(fx, fs, any);
+        if (vc0.empty() || oc0.empty()) continue;   // (no note with this module or these locations at all)
+        std::vector<Class> vc = candidates(vx, vs, vfit), oc = candidates(fx, fs, ofit);
+        counts.refit += (vc != vc0 && !vc.empty() && !(vx && !vx->order.empty())) ||
+                        (oc != oc0 && !oc.empty() && !(fx && !fx->order.empty()));
         const size_t all = vc.size() * oc.size();
-        vc.erase(std::remove_if(vc.begin(), vc.end(), [&](const Class& v) { return !vertex_fits(f, *vdonor.at(v)); }), vc.end());
+        // (an exact module's classes are filtered here; a signature's pick already fits, and this leaves it as it is)
+        vc.erase(std::remove_if(vc.begin(), vc.end(), [&](const Class& v) { return !vfit(v); }), vc.end());
         const size_t vertex_kept = vc.size() * oc.size();
-        oc.erase(std::remove_if(oc.begin(), oc.end(), [&](const Class& o) { return !output_fits(f, *odonor.at(o)); }), oc.end());
+        oc.erase(std::remove_if(oc.begin(), oc.end(), [&](const Class& o) { return !ofit(o); }), oc.end());
         counts.vertex_types += all - vertex_kept, counts.output_types += vertex_kept - vc.size() * oc.size();
-        if (vc.empty() || oc.empty()) {
+        if (vc.empty() || oc.empty()) {   // (no class of its module or signature fits the types it was made for)
             counts.variants_unfit++;
             continue;
         }

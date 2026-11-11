@@ -23,6 +23,7 @@ struct PipeNote {
 /// that leaves them out is wrong)
 struct PredictCounts {
     size_t vertex_types = 0, output_types = 0, variants_unfit = 0, notes_unfit = 0;
+    size_t refit = 0;   // (program variants whose signature fallback took a less common class, the most common not fitting)
 };
 /// (vk_predict.cpp) The pipelines the notes predict for the kept graphics program variants no note names (key 0: not made yet)
 std::vector<std::unique_ptr<PipeNote>> predict_pipelines(const std::vector<std::unique_ptr<PipeNote>>& notes, size_t* programs,
