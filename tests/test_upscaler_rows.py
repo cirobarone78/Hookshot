@@ -28,12 +28,13 @@ def main():
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-    # the picture's way, top to bottom: the output, what fills it, the 3D's size, the frames made between the game's (beside
-    # the Upscaler: DLSS Frame Generation takes its depth and motion), then the window
+    # the picture's way, top to bottom: the output, what fills it, the 3D's size and its sharpening (Resolution and
+    # upscaling); then the frame rows, Reflex with them (Frame generation and latency); then the window (Screen)
     order = ['"Output resolution", &opts.output_res', '"Upscaler", &opts.dlss', '"DLSS model", &opts.dlss_model',
-             '"Render resolution", &opts.resolution', '"Frame generation", &opts.framegen',
-             '"Frame generation by", &opts.framegen_by', '"Frame pacing", &opts.pace',
-             '"Window scaling filter", &opts.upscale', '"Sharpness", &opts.sharpness']
+             '"Render resolution", &opts.resolution', '"Sharpness", &opts.sharpness',
+             '"Frame generation", &opts.framegen', '"Frame generation by", &opts.framegen_by',
+             '"Frame pacing", &opts.pace', '"NVIDIA Reflex", &opts.reflex',
+             '"Window scaling filter", &opts.upscale']
     at = [menu.find(row) for row in order]
     if -1 in at:
         raise SystemExit("vk_menu.cpp: a scaling row is missing: " + order[at.index(-1)])
@@ -125,8 +126,25 @@ def main():
     if "fsr3_wanted()" not in mode:
         raise SystemExit("temporal_mode runs DLSS or FSR 4 while FSR 3.1 upscales (two upscalers, two jitters)")
     fsr3 = (ROOT / "gpu" / "vk" / "vk_fsr3.cpp").read_text(encoding="utf-8")
-    if "!temporal_env_chosen()" not in function(fsr3, "bool fsr3_wanted() {"):
-        raise SystemExit("fsr3_wanted: a saved FSR 3.1 drops RX_VK_DLSS / RX_VK_FSR4, which go over the row")
+    if "!temporal_env_chosen()" not in function(fsr3, "bool fsr3_chosen() {"):
+        raise SystemExit("fsr3_chosen: a saved FSR 3.1 drops RX_VK_DLSS / RX_VK_FSR4, which go over the row")
+    # FSR 3.1 is an engine of the chain (the skinned draws' motion), unless RX_VK_FSR3_CHAIN=0 keeps its own inputs: the chain
+    # takes it before its fallback to the game's own, fsr3_wanted (its own inputs) is then off, and the chain has its slot
+    if "return !fsr3_on_chain() && fsr3_chosen();" not in function(fsr3, "bool fsr3_wanted() {"):
+        raise SystemExit("fsr3_wanted: FSR 3.1 would upscale with its own inputs while it draws on the chain (two upscales)")
+    on_chain = "if (fsr3_on_chain() && fsr3_chosen()) return ur::FSR3;"
+    if on_chain not in mode or mode.index(on_chain) > mode.index("if (!ur::is_dlss(v) && !ur::is_fsr4(v)) return ur::GAME;"):
+        raise SystemExit("temporal_mode does not run the row's FSR 3.1 on the chain before falling back to the game's own")
+    if "fsr3_engine()" not in function(temporal, "Engine& engine_of("):
+        raise SystemExit("engine_of has no slot for FSR 3.1's engine")
+    # The chain's depth is reversed for FSR 3.1 (the prep's bit 3, from fsr_flip): the frame says so, for whatever else reads it
+    upscale = function(temporal, "bool temporal_upscale(")
+    if "(fsr_flip ? 8 : 0)" not in upscale or "f.depth_reversed = fsr_flip;" not in upscale:
+        raise SystemExit("temporal_upscale reverses the depth without saying so in the frame (TemporalFrame::depth_reversed)")
+    # DLSS Frame Generation (NGX) copies the chain's depth: it must hand NGX the depth convention the frame says
+    dlss = (ROOT / "gpu" / "vk" / "vk_dlss.cpp").read_text(encoding="utf-8")
+    if "g.depth_reversed = f.depth_reversed;" not in dlss or "o.depthInverted = g.depth_reversed;" not in dlss:
+        raise SystemExit("DLSS Frame Generation tells NGX the chain's depth is not reversed while FSR 3.1 reverses it")
     chosen = function(temporal, "bool temporal_env_chosen() {")
     if "dlss_why() == DLSS_OK" not in chosen or "fsr4_why() == FSR_OK" not in chosen:
         raise SystemExit("temporal_env_chosen: a switch for an engine that cannot run here leaves the game's own, not the saved FSR 3.1")

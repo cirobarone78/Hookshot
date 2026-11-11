@@ -23,6 +23,7 @@ Each is a runtime switch where it can be, so the game's own path stays reachable
   calls of f_80522050, its GPU memory (GPU_ALLOC_SITES), and its two tryAllocs of CPU buffers (HEAP_ALLOC_SITES). They went on
   with a null pointer and crashed writing through it (issue 1697). The supported build only.
 """
+import collections
 import glob
 import os
 import re
@@ -450,6 +451,84 @@ def patch_whole_frames(s):
     return s, done
 
 
+# Above a Frame rate cap of 60, two places that need whole 60 fps frames (host/oot_high_fps.h has why and the logic; at a cap of
+# 60 the host hands back what the game computed):
+# - the sound manager's job, f_80435300 (phase in w2; phase 0 loads the game step, [[slot]]+0x10, and hands it to the sound
+#   engine): its head asks hos_oot_sound_gate whether to run now (60 Hz above 60 fps, the other phases following phase 0), and
+#   the step it loads goes through hos_oot_sound_step (a whole one while the gate holds the job). After zortos293/Lichii PR #1289
+#   (auz466), which does the same as a code patch for the emulator.
+# - the physics solver's step count, set each update from the frame step in f_838ceb80 and f_838cfc10 (the same code in both):
+#   hos_oot_solver_steps rounds it up instead of down, at least 1, so Link stays on moving platforms (issue 1798).
+SOUND_HEAD = "void f_80435300(Ctx *__restrict A64_NOESC c) {\n"
+SOUND_SLOT = "g_module_base + 0x80435000ULL + (int64_t)75927552"   # (the page of the step's pointer, whose +2192 holds it)
+SOUND_OLD = ("    c->x[8]=" + SOUND_SLOT + ";\n"
+             "    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[19] = _r; }\n"
+             "    c->x[8]=recomp_load64(c,c->x[8] + 2192);\n"
+             "    c->x[8]=recomp_load64(c,c->x[8] + 0);\n"
+             "    { { uint64_t _v=recomp_load32(c,(c->x[8]+16ULL)); a64_vset64(c->vreg[0],_v); } }\n")
+SOUND_NEW = SOUND_OLD.replace("uint64_t _v=recomp_load32(c,(c->x[8]+16ULL));",
+                              "uint64_t _v=hos_oot_sound_step((uint32_t)recomp_load32(c,(c->x[8]+16ULL)));")
+SOUND_GATE = ("    if (!hos_oot_sound_gate(c, (uint32_t)c->x[2], " + SOUND_SLOT + " + 2192)) return;"
+              "   /* (nx2/oot_patches.py: the sound job at 60 Hz above 60 fps) */\n")
+SOUND_DECL = "extern int hos_oot_sound_gate(Ctx *c, uint32_t phase, uint64_t slot);\nextern uint32_t hos_oot_sound_step(uint32_t step_bits);\n"
+SOLVER_HEADS = ("void f_838ceb80(Ctx *__restrict A64_NOESC c) {\n", "void f_838cfc10(Ctx *__restrict A64_NOESC c) {\n")
+# (the cut of frame step * steps a frame + 0.001, then its store into the solver: vreg 0 the float cut, vreg 1 the steps a frame)
+SOLVER_OLD = ("    c->x[1]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
+              "    recomp_store32(c,c->x[0] + 712,c->x[1]);\n")
+SOLVER_NEW = SOLVER_OLD.replace(
+    "    recomp_store32(", "    c->x[1]=hos_oot_solver_steps((uint32_t)c->x[1], (uint32_t)c->vreg[0][0], (uint32_t)c->vreg[1][0]);"
+    "   /* (nx2/oot_patches.py: solver steps rounded up above 60 fps) */\n    recomp_store32(", 1)
+SOLVER_DECL = "extern uint32_t hos_oot_solver_steps(uint32_t game, uint32_t scaled_bits, uint32_t per_frame_bits);\n"
+
+
+def _function(s, head_text):
+    """(start, end) of the function whose head is head_text, or None"""
+    head = s.find(head_text)
+    if head < 0:
+        return None
+    end = s.find("\nvoid f_", head + len(head_text))
+    return head, end if end >= 0 else len(s)
+
+
+def patch_sound_job(s):
+    """The sound job's gate and step: (s, 1) when the job is in s with them (made now or before), (s, 0) when it is not here or
+    its code differs (another game version: left as it is)"""
+    at = _function(s, SOUND_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(SOUND_NEW) == 1 and body.count(SOUND_GATE) == 1:
+        return s, 1
+    if body.count(SOUND_OLD) != 1 or SOUND_GATE in body:
+        return s, 0
+    body = body.replace(SOUND_OLD, SOUND_NEW, 1)
+    body = SOUND_HEAD + SOUND_GATE + body[len(SOUND_HEAD):]
+    s = s[:head] + body + s[end:]
+    if SOUND_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SOUND_DECL, 1)
+    return s, 1
+
+
+def patch_solver_steps(s):
+    """The solver step count's two places: (s, how many of them are in s with the hook, made now or before)"""
+    done = 0
+    for head_text in SOLVER_HEADS:
+        at = _function(s, head_text)
+        if at is None:
+            continue
+        head, end = at
+        body = s[head:end]
+        if body.count(SOLVER_NEW) == 1:
+            done += 1
+        elif body.count(SOLVER_OLD) == 1:
+            s = s[:head] + body.replace(SOLVER_OLD, SOLVER_NEW, 1) + s[end:]
+            done += 1
+    if done and SOLVER_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SOLVER_DECL, 1)
+    return s, done
+
+
 def patch_text_speed(s):
     """The scale at the head of the letters' block of f_80b1e140 (Text speed), and the call to hos_oot_text_pane after it
     (Text size: host/oot_text_size.c); None when the file has no such function, s unchanged when the
@@ -507,6 +586,36 @@ def patch_camera_speed(s):
     return s, found
 
 
+# Scene format (host/nn_vi.c hos_scene_rgba16f: the Insert menu's HDR set to Native with the PsychoV35 tone mapper). f_80672260 picks the format of the scene
+# buffer the game tone maps into (main+0x652340: RGBA16F, 44, under two of its flags, else R11G11B10F, 26) and makes the buffer
+# again when the one it has differs (+440). R11G11B10F has no sign and 6 bits of mantissa, so the native HDR banded; with the
+# switch on both choices are RGBA16F (RenoDX's zelda-oot-oz patch of main+0x65234C, github.com/clshortfuse/renodx, MIT).
+SCENE_FORMAT_HEAD = "void f_80672260(Ctx *__restrict A64_NOESC c) {\n"
+SCENE_FORMAT_OLD = "    c->x[10] = 0x2cULL;\n    c->x[10] &= 0xFFFFFFFFULL;\n"
+SCENE_FORMAT_PICK = "    c->x[9] = 0x1aULL;\n    c->x[9] &= 0xFFFFFFFFULL;\n    { uint64_t _r = (!c->z) ? c->x[10] : c->x[9];"
+SCENE_FORMAT_NEW = ("    c->x[9] = hos_scene_rgba16f ? 0x2cULL : 0x1aULL;\n    c->x[9] &= 0xFFFFFFFFULL;\n"
+                    "    { uint64_t _r = (!c->z) ? c->x[10] : c->x[9];")
+SCENE_FORMAT_DECL = "extern volatile int hos_scene_rgba16f;\n"
+
+
+def patch_scene_format(s):
+    """The scene buffer's format by hos_scene_rgba16f in f_80672260; None when the file has no such function, s unchanged when the
+    function is there but its code differs (another game version)."""
+    head = s.find(SCENE_FORMAT_HEAD)
+    if head < 0:
+        return None
+    end = s.find("\nvoid f_", head + len(SCENE_FORMAT_HEAD))
+    end = end if end >= 0 else len(s)
+    body = s[head:end]
+    if SCENE_FORMAT_NEW in body:   # (applied already: a second run)
+        return s
+    if body.count(SCENE_FORMAT_OLD) != 1 or body.count(SCENE_FORMAT_PICK) != 1 or \
+            body.index(SCENE_FORMAT_OLD) > body.index(SCENE_FORMAT_PICK):
+        return s
+    s = s[:head] + body.replace(SCENE_FORMAT_PICK, SCENE_FORMAT_NEW, 1) + s[end:]
+    return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SCENE_FORMAT_DECL, 1)
+
+
 # (from TomShafford/Hookshot 55d68e8cd6 and 65c1998222) f_804566e0's two calls of f_80522050, the GPU memory a model's material
 # block is made with, made through host/oot_heap_retry.c hos_oot_gpu_alloc, which calls the game's own and tries a full heap's
 # failure again in the heap's parents. f_80522050's other callers stay as they are.
@@ -547,9 +656,136 @@ def patch_heap_retry(s):
     return s, found
 
 
-def apply(gen, *, protect_hearts=False, required=False):
-    """required: the lift of the supported build (LIFE_BUILD_ID), whole: a missing output-size edit stops it (apply_output_size).
-    The other patches only warn when their place is not found once."""
+def patch_file(s, name, protect_hearts=False):
+    """One lifted file's patches (apply(), and nx2/chunks.py edit_c, a process per file): (its text, the places counted in it, the
+    lines to print). The counts add up over the files; report() decides from the sums"""
+    counts = collections.Counter()
+    lines = []
+    out = s
+    d = patch_dynres(out)
+    if d is not None:
+        out = d
+        counts["dynamic resolution branch"] += 1
+        lines.append("oot_patches: dynamic resolution switch in " + name)
+    t = patch_text_speed(out)
+    if t is not None and t != out:
+        out = t
+        counts["text speed block"] += 1
+        lines.append("oot_patches: text speed scale and text size in " + name)
+    focus = patch_menu_focus(out) if protect_hearts else None
+    if focus is not None:
+        out = focus
+        counts["menu focus hook"] += 1
+        lines.append("oot_patches: the menus' focus hook in " + name)
+    tick = patch_menu_tick(out) if protect_hearts else None
+    if tick is not None:
+        out = tick
+        counts["menu tick hook"] += 1
+        lines.append("oot_patches: the menus' update hook in " + name)
+    draw = patch_text_draw(out) if protect_hearts else None
+    if draw is not None:
+        out = draw
+        counts["text draw hook"] += 1
+        lines.append("oot_patches: the text boxes' draw hook in " + name)
+    glyph = patch_glyph(out) if protect_hearts else None
+    if glyph is not None:
+        out = glyph
+        counts["glyph hook"] += 1
+        lines.append("oot_patches: the glyphs' hook in " + name)
+    layout = patch_text_layout(out) if protect_hearts else None
+    if layout is not None:
+        out = layout
+        counts["text layout hook"] += 1
+        lines.append("oot_patches: the text boxes' layout hook in " + name)
+    movie = patch_movie_frames(out)
+    if movie is not None:
+        if MOVIE_NEW in movie:   # (made now, or by an earlier run over this file)
+            counts["movie's frame count"] += 1
+        if movie != out:
+            lines.append("oot_patches: the movie's frame count by the frames' time in " + name)
+        out = movie
+    out, n = fixed_scale(out)
+    if n:
+        counts["fixed path's scale"] += 1
+        lines.append("oot_patches: the fixed path's scale in " + name)
+    life = patch_life(out) if protect_hearts else None
+    if life is not None:
+        out = life
+        counts["player heart protection"] += 1
+        lines.append("oot_patches: player heart protection in " + name)
+    move = patch_movement(out) if protect_hearts else None
+    if move is not None:
+        out = move
+        counts["player flight"] += 1
+        lines.append("oot_patches: player flight in " + name)
+    rotation = patch_flight_rotation(out) if protect_hearts else None
+    if rotation is not None:
+        out = rotation
+        counts["player flight rotation"] += 1
+        lines.append("oot_patches: player flight rotation in " + name)
+    mouse = patch_mouse_camera(out) if protect_hearts else None
+    if mouse is not None:
+        out = mouse
+        counts["mouse camera"] += 1
+        lines.append("oot_patches: native mouse camera in " + name)
+    center = patch_camera_centering(out) if protect_hearts else None
+    if center is not None:
+        out = center
+        counts["disable camera centering"] += 1
+        lines.append("oot_patches: disable camera centering switch in " + name)
+    speed = patch_cct_speed(out) if protect_hearts else None
+    if speed is not None:
+        if speed[0] != out:
+            lines.append("oot_patches: movement speed in " + name)
+        out = speed[0]
+        counts["speed hooks"] += speed[1]
+    view = patch_view(out) if protect_hearts else None
+    if view is not None:
+        out = view
+        counts["free camera"] += 1
+        lines.append("oot_patches: free camera in " + name)
+    scene = patch_scene_format(out) if protect_hearts else None
+    if scene is not None and SCENE_FORMAT_NEW in scene:
+        counts["scene format"] += 1
+        if scene != out:
+            lines.append("oot_patches: the scene buffer's format for native HDR in " + name)
+        out = scene
+    if protect_hearts:   # (found by name alone: in another build these addresses are other functions)
+        made, n = patch_camera_speed(out)
+        counts["camera speed"] += n
+        if made != out:
+            out = made
+            lines.append("oot_patches: camera speed at %d function(s) in %s" % (n, name))
+    out, sites = patch_frame_seconds(out)
+    counts["step sites"] += out.count(STEP_MARK)   # (made now, or by an earlier run over this file)
+    if sites:
+        lines.append("oot_patches: the frame's time at %d step divide(s) in %s" % (sites, name))
+    heap, found = patch_heap_retry(out) if protect_hearts else (out, [0, 0])
+    counts["heap GPU sites"] += found[0]
+    counts["heap CPU sites"] += found[1]
+    if heap != out:
+        lines.append("oot_patches: heap-full retries of the OptimizeChangeBank allocations in " + name)
+    out = heap
+    out, whole = patch_whole_frames(out)
+    counts["whole sites"] += out.count(WHOLE_MARK)   # (made now, or by an earlier run over this file)
+    if whole:
+        lines.append("oot_patches: %d frame counter(s) with the step's whole frames in %s" % (whole, name))
+    sound, found = patch_sound_job(out)
+    counts["sound jobs"] += found
+    if sound != out:
+        lines.append("oot_patches: the sound job at 60 Hz above 60 fps in " + name)
+    out = sound
+    solver, found = patch_solver_steps(out)
+    counts["solver sites"] += found
+    if solver != out:
+        lines.append("oot_patches: the solver steps rounded up above 60 fps in " + name)
+    out = solver
+    return out, counts, lines
+
+
+def report(paths, counts, protect_hearts=False):
+    """The warnings from the files' counts (each file's patch_file counts, in the order of paths), and the step divides' rule:
+    both or neither, so a file of paths that has the hook is put back"""
     done = {"dynamic resolution branch": 0, "text speed block": 0, "fixed path's scale": 0, "movie's frame count": 0}
     if protect_hearts:   # (the supported build's: these places are its functions)
         done["menu focus hook"] = 0
@@ -563,124 +799,25 @@ def apply(gen, *, protect_hearts=False, required=False):
         done["free camera"] = 0
         done["mouse camera"] = 0
         done["disable camera centering"] = 0
-    speed_hooks = 0   # (SPEED_PLACES', in one file or several)
-    camera_speed = 0   # (the turn-speed functions that scale by hos_camera_scale: patch_camera_speed)
-    step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
-    whole_sites = 0   # (the counters of WHOLE_SITES with the whole frames: patch_whole_frames)
-    heap_sites = [0, 0]   # (the GPU memory's sites, the CPU buffers': patch_heap_retry, the supported build only)
-    for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
-        with open(path, encoding="utf-8", newline="") as f:
-            s = f.read()
-        out = s
-        d = patch_dynres(out)
-        if d is not None:
-            out = d
-            done["dynamic resolution branch"] += 1
-            print("oot_patches: dynamic resolution switch in", os.path.basename(path))
-        t = patch_text_speed(out)
-        if t is not None and t != out:
-            out = t
-            done["text speed block"] += 1
-            print("oot_patches: text speed scale and text size in", os.path.basename(path))
-        focus = patch_menu_focus(out) if protect_hearts else None
-        if focus is not None:
-            out = focus
-            done["menu focus hook"] += 1
-            print("oot_patches: the menus' focus hook in", os.path.basename(path))
-        tick = patch_menu_tick(out) if protect_hearts else None
-        if tick is not None:
-            out = tick
-            done["menu tick hook"] += 1
-            print("oot_patches: the menus' update hook in", os.path.basename(path))
-        draw = patch_text_draw(out) if protect_hearts else None
-        if draw is not None:
-            out = draw
-            done["text draw hook"] += 1
-            print("oot_patches: the text boxes' draw hook in", os.path.basename(path))
-        glyph = patch_glyph(out) if protect_hearts else None
-        if glyph is not None:
-            out = glyph
-            done["glyph hook"] += 1
-            print("oot_patches: the glyphs' hook in", os.path.basename(path))
-        layout = patch_text_layout(out) if protect_hearts else None
-        if layout is not None:
-            out = layout
-            done["text layout hook"] += 1
-            print("oot_patches: the text boxes' layout hook in", os.path.basename(path))
-        movie = patch_movie_frames(out)
-        if movie is not None:
-            if MOVIE_NEW in movie:   # (made now, or by an earlier run over this file)
-                done["movie's frame count"] += 1
-            if movie != out:
-                print("oot_patches: the movie's frame count by the frames' time in", os.path.basename(path))
-            out = movie
-        out, n = fixed_scale(out)
-        if n:
-            done["fixed path's scale"] += 1
-            print("oot_patches: the fixed path's scale in", os.path.basename(path))
-        life = patch_life(out) if protect_hearts else None
-        if life is not None:
-            out = life
-            done["player heart protection"] += 1
-            print("oot_patches: player heart protection in", os.path.basename(path))
-        move = patch_movement(out) if protect_hearts else None
-        if move is not None:
-            out = move
-            done["player flight"] += 1
-            print("oot_patches: player flight in", os.path.basename(path))
-        rotation = patch_flight_rotation(out) if protect_hearts else None
-        if rotation is not None:
-            out = rotation
-            done["player flight rotation"] += 1
-            print("oot_patches: player flight rotation in", os.path.basename(path))
-        mouse = patch_mouse_camera(out) if protect_hearts else None
-        if mouse is not None:
-            out = mouse
-            done["mouse camera"] += 1
-            print("oot_patches: native mouse camera in", os.path.basename(path))
-        center = patch_camera_centering(out) if protect_hearts else None
-        if center is not None:
-            out = center
-            done["disable camera centering"] += 1
-            print("oot_patches: disable camera centering switch in", os.path.basename(path))
-        speed = patch_cct_speed(out) if protect_hearts else None
-        if speed is not None:
-            if speed[0] != out:
-                print("oot_patches: movement speed in", os.path.basename(path))
-            out = speed[0]
-            speed_hooks += speed[1]
-        view = patch_view(out) if protect_hearts else None
-        if view is not None:
-            out = view
-            done["free camera"] += 1
-            print("oot_patches: free camera in", os.path.basename(path))
-        if protect_hearts:   # (found by name alone: in another build these addresses are other functions)
-            made, n = patch_camera_speed(out)
-            camera_speed += n
-            if made != out:
-                out = made
-                print("oot_patches: camera speed at %d function(s) in %s" % (n, os.path.basename(path)))
-        out, sites = patch_frame_seconds(out)
-        if STEP_MARK in out:   # (made now, or by an earlier run over this file)
-            step_sites += out.count(STEP_MARK)
-            step_files.append(path)
-        if sites:
-            print("oot_patches: the frame's time at %d step divide(s) in %s" % (sites, os.path.basename(path)))
-        heap, found = patch_heap_retry(out) if protect_hearts else (out, [0, 0])
-        heap_sites[0] += found[0]
-        heap_sites[1] += found[1]
-        if heap != out:
-            print("oot_patches: heap-full retries of the OptimizeChangeBank allocations in", os.path.basename(path))
-        out = heap
-        out, whole = patch_whole_frames(out)
-        whole_sites += out.count(WHOLE_MARK)   # (made now, or by an earlier run over this file)
-        if whole:
-            print("oot_patches: %d frame counter(s) with the step's whole frames in %s" % (whole, os.path.basename(path)))
-        if out != s:
-            whole_write.write_whole(path, out, newline="")
+        done["scene format"] = 0
+    total = collections.Counter()
+    for c in counts:
+        total.update(c)
+    for what in done:
+        done[what] = total[what]
+    speed_hooks = total["speed hooks"]   # (SPEED_PLACES', in one file or several)
+    camera_speed = total["camera speed"]   # (the turn-speed functions that scale by hos_camera_scale: patch_camera_speed)
+    heap_sites = [total["heap GPU sites"], total["heap CPU sites"]]   # (patch_heap_retry, the supported build only)
     if protect_hearts and heap_sites != [len(GPU_ALLOC_SITES), len(HEAP_ALLOC_SITES)]:   # (the supported build's functions)
         print("oot_patches: WARNING: the OptimizeChangeBank allocations were found %s times, not once each: a full heap is "
               "not tried again" % heap_sites)
+    step_sites = total["step sites"]   # (the divides with the hook)
+    step_files = [p for p, c in zip(paths, counts) if c["step sites"]]   # (the files that have it)
+    whole_sites = total["whole sites"]   # (the counters of WHOLE_SITES with the whole frames: patch_whole_frames)
+    if total["sound jobs"] != 1:   # (without it, above 60 fps sounds and then the music can stop after a few loading zones)
+        print("oot_patches: WARNING: the sound job was found %d times, not once" % total["sound jobs"])
+    if total["solver sites"] != len(SOLVER_HEADS):   # (without them, above 60 fps moving platforms can drop Link)
+        print("oot_patches: WARNING: the solver step count was found at %d of %d places" % (total["solver sites"], len(SOLVER_HEADS)))
     for what, n in done.items():
         if n != 1:
             print("oot_patches: WARNING: the %s was found %d times" % (what, n))
@@ -701,6 +838,24 @@ def apply(gen, *, protect_hearts=False, required=False):
     elif whole_sites != len(WHOLE_SITES):   # (the frames' own time without them: the pick-up indicator stays above 60 fps)
         print("oot_patches: WARNING: %d of %d frame counters found for the step's whole frames (above 60 fps a counter can stop: "
               "the pick-up indicator)" % (whole_sites, len(WHOLE_SITES)))
+
+
+def apply(gen, *, protect_hearts=False, required=False):
+    """required: the lift of the supported build (LIFE_BUILD_ID), whole: a missing output-size edit stops it (apply_output_size).
+    The other patches only warn when their place is not found once. (nx2/chunks.py edit_c makes the same edits, a process per
+    file)"""
+    paths = sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c")))
+    counts = []
+    for path in paths:
+        with open(path, encoding="utf-8", newline="") as f:
+            s = f.read()
+        out, c, lines = patch_file(s, os.path.basename(path), protect_hearts)
+        counts.append(c)
+        if lines:
+            print("\n".join(lines))
+        if out != s:
+            whole_write.write_whole(path, out, newline="")
+    report(paths, counts, protect_hearts)
     apply_output_size(gen, required=required)
 
 
@@ -764,6 +919,36 @@ OUT_EDITS = [
 ]
 
 
+def output_size_file(s, name):
+    """One lifted file's output-size edits: (its text, each place's count in it, the lines to print). apply_output_size(), and
+    nx2/chunks.py edit_c, a process per file"""
+    found = [0] * len(OUT_EDITS)
+    hit = False
+    for i, (old, new) in enumerate(OUT_EDITS):
+        # (every place: each made one, and each old text outside a made one; a new text can hold its old one. A file with
+        # both is counted for both, and its old ones are left: a second made place or a stray raw one is not once)
+        made = s.count(new)
+        raw = (s.replace(new, "\0") if made else s).count(old)
+        found[i] += made + raw
+        if raw and not made:
+            s = s.replace(old, new)
+            hit = True
+    if hit:
+        if OUT_DECL not in s:
+            s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + OUT_DECL, 1)
+        return s, found, ["oot_patches: output size in " + name]
+    return s, found, []
+
+
+def check_output_size(found, required=False):
+    """found: each place's count over all the files"""
+    if found != [1] * len(OUT_EDITS):
+        if required:
+            raise SystemExit("oot_patches: the output size places were found %s times, not once each (OUT_EDITS %s): the "
+                             "lifted C no longer has the text they match" % (found, [i for i, n in enumerate(found) if n != 1]))
+        print("oot_patches: WARNING: the output size places were found %s times" % found)
+
+
 def apply_output_size(gen, required=False):
     """required (the supported build's whole lift): each edit must be made, or found made, exactly once, else SystemExit: without
     one the Insert menu's Output resolution is ignored, or a 4K output runs out of the render targets' pool. Elsewhere (another
@@ -772,26 +957,12 @@ def apply_output_size(gen, required=False):
     for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
-        hit = False
-        for i, (old, new) in enumerate(OUT_EDITS):
-            # (every place: each made one, and each old text outside a made one; a new text can hold its old one. A file with
-            # both is counted for both, and its old ones are left: a second made place or a stray raw one is not once)
-            made = s.count(new)
-            raw = (s.replace(new, "\0") if made else s).count(old)
-            found[i] += made + raw
-            if raw and not made:
-                s = s.replace(old, new)
-                hit = True
-        if hit:
-            if OUT_DECL not in s:
-                s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + OUT_DECL, 1)
-            whole_write.write_whole(path, s, newline="")
-            print("oot_patches: output size in", os.path.basename(path))
-    if found != [1] * len(OUT_EDITS):
-        if required:
-            raise SystemExit("oot_patches: the output size places were found %s times, not once each (OUT_EDITS %s): the "
-                             "lifted C no longer has the text they match" % (found, [i for i, n in enumerate(found) if n != 1]))
-        print("oot_patches: WARNING: the output size places were found %s times" % found)
+        out, here, lines = output_size_file(s, os.path.basename(path))
+        found = [a + b for a, b in zip(found, here)]
+        if out != s:
+            whole_write.write_whole(path, out, newline="")
+            print("\n".join(lines))
+    check_output_size(found, required)
 
 
 if __name__ == "__main__":
