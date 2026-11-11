@@ -70,6 +70,9 @@ struct Pool {
     uint64_t direct_write_epoch = 0;   // (the part that last wrote it in guest memory, before it had a mirror)
     uint64_t retired_value = 0;  // (retired: the submission that may still use it)
     bool was_mirrored = false;   // (its mirror was given back: its pages stay in the captures, for the next one)
+    // (hookshot) the GPU wrote it past what is copied back (memory_note_gpu_write: a bare entry's guessed range, the pointer
+    // table's, a wide binding's): that is in its mirror alone, so the mirror is never given back (mirrors_give_back)
+    bool gpu_only = false;
     // (EvilOOT) retired with its mirror on: the pool that took it in copies the GPU's contents from it when its own mirror is
     // made (mirror_make), and until then the mirror stays (mirrors_give_back)
     bool inherit_pending = false;
@@ -2037,7 +2040,7 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
         }
         for (uint64_t k : overlapped) {   // (the pools it took in)
             auto o = imported.find(k);
-            if (o != imported.end()) retire_pool(o);
+            if (o != imported.end()) p.gpu_only |= o->second.gpu_only, retire_pool(o);   // (their mirrors' contents come with them)
         }
         imp = imported.emplace(p.lo, p).first;
         guest_pages_set(p.lo, p.hi, p.address);
@@ -2439,6 +2442,12 @@ void memory_note_gpu_write(uint64_t gpu, uint64_t size) {
     }
     std::lock_guard lk(pools_mu);
     rb_hazard_locked(guest, guest + size);
+    // (and the pools it reaches keep their mirrors: imports are at most 1 GB, so none further down reaches guest)
+    for (auto it = imported.upper_bound(guest + size - 1); it != imported.begin();) {
+        --it;
+        if (it->second.hi > guest) it->second.gpu_only = true;
+        else if (it->second.hi + (1ull << 30) < guest) break;
+    }
 }
 void memory_rb_recording_begun() {
     std::lock_guard lk(pools_mu);
@@ -2864,18 +2873,26 @@ void mirrors_give_back(uint64_t want_bytes) {   // (pools_mu held)
         if (p.inherit_pending && mirror_epoch - p.retired_epoch > kIdleEpochs) p.inherit_pending = false;
         if (p.mstate == Pool::MIRROR_ON && p.retired_value <= mem_completed && !p.inherit_pending) mirror_free(p);
     }
+    // (hookshot) not a pool the GPU wrote past what is copied back (gpu_only): made again, its mirror came from guest memory
+    // without that, and the GPU went on from stale data. Paused 1-2 minutes in the background, the idle pools' mirrors all went,
+    // and the game came back with cyan for a few seconds (RX 5500M; gone with RX_VK_MIRROR_KEEP=1). A pool refused a mirror for
+    // the budget meanwhile is read in system memory, slower, not wrong
     std::vector<Pool*> idle;
+    uint64_t kept_bytes = 0;
     for (auto& [lo, p] : imported)
-        if (p.mstate == Pool::MIRROR_ON && mirror_epoch - p.synced_epoch > kIdleEpochs && p.last_value <= mem_completed)
-            idle.push_back(&p);
+        if (p.mstate == Pool::MIRROR_ON && mirror_epoch - p.synced_epoch > kIdleEpochs && p.last_value <= mem_completed) {
+            if (p.gpu_only) kept_bytes += p.hi - p.lo;
+            else idle.push_back(&p);
+        }
     std::sort(idle.begin(), idle.end(), [](const Pool* a, const Pool* b) { return a->synced_epoch < b->synced_epoch; });
     for (Pool* p : idle)
         if (mirror_epoch - p->synced_epoch > kLongIdle || mirror_bytes + want_bytes > mirror_budget()) mirror_free(*p);
     static int64_t logged_at;
     if (st_mirrors_freed / 16 != logged_at) {
         logged_at = st_mirrors_freed / 16;
-        logf("vk: %lld mirrors given back (%llu MB in all); %llu MB of mirrors now", (long long)st_mirrors_freed,
-             (unsigned long long)(st_mirror_bytes_freed >> 20), (unsigned long long)(mirror_bytes >> 20));
+        logf("vk: %lld mirrors given back (%llu MB in all); %llu MB of mirrors now, %llu MB of them idle and kept for what the GPU "
+             "wrote there alone", (long long)st_mirrors_freed, (unsigned long long)(st_mirror_bytes_freed >> 20),
+             (unsigned long long)(mirror_bytes >> 20), (unsigned long long)(kept_bytes >> 20));
     }
 }
 
