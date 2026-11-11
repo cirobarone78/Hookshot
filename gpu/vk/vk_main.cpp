@@ -77,12 +77,18 @@ int64_t prof_ns[PROF_COUNT];
 Device dev;
 PFN_vkGetInstanceProcAddr instance_proc() { return vkx::instance_proc_addr(); }
 
+/// (hookshot) Milliseconds on the steady clock: the log's last line and the preparation's watchdog
+int64_t steady_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+std::atomic<int64_t> last_log_ms{0};   // (when logf last wrote: the preparation's status line comes after a silence)
 void logf(const char* fmt, ...) {
     char b[1024];
     std::va_list a;
     va_start(a, fmt);
     std::vsnprintf(b, sizeof b, fmt, a);
     va_end(a);
+    last_log_ms.store(steady_ms(), std::memory_order_relaxed);
     if (host) host->log(b);
 }
 
@@ -551,9 +557,50 @@ int swapchain_framegen() { return opts.framegen >= 2 ? std::min(opts.framegen, 4
 /// changes
 bool swapchain_dlssg() { return swapchain_framegen() >= 2 && dlss_fg_runs(); }
 
+void retire_swapchain() {
+    if (!dev.swapchain) return;
+    device_wait_idle_locked();
+    reflex_swapchain_destroyed();
+    swap_views_drop();
+    for (auto semaphore : dev.swap_rendered) vkDestroySemaphore(dev.device, semaphore, nullptr);
+    vkDestroySwapchainKHR(dev.device, dev.swapchain, nullptr);
+    dev.swapchain = VK_NULL_HANDLE;
+    ++dev.swapchain_generation;
+    dev.swap_rendered.clear();
+    dev.swap_images.clear();
+    dev.swap_spare = 0;
+}
+
+bool invalidate_lost_surface(VkResult result) {
+    if (result != VK_ERROR_SURFACE_LOST_KHR) return false;
+    retire_swapchain();
+    if (dev.surface) vkDestroySurfaceKHR(dev.instance, dev.surface, nullptr);
+    dev.surface = VK_NULL_HANDLE;
+    dev.present_queue_supported = false;
+    static unsigned logged = 0;
+    if (logged++ < 8) logf("vk: presentation surface lost; will retry with a replacement");
+    return true;
+}
+
+namespace {
+bool open_window_surface(bool log_failure);
+void window_size(uint32_t* width, uint32_t* height);
+}
+
 bool create_swapchain(uint32_t width, uint32_t height) {
+    if (!dev.surface) {
+        window_size(&width, &height);
+        if (!width || !height) return false;
+        using Clock = std::chrono::steady_clock;
+        static Clock::time_point next_attempt;
+        const auto now = Clock::now();
+        if (now < next_attempt) return false;
+        next_attempt = now + std::chrono::milliseconds(250);
+        if (!open_window_surface(false)) return false;
+    }
     VkSurfaceCapabilitiesKHR caps;
     VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev.physical, dev.surface, &caps);
+    if (invalidate_lost_surface(result)) return false;
     if (result != VK_SUCCESS) {
         logf("vk: querying surface capabilities failed (VkResult %d)", (int)result);
         return false;
@@ -570,12 +617,15 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     if (!width || !height) return false;
     uint32_t n = 0;
     result = vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, &n, nullptr);
+    if (invalidate_lost_surface(result)) return false;
     if (result != VK_SUCCESS || !n) {
         logf("vk: querying surface formats failed (VkResult %d, count %u)", (int)result, n);
         return false;
     }
     std::vector<VkSurfaceFormatKHR> formats(n);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, &n, formats.data());
+    result = vkGetPhysicalDeviceSurfaceFormatsKHR(dev.physical, dev.surface, &n, formats.data());
+    if (invalidate_lost_surface(result) || result != VK_SUCCESS || !n) return false;
+    formats.resize(n);
     VkSurfaceFormatKHR fmt = formats[0];
     for (const auto& f : formats)   // (an UNORM target: the game's window textures are presented as they are)
         // (in sRGB: RADV on Wayland lists every format again with PASS_THROUGH_EXT and the compositor's colour spaces,
@@ -611,6 +661,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
         modes.resize(n);
         result = vkGetPhysicalDeviceSurfacePresentModesKHR(dev.physical, dev.surface, &n, modes.data());
     }
+    if (invalidate_lost_surface(result)) return false;
     if (result != VK_SUCCESS || modes.empty())
         logf("vk: querying present modes failed (VkResult %d, count %u); trying mandatory FIFO mode", (int)result, n);
     // (hookshot) the Insert menu's V-Sync (menu_vsync: RX_VK_FIFO=1 On, RX_VK_IMMEDIATE=1 Off for a run): On is FIFO, as on a
@@ -669,7 +720,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     }
     ci.presentMode = mode;
     const uint32_t sharing[2] = {dev.queue_family, dev.present_family};
-    if (dev.present_queue && dev.present_family != dev.queue_family) {   // (presented from another family: no ownership moves)
+    if (dev.present_queue_supported && dev.present_family != dev.queue_family) {   // (presented from another family: no ownership moves)
         ci.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
         ci.queueFamilyIndexCount = 2;
         ci.pQueueFamilyIndices = sharing;
@@ -692,17 +743,8 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     VkSwapchainKHR sc;
     result = vkCreateSwapchainKHR(dev.device, &ci, nullptr, &sc);
     // Passing oldSwapchain retires it even when creation fails. Nothing may acquire from it again.
-    if (dev.swapchain) {
-        device_wait_idle_locked();   // (the present queue's presents of the old swapchain done too)
-        reflex_swapchain_destroyed();   // (no latency sleep or markers may use the destroyed chain)
-        swap_views_drop();   // (hookshot: the overlays' views of its images, before it)
-        for (auto semaphore : dev.swap_rendered) vkDestroySemaphore(dev.device, semaphore, nullptr);
-        vkDestroySwapchainKHR(dev.device, dev.swapchain, nullptr);
-        dev.swapchain = VK_NULL_HANDLE;
-        dev.swap_rendered.clear();
-        dev.swap_images.clear();
-        dev.swap_spare = 0;
-    }
+    retire_swapchain();
+    if (invalidate_lost_surface(result)) return false;
     if (result != VK_SUCCESS) {
         logf("vk: vkCreateSwapchainKHR failed (VkResult %d, extent %ux%u, format %d, usage %#x, mode %d, images %u)",
              (int)result, width, height, (int)fmt.format, ci.imageUsage, (int)mode, ci.minImageCount);
@@ -754,6 +796,132 @@ std::string skipped_path() {
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string path(exe, n);
     return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepare_skipped";
+}
+// (hookshot) The --prepare-shaders run's watchdog, for any GPU and any part of it.
+// - What it waits on, in the log the builder shows: every 30 s that nothing has moved, the part, its count, and whether the
+//   GPU driver faulted; a driver fault as soon as it is caught. (The pipeline steps log their own progress every 10 s,
+//   vk_draw.cpp prepare_progress_log, #2186; this adds the shader programs' count when the log has been quiet for 30 s.)
+//   Before, the builder's details could not tell a slow driver from a stuck one.
+// - When it stops for good: a driver that faults inside a pipeline compile (caught by guarded_graphics: "the driver faulted
+//   compiling", above) can leave that compile unfinished inside it, and builds behind it then wait for ever (on AMD, any build of
+//   the same program: #1823's dump of issue 996): builds stuck on players' cards of all kinds, AMD and NVIDIA (#2107). Whatever
+//   the cause, a part that needs the stuck driver cannot go on. So when nothing has moved for RX_VK_PREPARE_STALL_S seconds
+//   (300; 0: never stopped. Long: some steps read the caches or
+//   decide the predictions for a while with no count, on a slow disk or CPU too), the run says where it stopped and why, leaves
+//   hookshot_prepare_skipped so the game's own starts do not stop in the same place (what was not prepared is built when first
+//   drawn), and ends at once with exit status 4 (make_game.py: "the GPU driver stopped responding"). Not through exit(): that
+//   unloads the driver, which can wait on the same lock. Before, it waited until make_game.py stopped it after 15 minutes with no
+//   line, and the game's first start then stopped in the same place
+// - The pipeline cache's save, the last part, has no count and can take minutes on a large cache. When the run went on from a
+//   part and left workers inside the driver (prepare_left_workers), or the driver faulted, the save can wait on them for ever
+//   (vkGetPipelineCacheData), and so can exit() unloading the driver: then the save is stopped too, after twice the parts' limit
+//   (600 s), and a run that gets through it ends at once (prepare_end). Twice: a fault AMD's retry recovered from ("recovered
+//   with optimization disabled") counts as one, so on such a card every run is risky, and a save that is only slow should not be
+//   stopped at the parts' limit. Otherwise the save is only reported, and its lines stop after the parts' 300 s so that
+//   make_game.py's 15 minutes with no line (PREPARE_SILENCE) still stop a save that never ends
+/// (where the run is, for the watchdog: under one lock, so it reads a part with its own count)
+struct PrepareSeen {
+    int part = -1;
+    size_t done = 0, total = 0;
+    int64_t moved_ms = 0;
+};
+std::mutex prepare_seen_mu;
+PrepareSeen prepare_seen;
+/// A part's count, from its progress: the watchdog's clock starts again when the part or its count changes. Part 3: the save
+void prepare_moved(int part, size_t done, size_t total) {
+    std::lock_guard lk(prepare_seen_mu);
+    if (part != prepare_seen.part || done != prepare_seen.done || !prepare_seen.moved_ms)
+        prepare_seen = {part, done, total, steady_ms()};
+}
+/// The run ends now: the log written out, then TerminateProcess, not exit(), which unloads a driver that can still hold workers
+/// (@@done first for a run that finished: the line the game prints after the preparation, host/hos_main.c)
+[[noreturn]] void prepare_end(int code) {
+    if (host && host->log_flush) host->log_flush();
+    if (!code) std::printf("@@done shaders\n");
+    std::fflush(stdout);
+    std::fflush(stderr);
+#ifdef _WIN32
+    TerminateProcess(GetCurrentProcess(), (UINT)code);
+#endif
+    std::_Exit(code);
+}
+std::atomic<int> driver_faults_seen{0};
+void prepare_watchdog() {
+    static const int stall_s = getenv("RX_VK_PREPARE_STALL_S") ? atoi(getenv("RX_VK_PREPARE_STALL_S")) : 300;
+    // (a status line after this long with no other line; RX_VK_PREPARE_STATUS_S=<s>, for the tests)
+    static const int64_t quiet_s = getenv("RX_VK_PREPARE_STATUS_S") ? std::max(1, atoi(getenv("RX_VK_PREPARE_STATUS_S"))) : 30;
+    prepare_moved(0, 0, 0);
+    std::thread([] {
+        static const char* const parts[] = {"the shader programs", "the predicted pipelines", "the noted pipelines",
+                                            "the pipeline cache's save"};
+        const int64_t limit_s = stall_s > 0 ? stall_s : 300;   // (the save's lines stop after this, whatever RX_VK_PREPARE_STALL_S)
+        const int save_stall_s = stall_s * 2;   // (a risky save's stop: twice the parts', above)
+        for (;;) {
+            Sleep(1000);
+            const int64_t now = steady_ms();
+            PrepareSeen at;
+            {
+                std::lock_guard lk(prepare_seen_mu);
+                at = prepare_seen;
+            }
+            const char* what = at.part >= 0 && at.part < 4 ? parts[at.part] : "the preparation";
+            const int64_t still = (now - at.moved_ms) / 1000;
+            const int faults = driver_faults();
+            const bool left = prepare_left_workers();
+            const bool risky = faults > 0 || left;   // (the driver may be stuck: the save too can wait for ever)
+            // (what it waits on: after a fault in the driver, most likely the driver; else the driver or the disk, a slow one
+            // reading the caches)
+            const char* waiting_on = faults ? "waiting on the GPU driver, which faulted (above)"
+                                     : left ? "waiting on the GPU driver, which still has pipelines it did not finish"
+                                            : "waiting on the GPU driver or the disk";
+            if (faults != driver_faults_seen.exchange(faults))
+                logf("vk: preparation: the GPU driver faulted %d time%s so far (above): a driver can stop responding after one, so a "
+                     "stop here would be why", faults, faults == 1 ? "" : "s");
+            if (stall_s > 0 && (at.part < 3 ? still >= stall_s : risky && still >= save_stall_s)) {
+                if (at.part < 3)
+                    logf("vk: preparation: STOPPED: nothing moved for %d s in %s (%zu of %zu): the GPU driver stopped responding%s. "
+                         "The rest is built in play, when first drawn; updating the GPU driver may help", stall_s, what, at.done,
+                         at.total, faults ? " after it faulted (above)" : "");
+                else
+                    logf("vk: preparation: STOPPED: %s waited %d s on the GPU driver, %s. The pipelines are made; only this "
+                         "file is left out. Updating the GPU driver may help", what, save_stall_s,
+                         faults ? "which faulted (above)" : "which still has pipelines it did not finish");
+                if (FILE* f = fopen(skipped_path().c_str(), "wb")) fclose(f);
+                prepare_end(4);
+            }
+            // (its own lines, at most one every quiet_s: while nothing has moved, what it waits on, whatever else the log says (the
+            // pipeline steps' own lines, vk_draw.cpp prepare_progress_log, come every 10 s and repeat their count while it is
+            // stuck); while the shader programs move, their count when the log has been quiet (the pipeline steps log theirs);
+            // the save, below)
+            static int64_t said_ms = 0;
+            if (now - said_ms < quiet_s * 1000) continue;
+            const bool quiet = now - last_log_ms.load(std::memory_order_relaxed) >= quiet_s * 1000;
+            if (at.part >= 3) {
+                if (!quiet) continue;
+                if (risky)
+                    logf("vk: preparation: still writing %s (%lld s), %s. Stopped at %d s if it does not end", what,
+                         (long long)still, waiting_on, save_stall_s);
+                else if (still < limit_s)
+                    logf("vk: preparation: still writing %s (%lld s): every pipeline is made, this is the disk", what,
+                         (long long)still);
+                else
+                    continue;   // (silent from here: make_game.py's 15 minutes with no line stop a save that never ends)
+            } else if (still >= quiet_s) {
+                if (stall_s > 0)
+                    logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s. Stopped at %d s if "
+                         "nothing moves", what, (long long)still, at.done, at.total, waiting_on, stall_s);
+                else
+                    logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s", what,
+                         (long long)still, at.done, at.total, waiting_on);
+            } else if (at.part == 0 && quiet) {
+                logf("vk: preparation: still working on %s: %zu of %zu", what, at.done, at.total);
+            } else {
+                continue;
+            }
+            said_ms = now;
+            if (host && host->log_flush) host->log_flush();
+        }
+    }).detach();
 }
 // (hookshot) The first start after an update prepares every shader (prepare_run) and the pipelines the last sessions noted
 // (precompile_run): a minute and more, before the game's first frame. They run on a thread of their own while this one, the
@@ -918,9 +1086,11 @@ bool started_up() {
         // from the start: PrepareBar. The fixed shares it had (70%, 20%, 10%) kept the predicted pipelines' minutes in a fifth)
         static int part;
         static PrepareBar bar;
+        prepare_watchdog();
         const auto progress = [](size_t done, size_t total) {
             static int last = -1;
             if (!total) return;
+            prepare_moved(part, done, total);
             bar.at(part, done, total);
             const int at = (int)(bar.fraction() * 1000);
             if (at == last) return;
@@ -942,12 +1112,20 @@ bool started_up() {
             bar.skip(1);
         }
         part = 1;
+        prepare_moved(1, 0, 0);
         if (prepared) predict_run(progress);
         part = 2;
+        prepare_moved(2, 0, 0);
         bar.reach(2);
         precompile_run(progress);
+        prepare_moved(3, 0, 0);   // (the pipeline cache written out: the watchdog reports it, and stops it only when risky)
         pipeline_cache_save(true);
         remove(skipped_path().c_str());
+        if (prepare_left_workers() || driver_faults() > 0) {   // (exit() would unload a driver that may still hold workers)
+            logf("vk: preparation: done; the run ends at once (%s)",
+                 prepare_left_workers() ? "pipelines left in the driver" : "the driver faulted");
+            prepare_end(0);
+        }
         return true;
     }
     if (FILE* f = fopen(skipped_path().c_str(), "rb")) {
@@ -1010,14 +1188,42 @@ bool started_up() {
 }
 // (the window's surface made: the presents' own queue kept where its family can present to it, create_device)
 static void choose_present_queue() {
+    dev.present_queue_supported = false;
     if (!dev.present_queue) return;
     VkBool32 ok = VK_FALSE;
     if (vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.present_family, dev.surface, &ok) != VK_SUCCESS || !ok) {
         logf("vk: queue family %u cannot present to the window: presents on the replay's queue", dev.present_family);
-        dev.present_queue = VK_NULL_HANDLE, dev.present_family = dev.queue_family;
         return;
     }
+    dev.present_queue_supported = true;
     logf("vk: presents on a queue of their own, of compute family %u (RX_VK_PRESENT_QUEUE=0: off)", dev.present_family);
+}
+
+bool open_window_surface(bool log_failure) {
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+#ifdef _WIN32
+    VkWin32SurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
+    si.hinstance = GetModuleHandleA(nullptr);
+    si.hwnd = main_window;
+    if (!IsWindow(main_window) || vkCreateWin32SurfaceKHR(dev.instance, &si, nullptr, &surface) != VK_SUCCESS) return false;
+#else
+    const MkwVkWindow* w = prep_window;
+    if (!w || !w->create_surface(w->window, (void*)dev.instance, (void*)&surface)) {
+        if (log_failure)
+            logf("vk: SDL_Vulkan_CreateSurface failed; check SDL_VIDEODRIVER and the Vulkan window-system extensions");
+        return false;
+    }
+#endif
+    VkBool32 ok = VK_FALSE;
+    const VkResult result = vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.queue_family, surface, &ok);
+    if (result != VK_SUCCESS || !ok) {
+        if (log_failure) logf("vk: queue-family present support failed (VkResult %d, supported %u)", (int)result, ok);
+        vkDestroySurfaceKHR(dev.instance, surface, nullptr);
+        return false;
+    }
+    dev.surface = surface;
+    choose_present_queue();
+    return true;
 }
 
 int start(void* hwnd) {
@@ -1032,14 +1238,7 @@ int start(void* hwnd) {
         return 1;
     }
 #ifdef _WIN32
-    VkWin32SurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
-    si.hinstance = GetModuleHandleA(nullptr);
-    si.hwnd = (HWND)hwnd;
-    if (vkCreateWin32SurfaceKHR(dev.instance, &si, nullptr, &dev.surface) != VK_SUCCESS) return 0;
-    VkBool32 ok = VK_FALSE;
-    vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.queue_family, dev.surface, &ok);
-    if (!ok) return 0;
-    choose_present_queue();
+    if (!open_window_surface(true)) return 0;
     RECT r{};
     GetClientRect((HWND)hwnd, &r);
     if (!create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top))) return 0;
@@ -1050,17 +1249,7 @@ int start(void* hwnd) {
         logf("vk: unsupported SDL window bridge version %u (expected %u)", w->version, MKWVK_WINDOW_VERSION);
         return 0;
     }
-    if (!w->create_surface(w->window, (void*)dev.instance, (void*)&dev.surface)) {
-        logf("vk: SDL_Vulkan_CreateSurface failed; check SDL_VIDEODRIVER and the Vulkan window-system extensions");
-        return 0;
-    }
-    VkBool32 ok = VK_FALSE;
-    VkResult present = vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.queue_family, dev.surface, &ok);
-    if (present != VK_SUCCESS || !ok) {
-        logf("vk: queue-family present support failed (VkResult %d, supported %u)", (int)present, ok);
-        return 0;
-    }
-    choose_present_queue();
+    if (!open_window_surface(true)) return 0;
     int width = 0, height = 0;
     w->drawable_size(w->window, &width, &height);
     if (width <= 0 || height <= 0) {
