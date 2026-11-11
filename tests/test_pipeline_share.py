@@ -309,6 +309,9 @@ def check_sources():
     spawn = spawn[:spawn.index("\n}\n")]
     assert "pipe2(fds, O_CLOEXEC)" in spawn and "addclosefrom_np(&fa, 3)" in spawn, \
         "a desktop program can inherit the clipboard pipe (wl-copy then waits for the browser to exit)"
+    assert "pthread_sigmask(SIG_BLOCK, &pipe_set" in spawn and "sigtimedwait(&pipe_set" in spawn, \
+        "a clipboard program that exits before reading would end the game (SIGPIPE)"
+    assert "WEXITSTATUS(status) == 0" in spawn, "a clipboard program that failed counts as copied (no fallback to xclip)"
     for word in ("WinHttp", "curl", "POST"):
         assert word not in body, "Save my pipeline list uploads something (%s)" % word
     # the builders

@@ -53,6 +53,9 @@
 #ifndef _WIN32   // (Save my pipeline list: the desktop's programs. On Windows, shell32 and ole32 are loaded when it is used)
 #include <fcntl.h>
 #include <spawn.h>
+#include <csignal>
+#include <cerrno>
+#include <pthread.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -1618,19 +1621,38 @@ bool share_spawn(std::vector<std::string> argv, const std::string* input = nullp
         if (input) close(fds[1]);
         return false;
     }
-    std::thread([pid, fd = fds[1], text = input ? *input : std::string()] {   // (its input, then reaped)
-        if (fd >= 0) {
-            for (size_t at = 0; at < text.size();) {
-                const ssize_t n = write(fd, text.data() + at, text.size() - at);
-                if (n <= 0) break;
-                at += (size_t)n;
-            }
-            close(fd);
+    if (!input) {   // (xdg-open: reaped whenever it ends)
+        std::thread([pid] {
+            int status = 0;
+            waitpid(pid, &status, 0);
+        }).detach();
+        return true;
+    }
+    // (the clipboard's programs: given the text, and their exit waited for (they fork to keep the clipboard, the parent ends at once),
+    // so one that fails (wl-copy with a stale WAYLAND_DISPLAY) counts as failed and the next is tried. On the share worker. SIGPIPE
+    // is blocked on this thread while it writes: a program that exits before reading would otherwise end the game; the write
+    // then fails with EPIPE, and the signal it left pending is taken before the mask is put back)
+    sigset_t pipe_set, old;
+    sigemptyset(&pipe_set);
+    sigaddset(&pipe_set, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipe_set, &old);
+    bool wrote = true;
+    for (size_t at = 0; at < input->size();) {
+        const ssize_t n = write(fds[1], input->data() + at, input->size() - at);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            wrote = false;
+            break;
         }
-        int status = 0;
-        waitpid(pid, &status, 0);
-    }).detach();
-    return true;
+        at += (size_t)n;
+    }
+    close(fds[1]);
+    const timespec now{0, 0};
+    while (sigtimedwait(&pipe_set, nullptr, &now) == SIGPIPE) {}
+    pthread_sigmask(SIG_SETMASK, &old, nullptr);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    return wrote && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 #endif
 bool share_clipboard(const std::string& text) {
