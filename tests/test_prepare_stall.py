@@ -9,8 +9,10 @@ showing the last line written ("vertex format NVN 0xe -> vk 17"). In one log the
   RX_VK_PREDICT_STALL_S it goes on, leaving the stuck workers in the driver: anywhere in the run after a fault in the driver, and
   otherwise only once every program was handed out (the last stragglers). A slow driver that still finishes pipelines, or one
   stuck early with no fault, is waited for (that is the watchdog's).
-- the --prepare-shaders run's watchdog (gpu/vk/vk_main.cpp prepare_watchdog): a status line after a quiet spell, saying what it
-  works on or waits on; once nothing has moved for RX_VK_PREPARE_STALL_S, the reason, hookshot_prepare_skipped and exit status 4.
+- the --prepare-shaders run's watchdog (gpu/vk/vk_main.cpp prepare_watchdog): while nothing moves, what it waits on, even with
+  the pipeline steps' own progress lines (#2186) coming every 10 s; the shader programs' count after a quiet spell, and nothing of
+  its own while the pipeline steps move (their lines say it); once nothing has moved for RX_VK_PREPARE_STALL_S, the reason,
+  hookshot_prepare_skipped and exit status 4.
   The pipeline cache's save is stopped the same way only when workers were left in the driver or it faulted; otherwise it is
   reported, and its lines end so that make_game.py's silence limit still applies.
 - make_game.py says "the GPU driver stopped responding" for exit status 4.
@@ -91,6 +93,7 @@ void logf(const char* f, ...) {
 bool prepare_stopped() { return false; }
 int driver_faults() { return faults.load(); }
 void prepare_left_workers_note() { left_noted = true; }
+void prepare_progress_log(const char*, size_t, size_t, std::chrono::steady_clock::time_point, std::chrono::steady_clock::time_point&) {}
 void ub_thread_off() {}
 void Sleep(unsigned ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 std::vector<std::unique_ptr<PipeNote>> pipe_notes_read() {
@@ -226,6 +229,17 @@ int main(int argc, char** argv) {
         return 8;
     }
     if (c == "end") prepare_end(0);   // (a run that left workers: done, ended at once)
+    if (c == "busy-stuck" || c == "busy-moving") {   // (other lines every 200 ms, as the pipeline steps' own progress lines)
+        std::thread([] { for (;;) logf("vk: predicted pipelines: progress line"), Sleep(200); }).detach();
+        if (c == "busy-stuck") {   // (stuck: what it waits on is still said, and it stops)
+            prepare_moved(1, 5, 10);
+            Sleep(20000);
+            return 8;
+        }
+        for (size_t i = 1; i <= 15; i++) prepare_moved(1, i, 100), Sleep(300);   // (moving: the steps' own lines say it)
+        std::fflush(stdout);
+        std::_Exit(0);
+    }
     return 9;
 }
 '''
@@ -280,7 +294,9 @@ def check_watchdog(cxx, tmp):
             ("moving", 0, ["still working on the shader programs"], ["STOPPED", "waiting:"]),
             ("save", 0, ["still writing the pipeline cache's save", "this is the disk"], ["STOPPED", "(5 s)", "(6 s)"]),
             ("save-left", 4, ["which still has pipelines it did not finish", "STOPPED: the pipeline cache's save waited 4 s"], []),
-            ("end", 0, ["@@done shaders"], ["STOPPED"])):
+            ("end", 0, ["@@done shaders"], ["STOPPED"]),
+            ("busy-stuck", 4, ["waiting: nothing in the predicted pipelines has finished", "STOPPED"], []),
+            ("busy-moving", 0, ["progress line"], ["still working", "waiting:", "STOPPED"])):
         skipped = Path(tmp) / ("skipped-" + case)
         env = dict(os.environ, RX_VK_PREPARE_STALL_S="4", RX_VK_PREPARE_STATUS_S="1", FIXTURE_SKIPPED=str(skipped))
         t0 = time.time()

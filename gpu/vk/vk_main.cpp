@@ -738,14 +738,15 @@ std::string skipped_path() {
     return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepare_skipped";
 }
 // (hookshot) The --prepare-shaders run's watchdog, for any GPU and any part of it.
-// - What it is doing, in the log the builder shows: a line whenever the log has been quiet for 30 s, with the part and its count,
-//   and, when that count has not moved, what it is waiting on and since when. Before, the builder's details showed
-//   the last line the run happened to write ("vertex format NVN 0xe -> vk 17") for as long as it ran or hung, and players could
-//   not tell a slow driver from a stuck one.
+// - What it waits on, in the log the builder shows: every 30 s that nothing has moved, the part, its count, and whether the
+//   GPU driver faulted; a driver fault as soon as it is caught. (The pipeline steps log their own progress every 10 s,
+//   vk_draw.cpp prepare_progress_log, #2186; this adds the shader programs' count when the log has been quiet for 30 s.)
+//   Before, the builder's details could not tell a slow driver from a stuck one.
 // - When it stops for good: a driver that faults inside a pipeline compile (caught by guarded_graphics: "the driver faulted
 //   compiling", above) can leave that compile unfinished inside it, and builds behind it then wait for ever (on AMD, any build of
 //   the same program: #1823's dump of issue 996): builds stuck on players' cards of all kinds, AMD and NVIDIA (#2107). Whatever
-//   the cause, a part that needs the stuck driver cannot go on. So when nothing has moved for RX_VK_PREPARE_STALL_S seconds (300; 0: never stopped. Long: some steps read the caches or
+//   the cause, a part that needs the stuck driver cannot go on. So when nothing has moved for RX_VK_PREPARE_STALL_S seconds
+//   (300; 0: never stopped. Long: some steps read the caches or
 //   decide the predictions for a while with no count, on a slow disk or CPU too), the run says where it stopped and why, leaves
 //   hookshot_prepare_skipped so the game's own starts do not stop in the same place (what was not prepared is built when first
 //   drawn), and ends at once with exit status 4 (make_game.py: "the GPU driver stopped responding"). Not through exit(): that
@@ -825,8 +826,15 @@ void prepare_watchdog() {
                 if (FILE* f = fopen(skipped_path().c_str(), "wb")) fclose(f);
                 prepare_end(4);
             }
-            if (now - last_log_ms.load(std::memory_order_relaxed) < quiet_s * 1000) continue;
+            // (its own lines, at most one every quiet_s: while nothing has moved, what it waits on, whatever else the log says (the
+            // pipeline steps' own lines, vk_draw.cpp prepare_progress_log, come every 10 s and repeat their count while it is
+            // stuck); while the shader programs move, their count when the log has been quiet (the pipeline steps log theirs);
+            // the save, below)
+            static int64_t said_ms = 0;
+            if (now - said_ms < quiet_s * 1000) continue;
+            const bool quiet = now - last_log_ms.load(std::memory_order_relaxed) >= quiet_s * 1000;
             if (at.part >= 3) {
+                if (!quiet) continue;
                 if (risky)
                     logf("vk: preparation: still writing %s (%lld s), %s. Stopped at %d s if it does not end", what,
                          (long long)still, waiting_on, stall_s);
@@ -835,15 +843,19 @@ void prepare_watchdog() {
                          (long long)still);
                 else
                     continue;   // (silent from here: make_game.py's 15 minutes with no line stop a save that never ends)
-            } else if (still < quiet_s) {
+            } else if (still >= quiet_s) {
+                if (stall_s > 0)
+                    logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s. Stopped at %d s if "
+                         "nothing moves", what, (long long)still, at.done, at.total, waiting_on, stall_s);
+                else
+                    logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s", what,
+                         (long long)still, at.done, at.total, waiting_on);
+            } else if (at.part == 0 && quiet) {
                 logf("vk: preparation: still working on %s: %zu of %zu", what, at.done, at.total);
-            } else if (stall_s > 0) {
-                logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s. Stopped at %d s if nothing "
-                     "moves", what, (long long)still, at.done, at.total, waiting_on, stall_s);
             } else {
-                logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s", what, (long long)still,
-                     at.done, at.total, waiting_on);
+                continue;
             }
+            said_ms = now;
             if (host && host->log_flush) host->log_flush();
         }
     }).detach();
