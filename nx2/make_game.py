@@ -447,6 +447,9 @@ def keep_heads(out, game, stamp):
         f.write(stamp.strip() + "\n" + listed)
 
 
+DAMAGED_NOTE = "hookshot_damaged_files.txt"   # (in the game folder: the damaged game files the last unpack replaced)
+
+
 def stand_in_damaged_files(out, romfs):
     """An incomplete dump's damaged textures replaced by whole ones of the same kind, and said: without them the game
     leaves out the walls and floors that use them (the Water Temple, #1002). Only in a romfs this builder unpacked (its
@@ -457,8 +460,11 @@ def stand_in_damaged_files(out, romfs):
         return
     check_cache_paths(out, (good, checked, romfs))
     stamp = read_stamp(good)
-    if os.path.isfile(checked) and read_stamp(checked) == stamp:
-        return
+    checked_stamp = "resolved-v1\n" + stamp
+    if os.path.isfile(checked):
+        if read_stamp(checked) == checked_stamp:
+            return
+        os.remove(checked)   # Earlier checks also marked files with no replacement as checked.
     import nup
     heads = os.path.join(out, HEADS)
     known = None
@@ -475,19 +481,31 @@ def stand_in_damaged_files(out, romfs):
         done = nup.stand_in_damaged(romfs, file_progress("checked"))
     else:   # (found while the .nup was extracted: no file opened again)
         done = nup.stand_in_damaged(romfs, damaged=[os.path.normpath(os.path.join(romfs, rel)) for rel in known])
-    write_stamp(checked, stamp)
+    note = os.path.join(out, DAMAGED_NOTE)
+    if not done:
+        with contextlib.suppress(FileNotFoundError):   # (a whole dump unpacked over a damaged one)
+            os.remove(note)
+    else:
+        lines = ["Your game dump is incomplete: %d game file%s in it %s damaged (a complete dump is about 23.8 GB, an incomplete "
+                 "one 23.3 GB). Similar files are used where available, "
+                 "with different textures in those places. Dump the game again for the original files:" %
+                 (len(done), "" if len(done) == 1 else "s", "is" if len(done) == 1 else "are")]
+        for path, other in done:
+            lines.append("  %s: %s" % (os.path.relpath(path, romfs),
+                                       "in its place " + os.path.basename(other) if other else "no replacement found; build cannot continue"))
+        for line in lines:
+            print(line, flush=True)
+        # (#2237: keep the list even when an unresolved file stops this build, before marking a successful check)
+        with open(note, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines) + "\n")
+        unresolved = sum(other is None for _, other in done)
+        if unresolved:
+            fail("The game dump still has %d damaged file%s with no replacement. The build stopped before compiling. "
+                 "Dump the game again and select the complete dump in Hookshot Builder. The affected files are listed above." %
+                 (unresolved, "" if unresolved == 1 else "s"))
+    write_stamp(checked, checked_stamp)
     with contextlib.suppress(FileNotFoundError):
         os.remove(heads)
-    if not done:
-        return
-    print("Your game dump is incomplete: %d game file%s in it %s damaged (a complete dump is about 23.8 GB, an incomplete "
-          "one 23.3 GB). Each is replaced by a similar file so that the places using it are still drawn, with a different "
-          "texture there. Dump the game again for the original look:" % (len(done), "" if len(done) == 1 else "s",
-                                                                          "is" if len(done) == 1 else "are"), flush=True)
-    for path, other in done:
-        print("  %s: %s" % (os.path.relpath(path, romfs),
-                            "in its place " + os.path.basename(other) if other else "nothing similar found, left as it is"),
-              flush=True)
 
 
 def check_cache_paths(out, paths):
@@ -1115,6 +1133,8 @@ def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
         not_prepared("the game printed nothing for %s and was stopped" % span(silence))
     elif code == 3:
         not_prepared("no usable Vulkan here")
+    elif code == 4:   # (gpu/vk/vk_main.cpp prepare_watchdog: nothing moved for minutes, the driver stuck after a fault in it)
+        not_prepared("the GPU driver stopped responding")
     elif code:
         not_prepared("the game stopped with exit status %d" % code)
     return code
@@ -1157,6 +1177,8 @@ def copy_writable(src, dst):
     store, a packaged tools folder) the copies in the work folder were read-only, so lift.py could not write chunks.txt
     again (PermissionError) and every later build failed on the same file"""
     if os.path.exists(dst):
+        if os.path.samefile(src, dst):   # (--work is the checkout's own work folder: the file is already there; copyfile stopped)
+            return
         os.chmod(dst, stat.S_IREAD | stat.S_IWRITE)
     shutil.copyfile(src, dst)
 

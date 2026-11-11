@@ -89,6 +89,7 @@ void hos_fatal(Ctx *c, const char *fmt, ...);
 uint64_t hos_sys_alloc(uint64_t size, uint64_t align);     /* zeroed, from the system region, never freed */
 uint64_t hos_region_alloc(uint64_t size, uint64_t align);  /* address space above the heap */
 void hos_region_free(uint64_t addr);
+int hos_regions(uint64_t (*out)[2], int cap);   /* the regions: {start, end}, at most cap; how many */
 void hos_mem_init(uint64_t image_end);
 extern uint64_t hos_heap_size, hos_heap_used, hos_total_memory, hos_program_size;
 
@@ -114,7 +115,8 @@ int hos_thread_priority(HosThread *t, int set, int value);
 int hos_thread_core(HosThread *t);
 int hos_cores(void);
 /* virtual cores (hos_thread.c, HOS_VCORES=1): a guest thread gives its core up for a block (hos_vcore_away: 1 if it
-   held one) and takes one again after it (hos_vcore_back); checkpoints hand it to a better waiter that asked */
+   held one, or ran without one since an escape) and takes one again after it (hos_vcore_back); checkpoints hand it to a
+   better waiter that asked */
 int hos_vcores_on(void);
 int hos_vcore_away(void);
 void hos_vcore_back(void);

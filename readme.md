@@ -205,6 +205,7 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
 | Problem | What to do |
 |---|---|
 | Where is the log? | `hookshot_log.txt` in the game folder holds the last run. The four runs before are `hookshot_log.1.txt` (the last) to `.4.txt`. Started from a terminal, the game prints there instead. Every 600 frames it has a `vk: status:` line: the video memory in use of what the driver allows, and DLSS's details while it draws; `vk: over the driver's video-memory allowance` says when the game passed it |
+| A place has a wrong texture, or a floor or wall is missing | Look for `hookshot_damaged_files.txt` in the game folder. The build writes it when your game dump is incomplete (about 23.3 GB, a complete one is about 23.8 GB): it lists each damaged game file and the file put in its place. Dump the game again and build from the new dump; the file is then removed |
 | Linux Builder Play closed before the game log appeared | After the game exits, check `hookshot_startup.log` in the game folder for up to 64 KiB of startup stderr and its exit status. |
 | "Hookshot supports build e0f3ccfa" or "This version isn't supported" | Check that you chose the right game with its update installed |
 | The game opens and closes, or the log says "device lost" | Update your graphics driver. On AMD cards there are known crashes ([#708](https://github.com/NotRexed/Hookshot/issues/708), [#614](https://github.com/NotRexed/Hookshot/issues/614)) |
@@ -318,6 +319,7 @@ HDR peak brightness show only while HDR is on.
 | | Invert mouse vertical | Off, On | Off |
 | | Invert camera X | Off, On | Off |
 | | Invert camera Y | Off, On | Off |
+| | Camera speed | 50% to 400%, in steps of 25 | 100% |
 | | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |
 | | Rumble strength | Off, 25% to 150%, in steps of 25 | 100% |
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom | Nintendo (Def) |
@@ -371,10 +373,10 @@ HDR peak brightness show only while HDR is on.
   and below; an ultrawide keeps its 16:9. For a size the menu does not offer (3440x1440, 2560x1080, ...), set
   `output_res=<width>x<height>` in `hookshot_options.ini`: each side a multiple of 8, at least 640x360, at most 5120x2880's
   pixels, and between 5:4 and 48:9 in shape; anything else uses the game's 2048x1152. The menu then offers it as its own
-  choice. With the **Aspect ratio** at Monitor's shape, a picture wider than 16:9 is kept to 3840x2160's pixels, so above
+  choice. With the **Aspect ratio** at Monitor's shape, a picture wider than 16:9 is kept to 5120x2160's pixels, so above
   that a wide size is not a native frame. A custom output wider than 32:9 also sets the camera shape, even when the OS
   reports a single 16:9 primary monitor. For three 16:9 monitors, use `5760x1080` or `7680x1440` and a window or logical display
-  that spans all three. The 7680x1440 output uses a smaller 48:9 internal picture to stay within the pixel budget.
+  that spans all three. Both render at full size: 7680x1440 has 5120x2160's pixels, the most a wide picture takes.
   For one run, set `HOS_OUTPUT_RES` to a size, such as `HOS_OUTPUT_RES=3840x2160`.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest
   picture, set the Output resolution to your screen's, and the row shows "Not needed (window = output)". It and
@@ -389,9 +391,12 @@ HDR peak brightness show only while HDR is on.
   there is no ghosting, but no anti-aliasing either: edges are jagged, and below 100% the picture is soft. The Render
   resolution then sets the 3D's size alone (Auto, 100%, 75%, 67%, 50%, 33%): lower is faster. RX_VK_DLSS, RX_VK_FSR4 and
   RX_VK_FSR set for a run go over it, as over the row's other choices.
-- **Texture detail with DLSS, FSR 3.1 or FSR 4:** below 75% Render resolution, the world's textures are sampled one finer
-  mip step for each halving of the 3D (the game already does so for its own 75%), so the upscaled picture keeps their
-  detail. `RX_VK_UPSCALE_LOD_BIAS=0` turns it off.
+- **Texture detail with DLSS, FSR 3.1 or FSR 4:** DLSS and DLAA sample the world's textures as NVIDIA's DLSS guide asks:
+  at the output's size and one mip step finer (the game's own bias + log2(3D / output) - 1), which DLSS resolves over its
+  frames, so they keep the detail of the full-size picture instead of the 3D's smaller size. FSR 3.1 and FSR 4 sample them
+  one finer mip step for each halving of the 3D below 75% (the game already does so for its own 75%).
+  `RX_VK_UPSCALE_LOD_BIAS=0` turns it off; `RX_VK_DLSS_LOD_OFFSET=<steps>` sets DLSS's extra step for a run (-1 by default,
+  0 for none, down to -3).
 - **NVIDIA Reflex** Off is the game as without it. `RX_VK_REFLEX_LOG=1` logs the driver's latency timings every 300
   frames while it is on.
 - **AMD Anti-Lag 2** Off is the game as without it. Like Reflex, it is not used while Frame generation is on.
@@ -437,6 +442,9 @@ HDR peak brightness show only while HDR is on.
 - **Disable camera centering:** On stops the game gradually turning the camera toward your movement, so it does not fight
   native mouse look. Off keeps the game's standard behavior. Changes apply immediately with either Mouse camera mode.
   Manual controls, explicit recentering and scripted camera headings still work; automatic pitch adjustment is unchanged.
+- **Camera speed** is how fast the right stick turns the camera, in percent of the game's own speed. The camera keys
+  follow it, and so does the mouse with Mouse camera on As the stick; Native mouse look has its own sensitivity. The
+  game's own camera speed option still picks the speed this multiplies.
 - **Stick dead zone:** how far a stick moves before it counts, on each axis. Default is XInput's (about 24%); lower suits
   a precise stick, higher one that drifts. The game keeps a dead zone of its own after it.
 - **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble
@@ -517,7 +525,10 @@ A mod file larger than the game's own does not load unless the resource size tab
 aside for it (by the CRC32 of its path without `.zs`; for a texture, its decompressed size + 280). Past that, the game
 goes on without the mod's file, or a loading screen waits for good. A mod that makes files bigger (HD
 textures, longer parameter files) ships the table with its entries grown. Since only one mod's table is used, mods that
-each grow files need one table with all their entries, in the mod that sorts last.
+each grow files need one table with all their entries, in the mod that sorts last. Hookshot merges the button prompts'
+entries into that table (each file gets the larger of the two), so your controller's icons stay in texts; the log says
+`(with the button prompts' sizes merged in)` after the table's line. A table it cannot read that way (not the game's
+format, or a zstd frame that does not give its size) is used as it is, with the Switch's icons.
 
 ## Build from source
 
@@ -713,6 +724,8 @@ of its own downloads (`C:\ProgramData\NVIDIA\NGX\models`) before it uses the gam
 A game built with FSR 4 offers **AMD FSR 4** and **AMD FSR 4 Native AA** in the Graphics tab's **Upscaler** row: AMD's
 machine-learned temporal upscaler in place of the game's own, on the same inputs as DLSS (the scene's colour and depth, the
 camera's and the characters' motion, and the camera jitter). Native AA draws the 3D at full size and smooths its edges.
+With HDR on **Native**, it takes the game's HDR colour as linear light, so highlights above the paper white are kept
+(`RX_VK_FSR4_HDR=0`: cut at the paper white, as before).
 Unlike FSR 3.1 (above), it runs AMD's own DLLs, so it needs them beside the game. Choose it in the menu (`dlss=4` or `5`
 in `hookshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to leave it out).
 
