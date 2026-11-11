@@ -35,5 +35,11 @@ inline bool fetch_bounds_buffers = false;
 // (hookshot) isnan tested on the value's bits (IsNan in emit_spirv_floating_point.cpp), not OpIsNan, for AMD's older Windows
 // shader compiler (RX 5000 and RX 6000: gpu/vk/vk_vendor.h); RX_VK_NAN_BITS=0 or 1
 inline bool nan_bits = false;
+// (hookshot) a storage buffer table's entries searched in a loop the driver is asked not to unroll (DefineGlobalMemoryFunctions),
+// not one test an entry written out sixteen times. Mesa inlines every function, DontInline or not: OoT's foliage culling
+// (53caac5f) has 46 global accesses, each with its ~70 table entries written out, over 100k instructions that Intel's
+// compiler did not finish in minutes, and every compute pipeline queued behind it on Intel's one build thread waited:
+// mesh-drawn rocks and doors white, the forest grey. In a loop: 12 s. On for Intel's Mesa driver (vk_coopmat.cpp); RX_VK_GM_LOOP=0 or 1
+inline bool global_table_loop = false;
 
 } // namespace Shader::Backend::SPIRV

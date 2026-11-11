@@ -119,8 +119,8 @@ def check_source():
     if "p.need_gather_subpixel_offset = dev.fixes.gather_offset;" not in cut(shader, "Shader::Profile make_profile() {"):
         raise SystemExit("FAIL: make_profile does not set the gather offset")
     stamp = cut(shader, "uint64_t translator_stamp() {")
-    for text in ("fetch_bounds ? 8u : 0u", "nan_bits ? 16u : 0u", "profile().need_gather_subpixel_offset ? 32u : 0u",
-                 "fetch_bounds_buffers ? 64u : 0u"):
+    for text in ("fetch_bounds ? 16u : 0u", "nan_bits ? 32u : 0u", "profile().need_gather_subpixel_offset ? 64u : 0u",
+                 "fetch_bounds_buffers ? 128u : 0u"):
         if text not in stamp:
             raise SystemExit("FAIL: the program cache's stamp lacks %s" % text)
 
