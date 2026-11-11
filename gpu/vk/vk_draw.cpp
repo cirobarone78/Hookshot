@@ -187,6 +187,19 @@ void pin_subgroup(VkPipelineShaderStageCreateInfo& st, uint32_t workgroup_x = 0)
         st.flags |= VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
 }
 
+/// Mesa's Intel compiler can spend minutes allocating registers for a compute program pinned to 32 lanes.
+/// Leave programs with no subgroup capability unpinned; small shared-memory workgroups stay pinned so their barriers are preserved.
+/// RX_VK_PIN_ALL=1 pins every program, as before; =0 applies this rule on any GPU.
+bool compute_pin_needed(const Program& p) {
+    static const int all = getenv("RX_VK_PIN_ALL") ? atoi(getenv("RX_VK_PIN_ALL")) : (dev.props.vendorID == 0x8086 ? 0 : 1);
+    if (all || p.stages.empty() || p.stages[0].subgroups) return true;
+    const uint64_t invocations = (uint64_t)p.workgroup[0] * p.workgroup[1] * p.workgroup[2];
+    return p.shared_memory && invocations <= 32;
+}
+void pin_compute(VkPipelineShaderStageCreateInfo& st, const Program& p) {
+    if (compute_pin_needed(p)) pin_subgroup(st, p.workgroup[0]);
+}
+
 inline uint64_t mix(uint64_t h, uint64_t v) {
     h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
     return h * 0xff51afd7ed558ccdull;
@@ -7893,7 +7906,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         ci.stage.module = p.stages[0].module;
         ci.stage.pName = "main";
-        pin_subgroup(ci.stage, p.workgroup[0]);
+        pin_compute(ci.stage, p);
         ci.layout = p.layout;
         if (env_on("RX_VK_NOOPT")) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         VkPipeline pl = VK_NULL_HANDLE;
@@ -8094,7 +8107,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                 ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
                 ci.stage.module = p.stages[0].module;
                 ci.stage.pName = "main";
-                pin_subgroup(ci.stage, p.workgroup[0]);
+                pin_compute(ci.stage, p);
                 ci.layout = p.layout;
                 VkPipeline made = VK_NULL_HANDLE;
                 if (cached_compute(&ci, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;
@@ -8612,7 +8625,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
                 ci.stage.module = q.stages[0].module;
                 ci.stage.pName = "main";
-                pin_subgroup(ci.stage, q.workgroup[0]);
+                pin_compute(ci.stage, q);
                 ci.layout = q.layout;
                 static const bool noopt = env_on("RX_VK_NOOPT");
                 if (noopt) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
@@ -8680,7 +8693,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         ci.stage.module = p.stages[0].module;
         ci.stage.pName = "main";
-        pin_subgroup(ci.stage, p.workgroup[0]);
+        pin_compute(ci.stage, p);
         ci.layout = p.layout;
         {   // (local) RX_VK_NOOPT=1, as for graphics pipelines above
             static const bool noopt = env_on("RX_VK_NOOPT");

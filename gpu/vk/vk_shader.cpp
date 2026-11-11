@@ -665,6 +665,23 @@ std::unique_ptr<Translation> translate(Env& env, bool graphics, bool one_exit = 
 
 } // namespace
 
+bool spirv_uses_subgroups(const std::vector<uint32_t>& spirv) {
+    if (spirv.size() < 5 || spirv[0] != 0x07230203u) return true;   // (not SPIR-V we can read: as if it did)
+    for (size_t i = 5; i < spirv.size();) {
+        const uint32_t op = spirv[i] & 0xffffu, n = spirv[i] >> 16;
+        if (!n || i + n > spirv.size()) return true;
+        if (op != 17 && op != 10 && op != 11) return false;   // (past OpCapability, OpExtension, OpExtInstImport: none of them)
+        if (op == 17 && n >= 2) {
+            const uint32_t c = spirv[i + 1];
+            // (Groups 18, GroupNonUniform to GroupNonUniformQuad 61-68, SubgroupBallotKHR 4423, SubgroupVoteKHR 4431,
+            // GroupNonUniformPartitionedNV 5297, CooperativeMatrixNV 5357, CooperativeMatrixKHR 6022)
+            if (c == 18 || (c >= 61 && c <= 68) || c == 4423 || c == 4431 || c == 5297 || c == 5357 || c == 6022) return true;
+        }
+        i += n;
+    }
+    return false;
+}
+
 VkShaderModule make_module(const std::vector<uint32_t>& spirv) {
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = spirv.size() * 4;
@@ -1284,6 +1301,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             st.nvn_stage = 5;
             st.info = t->program.info;
             st.module = make_module(spirv);
+            st.subgroups = spirv_uses_subgroups(spirv);
             kept.push_back(spirv);
             st.vk_stage = VK_SHADER_STAGE_COMPUTE_BIT;
             st.c1 = csc->c1;
