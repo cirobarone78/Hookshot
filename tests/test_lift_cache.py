@@ -44,6 +44,11 @@ def main():
             check("another lift setting changes the key", make_game.lift_key(str(exefs), str(work), dict(env, A64_HOT_CHUNK="")) != key)
             with mock.patch.dict(os.environ, {"A64_KEEP_FLAGS": "1"}):
                 check("a lifter switch in the environment changes the key", make_game.lift_key(str(exefs), str(work), env) != key)
+            for name in make_game.COMPILE_ONLY_ENV:   # (the compile's switches: a build at another hot-code level keeps the lift)
+                check("%s for the compile does not change the key" % name,
+                      make_game.lift_key(str(exefs), str(work), dict(env, **{name: "O1"})) == key)
+                with mock.patch.dict(os.environ, {name: "O1"}):
+                    check("%s in the environment does not change the key" % name, make_game.lift_key(str(exefs), str(work), env) == key)
             real_open = open
             changed = str(ROOT / "nx2" / "lift.py")
 
@@ -89,6 +94,16 @@ def main():
               not make_game.lifted_before(str(work), key))
         make_game.write_lift_key(str(work), key)
         check("a finished lift with another key is not", not make_game.lifted_before(str(work), "0" * 40))
+    # (the variables the key leaves out must be the compile's alone: no file of the translator reads them, only nx2/build.py,
+    # which runs after the lift, and make_game.py, which hands them on)
+    for top in (ROOT / "nx2", ROOT / "third_party" / "a64-kit"):
+        for path in sorted(top.rglob("*")):
+            if path.suffix not in (".py", ".c", ".h", ".cpp", ".hpp") or path.name in ("build.py", "make_game.py") and path.parent == ROOT / "nx2":
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for name in make_game.COMPILE_ONLY_ENV:
+                check("%s reads %s, which the lift key leaves out as the compile's alone" % (path.relative_to(ROOT), name),
+                      name not in text)
     print("ok: the lift key follows the game, the tools, the hot list, the chunks and the settings")
 
 

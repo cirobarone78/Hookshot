@@ -1242,6 +1242,10 @@ def shader_census_cmd(romfs, out):
 
 
 LIFT_KEY = ".lift_key"   # (in <work>/sa/gen: what the lifted C there was made from)
+# (the compile's own switches, read by nx2/build.py alone: the hot pieces' level and their profile. They are not the lift's, so a
+# development build at RX_HOT_OPT=O1 keeps the lifted C instead of translating the game again; tests/test_lift_cache.py checks
+# that nothing else the key covers reads them)
+COMPILE_ONLY_ENV = ("RX_HOT_OPT", "RX_PGO")
 
 
 def lift_key(exefs, work, env):
@@ -1266,6 +1270,7 @@ def lift_key(exefs, work, env):
             with open(f, "rb") as src:
                 h.update(hashlib.sha1(src.read(), usedforsecurity=False).digest())
     lift_env = dict(env, **{k: v for k, v in os.environ.items() if k.startswith(("A64_", "OOT_", "RX_"))})
+    lift_env = {k: v for k, v in lift_env.items() if k not in COMPILE_ONLY_ENV}
     h.update(repr(sorted(lift_env.items())).encode())
     return h.hexdigest()
 
