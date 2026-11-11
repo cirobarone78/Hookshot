@@ -132,6 +132,9 @@ workload, or build it from a developer prompt:
 dotnet build builder/HookshotBuilder.sln
 ```
 
+For a Windows installation that keeps its own state on an external SSD, see
+[portable Builder setup and relocation](docs/windows-portable-builder.md).
+
 You only need Visual Studio for the builder itself. The game build uses llvm-mingw.
 
 The Windows app's **Build workers** choice applies to builds started from that window. **Automatic** keeps the existing
@@ -312,9 +315,8 @@ NVIDIA's DLSS SDK is not one of them: it is never in the repository, and nothing
 ## Where to talk
 
 - **Issues:** [use the forms](https://github.com/NotRexed/Hookshot/issues/new/choose).
-- **Discord:** https://discord.gg/EajnD2AJD9. Use the `hookshot-discussion` channel; the server is mainly for
-  web ports, and that channel is where Hookshot talk belongs.
-- **Newest release:** https://github.com/NotRexed/Hookshot/releases/latest.
+- **Discord:** https://discord.gg/rexed. Use the `dev-work` channel for prs.
+- **Newest release:** https://github.com/NotRexed/Hookshot/releases/latest
 
 Thanks for testing, reporting and sending fixes. Every report from a different GPU and every area played further than
 before moves the port forward.
