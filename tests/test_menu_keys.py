@@ -262,7 +262,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="menu-keys-") as tmp:
         cpp, exe = Path(tmp) / "fixture.cpp", Path(tmp) / "fixture"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(ROOT), str(cpp), "-o", str(exe)], check=True)
+        # (_CRT_SECURE_NO_WARNINGS: the MSVC CRT's fopen deprecation, as the game's own Windows build passes)
+        subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-I" + str(ROOT), str(cpp),
+                        "-o", str(exe)], check=True)
         subprocess.run([str(exe), str(Path(tmp) / "hookshot_options.ini")], check=True)
 
     need(menu, r'\{TAB_CONTROLS, "Menu shortcut", &opts\.menu_shortcut, 0, 2, 1, tx_menu_shortcut,[^}]*nullptr, false, true\}',
