@@ -89,8 +89,10 @@ def main():
             exe = Path(tmp) / ("fixture_%s%s" % (suffix[1:], ".exe" if os.name == "nt" else ""))
             src.write_text(FIXTURE, encoding="utf-8")
             flags = ["-x", "c", "-D_POSIX_C_SOURCE=200809L"] if lang == "C" else []   # (C++'s compiler, told it is C)
-            subprocess.run([args.cxx, std, "-Wall", "-Wextra", "-Werror", *flags, "-I", str(include), str(src), "-o", str(exe)],
-                           check=True)
+            # (_CRT_SECURE_NO_WARNINGS: the fixture's stdio.h comes before hookshot_env.h, and Windows' CRT then calls getenv
+            # deprecated for the rest of the file)
+            subprocess.run([args.cxx, std, "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", *flags, "-I", str(include),
+                            str(src), "-o", str(exe)], check=True)
             subprocess.run([str(exe), *argv], check=True)
 
     # (no on/off switch read the old way: a name read only as getenv(name) != NULL / == NULL anywhere in host/ or gpu/vk)
