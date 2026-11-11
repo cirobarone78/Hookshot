@@ -39,8 +39,17 @@ static class Updater
     // builder/linux/linux_update.py have the same rules ----
     public const string Release = "release", Candidate = "rc", Nightly = "nightly";
     const string Releases = "https://api.github.com/repos/NotRexed/Hookshot/releases";
-    static readonly System.Text.RegularExpressions.Regex NightlyName = new(@"-\d+-g[0-9a-f]+(-dirty)?$");
-    static readonly System.Text.RegularExpressions.Regex ReleaseName = new(@"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$");
+    // (\z, not $, in these: .NET's $ also matches before a last line break, and "v2.1.0\n" was taken)
+    static readonly System.Text.RegularExpressions.Regex NightlyName = new(@"-\d+-g[0-9a-f]+(-dirty)?\z");
+    static readonly System.Text.RegularExpressions.Regex ReleaseName = new(@"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?\z");
+    static readonly System.Text.RegularExpressions.Regex TagName = new(@"^[0-9A-Za-z._+-]{1,128}\z");
+
+    /// A release name as every builder takes it (builder/linux/linux_update.py tag_ok, host/hos_update.c safe_tag): it goes
+    /// into release links and folder names, from the command line or GitHub's answer
+    public static bool TagOk(string? tag) => tag != null && TagName.IsMatch(tag) && tag != "." && tag != "..";
+
+    /// A tag line ("tag <t>") of a setup list, when it is a release name
+    static string? ListTag(string line) => line[4..].Trim() is var t && TagOk(t) ? t : null;
 
     /// A build's track from its version: git describe --long's v2.1.0-rc.1-3-g1a2b3c4 is the nightly, v2.1.0-rc.1 a release
     /// candidate, anything else a release
@@ -95,7 +104,7 @@ static class Updater
                 {
                     var list = await http.GetStringAsync("https://github.com/NotRexed/Hookshot/releases/download/nightly/" + SetupList);
                     foreach (var line in list.Split('\n'))
-                        if (line.StartsWith("tag ")) return line[4..].Trim();
+                        if (line.StartsWith("tag ")) return ListTag(line);
                 }
                 catch (Exception) { }
                 await Task.Delay(TimeSpan.FromSeconds(2));
@@ -112,7 +121,7 @@ static class Updater
                 using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
                 string? newest = null;
                 foreach (var r in doc.RootElement.EnumerateArray())
-                    if (r.GetProperty("tag_name").GetString() is { } t && ReleaseName.IsMatch(t) && (newest == null || Newer(t, newest)))
+                    if (r.GetProperty("tag_name").GetString() is { } t && ReleaseName.IsMatch(t) && TagOk(t) && (newest == null || Newer(t, newest)))
                         newest = t;
                 if (newest != null) return newest;
             }
@@ -139,7 +148,7 @@ static class Updater
                 if (response.IsSuccessStatusCode)
                 {
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-                    return doc.RootElement.GetProperty("tag_name").GetString();
+                    return doc.RootElement.GetProperty("tag_name").GetString() is { } latest && TagOk(latest) ? latest : null;
                 }
                 if ((int)response.StatusCode < 500) break;   // (the API's limit, 60 an hour a PC: the list below instead)
             }
@@ -154,7 +163,7 @@ static class Updater
             {
                 var list = await http.GetStringAsync("https://github.com/NotRexed/Hookshot/releases/latest/download/" + SetupList);
                 foreach (var line in list.Split('\n'))
-                    if (line.StartsWith("tag ")) return line[4..].Trim();
+                    if (line.StartsWith("tag ")) return ListTag(line);
             }
             catch (Exception) { }
             await Task.Delay(TimeSpan.FromSeconds(2));
@@ -203,6 +212,11 @@ static class Updater
     public static async void UpdateFolder(MainWindow w, string folder, string? tag, bool fetched, bool named = false)
     {
         w.BeginUpdate(folder, tag);
+        if (tag != null && !TagOk(tag))
+        {
+            w.DownloadFailed("The update asked for a release name this builder does not take.");
+            return;
+        }
         var tools = Tools.Find();
         if (tools == null)
         {
@@ -420,6 +434,9 @@ static class Updater
             if (!response.IsSuccessStatusCode) throw HttpFailure(response);
 
             var total = response.Content.Headers.ContentLength ?? size;
+            // (hookshot) never more than GitHub's size of the file, or the answer's own length: a body with no
+            // Content-Length was written to disk to its end before its length was compared
+            var limit = size > 0 ? size : total;
             await using (var from = await response.Content.ReadAsStreamAsync(token))
             await using (var to = new FileStream(partial, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
@@ -434,6 +451,8 @@ static class Updater
                     try { n = await from.ReadAsync(buffer, token); }
                     catch (IOException e) { throw new HttpRequestException("The download connection ended unexpectedly.", e); }
                     if (n == 0) break;
+                    if (limit > 0 && have + n > limit)
+                        throw new InvalidDataException($"The download is longer than the release says ({limit >> 20} MB).");
                     await to.WriteAsync(buffer.AsMemory(0, n), token);
                     hash.AppendData(buffer, 0, n);
                     have += n;

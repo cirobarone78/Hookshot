@@ -315,6 +315,28 @@ namespace DigestFixture
                 var content = new StreamContent(new Bytes(s.Good, () => throw new IOException("authored stream failure")));
                 Check(await Rejects<HttpRequestException>(() => Once(s, content, s.Good.Length, CancellationToken.None)), "Stream failure changed."); s.NoPartial();
             });
+            await Case("longer-than-its-size", async s =>
+            {
+                // (no Content-Length, more bytes than the release's size: the download stops there, not at the end)
+                var stream = new Bytes(s.Good.Concat(new byte[4096]).ToArray());
+                var content = new StreamContent(stream);
+                Check(await Rejects<InvalidDataException>(() => Once(s, content, s.Good.Length, CancellationToken.None)), "Overlong download accepted.");
+                Check(stream.Position <= s.Good.Length + 3, "Overlong download read to its end."); s.NoPartial();
+            });
+            await Case("tag-rule", s =>
+            {
+                // (the one release-name rule every builder applies: builder/linux/linux_update.py tag_ok)
+                foreach (var good in new[] { "v2.1.0", "v2.1.0-rc.3", "nightly", "v2.0.14-12-gabcdef01-dirty", "v1+b.2", new string('a', 128) })
+                    Check(Updater.TagOk(good), "Release name refused: " + good);
+                foreach (var bad in new[] { null, "", ".", "..", "../x", "v1/../latest", "a b", "v1\\x", "v1?x=1", "v1#x", "%2e%2e", "v2.1.0\n", "\nv2.1.0", new string('a', 129) })
+                    Check(!Updater.TagOk(bad), "Release name taken: " + bad);
+                // (a version's track: a release candidate's name, whole, and nothing after it)
+                Check(Updater.TrackOf("v2.1.0-rc.1") == Updater.Candidate && Updater.TrackOf("v2.1.0-rc.1-3-g1a2b3c4") == Updater.Nightly,
+                      "Track of a version changed.");
+                Check(Updater.TrackOf("v2.1.0-rc.1\n") == Updater.Release && Updater.TrackOf("v2.1.0-rc.1-3-g1a2b3c4\n") == Updater.Release,
+                      "A version with a line break after it was taken as a release candidate or nightly.");
+                return Task.CompletedTask;
+            });
             await Case("midstream-cancel", async s =>
             {
                 var content = new StreamContent(new Bytes(s.Good, () => s.Cancel.Cancel()));

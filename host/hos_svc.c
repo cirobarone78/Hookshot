@@ -460,7 +460,9 @@ void a64_svc(Ctx *c, uint32_t imm) {
     case 0x27: { /* OutputDebugString(str, size) */
         uint64_t n = c->x[1] > 4096 ? 4096 : c->x[1];
         char buf[4097];
-        memcpy(buf, GP(c->x[0]), n);
+        const void *from = hos_guest_range(c->x[0], n);   /* (hookshot: guest memory only, not the host's, into the log) */
+        if (!from) n = 0;
+        else memcpy(buf, from, n);
         buf[n] = 0;
         hos_log("debug: %s", buf);
         c->x[0] = R_OK;

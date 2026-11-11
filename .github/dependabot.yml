@@ -12,3 +12,17 @@ updates:
     groups:
       actions:
         patterns: ['*']
+  # (hookshot) The Python packages the release's Python carries (requirements.txt, nx2/prompt_requirements.txt), pinned
+  # and installed with pip --require-hashes from requirements-lock.txt: proposed weekly after the same week's cooldown.
+  # A proposal changes the pins; scripts/python_lock.py then writes the lock again (tests/test_python_lock.py fails on a
+  # stale lock, so a proposal is not merged without it). The builder's .NET project has no NuGet packages: nothing for
+  # Dependabot there.
+  - package-ecosystem: pip
+    directories: [/, /nx2]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ['*']

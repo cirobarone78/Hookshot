@@ -32,6 +32,11 @@ TK_SHA256=d7a146d2917eb8b5cc95276dbf0e3d03c7464d2b19c1675357857c989301dbb4
 SDL_VER=2.32.10
 FFMPEG_VER=9.0.2
 DAV1D_VER=1.5.4
+# (the license texts the AppImage carries, at the versions above: a bump that changes one stops deps.sh until it is updated)
+LLVM_LICENSE_SHA256=8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee
+FFMPEG_LGPL_SHA256=246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30
+FFMPEG_LICENSE_SHA256=2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af
+DAV1D_COPYING_SHA256=dd92c3c2247c5651606fc23a5e2d6a1ebc5ace9a3e49cbde0e12f05ad1cb1ee5
 VK_HEADERS=v1.4.345
 SPIRV_HEADERS=vulkan-sdk-1.4.341.0
 VMA=v3.3.0
@@ -117,13 +122,14 @@ if ! done_for llvm "$LLVM_VER"; then
 fi
 
 # ---- Python and the tools' modules ----
-PY_MARK="$PY_VER-$PY_TAG-$(sha256sum requirements.txt nx2/prompt_requirements.txt | sha256sum | cut -c1-12)"   # (a new pin installs again)
+PY_MARK="$PY_VER-$PY_TAG-$(sha256sum requirements.txt nx2/prompt_requirements.txt requirements-lock.txt | sha256sum | cut -c1-12)"   # (a new pin installs again)
 if ! done_for python "$PY_MARK"; then
     fetch "https://github.com/astral-sh/python-build-standalone/releases/download/$PY_TAG/cpython-$PY_VER+$PY_TAG-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" python.tar.gz "$PY_SHA256"
     rm -rf "$DEPS/python"
     tar -xzf "$DL/python.tar.gz" -C "$DEPS"
+    # (each wheel checked against requirements-lock.txt's SHA-256s, as every other download here: scripts/python_lock.py)
     "$DEPS/python/bin/python3" -m pip install --no-cache-dir --only-binary :all: --disable-pip-version-check -q \
-        -r requirements.txt
+        --require-hashes -r requirements-lock.txt
     rm -rf "$DEPS/python/lib/python3.12/test" "$DEPS/python/lib/python3.12/idlelib" "$DEPS/python/lib/python3.12/ensurepip"
     find "$DEPS/python" -name __pycache__ -prune -exec rm -rf {} +
     mark python "$PY_MARK"
@@ -207,10 +213,15 @@ fi
 if ! done_for licenses "$LLVM_VER-$FFMPEG_VER-$DAV1D_VER-$SDL_VER-$TCLTK_VER"; then
     L=$DEPS/licenses
     rm -rf "$L" && mkdir -p "$L"
-    curl -fsSL -o "$L/LLVM-LICENSE.TXT" "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-$LLVM_VER/llvm/LICENSE.TXT"
-    curl -fsSL -o "$L/FFmpeg-COPYING.LGPLv2.1" "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/COPYING.LGPLv2.1"
-    curl -fsSL -o "$L/FFmpeg-LICENSE.md" "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/LICENSE.md"
-    curl -fsSL -o "$L/dav1d-COPYING" "https://code.videolan.org/videolan/dav1d/-/raw/$DAV1D_VER/COPYING"
+    # (fetched over https only and checked like every other download: the files ship in the AppImage)
+    fetch "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-$LLVM_VER/llvm/LICENSE.TXT" "LLVM-LICENSE-$LLVM_VER.TXT" "$LLVM_LICENSE_SHA256"
+    fetch "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/COPYING.LGPLv2.1" "FFmpeg-COPYING-$FFMPEG_VER.LGPLv2.1" "$FFMPEG_LGPL_SHA256"
+    fetch "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/LICENSE.md" "FFmpeg-LICENSE-$FFMPEG_VER.md" "$FFMPEG_LICENSE_SHA256"
+    fetch "https://code.videolan.org/videolan/dav1d/-/raw/$DAV1D_VER/COPYING" "dav1d-COPYING-$DAV1D_VER" "$DAV1D_COPYING_SHA256"
+    cp "$DL/LLVM-LICENSE-$LLVM_VER.TXT" "$L/LLVM-LICENSE.TXT"
+    cp "$DL/FFmpeg-COPYING-$FFMPEG_VER.LGPLv2.1" "$L/FFmpeg-COPYING.LGPLv2.1"
+    cp "$DL/FFmpeg-LICENSE-$FFMPEG_VER.md" "$L/FFmpeg-LICENSE.md"
+    cp "$DL/dav1d-COPYING-$DAV1D_VER" "$L/dav1d-COPYING"
     cp "$DEPS/sdl2/LICENSE.txt" "$L/SDL2-LICENSE.txt"
     cp "$DEPS/tk/Tk-license.terms" "$L/Tk-license.terms"
     cp /usr/share/doc/libxft2/copyright "$L/libXft-copyright"

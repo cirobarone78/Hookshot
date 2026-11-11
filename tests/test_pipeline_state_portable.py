@@ -55,7 +55,7 @@ def main():
     shaders += '\n'.join(block(shader, m) for m in (
         'std::vector<Program::Answer> answers_portable(const Program& p)', 'std::vector<Program::Answer> answers_here(',
         'uint64_t portable_variant(const Program& p)'))
-    targets = block(draw, 'bool targets_ok(') + '\n' + block(draw, 'bool formats_ok(')
+    targets = block(draw, 'bool targets_ok(') + '\n' + block(draw, 'bool formats_ok(') + '\n' + block(draw, 'bool streams_ok(')
     states = '\n'.join([
         block(draw, 'struct Targets {', True), block(draw, 'void color_types_of('),
         'constexpr VkPrimitiveTopology kMeshDrawTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;',
@@ -71,6 +71,7 @@ def main():
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include "HOS_FOPEN_HEADER"
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
@@ -79,7 +80,8 @@ def main():
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
 // the made-up GPUs: A samples ASTC and has mesh shaders; B decodes ASTC and runs mesh programs as the compute fallback
 bool gpu_b = false;
-struct { void* physical = (void*)1; } dev;
+// (a device that draws with 1, 2, 4 and 8 samples: VkPhysicalDeviceLimits' framebuffer sample counts)
+struct { void* physical = (void*)1; struct { struct { uint32_t framebufferColorSampleCounts = 0xF, framebufferDepthSampleCounts = 0xF; } limits; } props; } dev;
 static void vkGetPhysicalDeviceFormatProperties(void*, VkFormat f, VkFormatProperties* p) {
     *p = {};
     const bool astc = f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
@@ -223,7 +225,7 @@ int main(int argc, char** argv) {
     with tempfile.TemporaryDirectory(prefix='state-portable-') as tmp:
         folder = Path(tmp)
         source, exe = folder / 'fixture.cpp', folder / 'fixture.exe'
-        source.write_text(fixture, encoding='utf-8')
+        source.write_text(fixture.replace('HOS_FOPEN_HEADER', (ROOT / "host" / "hos_fopen_read.h").as_posix()), encoding='utf-8')
         subprocess.run([args.cxx, '-std=c++20', '-Wall', '-Wextra', '-Wno-unused-function', '-Werror', '-D_CRT_SECURE_NO_WARNINGS', '-I', str(args.headers),
                         '-I', str(ROOT / 'gpu/render'), str(source), '-o', str(exe)], check=True)
         subprocess.run([str(exe), str(folder)], check=True)

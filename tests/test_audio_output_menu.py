@@ -22,6 +22,7 @@ FIXTURE = r"""
 #include <cctype>
 #include <cstdarg>
 #include <cstdio>
+#include "HOS_FOPEN_HEADER"   // (the game's start-up reads: host/hos_fopen_read.h)
 #include <cstdlib>
 #include <cstring>
 
@@ -115,7 +116,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="audio-output-menu-") as tmp:
         work = Path(tmp)
         source, exe = work / "fixture.cpp", work / "fixture.exe"
-        source.write_text(FIXTURE.replace("HOST", host).replace("MENU", menu_part), encoding="utf-8")
+        source.write_text(FIXTURE.replace("HOS_FOPEN_HEADER", (ROOT / "host" / "hos_fopen_read.h").as_posix()).replace("HOST", host).replace("MENU", menu_part), encoding="utf-8")
         subprocess.run([args.cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(exe)], check=True)
         for saved, env_channels, device, want, asked, log in CASES:
             ini = work / "hookshot_options.ini"

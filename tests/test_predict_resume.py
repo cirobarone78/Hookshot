@@ -31,7 +31,7 @@ def main():
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     main_cpp = (ROOT / "gpu/vk/vk_main.cpp").read_text(encoding="utf-8")
     run = body(draw, "void predict_run(void (*progress)(size_t done, size_t total)) {")
-    made = run.index('fopen(predict_pending_path().c_str(), "wb")')
+    made = run.index('hos_fopen_write(predict_pending_path().c_str(), "wb")')
     if made > run.index("predict_pipelines("):
         raise SystemExit("FAIL: the marker is made after the prediction has begun deciding")
     if "if (!prepare_stopped()) remove(predict_pending_path().c_str());" not in run:

@@ -524,6 +524,23 @@ static int nightly_tag(const char *s) {
 #define HOOKSHOT_SETUP_RELEASE ""
 #endif
 
+/* (hookshot) A part's link: under this project's releases, or llvm-mingw's (the one part that is not ours), with no ".." step,
+   escape, query or other host hidden in the rest. The list is fetched from a release page anyone can link to: its checksums pin
+   each part, but the links named where the setup reached out to. HOOKSHOT_SETUP_LIST (a list for testing a release elsewhere):
+   any https link, as before */
+static int part_url_ok(const char *u) {
+    static const char *const from[] = {"https://github.com/NotRexed/Hookshot/releases/download/",
+                                       "https://github.com/mstorsjo/llvm-mingw/releases/download/"};
+    const char *e = getenv("HOOKSHOT_SETUP_LIST");
+    if (e && *e) return !_strnicmp(u, "https://", 8);
+    for (size_t i = 0; i < sizeof from / sizeof *from; i++) {
+        const size_t n = strlen(from[i]);
+        if (!strncmp(u, from[i], n))
+            return u[n] && !strstr(u + n, "..") && !strpbrk(u + n, "%?#@\\:");
+    }
+    return 0;
+}
+
 static const char *manifest_url(void) {
     static char u[1024];
     const char *e = getenv("HOOKSHOT_SETUP_LIST");
@@ -611,7 +628,7 @@ static DWORD WINAPI work(LPVOID unused) {
         int bad = !list_name_ok(tag, 0) || !list_name_ok(run, 1);
         for (int i = 0; i < nparts && !bad; i++) {
             const Part *p = &parts[i];
-            bad = strlen(p->sha) != 64 || strspn(p->sha, "0123456789abcdef") != 64 || _strnicmp(p->url, "https://", 8) ||
+            bad = strlen(p->sha) != 64 || strspn(p->sha, "0123456789abcdef") != 64 || !part_url_ok(p->url) ||
                   (strcmp(p->dest, ".") && !list_name_ok(p->dest, 1)) || (strcmp(p->from, "-") && !list_name_ok(p->from, 0)) ||
                   (strcmp(p->to, "-") && !list_name_ok(p->to, 0));
         }

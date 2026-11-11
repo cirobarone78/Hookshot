@@ -760,12 +760,15 @@ never an older FSR in its place), and why not when it did not start. Tested on a
 Switches to test (`RX_VK_NOOPT=1` and the others) go in `hookshot_env.txt` in the game folder, one `NAME=VALUE` a
 line, on Windows and Linux. The running game reads it, not the builder. A test run can name another file with
 `HOS_ENV_FILE=<path>`; the game then reads that one instead and leaves `hookshot_env.txt` alone.
-`hookshot_env.txt` sets only the game's own switches (names that start with `RX_`, `HOS_`, `HOOKSHOT_`, `EDEN_`,
-`NVN_` or `SDL_`, but not SDL's library names such as `SDL_VULKAN_LIBRARY`), and no value that is a path except
-`RX_VK_DLSS_DIR`'s (a folder on this PC, not a network share), and no value at all for the switches that name a file
-or folder (`HOS_AUDIO_DUMP`, `RX_VK_SHOTS` and the like) or press buttons on a timer (`HOS_INPUT_SCRIPT`,
-`RX_VK_MENU_SCRIPT`); other lines are left out, and the log says so. Switches that need a path, or other variables, go
-in a file named by `HOS_ENV_FILE`.
+`hookshot_env.txt` sets only the game's own switches: names that start with `RX_`, `HOS_`, `EDEN_`, `NVN_`
+or `SDL_`, and of the `HOOKSHOT_` names only the game's (`HOOKSHOT_NO_UPDATE_CHECK`, `HOOKSHOT_NO_AV1_NOTICE`,
+`HOOKSHOT_OCCLUSION_OFF`), not the builder's. It does not set SDL's library names such as `SDL_VULKAN_LIBRARY`, nor SDL's
+switches that write files (`*_SAVE_FRAMES` and the `disk` audio driver). It takes no value that is a path except
+`RX_VK_DLSS_DIR`'s (a folder on this PC named by its full path, such as `C:\ngx` or `/opt/ngx`, not a network share),
+and no value at all for the switches that name a file or folder (`HOS_AUDIO_DUMP`, `RX_VK_SHOTS` and the like, and every
+dump switch: any name with `_DUMP` in it) or press buttons on a timer (`HOS_INPUT_SCRIPT`, `RX_VK_MENU_SCRIPT`). Other
+lines are left out, and the log says so. Switches that need a path, or other variables, go in a file named by
+`HOS_ENV_FILE`.
 A switch set in the environment the game is started with (a shell's `HOS_FULLSCREEN=0 ./hookshot`, a launcher's own)
 goes over the same name in the file, and the log says so; within the file, a later line replaces an earlier one. A
 switch that stands in for a menu row (`RX_VK_PACE`, `RX_VK_UPSCALE`, `RX_VK_FRAMEGEN_MULT`, `HOS_REALTIME_STEP`,

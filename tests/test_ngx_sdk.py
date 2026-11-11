@@ -139,6 +139,31 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(os.listdir(game), ["ngx"])   # (nothing beside the exe)
 
 
+class LinkTests(unittest.TestCase):
+    def test_a_link_in_the_parts_place_or_an_endless_download(self):
+        """(a .part left there, or a link put in its place, is never written through; a download is stopped past MAX_FILE)"""
+        if os.name == "nt":
+            self.skipTest("symbolic links: checked on Linux")
+        data = b"the runtime"
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "precious")
+            with open(target, "wb") as f:
+                f.write(b"keep me")
+            dst = os.path.join(tmp, "sdk", "lib", "x.so")
+            os.makedirs(os.path.dirname(dst))
+            os.symlink(target, dst + ".part")
+            self.assertTrue(ngx_sdk.fetch_one("lib/x.so", digest(data), dst, Opener({"lib/x.so": data})))
+            with open(dst, "rb") as f:
+                self.assertEqual(f.read(), data)
+            with open(target, "rb") as f:
+                self.assertEqual(f.read(), b"keep me")
+            with mock.patch.object(ngx_sdk, "MAX_FILE", 4):
+                other = os.path.join(tmp, "big", "y.so")
+                with self.assertRaises(ValueError):
+                    ngx_sdk.fetch_one("lib/x.so", digest(data), other, Opener({"lib/x.so": data}))
+                self.assertEqual(os.listdir(os.path.dirname(other)), [])
+
+
 class LicenseTests(unittest.TestCase):
     def test_notice_names_nvidia_and_the_license(self):
         self.assertIn("NVIDIA", ngx_sdk.NOTICE)

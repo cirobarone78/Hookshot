@@ -3,6 +3,7 @@
 // swapchain, and the rx_* table (vk_api.h). The NVN replay itself is vk_replay.cpp.
 #include "vk_paths.h"
 #include "vk_loader.h"
+#include "../../host/hos_fopen_read.h"   // (hookshot_options.ini and the skip marker: regular files only)
 
 #include <atomic>
 #include <chrono>
@@ -244,7 +245,7 @@ bool create_device() {
         std::string ini(exe, len);
         ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
         int v = 0;
-        if (FILE* fl = fopen(ini.c_str(), "r")) {
+        if (FILE* fl = hos_fopen_read(ini.c_str())) {
             char line[80];
             while (fgets(line, sizeof line, fl))
                 if (!strncmp(line, "mesh_shaders=", 13)) {
@@ -394,7 +395,7 @@ bool create_device() {
         std::string ini(exe, n);
         ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
         int v = 0;   // (Auto)
-        if (FILE* f = fopen(ini.c_str(), "r")) {
+        if (FILE* f = hos_fopen_read(ini.c_str())) {
             char line[80];
             while (fgets(line, sizeof line, f))
                 if (!strncmp(line, "robust_buffers=", 15)) {
@@ -1131,7 +1132,7 @@ bool started_up() {
         }
         return true;
     }
-    if (FILE* f = fopen(skipped_path().c_str(), "rb")) {
+    if (FILE* f = hos_fopen_read_binary(skipped_path().c_str())) {
         fclose(f);
         logf("vk: the shaders' preparation was skipped at the build: left to when each is first drawn");
         return true;

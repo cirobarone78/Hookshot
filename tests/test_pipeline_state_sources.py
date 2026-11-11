@@ -43,8 +43,29 @@ def load(name, path):
 tool = load("pipeline_states", TOOL)
 
 
-def rec(i):
-    return struct.pack("<Q", i) + bytes(tool.SIZE - 8)
+def rec(i, size=None):
+    r = bytearray(size or tool.SIZE)
+    struct.pack_into("<Q", r, 0, i)
+    struct.pack_into("<I", r, 52, 1)   # (one sample: a record of a pipeline the game can make)
+    return bytes(r)
+
+
+def bad(i, offset, value):
+    """a version 1 record with one value no pipeline has (offsets: tool._V1's layout)"""
+    r = bytearray(rec(i))
+    struct.pack_into("<I", r, offset, value)
+    return bytes(r)
+
+
+def bomb():
+    """an xz list of 128 MB of zero records after a good header, a few KB packed"""
+    import lzma
+    c = lzma.LZMACompressor(format=lzma.FORMAT_XZ)
+    out = c.compress(tool.MAGIC + struct.pack("<I", tool.SIZE))
+    zeros = bytes(1 << 20)
+    for _ in range(128):
+        out += c.compress(zeros)
+    return out + c.flush()
 
 
 NOTE = {"who": "someone", "gpu": "a GPU, driver 1, Linux", "build": "main", "settings": "1080p", "route": "the field"}
@@ -157,8 +178,19 @@ class Tool(unittest.TestCase):
         b = Path(self.raw("b.bin.xz", [rec(1), rec(2)])).read_bytes()
         self.assertEqual(a, b)
 
+    def test_a_list_is_unpacked_only_up_to_a_bound(self):
+        path = self.src / "bomb.bin.xz"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(bomb())
+        with self.assertRaises(SystemExit) as e:
+            tool.load(str(path))
+        self.assertIn("unpacks to more than", str(e.exception))
+
     def test_add_refuses(self):
         self.assertNotEqual(self.add("Bad Name", [rec(1)]).returncode, 0)
+        r = self.add("someone", [rec(1), bad(2, 52, 3)])
+        self.assertNotEqual(r.returncode, 0, "a list with a record no pipeline has was added")
+        self.assertIn("sample count of 3", r.stderr)
         r = self.add("someone", [rec(1)], note=dict(NOTE, route=""))
         self.assertNotEqual(r.returncode, 0, "a list was added without saying its route")
         self.assertIn("--route", r.stderr)
@@ -177,6 +209,12 @@ class Tool(unittest.TestCase):
             os.replace(c / "someone.bin.xz.raw", c / "someone.bin.xz"),
             "a pipeline twice": lambda: tool.write(str(c / "someone.bin.xz"), [rec(1), rec(1)]),
             "an empty list": lambda: tool.write(str(c / "someone.bin.xz"), []),
+            # (hookshot) values no pipeline has: the game leaves such records out, and check stops on them
+            "a sample count of 3": lambda: tool.write(str(c / "someone.bin.xz"), [rec(1), bad(2, 52, 3)]),
+            "too many targets": lambda: tool.write(str(c / "someone.bin.xz"), [rec(1), bad(2, 48, 9)]),
+            "too many answers": lambda: tool.write(str(c / "someone.bin.xz"), [rec(1), bad(2, 388, 25)]),
+            "a vertex stride past Vulkan's": lambda: tool.write(str(c / "someone.bin.xz"), [rec(1), bad(2, 236, 1 << 20)]),
+            "a list that unpacks to gigabytes": lambda: (c / "someone.bin.xz").write_bytes(bomb()),
         }
         for why, damage in cases.items():
             with self.subTest(why):
@@ -195,7 +233,7 @@ class Tool(unittest.TestCase):
     def test_versions_merge(self):
         # (a version 2 source: the merge, and check, have the version 1 ones converted; version 1 alone stays version 1)
         def rec2(i):
-            return struct.pack("<Q", i) + bytes(tool.SIZE2 - 8)
+            return rec(i, tool.SIZE2)
         self.assertEqual(self.add("a-old", [rec(1), rec(2)]).returncode, 0)
         self.assertEqual(tool.load(str(self.src / "contrib" / "a-old.bin.xz"))[:8], tool.MAGIC)
         self.assertEqual(tool.merged(str(self.src)), [rec(1), rec(2)])

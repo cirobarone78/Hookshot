@@ -40,7 +40,7 @@ class PipelineNotesOpenTests(unittest.TestCase):
         self.assertIn("_fseeki64(f, 16, SEEK_SET)", open_)   # (one seek, past the head)
         self.assertIn("while (fread(rec.get(), sizeof(PipeNote), 1, f) == 1) noted.insert(rec->key);", open_)
         self.assertNotIn("at += sizeof(PipeNote)", open_)   # (no seek a record)
-        self.assertIn('note_file = fopen(path.c_str(), same ? "ab" : "wb");', open_)
+        self.assertIn('note_file = hos_fopen_write(path.c_str(), same ? "ab" : "wb");', open_)
 
     def test_state_record_opens_through_the_shared_function(self):
         record = block(self.draw, "void state_record(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, const uint8_t color_types[8]) {")

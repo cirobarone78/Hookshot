@@ -960,6 +960,9 @@ def main():
                                    os.path.join(GPU, "compat"))
         vdeps = tree_headers(vk, os.path.join(GPU, "render"), os.path.join(GPU, "compat"),
                              os.path.join(GPU, "third_party", "suyu", "video_core", "textures"))
+        # (hookshot) and the host's headers the back end includes (vk_menu.cpp, vk_draw.cpp): a change to one of them
+        # rebuilt nothing, and the objects kept the old code
+        vdeps += b"".join(open(os.path.join(HOST, h), "rb").read() for h in ("hos_fopen_write.h", "hos_fopen_read.h", "hos_wide_size.h"))
         # (hookshot) Dear ImGui (third_party/imgui) draws the overlays over the window's image (gpu/vk/vk_imgui.cpp; vk_menu.cpp
         # draws with it). Its objects see only its own headers; its headers are a dependency of the two files that include them
         imgui = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "imgui"))

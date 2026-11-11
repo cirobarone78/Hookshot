@@ -38,6 +38,7 @@
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_dlss.h"
 #include "../../host/hos_wide_size.h"   // (the widescreen picture's size, as host/hos_main.c works it out)
+#include "../../host/hos_fopen_write.h"   // (hookshot_options.ini: not through a link)
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
 #include "vk_fsr4.h"
@@ -1393,7 +1394,7 @@ void save() {
     // (hookshot) the lines that are not the menu's are kept: the controls, pad_ and key_ (host/nn_hid.c)
     // (and every other line the menu does not write, such as discord_app_id=: they were dropped at the next save)
     std::string kept, others;
-    if (FILE* f = fopen(ini_path().c_str(), "r")) {
+    if (FILE* f = hos_fopen_read(ini_path().c_str())) {
         char line[256];
         while (fgets(line, sizeof line, f)) {
             if (!strncmp(line, "pad_", 4) || !strncmp(line, "key_", 4)) {
@@ -1411,7 +1412,7 @@ void save() {
         }
         fclose(f);
     }
-    if (FILE* f = fopen(ini_path().c_str(), "w")) {
+    if (FILE* f = hos_fopen_write(ini_path().c_str(), "w")) {
         for (const Row& r : rows) {
             if (r.value == &opts.output_res) {   // (the size itself: host/nn_applet.c reads it)
                 const int v = saved_value(r.value);
@@ -3065,7 +3066,7 @@ void menu_init() {
         const char* hearts = getenv("HOS_OOT_PROTECT_HEARTS");
         protect_hearts.store(hearts && !strcmp(hearts, "1"));
     }
-    if (FILE* f = fopen(ini_path().c_str(), "r")) {
+    if (FILE* f = hos_fopen_read(ini_path().c_str())) {
         has_options = true;
         char line[80];
         bool has_resolution = false;

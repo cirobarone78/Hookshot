@@ -57,6 +57,9 @@ if [[ -z $src ]]; then
     exit 0
 fi
 echo "the newest release candidate or release: $tag ($src)"
+# (each file is checked against GitHub's SHA-256 digest of it: one without a digest is not copied, before anything moves)
+nodigest=$(jq -r '[.[] | select((.digest // "") | test("^sha256:[0-9a-f]{64}$") | not) | .name] | join(", ")' <<<"$files")
+[[ -z $nodigest ]] || fail "$tag: GitHub gives no SHA-256 digest of $nodigest: $RC is left as it is"
 sha=$(commit_of "$tag")
 url="https://github.com/$GH_REPO/releases/tag/$tag"
 notes="The Linux AppImage of the newest release candidate or release, [$tag]($url), and its \`.zsync\`: the same files, here for AppImageUpdate, so that a release candidate's AppImage moves on to the next release candidate and to its version's release. This is not a version.
@@ -86,12 +89,12 @@ trap 'rm -rf "$dir"' EXIT
 upload=()
 while read -r asset name digest; do
     there=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .digest // ""' <<<"$have")
-    if [[ $digest == sha256:* && $there == "$digest" ]]; then
+    if [[ $there == "$digest" ]]; then
         echo "$RC: $name is there already"
         continue
     fi
     gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$asset" >"$dir/$name"
-    if [[ $digest == sha256:* && sha256:$(sha256sum "$dir/$name" | cut -d' ' -f1) != "$digest" ]]; then
+    if [[ sha256:$(sha256sum "$dir/$name" | cut -d' ' -f1) != "$digest" ]]; then
         fail "$tag: $name did not download whole (its SHA-256 is not GitHub's digest of it)"
     fi
     upload+=("$dir/$name")

@@ -34,6 +34,7 @@
 #include "hos_sdl.h"
 #endif
 #include "hos_paths.h"   /* (the game folder: hookshot_options.ini, au_menu_output) */
+#include "hos_fopen_write.h"   /* (hookshot_options.ini read as a regular file only) */
 #ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/hookshot_env.h"
 #endif
@@ -175,6 +176,13 @@ static WB read_wb(uint64_t p) {
     w.loop = *(uint8_t *)GP(p + 0x18);
     w.context = G64(p + 0x20);
     return w;
+}
+
+/* (hookshot) a wave buffer whose data (and ADPCM context) lie in guest memory: the mixer reads them for as long as the
+   voice plays, and a size from the game's data walked its reads past the guest window, into the host's memory (into the
+   sound) or a fault in the mixer */
+static int wb_in_guest(const WB *w) {
+    return hos_guest_range(w->buffer, w->size) && (!w->context || hos_guest_range(w->context, 6));
 }
 
 /* one source frame (all channels) of the voice's current wave buffer at sample frame s; 0 when out of range */
@@ -675,7 +683,7 @@ static int au_menu_output(void) {
     char *slash = len ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
     if (!slash) return 0;
     snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
-    FILE *f = fopen(path, "r");
+    FILE *f = hos_fopen_read(path);
     if (!f) return 0;
     char line[80];
     int v = 0;
@@ -1459,7 +1467,7 @@ HLE(_ZN2nn5audio16AcquireVoiceSlotEPNS0_19AudioRendererConfigEPNS0_9VoiceTypeEii
     v->channels = (int)ARG(3) < 1 ? 1 : (int)ARG(3) > MAX_CH ? MAX_CH : (int)ARG(3);
     v->format = (int)ARG(4);
     v->param = ARG(6);
-    if (v->param && ARG(7) >= 32) memcpy(v->coefs, GP(v->param), 32);
+    if (v->param && ARG(7) >= 32 && hos_guest_range(v->param, 32)) memcpy(v->coefs, GP(v->param), 32);   /* (hookshot) */
     v->volume = 1.0f;
     v->pitch = 1.0f;
     v->state = PLAY_STOPPED;
@@ -1584,7 +1592,9 @@ HLE(_ZN2nn5audio16AppendWaveBufferEPNS0_9VoiceTypeEPKNS0_10WaveBufferE) {
     au_lock();
     Voice *v = voice_of(ARG(0));
     int ok = 0;
-    if (v && v->nwb + v->pending_wb < MAX_WB) {
+    WB checked = {0};
+    if (hos_guest_range(ARG(1), 0x30)) checked = read_wb(ARG(1));
+    if (v && v->nwb + v->pending_wb < MAX_WB && hos_guest_range(ARG(1), 0x30) && wb_in_guest(&checked)) {
         {   /* HOS_AUDIO_WB_DUMP=<dir>: the first 40 wave buffers' data and the voice's coefficients (debugging) */
             static const char *dir;
             static int init, nd;
@@ -1602,7 +1612,7 @@ HLE(_ZN2nn5audio16AppendWaveBufferEPNS0_9VoiceTypeEPKNS0_10WaveBufferE) {
                 }
             }
         }
-        const Cmd k = {.op = OP_VOICE_APPEND, .idx = (int)(v - voices), .wbp = ARG(1), .wb = read_wb(ARG(1))};
+        const Cmd k = {.op = OP_VOICE_APPEND, .idx = (int)(v - voices), .wbp = ARG(1), .wb = checked};   /* (as checked) */
         v->pending_wb++;
         submit(&k);
         ok = 1;

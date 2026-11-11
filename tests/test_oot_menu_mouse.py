@@ -40,6 +40,9 @@ extern uint8_t *fake_heap;
 #define FAKE_BASE 0x100000ULL
 #define HOS_GUEST_SPACE (FAKE_BASE + (4ULL << 20))
 #define GP(a) ((void *)(fake_heap + ((uint64_t)(a) - FAKE_BASE)))
+static inline void *hos_guest_range(uint64_t a, uint64_t n) {
+    return a >= FAKE_BASE && n <= HOS_GUEST_SPACE - FAKE_BASE && a - FAKE_BASE <= HOS_GUEST_SPACE - FAKE_BASE - n ? GP(a) : NULL;
+}
 void hos_log(const char *fmt, ...);
 int64_t hos_now_ns(void);
 """

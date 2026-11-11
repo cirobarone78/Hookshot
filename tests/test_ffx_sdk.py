@@ -85,6 +85,38 @@ class FetchTests(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(tmp, ffx_sdk.FILES[0][2] + ".part")))
             self.assertFalse(ffx_sdk.complete(tmp))
 
+    def test_a_link_in_the_parts_place_or_an_endless_download(self):
+        """(a .part left there, or a link put in its place, is never written through; a download is stopped past MAX_FILE)"""
+        if not hasattr(os, "symlink") or os.name == "nt":
+            self.skipTest("symbolic links: checked on Linux")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ffx_sdk, "FILES", fake_table(self.data)):
+            target = os.path.join(tmp, "precious")
+            with open(target, "wb") as f:
+                f.write(b"keep me")
+            sdk = os.path.join(tmp, "sdk")
+            os.makedirs(sdk)
+            for _, _, name in ffx_sdk.FILES:
+                os.symlink(target, os.path.join(sdk, name + ".part"))
+            ffx_sdk.fetch(sdk, opener=Opener(self.data), say=lambda _: None)
+            self.assertTrue(ffx_sdk.complete(sdk))
+            with open(target, "rb") as f:
+                self.assertEqual(f.read(), b"keep me")
+            game = os.path.join(tmp, "game")
+            os.makedirs(game)
+            for _, _, name in ffx_sdk.FILES:
+                os.symlink(target, os.path.join(game, name + ".part"))
+            ffx_sdk.install(sdk, game, say=lambda _: None)
+            self.assertTrue(ffx_sdk.complete(game))
+            with open(target, "rb") as f:
+                self.assertEqual(f.read(), b"keep me")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ffx_sdk, "FILES", fake_table(self.data)), \
+                mock.patch.object(ffx_sdk, "MAX_FILE", 1000):
+            big = dict(self.data)
+            big[ffx_sdk.FILES[0][0]] = b"x" * 5000
+            with self.assertRaises(ValueError):
+                ffx_sdk.fetch(tmp, opener=Opener(big), say=lambda _: None)
+            self.assertEqual([n for n in os.listdir(tmp)], [])
+
     def test_players_dlls_left_alone(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ffx_sdk, "FILES", fake_table(self.data)), \
                 mock.patch.object(ffx_sdk, "DLLS", [n for _, _, n in fake_table(self.data) if n.endswith(".dll")]):

@@ -7,12 +7,21 @@ import os
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 
 from . import REPO, paths, setup_parts
 from .core import Tools
 
 LATEST = "https://api.github.com/repos/%s/releases/latest" % REPO
+
+
+def read_small_body(r):
+    """An API answer or a setup list: setup_parts.MAX_BODY at most (a longer one is refused, not read whole)"""
+    data = r.read(setup_parts.MAX_BODY + 1)
+    if len(data) > setup_parts.MAX_BODY:
+        raise ValueError("the answer is larger than expected")
+    return data
 
 
 def latest_tag():
@@ -23,12 +32,13 @@ def latest_tag():
     for attempt in range(3):
         try:
             req = urllib.request.Request(LATEST, headers={"User-Agent": "HookshotBuilder", "Accept": "application/vnd.github+json"})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                return json.loads(r.read()).get("tag_name")
+            with setup_parts.OPENER.open(req, timeout=8) as r:
+                tag = json.loads(read_small_body(r)).get("tag_name")
+                return tag if isinstance(tag, str) and setup_parts.list_name_ok(tag) else None
         except urllib.error.HTTPError as e:
             if e.code < 500:   # (the API's limit, 60 an hour a PC: the list below instead)
                 break
-        except (OSError, ValueError):
+        except (OSError, ValueError, setup_parts.SetupError):
             pass
         time.sleep(2 << attempt)
     # (v2.0.0: when the API did not answer, the builder said a game was up to date. The release's setup list names its tag in its
@@ -36,11 +46,12 @@ def latest_tag():
     for _ in range(2):
         try:
             req = urllib.request.Request(setup_parts.manifest_url(), headers={"User-Agent": "HookshotBuilder"})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                for line in r.read().decode("utf-8", "replace").splitlines():
+            with setup_parts.OPENER.open(req, timeout=8) as r:
+                for line in read_small_body(r).decode("utf-8", "replace").splitlines():
                     if line.startswith("tag "):
-                        return line[4:].strip()
-        except OSError:
+                        tag = line[4:].strip()
+                        return tag if setup_parts.list_name_ok(tag) else None
+        except (OSError, ValueError, setup_parts.SetupError):
             pass
         time.sleep(2)
     return None
@@ -84,6 +95,9 @@ def update_folder(ui, folder, tag, fetched):
     """The game in folder built again with the latest release: here when these tools are it (or fetched), else after installing it
     (this app then starts again on it with --update folder --tag t --fetched)"""
     ui.begin_update(folder, tag)
+    if tag is not None and not setup_parts.list_name_ok(tag):   # (it goes into release links: the setup list's rule)
+        ui.download_failed("The update asked for a release name this builder does not take.")
+        return
     tools = Tools.find()
     # (just installed, but another release than asked for: GitHub's latest link lags right after a publish)
     if fetched and tag and tools and tools.version and tools.version != tag:

@@ -22,7 +22,7 @@ def main():
     parser.add_argument('--cxx',default='clang++')
     args=parser.parse_args()
     text=(args.source/'gpu/vk/vk_draw.cpp').read_text(encoding='utf-8')
-    targets=block(text,'bool targets_ok(')+'\n'+block(text,'bool formats_ok(')
+    targets=block(text,'bool targets_ok(')+'\n'+block(text,'bool formats_ok(')+'\n'+block(text,'bool streams_ok(')
     # (version 2 records and a version 1 mesh record's numbering: tests/test_pipeline_state_portable.py. These records draw no mesh)
     actual='\n'.join((block(text,'constexpr char kStateMagic[8]')+';',block(text,'constexpr char kStateMagic2[8]')+';',
                        block(text,'struct StateRec {')+';',block(text,'struct StateRec2 {')+';',
@@ -32,6 +32,7 @@ def main():
     fixture=r'''
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <cstdio>
+#include "HOS_FOPEN_HEADER"
 #include <cstring>
 #include <cstdint>
 #include <filesystem>
@@ -48,7 +49,8 @@ enum VkFormat : uint32_t { VK_FORMAT_UNDEFINED = 0 };
 typedef uint32_t VkFormatFeatureFlags;
 constexpr uint32_t VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT = 0x80, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT = 0x200;
 struct VkFormatProperties { uint32_t linearTilingFeatures, optimalTilingFeatures, bufferFeatures; };
-struct { void* physical = (void*)1; } dev;
+// (a device that draws with 1, 2, 4 and 8 samples: VkPhysicalDeviceLimits' framebuffer sample counts)
+struct { void* physical = (void*)1; struct { struct { uint32_t framebufferColorSampleCounts = 0xF, framebufferDepthSampleCounts = 0xF; } limits; } props; } dev;
 static void vkGetPhysicalDeviceFormatProperties(void*, VkFormat f, VkFormatProperties* p) {
  p->optimalTilingFeatures = f == 37 ? VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT : f == 126 ? VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT : 0;
 }
@@ -73,10 +75,14 @@ int main(int argc,char** argv) {
  // (hookshot) the targets a pipeline is made with: at most 8, a sample count and topology Vulkan has, 16 attributes
  StateRec bad_n=maximum,neg_n=maximum,bad_samples=maximum,no_samples=maximum,bad_topo=maximum,bad_vattr=maximum;
  bad_n.n=9;neg_n.n=0xFFFFFFFFu;bad_samples.samples=3;no_samples.samples=0;bad_topo.topo=99;bad_vattr.nvattr=17;
+ // (hookshot) and a sample count this device draws with: 16 and 64 are Vulkan's, not this device's
+ StateRec samples16=maximum,samples64=maximum,samples8=maximum;samples16.samples=16;samples64.samples=64;samples8.samples=8;
  // (hookshot) formats the device draws to: any number reached the driver as a VkFormat
  StateRec drawn=maximum,bad_color=maximum,bad_depth=maximum;
  drawn.color_format[0]=37;drawn.has_depth=1;drawn.depth_format=126;
  bad_color.color_format[7]=0x7fffffffu;bad_depth.has_depth=1;bad_depth.depth_format=37;
+ // (hookshot) vertex strides and divisors Vulkan takes: 2048 and 65535 at most
+ StateRec wide=maximum,far_div=maximum,edge=maximum;wide.stride[3]=4096;far_div.divisor[15]=0x10000;edge.stride[0]=2048;edge.divisor[0]=0xFFFF;
  bad_answers=maximum;bad_answers.nanswers=25;
  bad_questions=maximum;bad_questions.nquestions=33;
  huge=maximum;huge.nanswers=huge.nquestions=std::numeric_limits<uint32_t>::max();
@@ -96,7 +102,9 @@ int main(int argc,char** argv) {
   write(path,{huge});check(path,{},"maximum integer counts");
   write(path,{bad_n,neg_n,bad_samples,no_samples,bad_topo,bad_vattr});check(path,{},"targets a pipeline cannot have");
   write(path,{bad_n,maximum,bad_topo});check(path,{maximum},"retain a valid record between bad targets");
+  write(path,{samples16,samples8,samples64});check(path,{samples8},"sample counts the device does not draw with");
   write(path,{bad_color,drawn,bad_depth});check(path,{drawn},"formats the device does not draw to");
+  write(path,{wide,edge,far_div});check(path,{edge},"vertex strides and divisors past Vulkan's limits");
   write(path,{maximum,bad_answers,zero,bad_questions,maximum,huge,zero});
   check(path,{maximum,zero,maximum,zero},"retain valid records around rejected records");
   write(path,{maximum},sizeof(StateRec)-1);check(path,{maximum},"ignore truncated trailing record");
@@ -108,7 +116,7 @@ int main(int argc,char** argv) {
 '''
     with tempfile.TemporaryDirectory(prefix='state-reader-counts-') as tmp:
         folder=Path(tmp);source=folder/'fixture.cpp';exe=folder/'fixture.exe'
-        source.write_text(fixture,encoding='utf-8')
+        source.write_text(fixture.replace('HOS_FOPEN_HEADER', (ROOT / "host" / "hos_fopen_read.h").as_posix()),encoding='utf-8')
         subprocess.run([args.cxx,'-std=c++20','-Wall','-Wextra','-Werror',str(source),'-o',str(exe)],check=True)
         subprocess.run([str(exe),str(folder)],check=True)
 

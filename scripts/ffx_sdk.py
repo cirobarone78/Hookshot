@@ -19,6 +19,7 @@ import hashlib
 import os
 import shutil
 import sys
+import tempfile
 import urllib.request
 
 COMMIT = "7539ae8b6568ad29ed78a753404351daf3b5cca7"   # (tag v2.4.0: FSR 4.1.2, FSR 3.1.6)
@@ -59,17 +60,34 @@ def sha256(path):
     return h.hexdigest()
 
 
+MAX_FILE = 1 << 30   # (no file of the SDK is near this: a download that grows past it is stopped, not kept to the end)
+
+
+def _part(dst):
+    """A new file of its own beside dst for a download or a copy (never an old dst.part, or a link put there in its place)"""
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(dst) + ".", suffix=".part", dir=os.path.dirname(dst) or ".")
+    os.chmod(tmp, 0o644)
+    return os.fdopen(fd, "wb"), tmp
+
+
 def fetch_one(path, digest, dst, opener=urllib.request.urlopen):
-    """One file into dst, unless it is there already with that SHA-256. The download goes to dst.part and is moved in only
-    when its SHA-256 is the expected one; otherwise it is deleted and ValueError says which"""
+    """One file into dst, unless it is there already with that SHA-256. The download goes to a new .part file beside it, is
+    hashed as it comes, and is moved in only when its SHA-256 is the expected one; otherwise it is deleted and ValueError says
+    which. One that grows past MAX_FILE stops there"""
     if os.path.isfile(dst) and sha256(dst) == digest:
         return False
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
-    tmp = dst + ".part"
+    f, tmp = _part(dst)
     try:
-        with opener(BASE + "/" + path, timeout=TIMEOUT) as r, open(tmp, "wb") as f:
-            shutil.copyfileobj(r, f, 1 << 20)
-        if sha256(tmp) != digest:
+        h, got = hashlib.sha256(), 0
+        with f, opener(BASE + "/" + path, timeout=TIMEOUT) as r:
+            for block in iter(lambda: r.read(1 << 20), b""):
+                got += len(block)
+                if got > MAX_FILE:
+                    raise ValueError("ffx-sdk: %s is larger than any file of the SDK: not used" % path)
+                h.update(block)
+                f.write(block)
+        if h.hexdigest() != digest:
             raise ValueError("ffx-sdk: %s is not the file expected (SHA-256): not used" % path)
         os.replace(tmp, dst)
     finally:
@@ -117,8 +135,14 @@ def install(folder, game_ffx, say=print):
     for _, digest, name in FILES:
         dst = os.path.join(game_ffx, name)
         if not (os.path.isfile(dst) and sha256(dst) == digest):
-            shutil.copyfile(os.path.join(folder, name), dst + ".part")
-            os.replace(dst + ".part", dst)
+            f, tmp = _part(dst)
+            try:
+                with f, open(os.path.join(folder, name), "rb") as src:
+                    shutil.copyfileobj(src, f, 1 << 20)
+                os.replace(tmp, dst)
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
     return game_ffx
 
 

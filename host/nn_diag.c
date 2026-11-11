@@ -6,7 +6,9 @@
 HLE(_ZN2nn4diag6detail7PutImplERKNS0_11LogMetaDataEPKcm) {
     uint64_t n = ARG(2) > 4000 ? 4000 : ARG(2);
     char buf[4001];
-    memcpy(buf, GP(ARG(1)), n);
+    const void *from = hos_guest_range(ARG(1), n);   /* (hookshot: guest memory only, not the host's, into the log) */
+    if (!from) n = 0;
+    else memcpy(buf, from, n);
     buf[n] = 0;
     while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = 0;
     hos_log("game: %s", buf);

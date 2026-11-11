@@ -10,6 +10,7 @@ static _Alignas(8) uint8_t guest[4096];
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 static void *guest_ptr(uint64_t address) { CHECK(address < sizeof guest); return guest + address; }
 #define GP(a) guest_ptr(a)
+static void *hos_guest_range(uint64_t a, uint64_t n) { return a < sizeof guest && n <= sizeof guest - a ? guest + a : NULL; }
 #define G64(a) (*(uint64_t *)GP(a))
 #define G32(a) (*(uint32_t *)GP(a))
 #define ARG(n) (c->x[n])

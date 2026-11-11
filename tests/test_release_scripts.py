@@ -511,6 +511,19 @@ class ReleaseScripts(unittest.TestCase):
         self.assertEqual([x["tag_name"] for x in self.state()["releases"]], ["v2.1.0-rc.3"])
         self.assertNotIn("rc", self.state()["tags"])
 
+    def test_rc_copies_nothing_without_githubs_digest(self):
+        src = self.released(3, "v2.1.0-rc.3")
+        for a in src["assets"]:
+            if a["name"].endswith(".zsync"):
+                del a["digest"]
+        self.given([src], tags={"v2.1.0-rc.3": "b" * 40})
+        r = self.run_script("release_rc.sh")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no SHA-256 digest", r.stdout + r.stderr)
+        self.assertNotIn("rc", self.state()["tags"])
+        self.assertEqual([x["tag_name"] for x in self.state()["releases"]], ["v2.1.0-rc.3"])
+        self.assertFalse(self.uploads())
+
     def test_rc_takes_no_upload(self):
         self.given([rel(50, "rc", False, True)])
         r = self.upload("rc")

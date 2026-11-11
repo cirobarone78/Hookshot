@@ -38,11 +38,16 @@ class PromptPackages(unittest.TestCase):
                     metadata += "Requires-Dist: archspec >=0.2\n"
                 archive.writestr(prefix + "Lib/site-packages/" + folder + "/METADATA", metadata)
 
+    def pip_run(self, command, **kwargs):
+        # (the pins go to pip as a temporary requirements file with their hashes: keep its text before it is deleted)
+        self.requested = Path(command[command.index("-r") + 1]).read_text(encoding="utf-8")
+
     def package(self):
         with patch.object(release_parts, "named_part", return_value=str(self.part)), \
                 patch.object(release_parts, "get", side_effect=AssertionError("no network in this fixture")), \
                 patch.object(release_parts, "extract", wraps=release_parts.extract) as extracted, \
-                patch.object(release_parts.subprocess, "run") as pip, redirect_stdout(io.StringIO()):
+                patch.object(release_parts.subprocess, "run", side_effect=self.pip_run) as pip, \
+                redirect_stdout(io.StringIO()):
             self.assertEqual(release_parts.python_packages("authored-setup.txt", str(REQUIREMENTS), str(self.tools)), 0)
             return pip, extracted
 
@@ -58,12 +63,15 @@ class PromptPackages(unittest.TestCase):
         self.assertEqual(command[command.index("--python-version") + 1], "3.14")
         target = command.index("--target")
         self.assertEqual(Path(command[target + 1]), self.tools / "python/Lib/site-packages")
-        requested = command[target + 2:]
+        self.assertIn("--require-hashes", command)
+        requested = self.requested.splitlines()
         self.assertEqual(len(requested), 1)
-        name, version = requested[0].split("==")
+        pin, *hashes = requested[0].split()
+        name, version = pin.split("==")
         self.assertEqual(name, "archspec")
         self.assertGreaterEqual(tuple(map(int, version.split("."))), (0, 2))
-        self.assertIn(requested[0], self.pins)
+        self.assertIn(pin, self.pins)
+        self.assertTrue(hashes and all(h.startswith("--hash=sha256:") and len(h) == 14 + 64 for h in hashes))
         self.assertEqual(pip.call_args.kwargs, {"check": True})
         extracted.assert_called_once()
         self.assertEqual((self.tools / "python/python314.dll").read_bytes(), b"authored version marker")

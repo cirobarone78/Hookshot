@@ -47,6 +47,7 @@ FIXTURE = r"""
 #include <string>
 #include "hookshot_env.h"   // (gpu/vk/compat: env_value_off, the switches' rule)
 #include "hos_wide_size.h"   // (host/: the output sizes the menu accepts, hos_output_size_valid)
+#include "hos_fopen_write.h"   // (host/: hookshot_options.ini read and written as a regular file only)
 #ifdef _WIN32
 static int setenv(const char* name, const char* value, int) { return _putenv_s(name, value); }
 #endif

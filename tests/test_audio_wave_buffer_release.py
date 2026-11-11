@@ -54,7 +54,7 @@ static int16_t adpcm_sample(Voice *v, const WB *w, int64_t s) { (void)v; (void)w
 """]
     actual.extend(helper.block(source, marker) for marker in (
         "static void put_handle(", "static int get_handle(", "static int voice_index(", "static Voice *voice_of(",
-        "static WB read_wb(", "static void release_wb(", "static int next_source_frame("))
+        "static WB read_wb(", "static int wb_in_guest(", "static void release_wb(", "static int next_source_frame("))
     actual.extend([queue, helper.block(source, "static void apply("), helper.block(source, "static void submit("),
                    helper.block(source, "static void commit(")])
     actual.extend(helper.block(source, "HLE(" + name + ")") for name in (APPEND, RELEASED, COUNT, STATE))

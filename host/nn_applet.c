@@ -9,6 +9,7 @@
 #include <string.h>
 #include <time.h>
 #include <windows.h>   /* (the exe's folder; the browser build: the Microsoft C runtime's time functions) */
+#include "hos_fopen_write.h"
 
 static int64_t boot_ns;
 
@@ -39,7 +40,7 @@ static const char *desired_language(void) {
         while (n > 0 && path[n - 1] != 92 && path[n - 1] != 47) n--;
         snprintf(path + n, sizeof path - n, "language.txt");
 #endif
-        FILE *f = fopen(path, "r");
+        FILE *f = hos_fopen_read(path);
         if (f) {
             char line[80];
             int whole = 1;   /* (the first line is longer than this: its second piece, "ave, and start...", was taken for the code) */
@@ -64,7 +65,7 @@ static const char *desired_language(void) {
                 break;
             }
             fclose(f);
-        } else if ((f = fopen(path, "w")) != NULL) {
+        } else if ((f = hos_fopen_write(path, "w")) != NULL) {
             fputs("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\nen-US\n\n", f);
             for (size_t i = 0; i < sizeof languages / sizeof *languages; i++) fprintf(f, "# %-8s %s\n", languages[i].code, languages[i].name);
             fclose(f);
@@ -96,7 +97,7 @@ static int ini_text(const char *key, char *out, size_t size) {
     char *slash = n ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/'; the game folder's, not bin\\'s) */
     if (!slash || !size) return 0;
     snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
-    FILE *f = fopen(path, "r");
+    FILE *f = hos_fopen_read(path);
     if (!f) return 0;
     char line[80];
     const size_t len = strlen(key);
@@ -265,7 +266,9 @@ HLE(_ZN2nn4time19StandardSteadyClock3nowEv) { RET((uint64_t)(hos_now_ns() / 1000
 static void socket_poll(Ctx *c) {
     const uint64_t fds = ARG(0), n = ARG(1);
     const int timeout = (int)ARG(2);
-    for (uint64_t i = 0; fds && i < n && i < 4096; i++) *(uint16_t *)GP(fds + 8 * i + 6) = 0;   /* revents */
+    const uint64_t m = n < 4096 ? n : 4096;
+    if (fds && hos_guest_range(fds, 8 * m))   /* (hookshot: the descriptors in guest memory) */
+        for (uint64_t i = 0; i < m; i++) *(uint16_t *)GP(fds + 8 * i + 6) = 0;   /* revents */
     if (timeout != 0) {
         const int away = hos_vcore_away();
         hos_sleep_ns((int64_t)(timeout < 0 || timeout > 50 ? 50 : timeout) * 1000000);

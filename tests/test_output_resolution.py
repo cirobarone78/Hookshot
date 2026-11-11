@@ -23,6 +23,7 @@ def main():
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include "HOS_FOPEN_HEADER"   // (the game's start-up reads: host/hos_fopen_read.h)
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
@@ -168,7 +169,7 @@ int main(int argc, char **argv) {
     with tempfile.TemporaryDirectory(prefix="output-resolution-") as tmp:
         work = Path(tmp)
         source, exe = work / "fixture.cpp", work / "fixture.exe"
-        source.write_text(fixture, encoding="utf-8")
+        source.write_text(fixture.replace("HOS_FOPEN_HEADER", (ROOT / "host" / "hos_fopen_read.h").as_posix()), encoding="utf-8")
         subprocess.run([args.cxx, "-std=c++17", "-I", str(ROOT), str(source), "-o", str(exe)], check=True)
         for saved, handheld, override, mode, w, h, label, pool, writes in cases:
             (work / "hookshot_options.ini").write_text(f"output_res={saved}\nhandheld_profile={handheld}\n", encoding="ascii")

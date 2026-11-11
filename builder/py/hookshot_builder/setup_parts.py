@@ -24,8 +24,28 @@ WAITS = (3, 6, 12, 20, 30, 45, 60)   # (8 tries over ~3 minutes: GitHub's releas
 OWN = ("python", "emsdk", "cpm", "third_party", "wgpu-native")
 
 
+MAX_BODY = 8 << 20       # (a setup list or an API answer: a few KB; a download with no size of its own stops there)
+
+
 class SetupError(Exception):
     pass
+
+
+class RedirectRefused(SetupError):
+    """A redirect to a link that is not https: not tried again (builder/linux/linux_update.py refuses the same)"""
+
+
+class _HttpsRedirects(urllib.request.HTTPRedirectHandler):
+    """Each redirect is followed only to another https link: urllib's own follows one to http: too, and only the last link
+    (r.geturl()) was checked, so https -> http -> https passed"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not str(newurl).startswith("https://"):
+            raise RedirectRefused("A download was redirected away from https")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+OPENER = urllib.request.build_opener(_HttpsRedirects)
 
 
 class Part:
@@ -43,17 +63,18 @@ class Http:
         self.status = 0
 
     def get(self, url, sink=None, expect=0, accept=None, progress=None, cancel=None):
-        """GET following redirects (never to http); the bytes to sink, or returned. Sets self.status; raises on failure"""
+        """GET following redirects (never to http); the bytes to sink, or returned. Sets self.status; raises on failure. At most
+        expect bytes (a part's size) are taken, else MAX_BODY: a longer answer stops there, before the rest is read"""
         if not url.startswith("https://"):
             raise SetupError("Only https downloads are allowed: " + url)
         req = urllib.request.Request(url, headers={"User-Agent": UA, **({"Accept": accept} if accept else {})})
         self.status = 0
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with OPENER.open(req, timeout=60) as r:
                 if not r.geturl().startswith("https://"):
                     raise SetupError("A download was redirected away from https")
                 self.status = r.status
-                got, out = 0, []
+                got, out, limit = 0, [], expect or MAX_BODY
                 while True:
                     if cancel and cancel():
                         raise SetupError("cancelled")
@@ -61,6 +82,9 @@ class Http:
                     if not b:
                         break
                     got += len(b)
+                    if got > limit:
+                        self.status = 200   # (not what the list says: worth another try, as one cut off)
+                        raise SetupError("The download is larger than expected (over %d MB)" % (limit >> 20))
                     if sink:
                         sink(b)
                     else:
@@ -110,10 +134,25 @@ def list_name_ok(s, path=False):
     return all(q not in ("", ".", "..") for q in names)
 
 
+PART_SOURCES = ("https://github.com/%s/releases/download/" % REPO, "https://github.com/mstorsjo/llvm-mingw/releases/download/")
+
+
+def part_url_ok(url):
+    """(builder/setup/setup.c part_url_ok) a part's link is under this project's releases or llvm-mingw's, with no "..", escape,
+    query or other host hidden in the rest; HOOKSHOT_SETUP_LIST (a list for testing a release elsewhere): any https link"""
+    if os.environ.get("HOOKSHOT_SETUP_LIST"):
+        return url[:8].lower() == "https://"
+    for base in PART_SOURCES:
+        if url.startswith(base):
+            rest = url[len(base):]
+            return bool(rest) and ".." not in rest and not any(c in rest for c in "%?#@\\:")
+    return False
+
+
 def list_ok(tag, parts):
     """(the list's names become paths under the install folder, a folder install() removes and remakes: they stay inside it)"""
     return list_name_ok(tag) and all(
-        re.fullmatch(r"[0-9a-f]{64}", p.sha) and p.url[:8].lower() == "https://" and (p.dest == "." or list_name_ok(p.dest, True))
+        re.fullmatch(r"[0-9a-f]{64}", p.sha) and part_url_ok(p.url) and (p.dest == "." or list_name_ok(p.dest, True))
         and (p.frm == "-" or list_name_ok(p.frm)) and (p.to == "-" or list_name_ok(p.to)) for p in parts)
 
 
@@ -140,6 +179,8 @@ def read_manifest(status, tag=None, cancel=None):
         try:
             text = http.get(url, cancel=cancel).decode("utf-8", "replace")
             break
+        except RedirectRefused:
+            raise
         except SetupError as e:
             last = str(e)
             first = http.status
@@ -149,6 +190,8 @@ def read_manifest(status, tag=None, cancel=None):
                     try:
                         text = http.get(api, accept="application/octet-stream", cancel=cancel).decode("utf-8", "replace")
                         break
+                    except RedirectRefused:
+                        raise
                     except SetupError:
                         http.status = first
             if not retryable(http.status):
@@ -300,7 +343,7 @@ def download_part(status, progress, p, i, n, zpath, cancel):
                 else:
                     http.get(p.url, sink, p.size, None, progress, cancel)
         except SetupError as e:
-            if str(e) == "cancelled":
+            if str(e) == "cancelled" or isinstance(e, RedirectRefused):
                 raise
             if not retryable(http.status):
                 break

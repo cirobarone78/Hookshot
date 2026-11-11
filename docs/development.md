@@ -17,7 +17,8 @@ the lessons carried over from MKW: [design.md](design.md).
 ## Use
 
 Requirements: Python 3 with `pip install -r requirements.txt` (`lz4`, `numpy`, `capstone`, `unicorn` 2.1,
-`zstandard`, and the button-prompt packages); a compiler: on Windows llvm-mingw
+`zstandard`, and the button-prompt packages; a pin changed there needs `python -I scripts/python_lock.py`, which
+writes the wheels' SHA-256s into `requirements-lock.txt` for the Python that releases ship); a compiler: on Windows llvm-mingw
 (`HOOKSHOT_MINGW`, or an `llvm-mingw` folder in the clone), else emsdk's clang at `C:\emsdk` (or `EMSDK`) with Visual
 Studio's C++ tools; on Linux clang and lld. For the Vulkan back end: distro Vulkan / SPIR-V / VMA headers under
 `/usr`, or `HOOKSHOT_VULKAN_HEADERS` / `HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VMA_HEADERS`, or a CPM package cache

@@ -33,10 +33,12 @@
 #pragma GCC diagnostic pop
 #endif
 
+#include "../../host/hos_fopen_read.h"
+
 namespace mkwvk::game_font {
 
 inline bool read_file(const std::string& path, std::vector<unsigned char>& out) {
-    FILE* f = fopen(path.c_str(), "rb");
+    FILE* f = hos_fopen_read_binary(path.c_str());   // (the game's files in romfs/: a regular file, not a FIFO)
     if (!f) return false;
     fseek(f, 0, SEEK_END);
     const long n = ftell(f);

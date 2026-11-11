@@ -47,10 +47,12 @@ def build(cc, tmp):
     program = r'''#include <windows.h>
 #include <stdarg.h>
 #include "hos_paths.h"
+#include "hos_fopen_write.h"
 #define SEP '/'
 #define SEP_S "/"
 static void hos_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); putchar(10); }
 const char *hos_romfs_dir, *hos_user_dir;
+const char *hos_env_file_names(void) { return ""; }
 void hos_update_check(void);
 ''' + saves + r'''
 int main(void) {

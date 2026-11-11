@@ -236,9 +236,27 @@ def state_list(tools):
     return 0
 
 
+def locked(names, lock=None):
+    """requirements-lock.txt's entries (name==version and its --hash lines) for those pins, as a requirements file's text,
+    for pip --require-hashes; exits when one is not in the lock at that version (scripts/python_lock.py writes it)"""
+    spec = importlib.util.spec_from_file_location("python_lock", os.path.join(ROOT, "scripts", "python_lock.py"))
+    pl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pl)
+    have = pl.read_lock(lock or pl.LOCK)
+    out = []
+    for pin in names:
+        name, _, version = pin.partition("==")
+        got = have.get(pl.norm(name.strip()))
+        if not got or got[1] != version.strip() or not got[2]:
+            sys.exit("%s is not in requirements-lock.txt at that version: run python -I scripts/python_lock.py" % pin)
+        out.append("%s==%s %s" % (got[0], got[1], " ".join("--hash=sha256:" + h for h in got[2])))
+    return "\n".join(out) + "\n"
+
+
 def python_packages(list_path, requirements, tools):
     """The list's Python part with requirements' pins (name==version) installed into tools/python, if it lacks one: by this
-    Python's pip, for the part's version and win_amd64 (the part has no pip)"""
+    Python's pip, for the part's version and win_amd64 (the part has no pip), each wheel checked against
+    requirements-lock.txt's SHA-256s"""
     with open(requirements, encoding="utf-8") as f:
         pins = [p for p in (l.split("#")[0].strip() for l in f.read().splitlines()) if p]
     part = named_part(list_path, "python")
@@ -259,9 +277,14 @@ def python_packages(list_path, requirements, tools):
     py = os.path.join(tools, "python")
     n = extract(part, "HookshotBuilder/tools/python/", py)
     print("%d files of %s (Python %s) into %s, with %s" % (n, os.path.basename(part), version, py, ", ".join(missing)))
-    subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--only-binary", ":all:", "--no-compile", "--no-cache-dir",
-                    "--disable-pip-version-check", "-q", "--platform", "win_amd64", "--python-version", version,
-                    "--implementation", "cp", "--target", os.path.join(py, "Lib", "site-packages")] + missing, check=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        req = os.path.join(tmp, "requirements.txt")
+        with open(req, "w", encoding="utf-8") as f:
+            f.write(locked(missing))
+        subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--only-binary", ":all:", "--no-compile",
+                        "--no-cache-dir", "--disable-pip-version-check", "-q", "--platform", "win_amd64", "--python-version",
+                        version, "--implementation", "cp", "--require-hashes", "-r", req,
+                        "--target", os.path.join(py, "Lib", "site-packages")], check=True)
     return 0
 
 

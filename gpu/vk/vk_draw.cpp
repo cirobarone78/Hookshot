@@ -60,6 +60,7 @@
 #include "shaders/shadow_stab_comp_spv.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
+#include "../../host/hos_fopen_write.h"   // (the pipeline caches, lists and markers: not through a link)
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
@@ -720,30 +721,34 @@ std::atomic<int64_t> pcache_built_since_save{0};
 // most precompiled pipelines as not found in the app's cache (~460 of ~12,900 here), which it then serves from its own.
 std::atomic<size_t> pcache_saved_size{0};
 /// A pipeline cache file's data, or nothing when it cannot be read or was made by another device or driver
+/// (hookshot: or is larger than kPcacheMax). Its header is read and checked first, the rest only for this device's: a file
+/// of any size was read whole into memory before (a large or sparse one from elsewhere ran the game out of memory at start)
+constexpr int64_t kPcacheMax = int64_t{4} << 30;   // (NVIDIA's after a full preparation: about 1.1 GB)
 std::vector<uint8_t> pcache_file_read(const std::string& path) {
     std::vector<uint8_t> data;
-    if (FILE* f = fopen(path.c_str(), "rb")) {
-        _fseeki64(f, 0, SEEK_END);
-        const int64_t sz = _ftelli64(f);
-        _fseeki64(f, 0, SEEK_SET);
-        if (sz > 32) {
-            data.resize((size_t)sz);
-            if (fread(data.data(), 1, data.size(), f) != data.size()) data.clear();
-        }
-        fclose(f);
-    }
-    // (data of another device or driver is dropped before Vulkan sees it)
-    if (data.size() >= 32) {
+    FILE* f = hos_fopen_read_binary(path.c_str());
+    if (!f) return data;
+    _fseeki64(f, 0, SEEK_END);
+    const int64_t sz = _ftelli64(f);
+    _fseeki64(f, 0, SEEK_SET);
+    uint8_t head[32];
+    if (sz > kPcacheMax) logf("vk: %s: %lld MB, larger than a pipeline cache is: not read", path.c_str(), (long long)(sz >> 20));
+    if (sz > 32 && sz <= kPcacheMax && fread(head, 1, sizeof head, f) == sizeof head) {
+        // (data of another device or driver is dropped before Vulkan sees it)
         uint32_t head_size, version, vendor, device;
-        std::memcpy(&head_size, data.data(), 4);
-        std::memcpy(&version, data.data() + 4, 4);
-        std::memcpy(&vendor, data.data() + 8, 4);
-        std::memcpy(&device, data.data() + 12, 4);
-        if (head_size < 32 || head_size > data.size() || version != VK_PIPELINE_CACHE_HEADER_VERSION_ONE ||   // (hookshot)
-            vendor != dev.props.vendorID || device != dev.props.deviceID ||
-            std::memcmp(data.data() + 16, dev.props.pipelineCacheUUID, VK_UUID_SIZE))
-            data.clear();
+        std::memcpy(&head_size, head, 4);
+        std::memcpy(&version, head + 4, 4);
+        std::memcpy(&vendor, head + 8, 4);
+        std::memcpy(&device, head + 12, 4);
+        if (head_size >= 32 && head_size <= sz && version == VK_PIPELINE_CACHE_HEADER_VERSION_ONE &&   // (hookshot)
+            vendor == dev.props.vendorID && device == dev.props.deviceID &&
+            !std::memcmp(head + 16, dev.props.pipelineCacheUUID, VK_UUID_SIZE)) {
+            data.resize((size_t)sz);
+            std::memcpy(data.data(), head, sizeof head);
+            if (fread(data.data() + sizeof head, 1, data.size() - sizeof head, f) != data.size() - sizeof head) data.clear();
+        }
     }
+    fclose(f);
     return data;
 }
 std::string pcache_dir;
@@ -776,7 +781,7 @@ size_t play_file_write(VkPipelineCache cache, const std::string& path) {
     std::vector<uint8_t> data(n);
     if (vkGetPipelineCacheData(dev.device, cache, &n, data.data()) != VK_SUCCESS) return 0;
     const std::string tmp = path + ".tmp";
-    FILE* f = fopen(tmp.c_str(), "wb");
+    FILE* f = hos_fopen_write(tmp.c_str(), "wb");
     if (!f) return 0;
     bool ok = fwrite(data.data(), 1, n, f) == n;
     ok = fclose(f) == 0 && ok;   // (its last bytes go to the disk at the close)
@@ -1086,7 +1091,7 @@ void driver_fault_note(uint64_t key) {
     static std::mutex mu;
     std::lock_guard lk(mu);
     const std::string path = driver_faults_path();
-    FILE* f = fopen(path.c_str(), "ab");
+    FILE* f = hos_fopen_write(path.c_str(), "ab");
     if (!f) {   // (a folder the game cannot write to: Program Files)
         static bool told;
         if (!told) told = true, logf("vk: %s could not be written: the faulted programs are kept out for this run only", path.c_str());
@@ -1258,10 +1263,14 @@ std::string pipe_notes_path() {
     return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_pipelines.bin";
 }
 /// The notes of this build (hookshot_pipelines.bin), each pipeline once
-/// (hookshot) Targets a pipeline can be made with: at most 8 colour targets, a sample count Vulkan has, a topology it has.
-/// The notes and the state list are files: what they say is checked before a pipeline is made from it
+/// (hookshot) Targets a pipeline can be made with: at most 8 colour targets, a sample count Vulkan has and this device draws
+/// with (a shareable list's 64 reached the driver as the pipeline's), a topology it has. The notes and the state list are
+/// files: what they say is checked before a pipeline is made from it
 bool targets_ok(uint32_t n, uint32_t samples, uint32_t topo) {
-    return n <= 8 && samples >= 1 && samples <= 64 && !(samples & (samples - 1)) && topo <= VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+    if (!(n <= 8 && samples >= 1 && samples <= 64 && !(samples & (samples - 1)) && topo <= VK_PRIMITIVE_TOPOLOGY_PATCH_LIST))
+        return false;
+    return !dev.physical ||   // (no device to ask: the pipeline is not made either)
+           (samples & (dev.props.limits.framebufferColorSampleCounts | dev.props.limits.framebufferDepthSampleCounts)) != 0;
 }
 /// (hookshot) Formats a pipeline can be made with: each colour target's none or one this device draws to, the depth target's
 /// one it uses as depth. They come from the notes and the shareable state list, and any number reached the driver as a
@@ -1278,11 +1287,21 @@ bool formats_ok(uint32_t n, const uint32_t color[8], uint32_t has_depth, uint32_
     return !has_depth || depth == VK_FORMAT_UNDEFINED ||
            (is_depth_format((VkFormat)depth) && supports(depth, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT));
 }
+/// (hookshot) Vertex streams a pipeline can be made with: each stride within Vulkan's least maxVertexInputBindingStride (2048)
+/// and each divisor within 65535. They come from the notes and the shareable state list (the game's own are under 100 and 0-1),
+/// and any number reached vkCreateGraphicsPipelines, which a driver need not survive
+bool streams_ok(const uint32_t stride[16], const uint32_t divisor[16]) {
+    for (int i = 0; i < 16; i++)
+        if (stride[i] > 2048 || divisor[i] > 0xFFFF) return false;
+    return true;
+}
 /// (hookshot) a note read from hookshot_pipelines.bin: its counts in range, its booleans 0 or 1, and no host pointers (the
 /// render targets' objects of the run that wrote it mean nothing here)
 bool note_sane(PipeNote& n) {
+    uint32_t stride[16], divisor[16];
+    for (int i = 0; i < 16; i++) stride[i] = n.s.vstream[i].stride, divisor[i] = n.s.vstream[i].divisor;
     if (!targets_ok(n.n, n.samples, n.topo) || n.s.nvattr < 0 || n.s.nvattr > 16 ||
-        !formats_ok(n.n, n.color_format, n.has_depth, n.depth_format))
+        !formats_ok(n.n, n.color_format, n.has_depth, n.depth_format) || !streams_ok(stride, divisor))
         return false;
     n.s.rt = nvn_p_set_rt{};
     for (bool* b : {&n.s.has_prog, &n.s.restart, &n.s.depth_clamp, &n.s.raster_discard, &n.s.render_enabled}) {
@@ -1295,7 +1314,7 @@ bool note_sane(PipeNote& n) {
 }
 std::vector<std::unique_ptr<PipeNote>> pipe_notes_read() {
     std::vector<std::unique_ptr<PipeNote>> notes;
-    if (FILE* f = fopen(pipe_notes_path().c_str(), "rb")) {
+    if (FILE* f = hos_fopen_read_binary(pipe_notes_path().c_str())) {
         uint64_t head[2] = {0, 0};
         if (fread(head, 8, 2, f) == 2 && head[0] == program_cache_stamp() && head[1] == sizeof(PipeNote)) {
             std::unordered_set<uint64_t> seen;
@@ -1330,7 +1349,7 @@ void notes_open_locked(const std::vector<std::unique_ptr<PipeNote>>* known) {
     static const uint64_t stamp = program_cache_stamp();
     const std::string path = pipe_notes_path();
     uint64_t head[2] = {0, 0};
-    if (FILE* f = fopen(path.c_str(), "rb")) {
+    if (FILE* f = hos_fopen_read_binary(path.c_str())) {
         if (fread(head, 8, 2, f) != 2) head[0] = 0;
         fclose(f);
     }
@@ -1338,14 +1357,14 @@ void notes_open_locked(const std::vector<std::unique_ptr<PipeNote>>* known) {
     if (same && known) {
         for (const auto& n : *known) noted.insert(n->key);
     } else if (same) {
-        if (FILE* f = fopen(path.c_str(), "rb")) {
+        if (FILE* f = hos_fopen_read_binary(path.c_str())) {
             auto rec = std::make_unique<PipeNote>();
             if (_fseeki64(f, 16, SEEK_SET) == 0)
                 while (fread(rec.get(), sizeof(PipeNote), 1, f) == 1) noted.insert(rec->key);
             fclose(f);
         }
     }
-    note_file = fopen(path.c_str(), same ? "ab" : "wb");
+    note_file = hos_fopen_write(path.c_str(), same ? "ab" : "wb");
     if (note_file && !same) {
         const uint64_t h[2] = {stamp, sizeof(PipeNote)};
         fwrite(h, 8, 2, note_file);
@@ -1384,7 +1403,7 @@ std::string computes_path() {
 }
 std::unordered_set<uint64_t> computes_read() {
     std::unordered_set<uint64_t> keys;
-    if (FILE* f = fopen(computes_path().c_str(), "rb")) {
+    if (FILE* f = hos_fopen_read_binary(computes_path().c_str())) {
         char magic[8] = {};
         if (fread(magic, 1, 8, f) == 8 && !memcmp(magic, kComputesMagic, 8))
             for (uint64_t k = 0; fread(&k, 8, 1, f) == 1;) keys.insert(k);
@@ -1399,7 +1418,7 @@ void compute_note(uint64_t key) {
     if (!compute_note_file) {
         computes_noted = computes_read();
         const bool append = !computes_noted.empty();   // (none read: a new file, or one that is not a list)
-        compute_note_file = fopen(computes_path().c_str(), append ? "ab" : "wb");
+        compute_note_file = hos_fopen_write(computes_path().c_str(), append ? "ab" : "wb");
         if (compute_note_file && !append) fwrite(kComputesMagic, 1, 8, compute_note_file);
     }
     if (compute_note_file && computes_noted.insert(key).second) fwrite(&key, 8, 1, compute_note_file), fflush(compute_note_file);
@@ -1505,7 +1524,8 @@ bool state_v1_portable(StateRec& r) {
 }
 /// A version 2 record for this device (false: it cannot be, its counts out of range or a format this GPU does not draw to)
 bool state_v2_resolve(const StateRec2& v, StateRec& r) {
-    if (v.nanswers > std::size(v.answers) || v.nquestions > std::size(v.questions) || v.nvattr > 16 || !targets_ok(v.n, v.samples, v.topo))
+    if (v.nanswers > std::size(v.answers) || v.nquestions > std::size(v.questions) || v.nvattr > 16 || !targets_ok(v.n, v.samples, v.topo) ||
+        !streams_ok(v.stride, v.divisor))
         return false;
     r = StateRec{};
     std::memcpy(r.code, v.code, sizeof r.code);
@@ -1527,7 +1547,7 @@ bool state_v2_resolve(const StateRec2& v, StateRec& r) {
 std::vector<StateRec> state_list_read(const std::string& path, int* version = nullptr) {
     std::vector<StateRec> out;
     if (version) *version = 0;
-    FILE* f = fopen(path.c_str(), "rb");
+    FILE* f = hos_fopen_read_binary(path.c_str());
     if (!f) return out;
     char magic[8];
     uint32_t size = 0;
@@ -1538,7 +1558,7 @@ std::vector<StateRec> state_list_read(const std::string& path, int* version = nu
             while (fread(&r, sizeof r, 1, f) == 1) {
                 if (r.nanswers > std::size(r.answers) || r.nquestions > std::size(r.questions) || r.nvattr > 16 ||
                     !targets_ok(r.n, r.samples, r.topo) || !formats_ok(r.n, r.color_format, r.has_depth, r.depth_format) ||
-                    !state_v1_portable(r))
+                    !streams_ok(r.stride, r.divisor) || !state_v1_portable(r))
                     continue;   // (hookshot: a pipeline is made from the rest: its counts must be ones it can have)
                 out.push_back(r);
             }
@@ -1562,7 +1582,7 @@ std::unordered_set<uint64_t> state_seen;
 void state_open_locked() {
     const std::string path = state_list_path("hookshot_pipeline_states.bin");
     bool keep = false;
-    if (FILE* f = fopen(path.c_str(), "rb")) {
+    if (FILE* f = hos_fopen_read_binary(path.c_str())) {
         char magic[8];
         uint32_t size = 0;
         const bool v2 = fread(magic, 8, 1, f) == 1 && fread(&size, 4, 1, f) == 1 && !memcmp(magic, kStateMagic2, 8) &&
@@ -1579,7 +1599,7 @@ void state_open_locked() {
             if (rename(path.c_str(), old.c_str()) == 0) logf("vk: state list: the version 1 list kept as %s", old.c_str());
         }
     }
-    state_file = fopen(path.c_str(), keep ? "ab" : "wb");
+    state_file = hos_fopen_write(path.c_str(), keep ? "ab" : "wb");
     if (state_file && !keep) {
         const uint32_t size = sizeof(StateRec2);
         fwrite(kStateMagic2, 8, 1, state_file), fwrite(&size, 4, 1, state_file);
@@ -2863,7 +2883,7 @@ bool menu_env_on(const char* env_name, const char* ini_key_name, bool def = fals
     ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
     const size_t klen = strlen(ini_key_name);
     int v = -1, version = 0;
-    if (FILE* f = fopen(ini.c_str(), "r")) {
+    if (FILE* f = hos_fopen_read(ini.c_str())) {
         char line[80];
         while (fgets(line, sizeof line, f)) {
             if (!strncmp(line, ini_key_name, klen) && line[klen] == '=') v = atoi(line + klen + 1);
@@ -7553,7 +7573,7 @@ int64_t file_clock_now() {
 /// The seed's contents, hashed four words at a time: ~0.1 s for its 540 MB read from memory, 0.3-0.6 s from the disk (a byte at a
 /// time, as hash_bytes, 0.45 s from memory). Only after the file was written again
 bool seed_file_hash(const std::string& path, uint64_t* out) {
-    FILE* f = fopen(path.c_str(), "rb");
+    FILE* f = hos_fopen_read_binary(path.c_str());
     if (!f) return false;
     constexpr uint64_t p1 = 0x9E3779B185EBCA87ull, p2 = 0xC2B2AE3D27D4EB4Full;
     const auto mix = [](uint64_t h, uint64_t w) {
@@ -7582,7 +7602,7 @@ bool seed_file_hash(const std::string& path, uint64_t* out) {
 /// The record: 0 none, 1 the translator alone (written before the seed was), 2 both. A record without the time it was written
 /// at (four words) never takes the shortcut: its seed is hashed, and the record written again with it
 int prepared_read(const std::string& path, PreparedFor* had) {
-    FILE* f = fopen(path.c_str(), "rb");
+    FILE* f = hos_fopen_read_binary(path.c_str());
     if (!f) return 0;
     uint64_t r[6]{};
     const size_t n = fread(r, 8, 6, f);
@@ -7594,7 +7614,7 @@ int prepared_read(const std::string& path, PreparedFor* had) {
 }
 void prepared_write(const std::string& path, const PreparedFor& now) {
     const uint64_t r[6] = {now.stamp, now.seed_hash, now.seed_size, (uint64_t)now.seed_time, (uint64_t)file_clock_now(), now.warmed};
-    if (FILE* f = fopen(path.c_str(), "wb")) fwrite(r, 8, 6, f), fclose(f);
+    if (FILE* f = hos_fopen_write(path.c_str(), "wb")) fwrite(r, 8, 6, f), fclose(f);
 }
 /// Whether to prepare (and why), and what for: *now, written once the prepare is done. No seed: the translator alone, as before.
 /// *hash_ms: how long the seed's hash took (0: not taken). now->warmed is the record's, for this translator: the caller's to renew
@@ -7647,7 +7667,7 @@ bool prepare_is_update() {
     // (opt-in, RX_VK_PREPARE_BACKGROUND=1: when the translator changed, the program cache is gone too, and the first area then
     // translated thousands of programs in play: 1 fps and black frames for minutes, which looked broken. Before the game is the default)
     if (env_on("RX_VK_PREPARE_AGAIN") || !env_on("RX_VK_PREPARE_BACKGROUND")) return false;
-    FILE* f = fopen(prepared_path().c_str(), "rb");
+    FILE* f = hos_fopen_read_binary(prepared_path().c_str());
     if (!f) return false;
     uint64_t have = 0;
     const bool read = fread(&have, 8, 1, f) == 1;   // (the record's first word, the translator's stamp: see PreparedFor)
@@ -7771,11 +7791,11 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         logf("vk: the shaders are prepared, but their driver's part was made for another driver or other settings: made again%s",
              libraries ? "" : " (no stage libraries: the predicted pipelines alone)");
         if (libraries) {
-            if (FILE* f = fopen(warming.c_str(), "rb")) {
+            if (FILE* f = hos_fopen_read_binary(warming.c_str())) {
                 fclose(f);
                 logf("vk: the last start did not finish the driver's part of the shaders: left out");
             } else {
-                if (FILE* w = fopen(warming.c_str(), "wb")) fclose(w);
+                if (FILE* w = hos_fopen_write(warming.c_str(), "wb")) fclose(w);
                 if (!warm_libraries(progress)) {
                     remove(warming.c_str());
                     return false;
@@ -7802,12 +7822,12 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     bool warm = libraries && !background;
     bool warm_cs = !env_on("RX_VK_NO_WARM") && !background;
     if (background) {
-    } else if (FILE* f = fopen(warming.c_str(), "rb")) {
+    } else if (FILE* f = hos_fopen_read_binary(warming.c_str())) {
         fclose(f);
         warm = warm_cs = false;
         logf("vk: the last start did not finish the driver's part of the shaders: left out");
     } else if (warm || warm_cs) {
-        if (FILE* w = fopen(warming.c_str(), "wb")) fclose(w);
+        if (FILE* w = hos_fopen_write(warming.c_str(), "wb")) fclose(w);
     }
     pcache_init();   // (once, here: the workers below build compute pipelines into it)
     std::atomic<size_t> next{0}, done{0}, made{0}, libs{0}, variants{0}, asking{0}, capped{0};
@@ -7961,7 +7981,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     // precompile and compiled everything in play: "stuck at 99%, then fine on the second start", 2026-11-08)
     const std::string running = pipe_notes_path() + ".running";
     int ended_inside = 0;
-    if (FILE* f = fopen(running.c_str(), "rb")) {
+    if (FILE* f = hos_fopen_read_binary(running.c_str())) {
         if (fscanf(f, "%d", &ended_inside) != 1) ended_inside = 1;
         fclose(f);
         if (ended_inside >= 2) {
@@ -7972,7 +7992,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         }
         logf("vk: the last start did not get through the precompile (closed, or it crashed there): trying it once more");
     }
-    if (FILE* f = fopen(running.c_str(), "wb")) fprintf(f, "%d\n", ended_inside + 1), fclose(f);
+    if (FILE* f = hos_fopen_write(running.c_str(), "wb")) fprintf(f, "%d\n", ended_inside + 1), fclose(f);
     struct Done { const std::string& path; ~Done() { remove(path.c_str()); } } done_marker{running};
     pcache_init();
     std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
@@ -8126,14 +8146,14 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
 void prepare_guess(size_t out[3]) {
     out[0] = out[1] = out[2] = 0;
     const auto size_of = [](const std::string& path) -> int64_t {
-        FILE* f = fopen(path.c_str(), "rb");
+        FILE* f = hos_fopen_read_binary(path.c_str());
         if (!f) return 0;
         _fseeki64(f, 0, SEEK_END);
         const int64_t n = _ftelli64(f);
         fclose(f);
         return n;
     };
-    if (FILE* f = fopen(seed_path().c_str(), "rb")) {
+    if (FILE* f = hos_fopen_read_binary(seed_path().c_str())) {
         char head[16]{};
         uint32_t programs = 0;
         if (fread(head, 1, 16, f) == 16 && !memcmp(head, "HKSEED01", 8)) std::memcpy(&programs, head + 8, 4);
@@ -8189,7 +8209,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     }
     if (resumed) logf("vk: the last start did not finish building the predicted pipelines (%s): they are built again (what the "
                       "driver kept comes from its cache)", began ? "it ended in them" : "closed");
-    if (FILE* f = fopen(predict_pending_path().c_str(), "wb")) fprintf(f, "%d\n", began + 1), fclose(f);
+    if (FILE* f = hos_fopen_write(predict_pending_path().c_str(), "wb")) fprintf(f, "%d\n", began + 1), fclose(f);
     size_t programs = 0;
     PredictCounts left_out;
     std::vector<std::unique_ptr<PipeNote>> predicted = predict_pipelines(notes, &programs, &left_out);
@@ -8322,7 +8342,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     if (!prepare_stopped() && !out_of_time.load() && !gone_on) predicted_sample_write(pre->predicted);
     // (gone on: what is stuck is left to play, as the stall guard says; a start that does it again would only stall again)
     if (!prepare_stopped()) remove(predict_pending_path().c_str());
-    else if (FILE* f = fopen(predict_pending_path().c_str(), "wb")) fprintf(f, "%d\n", began), fclose(f);   // (closed: not counted)
+    else if (FILE* f = hos_fopen_write(predict_pending_path().c_str(), "wb")) fprintf(f, "%d\n", began), fclose(f);   // (closed: not counted)
     driver_cache_log("after the prediction");
     if (!gone_on) delete pre;
 }
@@ -8342,7 +8362,7 @@ void predicted_sample_write(const std::vector<std::unique_ptr<PipeNote>>& predic
     for (size_t i = 0; i < predicted.size() && pick.size() < kSample; i += std::max<size_t>(1, predicted.size() / kSample))
         pick.push_back(*predicted[i]);
     const std::string path = predicted_sample_path();
-    if (FILE* f = fopen(path.c_str(), "wb")) {
+    if (FILE* f = hos_fopen_write(path.c_str(), "wb")) {
         const uint64_t head[3] = {program_cache_stamp(), sizeof(PipeNote), pick.size()};
         const bool ok = fwrite(head, 8, 3, f) == 3 && fwrite(pick.data(), sizeof(PipeNote), pick.size(), f) == pick.size();
         if (fclose(f) != 0 || !ok) remove(path.c_str());
@@ -9001,7 +9021,7 @@ void pipeline_cache_save(bool force) {
                 std::vector<uint8_t> data(n);
                 if (vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS) {
                     const std::string tmp = pcache_path + ".tmp";
-                    if (FILE* f = fopen(tmp.c_str(), "wb")) {
+                    if (FILE* f = hos_fopen_write(tmp.c_str(), "wb")) {
                         bool ok = fwrite(data.data(), 1, n, f) == n;
                         ok = fclose(f) == 0 && ok;   // (its last bytes go to the disk at the close)
                         // (only a file in place counts as saved: a failed write is tried again at the next save)

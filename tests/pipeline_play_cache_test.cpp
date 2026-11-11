@@ -7,6 +7,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include "../host/hos_fopen_write.h"   // (the game's own writes)
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>

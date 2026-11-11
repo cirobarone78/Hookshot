@@ -28,6 +28,7 @@ import shutil
 import stat
 import struct
 import sys
+import tempfile
 from time import monotonic
 
 
@@ -395,8 +396,14 @@ def long_path(p):
     return "\\\\?\\" + p
 
 
-def extraction_path(out, part, rel, temporary_suffix=".part"):
-    """A package path stays under its part, without following existing output links."""
+# (Windows) the reparse points that are links: a symbolic link, a junction (mount point), WSL's link. OneDrive marks its files
+# and folders with reparse points of its own, which are not
+LINK_TAGS = (0xA000000C, 0xA0000003, 0xA000001D)
+
+
+def extraction_path(out, part, rel, temporary_suffix=".part", links_only=False):
+    """A package path stays under its part, without following existing output links. links_only (hookshot): only reparse
+    points that are links count (a game folder OneDrive keeps, read back after the unpack); the unpack itself refuses any"""
     parts = rel.split("/")
     if (not rel or "\\" in rel or any(not p or p in (".", "..") or p[-1] in " ." or
             any(c in '<>:"|?*' or ord(c) < 32 for c in p) or p.split(".")[0].rstrip(" ").upper() in WINDOWS_DEVICES
@@ -419,7 +426,10 @@ def extraction_path(out, part, rel, temporary_suffix=".part"):
             info = os.lstat(path)
         except FileNotFoundError:
             continue
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+        reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if reparse and links_only:
+            reparse = getattr(info, "st_reparse_tag", 0) in LINK_TAGS
+        if stat.S_ISLNK(info.st_mode) or reparse:
             raise SystemExit("extraction path is a link or reparse point: %s" % path)
         if path == temporary and info.st_nlink > 1:
             raise SystemExit("extraction temporary file has other hard links: %s" % path)
@@ -660,10 +670,22 @@ def stand_in_damaged(romfs, progress=None, damaged=None):
         damaged = damaged_game_files(romfs, progress)
     excluded = set(damaged)
     for path in damaged:
+        if os.path.islink(long_path(path)):   # (hookshot: this tool unpacks no links; one is left as it is)
+            continue
         other = stand_in_for(path, excluded)
         if other:
-            shutil.copyfile(long_path(other), long_path(path + ".part"))
-            os.replace(long_path(path + ".part"), long_path(path))
+            # (hookshot) copied into a new file of its own beside it, not a fixed <name>.part, which a folder from
+            # elsewhere could hold as a link to a file outside it
+            fd, staged = tempfile.mkstemp(prefix=".standin-", dir=long_path(os.path.dirname(path)))
+            try:
+                with os.fdopen(fd, "wb") as g, open(long_path(other), "rb") as f:
+                    shutil.copyfileobj(f, g)
+                os.chmod(staged, 0o644)   # (as the unpacked files: mkstemp's are the owner's only)
+                os.replace(staged, long_path(path))
+            except BaseException:
+                with suppress(FileNotFoundError):
+                    os.unlink(staged)
+                raise
         done.append((path, other))
     return done
 

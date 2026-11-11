@@ -36,6 +36,7 @@
 #include <xinput.h>
 #include "../gpu/vk/vk_api.h"   /* (the controls' names: HOS_SW_*, HOS_PAD_*) */
 #include "hos_motion.h"
+#include "hos_fopen_write.h"
 #ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/hookshot_env.h"
 #endif
@@ -63,7 +64,7 @@ extern const char *hos_user_dir;
 static void mouse_sens_save(void) {
     char path[512];
     snprintf(path, sizeof path, "%s/mouse_sens.txt", hos_user_dir ? hos_user_dir : "user");
-    FILE *f = fopen(path, "w");
+    FILE *f = hos_fopen_write(path, "w");
     if (f) { fprintf(f, "%.3f\n", hos_mouse_sens); fclose(f); }
 }
 
@@ -211,15 +212,17 @@ static void mouse_setup(void) {   /* (once: the sensitivity kept in <user>/mouse
         hos_mouse_sens = 1.0;
         char path[512];
         snprintf(path, sizeof path, "%s/mouse_sens.txt", hos_user_dir ? hos_user_dir : "user");
-        FILE *f = fopen(path, "r");
+        FILE *f = hos_fopen_read(path);
         if (f) {
             double v;
-            if (fscanf(f, "%lf", &v) == 1 && v > 0) hos_mouse_sens = v;
+            /* (hookshot) only a finite value, kept to the menu's 10-500%: "inf" or "1e999" went on into lround() and the
+               menu's option as an undefined number */
+            if (fscanf(f, "%lf", &v) == 1 && isfinite(v) && v > 0) hos_mouse_sens = v < 0.1 ? 0.1 : v > 5 ? 5 : v;
             fclose(f);
             sens_from_file = 1;
         }
         const char *e = getenv("HOS_MOUSE_SENS");
-        if (e && atof(e) > 0) hos_mouse_sens = atof(e);
+        if (e && isfinite(atof(e)) && atof(e) > 0) hos_mouse_sens = atof(e) < 0.1 ? 0.1 : atof(e) > 5 ? 5 : atof(e);
     }
 }
 
@@ -542,7 +545,7 @@ static void binds_load(void) {
     FILE *f = NULL;
     if (slash) {
         snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
-        f = fopen(path, "r");
+        f = hos_fopen_read(path);
     }
     int changed = 0;
     if (f) {
@@ -893,7 +896,13 @@ volatile int64_t hos_hid_last_read;
 /* GetNpadStates(State* out, int count, unsigned int const& npadId): the latest state first */
 static void npad_states(Ctx *c) {
     uint64_t out = ARG(0);
-    int count = (int)ARG(1);
+    /* (hookshot) at most the 16 states a console keeps, all in guest memory: a count from the game's arguments wrote
+       0x28 bytes a state past any buffer, and past the guest window */
+    int count = (int)ARG(1) < 0 ? 0 : (int)ARG(1) > 16 ? 16 : (int)ARG(1);
+    if (!hos_guest_range(out, (uint64_t)count * STATE_SIZE) || !hos_guest_range(ARG(2), 4)) {
+        RET(0);
+        return;
+    }
     uint32_t id = G32(ARG(2));
     uint64_t buttons = 0;
     int32_t stick[4] = {0};
@@ -1006,7 +1015,8 @@ HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxi
     static int64_t six_sampling, six_base;
     static int was_live;
     const uint64_t out = ARG(0);
-    const int count = (int)ARG(1) < 1 ? 0 : (int)ARG(1) > HOS_MOTION_HISTORY ? HOS_MOTION_HISTORY : (int)ARG(1);
+    int count = (int)ARG(1) < 1 ? 0 : (int)ARG(1) > HOS_MOTION_HISTORY ? HOS_MOTION_HISTORY : (int)ARG(1);
+    if (!hos_guest_range(out, (uint64_t)count * 0x60)) count = 0;   /* (hookshot: the states in guest memory, or none) */
     static const float at_rest[18] = {0, 0, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1};
     int hos_sdl_motion_history(HosMotionSample *out, int max);   /* pad_sdl.c */
     HosMotionSample h[HOS_MOTION_HISTORY];

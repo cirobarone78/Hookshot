@@ -156,7 +156,7 @@ def menu_fixture():
         raise SystemExit("the menu lost its Rumble strength row")
     exempt = block(menu, row.start()).rstrip().endswith(", true}")   # (Row::preset_exempt: a control, not the preset's)
     load = menu.index("bool has_resolution = false;")   # (the ini's load, not save()'s read of its other lines)
-    load = block(menu, menu.rindex('if (FILE* f = fopen(ini_path().c_str(), "r"))', 0, load))
+    load = block(menu, menu.rindex('if (FILE* f = hos_fopen_read(ini_path().c_str()))', 0, load))
     if "opts.rumble = rumble_step(opts.rumble);" not in load:
         raise SystemExit("the ini's Rumble strength is not put on the row's steps")
     wheel_free(menu)

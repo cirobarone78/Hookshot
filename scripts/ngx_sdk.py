@@ -25,6 +25,7 @@ import hashlib
 import os
 import shutil
 import sys
+import tempfile
 import urllib.request
 
 COMMIT = "9981c6350dc58c0ce21f024fd65e31e851c31689"   # (v310.9.16)
@@ -124,17 +125,34 @@ def sha256(path):
 TIMEOUT = 60   # (seconds without an answer, or between two reads, before a download gives up: a stalled one ends the build)
 
 
+MAX_FILE = 1 << 30   # (no file of the SDK is near this: a download that grows past it is stopped, not kept to the end)
+
+
+def _part(dst):
+    """A new file of its own beside dst for a download or a copy (never an old dst.part, or a link put there in its place)"""
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(dst) + ".", suffix=".part", dir=os.path.dirname(dst) or ".")
+    os.chmod(tmp, 0o644)
+    return os.fdopen(fd, "wb"), tmp
+
+
 def fetch_one(path, digest, dst, opener=urllib.request.urlopen):
-    """One file into dst, unless it is there already with that SHA-256. The download goes to dst.part and is moved in only
-    when its SHA-256 is the expected one; otherwise it is deleted and ValueError says which"""
+    """One file into dst, unless it is there already with that SHA-256. The download goes to a new .part file beside it, is
+    hashed as it comes, and is moved in only when its SHA-256 is the expected one; otherwise it is deleted and ValueError says
+    which. One that grows past MAX_FILE stops there"""
     if os.path.isfile(dst) and sha256(dst) == digest:
         return False
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
-    tmp = dst + ".part"
+    f, tmp = _part(dst)
     try:
-        with opener(BASE + "/" + path, timeout=TIMEOUT) as r, open(tmp, "wb") as f:
-            shutil.copyfileobj(r, f, 1 << 20)
-        if sha256(tmp) != digest:
+        h, got = hashlib.sha256(), 0
+        with f, opener(BASE + "/" + path, timeout=TIMEOUT) as r:
+            for block in iter(lambda: r.read(1 << 20), b""):
+                got += len(block)
+                if got > MAX_FILE:
+                    raise ValueError("ngx-sdk: %s is larger than any file of the SDK: not used" % path)
+                h.update(block)
+                f.write(block)
+        if h.hexdigest() != digest:
             raise ValueError("ngx-sdk: %s is not the file expected (SHA-256): not used" % path)
         os.replace(tmp, dst)
     finally:
@@ -156,8 +174,14 @@ def install_runtime(sdk, platform, folder):
     dst = os.path.join(folder, runtime_name(platform))
     os.makedirs(folder, exist_ok=True)
     if not (os.path.isfile(dst) and os.path.getsize(dst) == os.path.getsize(src) and sha256(dst) == sha256(src)):
-        shutil.copyfile(src, dst + ".part")
-        os.replace(dst + ".part", dst)
+        f, tmp = _part(dst)
+        try:
+            with f, open(src, "rb") as s:
+                shutil.copyfileobj(s, f, 1 << 20)
+            os.replace(tmp, dst)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
     return dst
 
 

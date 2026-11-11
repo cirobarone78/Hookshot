@@ -145,8 +145,9 @@ static int set_item_key(Ctx *c, uint64_t screen, const char *key) {
     peek(screen + 840, &mode, 4);
     const size_t n = strlen(key);
     A64Fn fn = a64_lookup(0x833fda00ULL);
-    if (!fn || !buf || buf + n + 1 > HOS_GUEST_SPACE || room <= (int32_t)n || mode != 0) return 0;
-    memcpy(GP(buf), key, n + 1);
+    void *to = buf ? hos_guest_range(buf, n + 1) : NULL;   /* (hookshot: buf + n + 1 wrapped for a buf near 2^64) */
+    if (!fn || !to || room <= (int32_t)n || mode != 0) return 0;
+    memcpy(to, key, n + 1);
     const Ctx saved = *c;
     c->x[0] = screen, c->x[1] = screen + 760, c->x[30] = 0;
     fn(c);

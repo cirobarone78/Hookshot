@@ -43,7 +43,7 @@ class ShippedList(unittest.TestCase):
 
     def fake_list(self, n, magic=None):
         return lzma.compress((magic or self.tool.MAGIC) + struct.pack("<I", self.tool.SIZE) + b"".join(
-            struct.pack("<Q", i + 1) + bytes(self.tool.SIZE - 8) for i in range(n)))
+            struct.pack("<Q", i + 1) + bytes(44) + struct.pack("<I", 1) + bytes(self.tool.SIZE - 56) for i in range(n)))
 
     def fake_sources(self, d, data):
         """d: a sources folder with one contributed list of these bytes, and its note"""

@@ -1271,7 +1271,10 @@ def main():
     launch = _arg("--launch")
     update = _arg("--update")
     if update is not None:
-        Builder(update=update, fetched="--fetched" in sys.argv[1:], tag=_arg("--tag")).mainloop()
+        tag = _arg("--tag")
+        if tag is not None and not linux_update.tag_ok(tag):   # (it goes into release links and folder names)
+            sys.exit("hookshot: --tag %r is not a release name" % tag)
+        Builder(update=update, fetched="--fetched" in sys.argv[1:], tag=tag).mainloop()
     elif launch:
         Builder(launch=launch).mainloop()
     else:

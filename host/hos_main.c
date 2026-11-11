@@ -13,6 +13,7 @@
 #include "../gpu/vk/compat/hookshot_env.h"
 #endif
 #include "hos_paths.h"
+#include "hos_fopen_write.h"   /* (the saves note and moved saves: not through a link) */
 #include "hos_wide_size.h"   /* (the widescreen picture's size, shared with the Insert menu) */
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/oot_cheat_items.h"
@@ -265,7 +266,7 @@ static int is_dir(const char *p) {
 }
 static int copy_tree(const char *from, const char *to) {
     if (!is_dir(from)) {
-        FILE *in = fopen(from, "rb"), *out = in ? fopen(to, "wb") : NULL;
+        FILE *in = hos_fopen_read_binary(from), *out = in ? hos_fopen_write(to, "wb") : NULL;   /* (not a FIFO) */
         int ok = in && out;
         char buf[1 << 16];
         for (size_t n; ok && (n = fread(buf, 1, sizeof buf, in)) > 0;) ok = fwrite(buf, 1, n, out) == n;
@@ -283,6 +284,10 @@ static int copy_tree(const char *from, const char *to) {
     if (h != INVALID_HANDLE_VALUE) {
         do {
             if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {   /* (hookshot) a link is not followed, and */
+                ok = 0;   /* (not left out either: the copy fails, and the entry stays where it is, link and all) */
+                break;
+            }
             char a[MAX_PATH], b[MAX_PATH];
             snprintf(a, sizeof a, "%s" SEP_S "%s", from, fd.cFileName);
             snprintf(b, sizeof b, "%s" SEP_S "%s", to, fd.cFileName);
@@ -306,6 +311,10 @@ static void delete_tree(const char *p) {
             if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
             char a[MAX_PATH];
             snprintf(a, sizeof a, "%s" SEP_S "%s", p, fd.cFileName);
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {   /* (hookshot) the link goes, never what it names */
+                DeleteFileA(a);
+                continue;
+            }
             delete_tree(a);
         } while (FindNextFileA(h, &fd));
         FindClose(h);
@@ -336,6 +345,17 @@ static const char *saves_dir(const char *beside) {
         char from[MAX_PATH], to[MAX_PATH];
         snprintf(from, sizeof from, "%s" SEP_S "%s", beside, fd.cFileName);
         snprintf(to, sizeof to, "%s" SEP_S "%s", dir, fd.cFileName);
+        /* (hookshot) a link (a player's save folder kept elsewhere) is moved as the link it is, or not at all: never
+           copied through, which put the files it pointed to (anywhere) in among the saves */
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+            /* (a relative link would name something else from its new place: only one by a full path is moved) */
+            char target[8];
+            const ssize_t tn = readlink(from, target, sizeof target);
+            if (tn > 0 && target[0] == '/' && GetFileAttributesA(to) == INVALID_FILE_ATTRIBUTES && MoveFileExA(from, to, 0))
+                moved++;
+            else kept++, hos_log("saves: %s is a link and could not be moved: the saves stay where they are", from);
+            continue;
+        }
         if (GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES) kept++;
         else if (MoveFileExA(from, to, 0)) moved++;
         else if (copy_tree(from, to)) delete_tree(from), moved++;
@@ -351,7 +371,7 @@ static const char *saves_dir(const char *beside) {
         char note[MAX_PATH];
         const char *sep = strrchr(beside, SEP);
         snprintf(note, sizeof note, "%.*s" SEP_S "saves-moved.txt", sep ? (int)(sep - beside) : 0, beside);
-        FILE *f = fopen(note, "w");
+        FILE *f = hos_fopen_write(note, "w");
         if (f) {
             fprintf(f, "Hookshot's saves are now in\n%s\n\nThey moved there from the user folder that was here.\n", dir);
             fclose(f);
@@ -376,9 +396,19 @@ static int env_line_allowed(const char *name, const char *value) {
     int ok = 0;
     for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++) ok |= !strncmp(name, prefixes[i], strlen(prefixes[i]));
     if (!ok || !strcmp(name, "HOS_ENV_FILE") || !strcmp(name, "SDL_DYNAMIC_API")) return 0;
+    /* (hookshot) of the HOOKSHOT_ names, only the game's own: the others are the builder's (HOOKSHOT_MEM_LIMIT_GB,
+       HOOKSHOT_LATEST_TAG, HOOKSHOT_JOBS...), and the builder an update starts from the game inherits its environment.
+       HOOKSHOT_PREPARE_ONLY is the game's but set by --prepare-shaders alone (from the file, the game would never play) */
+    if (!strncmp(name, "HOOKSHOT_", 9) && strcmp(name, "HOOKSHOT_NO_UPDATE_CHECK") && strcmp(name, "HOOKSHOT_NO_AV1_NOTICE") &&
+        strcmp(name, "HOOKSHOT_OCCLUSION_OFF"))
+        return 0;
     /* (hookshot) nor the libraries SDL loads by name (SDL_VULKAN_LIBRARY, SDL_OPENGL_LIBRARY, SDL_VIDEO_GL_DRIVER,
        SDL_VIDEO_EGL_DRIVER...): a bare file name is looked for beside the game and in the current folder on Windows */
     if (!strncmp(name, "SDL_", 4) && (strstr(name, "_LIB") || strstr(name, "GL_DRIVER"))) return 0;
+    /* (hookshot) nor SDL's switches that write files where the game was started: the dummy and offscreen video drivers'
+       SAVE_FRAMES (a picture each frame) and the disk audio driver (the sound, without end, to sdlaudio.raw) */
+    if (!strncmp(name, "SDL_", 4) && strstr(name, "SAVE_FRAMES")) return 0;
+    if ((!strcmp(name, "SDL_AUDIODRIVER") || !strcmp(name, "SDL_AUDIO_DRIVER")) && strstr(value, "disk")) return 0;
     for (const char *p = name; *p; p++)
         if (!((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_')) return 0;
     /* (hookshot) the switches that name a file to write or a folder take no value here, not even a bare name: one
@@ -394,14 +424,46 @@ static int env_line_allowed(const char *name, const char *value) {
         "HOS_INPUT_SCRIPT", "HOS_SAMPLE_ALL", "HOS_WATCH", "HOOKSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
         "RX_VK_FRAMELOG", "RX_VK_HANG_DUMP", "RX_VK_DUMP", "RX_VK_DUMP_SPV", "RX_VK_DUMP_MESH_SPV", "RX_VK_DUMP_STAGES",
         "RX_VK_DUMP_FAILED", "RX_VK_IR", "RX_VK_MENU_SCRIPT", "RX_DUMP_WGSL", "RX_DUMP_SLOW_WGSL", "RX_DUMP_TICS",
-        "RX_WGSL_OVERRIDE"};
+        "RX_WGSL_OVERRIDE", "RX_SCREENSHOT", "RX_FLASH_LOG", "HOS_SCAN_DT",
+        "RX_VK_FRAME_TRACE",   /* (hookshot: hookshot_frames.csv, a line each frame without end) */
+        "HOS_CONTROL", "HOS_CONTROL_MEM"};   /* (hookshot: the control bridge's socket, a bare name in the current folder,
+                                                and its guest memory reads and writes) */
     for (size_t i = 0; i < sizeof by_name / sizeof *by_name; i++) names_file |= !strcmp(name, by_name[i]);
-    /* RX_VK_DLSS_DIR: a folder on this PC, not a share (\\server\x or //server/x) or a device path */
-    if (!strcmp(name, "RX_VK_DLSS_DIR"))
-        return !((value[0] == '\\' || value[0] == '/') && (value[1] == '\\' || value[1] == '/'));
+    /* (hookshot) and every dump switch by its family, not one by one (RX_VK_DUMP_NATIVE and RX_DUMP_IR had been left
+       out of the list above): RX_VK_DUMP*, RX_DUMP*, HOS_*_DUMP, RX_*_DUMPS. tests/test_env_file.py also looks through
+       the sources for switches whose value is a path and checks that this file cannot set them */
+    names_file |= strstr(name, "_DUMP") != NULL;
+    /* RX_VK_DLSS_DIR: a folder on this PC named in full (C:\x on Windows, /x on Linux), not a share (\\server\x or
+       //server/x) or a device path; (hookshot) not a relative one either, which NGX resolved against whatever folder
+       the game was started from, and no .. step out of the folder the value names */
+    if (!strcmp(name, "RX_VK_DLSS_DIR")) {
+#ifdef _WIN32
+        const int full = ((value[0] | 0x20) >= 'a' && (value[0] | 0x20) <= 'z' && value[1] == ':' &&
+                          (value[2] == '\\' || value[2] == '/'));
+#else
+        const int full = value[0] == '/' && value[1] != '/';
+#endif
+        if (!full) return 0;
+        for (const char *p = value; *p; p++)
+            if (p[0] == '.' && p[1] == '.' && (p == value || p[-1] == '/' || p[-1] == '\\') &&
+                (!p[2] || p[2] == '/' || p[2] == '\\'))
+                return 0;
+        return 1;
+    }
     if (names_file) return 0;
     const int drive = ((value[0] | 0x20) >= 'a' && (value[0] | 0x20) <= 'z' && value[1] == ':');
     return !strpbrk(value, "/\\") && !drive && value[0] != '~' && strcmp(value, ".") && strcmp(value, "..");
+}
+/* (hookshot) the names the shared hookshot_env.txt set (not a HOS_ENV_FILE's), each with a 0 after it and an empty name
+   at the end: host/hos_update.c starts the builder without them */
+static char env_file_names[4096];
+static size_t env_file_used;
+const char *hos_env_file_names(void) { return env_file_names; }
+static int env_file_note(const char *name) {   /* (0: no room left, and the line is not taken) */
+    const size_t k = strlen(name) + 1;
+    if (env_file_used + k >= sizeof env_file_names) return 0;
+    memcpy(env_file_names + env_file_used, name, k), env_file_used += k;
+    return 1;
 }
 static void load_hookshot_env(void) {
     char path[MAX_PATH + 32];
@@ -413,7 +475,7 @@ static void load_hookshot_env(void) {
         while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
         memcpy(path + n, "hookshot_env.txt", 17);
     }
-    FILE *f = fopen(path, "r");
+    FILE *f = hos_fopen_read(path);
     if (!f) return;
     /* The environment the game was started with wins over the file: a switch set for one launch (HOS_FULLSCREEN=0 in a
        shell, a script's RX_VK_PACE=1) beats the same name saved in the file. The file's own later lines still replace its
@@ -441,6 +503,11 @@ static void load_hookshot_env(void) {
         if (!ours && getenv(s)) {
             fprintf(stderr, "env: %s: %s left out (set in the environment, which goes first)\n",
                     other && *other ? "HOS_ENV_FILE" : "hookshot_env.txt", s);
+            continue;
+        }
+        /* (only a name the file sets: one the environment set stays in the builder's environment) */
+        if (!(other && *other) && !ours && !env_file_note(s)) {
+            fprintf(stderr, "env: hookshot_env.txt: %s left out (too many switches in the file)\n", s);
             continue;
         }
         if (!ours && from_file_n < (int)(sizeof from_file / sizeof *from_file) && strlen(s) < sizeof from_file[0])
@@ -823,8 +890,9 @@ static int oot_event_arg(Ctx *c, uint64_t arg, const char *name, uint32_t type, 
     const uint64_t name_buf = recomp_load64(c, entry + 8);
     const uint32_t name_cap = recomp_load32(c, entry + 16);
     const size_t length = strlen(name);
-    if (!name_buf || length + 1 > name_cap) return 0;
-    memcpy(A64_PTR(name_buf), name, length + 1);
+    void *to = name_buf && length + 1 <= name_cap ? hos_guest_range(name_buf, length + 1) : NULL;   /* (hookshot) */
+    if (!to) return 0;
+    memcpy(to, name, length + 1);
     if (type == 4) recomp_store8(c, entry + 152, value & 1);
     else recomp_store64(c, entry + 152, value);
     recomp_store32(c, entry, type);
@@ -907,8 +975,9 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
     {   /* the event's name: arg+6800 points at its buffer, arg+6808 the capacity */
         const uint64_t buf = recomp_load64(c, arg + 6800);
         const uint32_t cap = recomp_load32(c, arg + 6808);
-        if (!buf || strlen(event) + 1 > cap) ok = 0;
-        else memcpy(A64_PTR(buf), event, strlen(event) + 1);
+        void *to = buf && strlen(event) + 1 <= cap ? hos_guest_range(buf, strlen(event) + 1) : NULL;   /* (hookshot) */
+        if (!to) ok = 0;
+        else memcpy(to, event, strlen(event) + 1);
     }
     ok = ok && oot_event_arg(c, arg, "NextBanc", 1, strings);
     ok = ok && oot_event_arg(c, arg, "NextStartPos", 1, strings + 128);
@@ -1706,7 +1775,7 @@ static int game_main(int argc, char **argv) {
             char *slash = len ? strrchr(path, SEP) : NULL;
             if (slash) {
                 snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
-                FILE *o = fopen(path, "r");
+                FILE *o = hos_fopen_read(path);
                 if (o) {
                     char line[80];
                     while (fgets(line, sizeof line, o)) {

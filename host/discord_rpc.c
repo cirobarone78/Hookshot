@@ -16,6 +16,7 @@
    Handshake 0, Frame 1, Close 2, Ping 3, Pong 4. The handshake {"v":1,"client_id":...} is answered by a Ready frame; a
    SET_ACTIVITY frame by a frame; a Ping is echoed as a Pong. */
 #include "hos_paths.h"   /* (first: hos_game_path_a, and windows.h on Windows) */
+#include "hos_fopen_write.h"   /* (hookshot_options.ini read as a regular file only) */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -143,7 +144,7 @@ static void read_app_id(char *out, size_t cap) {
     char *slash = n ? (strrchr(path, '\\') ? strrchr(path, '\\') : strrchr(path, '/')) : NULL;
     if (slash) {
         snprintf(slash + 1, (size_t)(path + sizeof path - slash - 1), "hookshot_options.ini");
-        FILE *f = fopen(path, "r");
+        FILE *f = hos_fopen_read(path);
         if (f) {
             char line[128];
             while (fgets(line, sizeof line, f))
