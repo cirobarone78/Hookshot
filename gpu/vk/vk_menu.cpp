@@ -561,6 +561,7 @@ const char* tx_mesh_mode(int v) {
     static const char* t[] = {"Automatic", "Native", "Compute"};
     return (unsigned)v < 3 ? t[v] : t[0];
 }
+const char* tx_shader_compile(int v) { return v ? "Asynchronous" : "Wait where needed"; }   // (opts.async_pipelines)
 const char* tx_preset(int v) {
     static const char* t[] = {"Custom", "Minimum (4GB)", "Low (6GB)", "Balanced (8GB)", "High (12GB)", "Ultra (16GB+)"};
     return t[std::min(std::max(v, 0), 5)];
@@ -689,6 +690,11 @@ MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA car
 MENU_HINTS(hn_mesh_mode, 0, "The GPU's own mesh shaders where it has them, the compute path where it has not.",
            "The GPU's own mesh shaders for every draw. A GPU without them still uses the compute path.",
            "The compute path on every GPU: try it if your card crashes or leaves objects out. Usually a little slower.")
+MENU_HINTS(hn_shader_compile, 0,
+           "Left out for a frame or two where the last frame's picture fills in; into a new or cleared picture it waits for a "
+           "quick build.",
+           "Never waits, so no first-time stutter. An effect can be missing for a few frames, and one drawn only once can look "
+           "wrong until it is drawn again.")
 MENU_HINTS(hn_fps, 0, nullptr, "The frame rate. With frame generation on, the game's own rate too.",
            "And the game's frame time, with its 1% low: the rate of its slowest 1% of frames over the last 10 seconds.",
            "And a graph of the last 4 seconds' frame times, with a line at the Game frame rate cap's.",
@@ -775,6 +781,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "Ultrawide menus", &opts.wide_menus, 0, 2, 1, tx_wide_menus,
      "With Ultrawide: the pause, item and map menus, and what shows beside them. Loading screens and pre-rendered movies, "
      "which draw no world either, get the same sides. Changes at once.", hn_wide_menus},
+    {TAB_GRAPHICS, "Shader compile", &opts.async_pipelines, 0, 1, 1, tx_shader_compile,
+     "What a draw does the first time its shader or pipeline is still being built. Changes at once.", hn_shader_compile, false,
+     true},
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
      "restart.", hn_robust, true},

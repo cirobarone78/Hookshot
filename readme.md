@@ -302,6 +302,7 @@ HDR peak brightness show only while HDR is on.
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
 | | Profile | Docked, Handheld (after a restart) | Docked |
 | | Ultrawide | Off (16:9), Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | Off (16:9) |
+| | Shader compile | Wait where needed, Asynchronous | Wait where needed |
 | | Robust buffers | Auto, Off, On (after a restart) | Auto |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
@@ -395,6 +396,11 @@ HDR peak brightness show only while HDR is on.
   Off. On waits for each refresh (FIFO): no tearing, at most the display's rate. Off shows each frame at once and can
   tear (where the driver cannot, it is Auto). It changes at once. `RX_VK_FIFO=1` (On) or `RX_VK_IMMEDIATE=1` (Off) chooses
   for one run.
+- **Shader compile** is what a draw does the first time its shader or pipeline is still being built. With **Wait where
+  needed**, the default, a draw whose picture the last frame can fill in is left out for a frame or two, and one into a new picture
+  waits for a quick build without the driver's optimizer (the full build replaces it shortly after); so does one into a
+  picture cleared that frame. **Asynchronous** never waits, so effects seen for the first time do not stutter, but one can be missing for a few frames, and one drawn
+  only once can look wrong until it is drawn again.
 - **Robust buffers:** a read past a buffer's end is dropped instead of stopping the GPU. Auto is on, on every card; Off
   can be faster on some NVIDIA cards.
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed

@@ -1,5 +1,5 @@
-// The worker threads (vk_jobs.h). As many as a third of the hardware threads (2 to 4): the game itself runs six
-// virtual cores, and the replay thread is one of the busiest.
+// The worker threads (vk_jobs.h). As many as a third of the hardware threads (2 to 4), 6 with 16 or more: the game itself
+// runs six virtual cores, and the replay thread is one of the busiest.
 #include <algorithm>
 #include <atomic>
 #include <exception>
@@ -73,7 +73,12 @@ void worker() {
 }
 
 void start() {
-    const unsigned n = std::clamp(std::thread::hardware_concurrency() / 3, 2u, 4u);
+    // (with 16 hardware threads or more, 6: an area's first pipelines are built sooner, and ten threads are still left for the
+    // game's six virtual cores, the replay and the presentation. Below normal priority, the workers take only idle ones.
+    // RX_VK_WORKERS=<n>: n, 1 to 16)
+    const unsigned hw = std::thread::hardware_concurrency();
+    unsigned n = hw >= 16 ? 6u : std::clamp(hw / 3, 2u, 4u);
+    if (const char* e = getenv("RX_VK_WORKERS")) n = (unsigned)std::clamp(atoi(e), 1, 16);
     for (unsigned i = 0; i < n; i++) std::thread(worker).detach();
     started = true;
     logf("vk: %u background workers (shader translation, pipelines)", n);

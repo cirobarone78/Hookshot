@@ -74,6 +74,7 @@ struct Texture {
     uint64_t upload_seg = 0;     // that recorded it: one before it in the stream uploads it again)
     uint64_t last_frame = 0;  // the present it was last used in (the cache's age)
     uint64_t first_render_frame = 0;   // the present it was first rendered into in (0: never)
+    uint64_t cleared_frame = 0;   // (hookshot) the present it was last cleared whole in: no earlier picture left (targets_persistent)
     uint64_t last_value = 0;  // the timeline value of the last submission that used it
     uint64_t bytes = 0;       // device memory it holds (the texels', or a sparse image's chunks)
     uint64_t pad = 0;         // (what the allocator gave it beyond that: padding and alignment; counted in the budget with bytes)
