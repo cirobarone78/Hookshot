@@ -76,6 +76,22 @@ const MkwVkHost* host;
 int64_t prof_ns[PROF_COUNT];
 Device dev;
 PFN_vkGetInstanceProcAddr instance_proc() { return vkx::instance_proc_addr(); }
+/// (hookshot) The driver as it names itself (VkPhysicalDeviceDriverProperties: "NVIDIA 580.95.05", "radv Mesa 25.2.4"), else its
+/// version number: the log's "vk: driver:" line and the menu's Save my pipeline list (vk_menu.cpp)
+std::string driver_text() {
+    VkPhysicalDeviceDriverProperties drv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    p2.pNext = &drv;
+    if (dev.physical) vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+    std::string name(drv.driverName, strnlen(drv.driverName, sizeof drv.driverName)),
+        info(drv.driverInfo, strnlen(drv.driverInfo, sizeof drv.driverInfo));
+    if (name.empty() && info.empty()) {
+        char b[32];
+        snprintf(b, sizeof b, "%#x", dev.props.driverVersion);
+        return b;
+    }
+    return info.empty() ? name : name.empty() ? info : name + " " + info;
+}
 
 /// (hookshot) Milliseconds on the steady clock: the log's last line and the preparation's watchdog
 int64_t steady_ms() {
@@ -480,8 +496,11 @@ bool create_device() {
 #ifdef _WIN32
     // Navi 22 can time out on task + mesh draws in the AMD Windows driver (issue 996), and so can Navi 21: on an RX 6800 XT
     // (driver 0x800161) the native path lost the device within minutes at Hyrule Castle's entrance, while the fallback played
-    // 25 minutes there with none. Navi 21 is 0x73bf (RX 6800, 6800 XT, 6900 XT); Navi 22 is 0x73df (RX 6700 XT)
-    task_mesh_fallback = dev.props.vendorID == 0x1002 && (dev.props.deviceID == 0x73bf || dev.props.deviceID == 0x73df);
+    // 25 minutes there with none. Navi 21 is 0x73bf (RX 6800, 6800 XT, 6900 XT), 0x73af (RX 6900 XT, XTXH boards) and 0x73a5
+    // (RX 6950 XT): the same chip on the same driver, not tested on their own. Navi 22 is 0x73df (RX 6700 XT)
+    task_mesh_fallback = dev.props.vendorID == 0x1002 &&
+                         (dev.props.deviceID == 0x73bf || dev.props.deviceID == 0x73af || dev.props.deviceID == 0x73a5 ||
+                          dev.props.deviceID == 0x73df);
 #endif
     if (mesh_mode == 1) task_mesh_fallback = false;   // (Native: the card's own mesh shaders for every draw)
     if (const char* e = getenv("RX_VK_TASK_MESH_FALLBACK")) task_mesh_fallback = atoi(e) != 0;
@@ -1333,17 +1352,33 @@ __attribute__((visibility("default")))
 #endif
 const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
     using namespace mkwvk;
-    if (!h || h->version != MKWVK_API_VERSION) return nullptr;
-    host = h;
-    if (!load_global()) {
-        logf("vk: vulkan-1.dll not found");
+    if (!h) return nullptr;
+    if (h->version != MKWVK_API_VERSION) {
+        std::fprintf(stderr, "vk: host version mismatch: host has %u, expected %u\n", h->version, MKWVK_API_VERSION);
         return nullptr;
     }
-    if (!create_instance() || !pick_device() || !create_device()) return nullptr;
+    host = h;
+    if (!load_global()) {
+        logf("vk: load_global failed (Vulkan loader library or vkCreateInstance missing)");
+        return nullptr;
+    }
+    if (!create_instance()) {
+        logf("vk: create_instance failed");
+        return nullptr;
+    }
+    if (!pick_device()) {
+        logf("vk: pick_device failed");
+        return nullptr;
+    }
+    if (!create_device()) {
+        logf("vk: create_device failed");
+        return nullptr;
+    }
     logf("vk: %s, Vulkan %u.%u, driver %#x; mesh shaders %s, host memory import %s, pipeline libraries %s",
          dev.props.deviceName, VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion),
          dev.props.driverVersion, dev.mesh_shader ? "yes" : "no", dev.external_memory_host ? "yes" : "no",
          dev.graphics_pipeline_library ? "yes" : "no");
+    logf("vk: driver: %s", driver_text().c_str());   // (the builders' Save my pipeline list reads it: nx2/pipeline_share.py)
     if (!dev.mesh_shader && !dev.mesh_fallback && !env_on("RX_VK_NO_MESH_WARNING")) {
         // (the game draws its foliage, grass and many effects with mesh shaders: without them those draws are left out and the
         // picture is broken (an RX 580's "static"-like scenes, 2026-11-08). Said once, on its own thread, and the game goes on.)
