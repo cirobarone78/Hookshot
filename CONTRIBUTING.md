@@ -132,6 +132,9 @@ workload, or build it from a developer prompt:
 dotnet build builder/HookshotBuilder.sln
 ```
 
+For a Windows installation that keeps its own state on an external SSD, see
+[portable Builder setup and relocation](docs/windows-portable-builder.md).
+
 You only need Visual Studio for the builder itself. The game build uses llvm-mingw.
 
 The Windows app's **Build workers** choice applies to builds started from that window. **Automatic** keeps the existing
@@ -159,6 +162,9 @@ compilers that always run (up to 4 on Windows) still run under a smaller number.
 
 Use a separate `--work` folder or `OOT_WORK` if you keep more than one dump around. The lifted C and every build are
 local artifacts; they are never committed.
+
+Not measuring speed? [A faster build for development](docs/development.md#a-faster-build-for-development) compiles the
+hot code at `-O1`, about a quarter less compile time. Never use it for fps, timings or a release.
 
 ## Testing
 
@@ -309,9 +315,8 @@ NVIDIA's DLSS SDK is not one of them: it is never in the repository, and nothing
 ## Where to talk
 
 - **Issues:** [use the forms](https://github.com/NotRexed/Hookshot/issues/new/choose).
-- **Discord:** https://discord.gg/EajnD2AJD9. Use the `hookshot-discussion` channel; the server is mainly for
-  web ports, and that channel is where Hookshot talk belongs.
-- **Newest release:** https://github.com/NotRexed/Hookshot/releases/latest.
+- **Discord:** https://discord.gg/rexed. Use the `dev-work` channel for prs.
+- **Newest release:** https://github.com/NotRexed/Hookshot/releases/latest
 
 Thanks for testing, reporting and sending fixes. Every report from a different GPU and every area played further than
 before moves the port forward.

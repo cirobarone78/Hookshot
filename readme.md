@@ -34,7 +34,7 @@ the console's system software is reimplemented, and the Switch 2 graphics are re
 > Some users report the file in releases to be a Trojan - it is not. Feel free to run it through any antivirus software
 
 
-Discord: https://discord.gg/DVQQJphbBf
+Discord: https://discord.gg/rexed
 <br>
 
 > [!IMPORTANT]
@@ -87,6 +87,9 @@ you start the game from its launcher, which also updates it.
 - An internet connection for the download. Nothing else to install: the builder brings its own compiler and tools.
 
 ### On Windows
+
+For a portable install on an external SSD, run the downloaded setup with `--portable`; see
+[Portable Hookshot Builder](docs/windows-portable-builder.md) for folder, move and repair behavior.
 
 1. Open the [latest release](https://github.com/NotRexed/Hookshot/releases/latest) and download `HookshotBuilder.exe`.
 2. Run it. It downloads the rest of Hookshot Builder (about 500 MB), checks it, and opens it.
@@ -214,9 +217,9 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
 | Linux: the game does not start or the picture is broken | The game needs a Vulkan 1.3 driver with mesh shaders. Check with `vulkaninfo \| grep mesh`: it should list `VK_EXT_mesh_shader`. Update Mesa or the NVIDIA driver |
 | Steam Deck: the game freezes and closes in Kokiri Forest or the Great Deku Tree (`gfx_0.0.0 timeout` in `journalctl -k`) | `RX_VK_MESH_NOCULL=2c56dc1006942f74` in `hookshot_env.txt` gets past it with every model drawn (the culling pass that runs for seconds is turned off). `RX_VK_SKIP_CODE=2c56dc1006942f74` also gets past it, but the models those draws make go missing (see the [development guide](docs/development.md#switches-for-testing-and-debugging), [#817](https://github.com/NotRexed/Hookshot/issues/817)) |
 | "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, or add `%LOCALAPPDATA%\HookshotBuilder` to its exclusions, then press **Repair** |
-| Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again |
+| Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again. You can help remove it for everyone: [send your pipeline list](#send-your-pipeline-list) |
 | Windows, NVIDIA: stutter every start in places you have seen, after the shaders were prepared | The driver's shader cache is too small to keep them all (the first start builds about 2 GB of pipelines into it). In the NVIDIA Control Panel, Manage 3D settings, set **Shader Cache Size** to **Unlimited** (or 10 GB). On Linux the game raises the driver's limit itself |
-| The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all |
+| The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all, and an update keeps the one you set there |
 
 If the problem continues, [report it](https://github.com/NotRexed/Hookshot/issues/new/choose) with the version, where
 you were in the game, your graphics card, `hookshot_log.txt` and a screenshot or video. Never send game files.
@@ -251,10 +254,13 @@ use and cause stalls when the card runs out of headroom. To undo it, turn the ro
 
 ## In-game menu
 
-By default, press <kbd>Insert</kbd> or <kbd>F1</kbd> in game. On a controller, press Home or Select and Start together; on
-a DualShock 4 or DualSense, clicking the touchpad does the same as <kbd>F1</kbd>.
-The same keys close it, and so does <kbd>Esc</kbd>. <kbd>F1</kbd> always works; **Controls → Menu shortcut** can leave
-<kbd>Insert</kbd> free for another overlay. The menu has five tabs, Graphics, Audio, Gameplay, Controls and Debug:
+By default, press <kbd>Insert</kbd>, <kbd>F1</kbd> or <kbd>Esc</kbd> in game. On a controller, press Home or Select and
+Start together; on a DualShock 4 or DualSense, clicking the touchpad does the same as <kbd>F1</kbd>.
+The same keys close it; with every Menu shortcut, <kbd>Esc</kbd> goes back a page or closes the open menu.
+<kbd>F1</kbd> always works. **Controls → Menu shortcut** can leave <kbd>Insert</kbd> free for another overlay (F1 only).
+With Insert or F1, or with F1 only, <kbd>Esc</kbd> does not open the menu: it only lets the mouse go. Options saved by
+an older version on Insert or F1, the default then, move to Insert, F1 or Esc; F1 only stays.
+The menu has five tabs, Graphics, Audio, Gameplay, Controls and Debug:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
 a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd>
 change it (<kbd>Enter</kbd> changes it too); beside the rows, the help says what the row is and, on a line of its own,
@@ -277,7 +283,7 @@ choices and starts the game again, so progress since your last save is lost.
 
 A row for something this PC cannot use is not shown: NVIDIA Reflex and AMD Anti-Lag 2 without a GPU and driver that
 have them, the DLSS model where DLSS does not run. HDR paper white and
-HDR peak brightness show only while HDR is on.
+HDR peak brightness show only while HDR is on, the HDR tone mapper only with HDR set to Native.
 
 | Tab | Option | Choices | Default |
 |---|---|---|---|
@@ -290,6 +296,7 @@ HDR peak brightness show only while HDR is on.
 | | HDR | Off, Expanded, Native (the game's) | Off |
 | | HDR paper white | 80 to 400 nits (while HDR is on) | 200 nits |
 | | HDR peak brightness | 400 to 4000 nits (while HDR is on) | 1000 nits |
+| | HDR tone mapper | Vanilla (the game's curve), PsychoV35 (RenoDX's; with HDR set to Native. DLSS, FSR and TAAU do not take its scene yet: the game's own upscale runs) | Vanilla |
 | | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS, Uncapped (after a restart) | 60 FPS |
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | AMD Anti-Lag 2 | Off, On (shown only on AMD GPUs with `VK_AMD_anti_lag`) | Off |
@@ -301,7 +308,7 @@ HDR peak brightness show only while HDR is on.
 | | Sharpness | 0 to 100%, in steps of 10 | 0% |
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
 | | Profile | Docked, Handheld (after a restart) | Docked |
-| | Ultrawide | Off (16:9), Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | Off (16:9) |
+| | Aspect ratio | 16:9, Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | Monitor's shape |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
@@ -325,7 +332,7 @@ HDR peak brightness show only while HDR is on.
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face, Custom | Nintendo (Def) |
 | | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
 | | Controls | Opens the Controls page | |
-| | Menu shortcut | Insert or F1, F1 only | Insert or F1 |
+| | Menu shortcut | Insert or F1; F1 only; Insert, F1 or Esc | Insert, F1 or Esc |
 | Debug | Debug tools | Off, On (the tools below it while on) | Off |
 | | Developer: Descriptor reuse | Off, On (after a restart) | On |
 | | Developer: Sampler cache | Off, On (after a restart) | Off |
@@ -366,14 +373,16 @@ HDR peak brightness show only while HDR is on.
 - **Output resolution:** its rows below show the sizes for the output you chose. Docked only. On a 1920x1080 display,
   the 1920x1080 option keeps HUD and text sharp when the game fills the screen by mapping them pixel for pixel. At
   3840x2160 the game's render targets get a bigger GPU pool, so a full-size 3D fits. On a 5120x1440 (32:9) ultrawide
-  monitor, 5120x1440 gives a native frame with a sharp HUD. Set **Ultrawide** to Monitor's shape with it: it widens the
-  cameras to the frame's shape and keeps the HUD and movies in the middle 16:9; without it, the game's 16:9 picture is
-  stretched across the 32:9 output, sharp but wide. For a size the menu does not offer (3440x1440, 2560x1080, ...), set
+  monitor, 5120x1440 gives a native frame with a sharp HUD. The **Aspect ratio**'s default, Monitor's shape, widens the
+  cameras to the frame's shape and keeps the HUD and movies in the middle 16:9; at 16:9, the game's 16:9 picture is
+  stretched across the 32:9 output, sharp but wide. Options saved by an older version at 16:9, the default then, move to
+  Monitor's shape on a screen narrower than 16:9 (16:10 such as the Steam Deck's, or 4:3), where 16:9 only adds bars above
+  and below; an ultrawide keeps its 16:9. For a size the menu does not offer (3440x1440, 2560x1080, ...), set
   `output_res=<width>x<height>` in `hookshot_options.ini`: each side a multiple of 8, at least 640x360, at most 5120x2880's
   pixels, and between 5:4 and 48:9 in shape; anything else uses the game's 2048x1152. The menu then offers it as its own
-  choice. With **Ultrawide** on, a picture wider than 16:9 is kept to 5120x2160's pixels, so above that a wide size is not a
-  native frame. A custom output wider than 32:9 also sets the camera shape, even when the OS reports a single
-  16:9 primary monitor. For three 16:9 monitors, use `5760x1080` or `7680x1440` and a window or logical display
+  choice. With the **Aspect ratio** at Monitor's shape, a picture wider than 16:9 is kept to 5120x2160's pixels, so above
+  that a wide size is not a native frame. A custom output wider than 32:9 also sets the camera shape, even when the OS
+  reports a single 16:9 primary monitor. For three 16:9 monitors, use `5760x1080` or `7680x1440` and a window or logical display
   that spans all three. Both render at full size: 7680x1440 has 5120x2160's pixels, the most a wide picture takes.
   For one run, set `HOS_OUTPUT_RES` to a size, such as `HOS_OUTPUT_RES=3840x2160`.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest
@@ -456,6 +465,7 @@ HDR peak brightness show only while HDR is on.
   creeps. `HOS_MOTION_DEBUG=1` (in `hookshot_env.txt`) logs what the game gets twice a second.
 - **Layout preset:** Nintendo has A on the right face button, Xbox / PC and Swap Face put A on the bottom one. Changing
   a button yourself sets it to Custom.
+- **Save my pipeline list** (Debug tab, under Developer): see [Send your pipeline list](#send-your-pipeline-list).
 
 ### Controls
 
@@ -649,9 +659,11 @@ interpolation can make the frame in between with `RX_VK_FSR_FG=1` (opt-in: the g
 and FSR 3.1 has no HUD-less colour to keep it still, so the HUD smears; by default the renderer's own makes it). Both are AMD's FidelityFX
 SDK 1.1.4 shaders (`third_party/fidelityfx-sdk`, MIT), compiled into the renderer: no AMD runtime or DLL is needed, and
 the row offers FSR 3.1 on any Vulkan 1.3 GPU with push descriptors, extended storage image formats and storage writes
-without a format (`vk: fsr3: ... can run on this GPU` in the log). Its inputs are the scene's colour, its depth, motion
-from the camera, and the same camera jitter DLSS uses (`RX_VK_FSR_JITTER=0` turns it off); things that move by
-themselves can trail for now.
+without a format (`vk: fsr3: ... can run on this GPU` in the log). It upscales on the same inputs as DLSS and FSR 4: the
+scene's colour, its depth, motion from the camera with the skinned characters' own drawn over it (Link, his shield and
+the people around him keep their outline while they move), and the same camera jitter (`RX_VK_FSR_JITTER=0` turns it
+off). Things that move by themselves and are not skinned (Navi's body, props) can still trail. `RX_VK_FSR3_CHAIN=0` gives
+it the camera's motion alone, as before.
 
 </details>
 
@@ -677,9 +689,11 @@ license. Never share a game folder built with them, and do not post builds made 
   sure no other folder has a newer one). Never copy NGX's core, `_nvngx.dll`, beside the game: it comes with NVIDIA's
   driver.
 - **Linux, the Hookshot Builder (the AppImage):** the same tick as on Windows, and nothing else to do: no variable is
-  passed to the AppImage and no file is copied by hand. The build downloads the SDK into
-  `$XDG_DATA_HOME/hookshot/builder/ngx-sdk` (`~/.local/share/hookshot/builder/ngx-sdk`), builds the game with it and
-  puts DLSS's runtime, `libnvidia-ngx-dlss.so.<version>`, in the game folder's `ngx` folder.
+  passed to the AppImage and no file is copied by hand. The build downloads the SDK into the builder's cache folder,
+  `$XDG_CACHE_HOME/hookshot-builder/ngx-sdk` (`~/.cache/hookshot-builder/ngx-sdk`), builds the game with it and puts
+  DLSS's runtime, `libnvidia-ngx-dlss.so.<version>`, in the game folder's `ngx` folder. The builder's settings
+  (`~/.config/hookshot/builder.ini`) remember that you accepted NVIDIA's license, so an update keeps DLSS even after the
+  cache was emptied: it downloads the SDK again.
 - **Linux, a build from source:** `scripts/linux/ngx-sdk.sh <sdk folder>` (it runs `scripts/ngx_sdk.py --platform
   linux`) asks you to accept NVIDIA's license and fetches `libnvsdk_ngx.a` for the build and
   `libnvidia-ngx-dlss.so.<version>`, DLSS's runtime. Then run the build with `HOOKSHOT_NGX_SDK=<sdk folder>` set:
@@ -821,6 +835,22 @@ More detail is in the [development guide](docs/development.md) and the [design n
 
 Testing on other graphics cards and reporting the result already helps a lot, and so does playing further into the
 game than anyone has yet.
+
+### Send your pipeline list
+
+The first time the game meets a pipeline it builds it on the spot, which stutters. Releases build a list of known
+pipelines before the title, and every player's play adds to it. To send yours:
+
+1. In the game, open the menu (Insert or F1), go to the **Debug** tab and choose **Save my pipeline list** (under Developer). Or, in
+   Hookshot Builder's launcher page for the game folder, press **Save my pipeline list**.
+2. It saves `hookshot-pipelines-<date>.zip` in your Downloads folder, copies a filled-in report to the clipboard and
+   opens the [Submit your pipelines](https://github.com/NotRexed/Hookshot/issues/2034) issue in your browser.
+3. Attach the zip to a comment there, paste the report and fill in where you played.
+
+The zip holds only `hookshot_pipeline_states.bin` (shader hashes, formats and draw state: no game code, game data or
+personal info) and the report (the version, OS, GPU and driver, output and render resolution, upscaler, frame
+generation, HDR and the mods the game loaded). Nothing is uploaded for you. If the list is missing or damaged, it says
+so and saves nothing. In a run without a window (`HOS_HEADLESS`) the menu saves the zip but opens nothing.
 
 Bigger ways to help:
 

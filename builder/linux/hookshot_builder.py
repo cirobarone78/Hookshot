@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.join(ROOT, "nx2"))
 sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
 import linux_update  # noqa: E402  (the release check and the part download)
 import make_game  # noqa: E402  (LANGUAGES, BUILD_ID)
+import pipeline_share  # noqa: E402  (Save my pipeline list: the zip for the "Submit your pipelines" issue)
 import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
 
 CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hookshot", "builder.ini")
@@ -43,13 +44,52 @@ DLSS_LICENSE = (
 )
 
 
+def cache_dir():
+    """The builder's own folder on Linux, as make_game.py's work folder: $XDG_CACHE_HOME/hookshot-builder (~/.cache/...)"""
+    return os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "hookshot-builder")
+
+
 def ngx_sdk_dir():
-    """Where NVIDIA's DLSS SDK goes when the player ticks NVIDIA DLSS: beside the builder's versions, kept across updates."""
+    """Where NVIDIA's DLSS SDK goes when the player ticks NVIDIA DLSS: the builder's cache folder, as on Windows its own folder
+    (%LOCALAPPDATA%\\HookshotBuilder\\ngx-sdk). A download, fetched again by the next build with DLSS when the cache was emptied;
+    whether NVIDIA's license was accepted is kept in the builder's settings (license_accepted), not in it"""
+    return os.path.join(cache_dir(), "ngx-sdk")
+
+
+def old_ngx_sdk_dir():
+    """Where the SDK went before: the game's data folder ($XDG_DATA_HOME/hookshot/builder/ngx-sdk), beside the builder's versions"""
     return os.path.join(linux_update.data_root(), "ngx-sdk")
 
 
+def license_accepted(cfg=None):
+    """Whether the player accepted NVIDIA's license here: the builder's settings say so (nvidia_license=1), or the SDK it was
+    accepted for is still where builders before the record kept it"""
+    cfg = load_config() if cfg is None else cfg
+    return cfg.get("nvidia_license") == "1" or os.path.isfile(os.path.join(old_ngx_sdk_dir(), "LICENSE.txt"))
+
+
+def move_old_ngx_sdk():
+    """(once) The SDK a builder before kept in the game's data folder moved to the cache folder, and the license it was accepted
+    under recorded in the settings. When it cannot move it is left: the next build with DLSS downloads it again"""
+    old, new = old_ngx_sdk_dir(), ngx_sdk_dir()
+    if not os.path.isfile(os.path.join(old, "LICENSE.txt")):
+        return
+    cfg = load_config()
+    if cfg.get("nvidia_license") != "1":
+        cfg["nvidia_license"] = "1"
+        save_config(cfg)
+    if os.path.exists(new):
+        shutil.rmtree(old, ignore_errors=True)
+        return
+    try:
+        os.makedirs(os.path.dirname(new), exist_ok=True)
+        shutil.move(old, new)
+    except OSError:
+        pass
+
+
 def folder_has_dlss(folder):
-    """Whether a game folder was built with NVIDIA DLSS (its runtime in ngx/, and NVIDIA's license in ngx-sdk)."""
+    """Whether a game folder was built with NVIDIA DLSS: its runtime in ngx/, and NVIDIA's license accepted here."""
     if not folder:
         return False
     ngx_dir = os.path.join(os.path.expanduser(folder), "ngx")
@@ -57,7 +97,7 @@ def folder_has_dlss(folder):
         has_runtime = any(name.startswith("libnvidia-ngx-dlss.so") for name in os.listdir(ngx_dir))
     except OSError:
         return False
-    return has_runtime and os.path.isfile(os.path.join(ngx_sdk_dir(), "LICENSE.txt"))
+    return has_runtime and license_accepted()
 
 
 def dlss_args(dlss):
@@ -131,6 +171,36 @@ def play(folder):
             subprocess.Popen(command, **dict(options, stdin=reading, stderr=writing))
     except OSError:
         subprocess.Popen([exe], **options)
+
+
+def share_pipeline_list(folder, out_dir=None, copy=None, open_path=None):
+    """Save my pipeline list (as the game's menu does it, nx2/pipeline_share.py): the game folder's pipeline list and the issue's
+    template, filled in, zipped into the Downloads folder; then the template to copy, the folder and the issue to open. Nothing is
+    uploaded. What happened, in the player's words"""
+    opener = open_path or (lambda p: subprocess.Popen(["xdg-open", p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+    try:
+        path, text, n = pipeline_share.make_zip(folder, out_dir)
+    except pipeline_share.ShareError as e:
+        return str(e)
+    except OSError as e:
+        return "The zip could not be written: %s" % e
+    copied = False
+    if copy:
+        try:
+            copy(text)
+            copied = True
+        except Exception:   # (no clipboard: the template is in the zip too)
+            pass
+    opened = True
+    for target in (os.path.dirname(path), pipeline_share.ISSUE_URL):
+        try:
+            opener(target)
+        except OSError:
+            opened = False
+    return ("Saved %s (%d pipelines) in %s. %s%s the zip to a comment, then paste the report and say where you played." %
+            (os.path.basename(path), n, os.path.dirname(path), "The report is copied. " if copied else "The report is in the zip. ",
+             "Issue #%d is open in your browser: attach" % pipeline_share.ISSUE if opened else
+             "Open %s and attach" % pipeline_share.ISSUE_URL))
 
 
 def desktop_exec(path):
@@ -343,8 +413,10 @@ class Builder(tk.Tk):
         self.apply_scale()
         self.apply_theme()
         self.minsize(self.px(760), self.px(520))
+        move_old_ngx_sdk()   # (before the settings are read: it may record the license in them)
         self.cfg = load_config()
         self.proc = None
+        self.stop_update = threading.Event()   # (Cancel while an update downloads: its thread ends the download)
         self.lines = queue.Queue()
         self.started = 0.0
         self.launch_folder = launch
@@ -695,8 +767,11 @@ class Builder(tk.Tk):
         ttk.Label(f, text="Pick your game files and where the game goes. Hookshot does the rest, once.", style="Sub.TLabel",
                   wraplength=px(800)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
         if game_ready(self.cfg.get("out")):
-            ttk.Button(f, text="Play the game built in %s" % self.cfg["out"], command=lambda: self.play_and_close(self.cfg["out"])).grid(
-                row=2, column=0, columnspan=3, sticky="w", pady=(px(16), 0))
+            played = ttk.Frame(f)
+            played.grid(row=2, column=0, columnspan=3, sticky="w", pady=(px(16), 0))
+            ttk.Button(played, text="Play the game built in %s" % self.cfg["out"],
+                       command=lambda: self.play_and_close(self.cfg["out"])).pack(side="left")
+            self.share_row(played, self.cfg["out"], wrap=px(360)).pack(side="left", padx=(px(12), 0))
         self.section(f, "Game files", 3, columnspan=3)
         kinds = ttk.Frame(f, style="Card.TFrame", padding=px(5))
         kinds.grid(row=4, column=0, columnspan=3, sticky="we")
@@ -763,6 +838,32 @@ class Builder(tk.Tk):
         self.update_space()
         self.apply_mode()
 
+    def share_row(self, parent, folder, wrap=None):
+        """Save my pipeline list (share_pipeline_list), and under it what it did"""
+        box = ttk.Frame(parent)
+        said = tk.StringVar(value="")
+        note = ttk.Label(box, textvariable=said, style="Small.TLabel", wraplength=wrap or self.px(600), justify="center")
+
+        def save():
+            button.state(["disabled"])   # (one save at a time)
+            said.set("Saving...")
+            note.pack(pady=(self.px(2), 0))
+            self.update_idletasks()
+            try:
+                said.set(share_pipeline_list(folder, copy=self.copy_text))
+            finally:
+                button.state(["!disabled"])
+
+        button = ttk.Button(box, text="Save my pipeline list (helps remove stutter)", style="Link.TButton", cursor="hand2",
+                            command=save)
+        button.pack()
+        return box
+
+    def copy_text(self, text):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update()   # (the clipboard is the window's: kept while the builder is open)
+
     def path_row(self, f, row, label, var, browse, button="Browse…"):
         if label:
             ttk.Label(f, text=label, style="Small.TLabel").grid(row=row, column=0, sticky="w", padx=(0, self.px(12)))
@@ -803,6 +904,8 @@ class Builder(tk.Tk):
             self.dlss.set(False)
         else:
             self.dlss_toggled = True
+            if self.dlss.get():
+                self.cfg["nvidia_license"] = "1"   # (kept apart from the SDK, which is in the cache: folder_has_dlss)
         self.cfg["dlss"] = "1" if self.dlss.get() else "0"
         save_config(self.cfg)
         self.apply_mode()
@@ -927,6 +1030,7 @@ class Builder(tk.Tk):
                    command=lambda: self.play_and_close(folder)).pack(side="right", padx=px(4))
         ttk.Button(f, text="Open the game folder", style="Link.TButton", cursor="hand2",
                    command=lambda: subprocess.Popen(["xdg-open", folder])).pack(pady=(px(22), 0))
+        self.share_row(f, folder).pack(pady=(px(4), 0))
         self.lookup_latest()
 
     def track_id(self):
@@ -966,6 +1070,8 @@ class Builder(tk.Tk):
         # (a game older than this builder is built again with it: nothing to download, and GitHub need not answer. So is one
         # from a builder that is not an older release, e.g. from the Actions tab: issue 902)
         fetched = self.fetched or bool(folder and self.tools and target == self.tools)
+        stop = self.stop_update
+        stop.clear()
 
         def run():
             try:
@@ -978,7 +1084,8 @@ class Builder(tk.Tk):
                         raise RuntimeError("These tools are a source checkout, so they cannot download a release. Start the AppImage to update.")
                     # (another track's build, or a Track switch: that version's own list)
                     named = target if target and (self.switching() or linux_update.track_of(target) != "release") else None
-                    manifest = linux_update.startup_manifest(root, tag=named)
+                    manifest = linux_update.startup_manifest(root, get=lambda url: linux_update.fetch_bytes(url, 30, stop),
+                                                             tag=named)
                     # The API and its download list can disagree right after a release. Check even when the list
                     # names the running tools: otherwise a newer target silently rebuilds with those older tools.
                     if target and manifest.tag != target:
@@ -986,7 +1093,8 @@ class Builder(tk.Tk):
                                            "Try Update again in a few minutes." % (manifest.tag, target))
                     if manifest.tag != linux_update.tools_tag(root):
                         source =linux_update.read_manifest(root)
-                        apprun = linux_update.install(manifest, root, source, note=lambda message: self.lines.put(("note", message)))
+                        apprun = linux_update.install(manifest, root, source, note=lambda message: self.lines.put(("note", message)),
+                                                      stop=stop)
                         for name in ("APPDIR", "APPIMAGE", "ARGV0", "OWD", "LD_LIBRARY_PATH"):
                             os.environ.pop(name, None)
                         args = [apprun]
@@ -995,6 +1103,8 @@ class Builder(tk.Tk):
                             if downgrade_from:
                                 args += ["--allow-downgrade-from", downgrade_from]
                         os.execv(apprun, args)
+                if stop.is_set():
+                    raise linux_update.Cancelled()
                 self.lines.put(("do-build", folder or ""))
             except Exception as error:
                 self.lines.put(("update-error", str(error)))
@@ -1151,10 +1261,13 @@ class Builder(tk.Tk):
                     self.latest = v or None
                     self.apply_mode()
                 elif kind == "note":
-                    if hasattr(self, "stage_text"):
+                    if hasattr(self, "stage_text") and not self.stop_update.is_set():
                         self.stage_text.set(v)
                 elif kind == "do-build":
-                    self.start_make_update(v)
+                    if self.stop_update.is_set():   # (Cancel after the thread's last look at it: no make_game.py)
+                        self.lines.put(("update-error", str(linux_update.Cancelled())))
+                    else:
+                        self.start_make_update(v)
                 elif kind == "update-error":
                     if hasattr(self, "stage_text"):
                         self.stage_text.set(v + " Your game folder is unchanged.")
@@ -1267,6 +1380,9 @@ class Builder(tk.Tk):
         if self.proc and self.proc.poll() is None:
             os.killpg(self.proc.pid, signal.SIGTERM)
             self.error = "Build cancelled. You can start again from the same folder."
+        elif self.proc is None:   # (an update still downloading: there is no make_game.py yet, its thread ends the download)
+            self.stop_update.set()
+            self.stage_text.set("Stopping the update")
 
     def play_and_close(self, folder):
         play(folder)
