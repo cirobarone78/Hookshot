@@ -431,7 +431,7 @@ public partial class MainWindow : Window
         PrepareTick.IsChecked = !s.PrepareLater;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
-        dlssLicense = s.DlssLicense;
+        dlssLicenseAccepted = s.DlssLicense;
         FsrTick.IsChecked = s.Fsr;
         fsrLicense = s.FsrLicense;
         MemoryBox.SelectedItem = BuildMemory.Saved(MemoryBox.ItemsSource.Cast<object>(), s.MemoryGb);
@@ -459,7 +459,7 @@ public partial class MainWindow : Window
             var s = new BuilderSettings { Out = BuilderHome.SavePath(OutPath.Text),
                                           Nup = BuilderHome.SavePath(romfs == null ? chosenNup : null),
                                           Romfs = BuilderHome.SavePath(romfs), Exefs = BuilderHome.SavePath(exefs),
-                                          Dlss = DlssTick.IsChecked == true, DlssLicense = dlssLicense,
+                                          Dlss = DlssTick.IsChecked == true, DlssLicense = dlssLicenseAccepted,
                                           Fsr = FsrTick.IsChecked == true,
                                           FsrLicense = fsrLicense,
                                           PrepareLater = PrepareTick.IsChecked != true,
@@ -895,9 +895,11 @@ public partial class MainWindow : Window
         "Hookshot never includes or shares them: never share a game folder built with them.\n\n" +
         "Do you accept NVIDIA's license?";
 
-    /// NVIDIA's license accepted on the DLSS tick, kept in the settings (DlssLicense): an update keeps a folder's DLSS by it.
-    /// It was the SDK's LICENSE.txt, a download: with the SDK gone, the update built without DLSS and its runtime went
-    bool dlssLicense;
+    /// Whether NVIDIA's license was accepted on the DLSS tick, kept in the settings (BuilderSettings.DlssLicense): an update
+    /// keeps a folder's DLSS by it. The record used to be the SDK's LICENSE.txt, a download: once the SDK's files were gone,
+    /// the update built the folder without DLSS and removed its DLSS runtime. (DlssLicense, the constant above, is the
+    /// license dialog's text)
+    bool dlssLicenseAccepted;
 
     /// The NVIDIA DLSS tick: NVIDIA's license first, and the tick stays only when it is accepted
     void DlssChanged(object sender, RoutedEventArgs e)
@@ -906,7 +908,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, DlssLicense, "NVIDIA DLSS", MessageBoxButton.YesNo, MessageBoxImage.Information) != MessageBoxResult.Yes)
             DlssTick.IsChecked = false;
         else if (DlssTick.IsChecked == true)
-            dlssLicense = true;
+            dlssLicenseAccepted = true;
         SaveSettings();   // (kept at once, not only when Build is pressed: ticked and closed, it is still ticked next time)
     }
 
