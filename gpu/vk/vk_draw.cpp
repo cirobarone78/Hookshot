@@ -8107,6 +8107,9 @@ void predicted_check() {
     // (not in a --prepare-shaders run (vk_main.cpp prepare_only): it exits right after, and a detached thread still asking the
     // driver then would race the process's exit, its static destructors and the driver's teardown; the game's next start checks)
     if (getenv("HOOKSHOT_PREPARE_ONLY")) return;
+    // (asking without compiling, VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT, needs pipelineCreationCacheControl, as
+    // the play caches' and the stage libraries' asks do: without it the flag is invalid and the "ask" would compile every one)
+    if (!dev.vk13.pipelineCreationCacheControl) return;
     std::vector<PipeNote> sample;
     if (FILE* f = fopen(predicted_sample_path().c_str(), "rb")) {
         uint64_t head[3]{};
