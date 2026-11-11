@@ -163,6 +163,16 @@ uint64_t completed() {
 // present, a sparse bind, another submit (queue_flush_locked under dev.present_mu).
 // (hookshot) on by default with Mesa's RADV, where it was measured (issue 413: a Radeon 8060S on Bazzite, ~10 -> 30-50 fps, the
 // replay's queue submit ~70 -> ~6 ms a frame); elsewhere as before. RX_VK_BATCH=0 / 1: off / on on any driver
+/// (hookshot, #1993 by mrdev023) The GPU has done every batch sent so far: the batch being held goes out at once. A held
+/// batch waited for the next wait or present while the GPU sat idle, and with serial replay the game waits for it mid-frame
+/// (take_capture's late pages), so the GPU started cold just as it was waited for. RX 9070 XT, RADV, Kokiri Forest: 33-41
+/// fps -> 46-61, no flashes in 5230 frames; ~10 flushes a frame of ~3.7 command buffers each, so batching still groups the
+/// submits while the GPU is busy. RX_VK_BATCH_IDLE=0: held until a wait, a present or the cap, as before
+bool batch_gpu_idle() {
+    static const bool on = !getenv("RX_VK_BATCH_IDLE") || atoi(getenv("RX_VK_BATCH_IDLE")) != 0;
+    uint64_t done = 0;
+    return on && vkGetSemaphoreCounterValue(dev.device, batch_tl, &done) == VK_SUCCESS && done >= batch_flushed;
+}
 bool batch_on() {
     static const bool on = [] {
         bool radv = false;
@@ -370,6 +380,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         // (RX_VK_BATCH_MAX=<command buffers>: held at most this many, default 32)
         static const size_t cap = getenv("RX_VK_BATCH_MAX") ? (size_t)std::max(1, atoi(getenv("RX_VK_BATCH_MAX"))) : 32;
         if (pend.cbs.size() >= cap) flush_reason = FR_CAP, queue_flush_locked();
+        if (!pend.cbs.empty() && batch_gpu_idle()) flush_reason = FR_OTHER, queue_flush_locked();   // (#1993)
         return;
     }
     PROF(PROF_QSUBMIT);
@@ -577,11 +588,11 @@ struct UbWord {
 };
 thread_local UbWord ub_words[128];
 uint32_t ub_word_index(uint64_t addr) {
-    // Uniform buffers commonly put the same handle at offsets 512 bytes or a page apart. The low seven word bits
-    // alone mapped those reads to one slot, evicting each other. Keep the full address check in ub_word_hit.
+    // Words 512 bytes or a page apart share the low seven word bits. Add higher bits to separate those strides
+    // while keeping runs of up to 64 words collision-free. Hits still compare the full address in ub_word_hit.
     static const bool linear = getenv("RX_VK_UB_WORD_HASH") && atoi(getenv("RX_VK_UB_WORD_HASH")) == 0;
     const uint64_t word = addr >> 2;
-    return (uint32_t)((linear ? word : word ^ (word >> 7) ^ (word >> 14)) & 127);
+    return (uint32_t)((linear ? word : word + (word >> 7) + (word >> 14)) & 127);
 }
 bool ub_word_hit(uint64_t addr, size_t lim, uint32_t* out) {
     UbWord& w = ub_words[ub_word_index(addr)];
@@ -3493,8 +3504,11 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     static int hdr_was = -1;   // (the Insert menu's HDR as the swapchain was made for it; -1: not yet looked at)
     const bool hdr_changed = hdr_was >= 0 && hdr_was != opts.hdr;   // (turned on or off: the swapchain's format)
     if (hdr_was < 0) hdr_was = opts.hdr;
+    static int vsync_was = -1;   // (the V-Sync row as the swapchain was made for it: its present mode)
+    const bool vsync_changed = vsync_was >= 0 && vsync_was != menu_vsync();
+    if (vsync_was < 0) vsync_was = menu_vsync();
     const uint64_t want = dev.swap_resize.exchange(0, std::memory_order_acquire);
-    if (want || !dev.swapchain || reflex_swapchain_stale() || hdr_changed) {   // (resized, gone, Reflex or HDR changed)
+    if (want || !dev.swapchain || reflex_swapchain_stale() || hdr_changed || vsync_changed) {   // (resized, gone, Reflex, HDR or V-Sync changed)
         std::lock_guard qk(dev.present_mu);
         const uint32_t width = want ? (uint32_t)(want >> 32) : dev.swap_extent.width;
         const uint32_t height = want ? (uint32_t)want : dev.swap_extent.height;
@@ -3505,7 +3519,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
                                                    std::memory_order_release, std::memory_order_relaxed);
             return;   // (the old swapchain may already be retired; do not acquire or reset a frame fence)
         }
-        hdr_was = opts.hdr;
+        hdr_was = opts.hdr, vsync_was = menu_vsync();
     }
     if (src) {   // (the Window scaling filter's row: whether the window is the picture's size. Only the game's frames and the
                  // made ones: the start-up screen (no src) is drawn at the window's own size, which made the row read "Not
@@ -4272,12 +4286,14 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_CHEAT_FLIGHT) return menu_player_flight();
         if (id == HOS_OPT_CHEAT_ACTION) return menu_take_cheat_action();
         if (id == HOS_OPT_CHEAT_CAMERA) return menu_free_camera();
+        if (id == HOS_OPT_CHEAT_SPEED) return menu_link_speed();
         if (id == HOS_OPT_HDR_NATIVE) return dev.hdr && opts.hdr == 2;
         if (id == HOS_OPT_HDR_PEAK) return std::clamp(opts.hdr_peak, 400, 10000);
         if (id == HOS_OPT_HDR_WHITE) return std::clamp(opts.hdr_white, 80, 500);
         if (id == HOS_OPT_DISCORD) return opts.discord != 0;
         if (id == HOS_OPT_VOLUME) return opts.volume;
         if (id == HOS_OPT_MUTE_BACKGROUND) return opts.mute_background;
+        if (id == HOS_OPT_DISABLE_CAMERA_CENTERING) return opts.disable_camera_centering;
         if (id == HOS_OPT_TEXT_SIZE) return opts.text_size;
         return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !temporal_full_scale() : id == 3 ? (temporal_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
                id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 9 ? opts.rumble : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y : id == HOS_OPT_GYRO ? opts.gyro : id == HOS_OPT_GYRO_SENS_X ? opts.gyro_sens_x : id == HOS_OPT_GYRO_SENS_Y ? opts.gyro_sens_y : id == HOS_OPT_GYRO_INV_X ? opts.gyro_inv_x : id == HOS_OPT_GYRO_INV_Y ? opts.gyro_inv_y : id == HOS_OPT_GYRO_DEADZONE ? opts.gyro_deadzone :

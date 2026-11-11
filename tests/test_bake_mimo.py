@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "work" / "bake-mimo-test"
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{spirv_headers}"]
+RUN_ALL_SKIP = {"windows": "compiles the whole recompiler (~164 files): over the runner's 600 s on Windows; Linux runs it"}
 
 EXIT = struct.pack("<4I", 0x0000794D, 0, 0x03800000, 0x000FEA00)   # (tests/test_lower_atomg_cas.py's EXIT)
 CONTROL = 0xD8
@@ -200,7 +201,7 @@ def main(argv=None):
     sys.path.insert(0, str(ROOT / "nx2"))
     import bake_mimo
     try:
-        bake_mimo.cxx()
+        bake_mimo.cxx_std(bake_mimo.cxx())   # (a compiler, and one with a C++23 mode: the recompiler needs it)
     except SystemExit as e:
         print("SKIP: %s" % e)
         return
