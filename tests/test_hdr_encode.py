@@ -7,6 +7,8 @@ than cut flat. Native is graded under the peak the game is told, moves on smooth
 peak is not cut flat (no peak limit for it). And its push constants are the ones framegen_hdr pushes.
 Also what the HDR paths around it need, from the sources: Native HDR is told by the format the game presents alone, its
 picture never blitted from its image, and at 100% contrast (exposure 1) the pass writes the game's PQ codes as they are.
+While the game presents PQ (present_native_pq), NVIDIA DLSS is made for HDR colour and given the scene as linear light,
+unclamped (dlss_prep.comp's kSquare and kColorMax), its picture taken back linear (dlss_out.comp's kSquare off).
 
     python -I -B tests/test_hdr_encode.py [--glslang glslangValidator]
 """
@@ -167,6 +169,46 @@ def check_paths():
     shot = present[present.index("const VkImage fx_img ="):]
     if "kShotW, kShotH,\n" not in shot[:shot.index(";")] or "present_native_pq.load(" not in shot[:shot.index(";")]:
         sys.exit("FAIL: the RX_VK_SHOT_FX shot scales Native HDR's picture as SDR")
+    check_dlss()
+
+
+def check_dlss():
+    # (the game's native HDR goes past 1 in the scene: DLSS made for HDR colour while the game presents PQ, and given the
+    # scene as linear light (the square of its square-root encoding), what IsHDR and AutoExposure are made for, not clamped
+    # to 1; its picture then taken back as it is, linear, where the LDR pair squares it: the same output either way)
+    prep = (SHADERS / "dlss_prep.comp").read_text(encoding="utf-8")
+    if "layout(constant_id = 0) const float kColorMax = 1.0;" not in prep or \
+            "layout(constant_id = 1) const bool kSquare = false;" not in prep or \
+            "const vec3 c = kSquare ? e * e : e;" not in prep or "imageStore(color, g, vec4(min(c, vec3(kColorMax)), 1.0));" not in prep:
+        sys.exit("FAIL: dlss_prep.comp does not square its colour into linear light (kSquare, constant 1, off by default) "
+                 "under its ceiling (kColorMax, constant 0, 1 by default)")
+    out = (SHADERS / "dlss_out.comp").read_text(encoding="utf-8")
+    if "layout(constant_id = 0) const bool kSquare = true;" not in out or "if (kSquare) c *= c;" not in out:
+        sys.exit("FAIL: dlss_out.comp's square is not its kSquare (constant 0, on by default)")
+    chain = (VK / "vk_temporal.cpp").read_text(encoding="utf-8")
+    pipes = function(chain, "bool make_pipelines() {")
+    for want in ("PrepSpec prep_hdr_data{16384.0f, VK_TRUE};",
+                 "prep_hdr_entries[2] = {{0, 0, sizeof(float)}, {1, sizeof(float), sizeof(VkBool32)}};",
+                 "out_hdr_square = VK_FALSE;", "out_hdr_entry{0, 0, sizeof(VkBool32)};",
+                 "s.prep_hdr, &prep_hdr_spec))", "s.out_hdr, &out_hdr_spec))",
+                 "if (s.prep && s.prep_hdr && s.out && s.out_hdr && s.point && s.linear) return true;"):
+        if want not in pipes:
+            sys.exit("FAIL: vk_temporal.cpp's HDR pipelines (linear light in, linear out) are not as this check expects: " + want)
+    upscale = function(chain, "bool temporal_upscale(")
+    for want in ("const bool hdr = engine.e->hdr && engine.e->hdr();", "prep_pipe = hdr ? s.prep_hdr : s.prep",
+                 "out_pipe = hdr ? s.out_hdr : s.out", "vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prep_pipe);",
+                 "vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, out_pipe);"):
+        if want not in upscale:
+            sys.exit("FAIL: temporal_upscale does not give an engine made for HDR colour the HDR pair: " + want)
+    dlss = (VK / "vk_dlss.cpp").read_text(encoding="utf-8")
+    prepare = function(dlss, "int prepare(")
+    if "const bool hdr = hdr_allowed && present_native_pq.load(std::memory_order_relaxed);" not in prepare or \
+            'getenv("RX_VK_DLSS_HDR")' not in prepare or "opts.hdr" in prepare or \
+            "s.feature_hdr == hdr" not in prepare or \
+            "NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure" not in prepare:
+        sys.exit("FAIL: DLSS's feature is not made for HDR colour while the game presents PQ (and again when that changes)")
+    if "start, prepare, evaluate, release, memory, hdr}" not in dlss:
+        sys.exit("FAIL: vk_dlss.cpp's engine does not tell the chain it takes HDR colour")
 
 
 a = argparse.ArgumentParser()
