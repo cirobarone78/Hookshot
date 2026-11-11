@@ -1508,7 +1508,7 @@ class Window(QWidget):
                     time_left(el / self.compiled * (1 - self.compiled) + 60) if self.compiled > 0.03 else "Estimating…")
             self.build_note.setText("Compiling %s · %s%s" % (clock(el), left, tail))
             return
-        self.build_note.setText(("Working…" if self.updating else "Usually about 45 minutes") + tail)
+        self.build_note.setText(("Working" if self.updating else "Usually about 45 minutes") + tail)
 
     def ended(self, failure):
         self.clock.stop()

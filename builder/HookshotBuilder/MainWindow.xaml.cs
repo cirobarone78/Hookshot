@@ -1013,7 +1013,7 @@ public partial class MainWindow : Window
             BuildNote.Text = $"Compiling {Clock(compileClock.Elapsed)} · {left}{tail}";
             return;
         }
-        BuildNote.Text = (updating ? "Working…" : "Usually about 45 minutes") + tail;
+        BuildNote.Text = (updating ? "Working" : "Usually about 45 minutes") + tail;
     }
 
     static string Clock(TimeSpan t) => $"{(int)t.TotalMinutes}:{t.Seconds:00}";
