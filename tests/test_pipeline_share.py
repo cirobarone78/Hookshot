@@ -300,6 +300,7 @@ def check_sources():
     assert 'is_share_row(r)) choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value' in cell, "the tuning bar shows the row as a page"
     assert menu.count('is_share_row(r) ? "Save" : "Open"') + menu.count('is_share_row(selr) ? "Save" : "Open"') >= 2, \
         "a prompt says Open for Save my pipeline list"
+    cs = (ROOT / "builder" / "HookshotBuilder" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
     tick = menu[menu.find("void menu_tick() {"):]
     save, catch_all = tick.find("is_share_row(r)) share_pipeline_list()"), tick.find("!r.value && can_bind()) page = 1")
     assert 0 < save < catch_all, "Enter on the row would open the Controls page"
@@ -315,6 +316,11 @@ def check_sources():
     assert body.find("std::thread([") > body.find('env_on("HOS_HEADLESS")'), "the opens are not on the worker"
     for call in ("share_clipboard(", "share_open(ps::kIssueUrl)", '"CoInitializeEx"', "co_uninit()", "share_result.store("):
         assert call in worker, "the worker lacks " + call
+    assert "catch (const std::system_error&)" in body and "share_finish();" in body.split("catch (const std::system_error&)")[1], \
+        "a thread that cannot start leaves the row busy for good"
+    dl = body_of(menu, "std::string share_downloads(")
+    assert dl.count('"your home folder"') == 2, "the home folder is named on screen (the user's name)"
+    assert 'L"WINDIR"' in menu and 'GetFolderPath(Environment.SpecialFolder.Windows)' in cs, "explorer.exe is taken from the search path"
     assert "kShareSaidLongest" in menu[menu.find("float measure_help("):][:900], "the help box has no room kept for the line after a save"
     assert "share_finish();" in menu[menu.find("void menu_tick() {"):][:400], "menu_tick never collects the worker's answer"
     spawn = menu[menu.find("bool share_spawn("):]

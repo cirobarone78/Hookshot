@@ -319,7 +319,8 @@ public partial class MainWindow : Window
         }
         var copied = false;
         try { Clipboard.SetText(template ?? ""); copied = true; } catch (Exception) { }
-        try { Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{zip}\"") { UseShellExecute = true }); } catch (Exception) { }
+        var explorer = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");   // (not one found on the path)
+        try { Process.Start(new ProcessStartInfo(File.Exists(explorer) ? explorer : "explorer.exe", $"/select,\"{zip}\"") { UseShellExecute = true }); } catch (Exception) { }
         var opened = false;
         try { Process.Start(new ProcessStartInfo(ShareIssue) { UseShellExecute = true }); opened = true; } catch (Exception) { }
         LaunchShareStatus.Text = $"Saved {System.IO.Path.GetFileName(zip)} ({count} pipelines) in {System.IO.Path.GetDirectoryName(zip)}. " +

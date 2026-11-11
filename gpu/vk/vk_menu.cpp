@@ -25,6 +25,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <system_error>
 #include <vector>
 
 #include "vk_paths.h"
@@ -1558,8 +1559,10 @@ FARPROC share_proc(const wchar_t* dll, const char* name) {
     return m ? GetProcAddress(m, name) : nullptr;
 }
 #endif
-/// The Downloads folder (where a browser's file picker opens), else the home folder, else the game folder
-std::string share_downloads() {
+/// The Downloads folder (where a browser's file picker opens), else the home folder, else the game folder. *words: how the menu
+/// names it: the folder's own name for Downloads, never the home folder's (that is the user's name)
+std::string share_downloads(std::string* words) {
+    *words = "";
 #ifdef _WIN32
     using KnownFolderFn = HRESULT(WINAPI*)(const GUID&, DWORD, HANDLE, wchar_t**);
     using FreeFn = void(WINAPI*)(void*);
@@ -1574,7 +1577,7 @@ std::string share_downloads() {
     }
     if (w && free_mem) free_mem(w);
     if (!out.empty() && is_dir(out)) return out;
-    if (const char* home = getenv("USERPROFILE"); home && is_dir(home)) return home;
+    if (const char* home = getenv("USERPROFILE"); home && is_dir(home)) return *words = "your home folder", home;
 #else
     const char* home = getenv("HOME");
     if (home && *home) {
@@ -1589,9 +1592,10 @@ std::string share_downloads() {
         const std::string d = ps::xdg_download_dir(text, home);
         if (!d.empty() && is_dir(d)) return d;
         if (is_dir(std::string(home) + "/Downloads")) return std::string(home) + "/Downloads";
-        if (is_dir(home)) return home;
+        if (is_dir(home)) return *words = "your home folder", home;
     }
 #endif
+    *words = "the game folder";
     return game_folder();
 }
 #ifndef _WIN32
@@ -1689,7 +1693,12 @@ bool share_open(const std::string& what, bool select = false) {
     static const auto shell_execute = (ShellExecuteFn)(void*)share_proc(L"shell32.dll", "ShellExecuteW");
     if (!shell_execute) return false;
     if (select)   // (the folder, the zip chosen in it)
-        return (INT_PTR)shell_execute(nullptr, L"open", L"explorer.exe", (L"/select,\"" + w + L"\"").c_str(), nullptr, SW_SHOWNORMAL) > 32;
+    {
+        wchar_t windir[MAX_PATH];   // (%WINDIR%\explorer.exe, not whichever explorer.exe the search path finds first)
+        const DWORD n = GetEnvironmentVariableW(L"WINDIR", windir, MAX_PATH);
+        const std::wstring explorer = n && n < MAX_PATH ? std::wstring(windir) + L"\\explorer.exe" : L"explorer.exe";
+        return (INT_PTR)shell_execute(nullptr, L"open", explorer.c_str(), (L"/select,\"" + w + L"\"").c_str(), nullptr, SW_SHOWNORMAL) > 32;
+    }
     return (INT_PTR)shell_execute(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL) > 32;
 #else
     (void)select;
@@ -1778,7 +1787,8 @@ void share_pipeline_list() {
 #endif
     const std::string zip = ps::share_zip(list, lines, (uint16_t)((t.tm_year - 80) << 9 | (t.tm_mon + 1) << 5 | t.tm_mday),
                                           (uint16_t)(t.tm_hour << 11 | t.tm_min << 5 | t.tm_sec / 2));
-    const std::string dir = share_downloads(), name = ps::zip_name(t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
+    std::string where;
+    const std::string dir = share_downloads(&where), name = ps::zip_name(t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
 #ifdef _WIN32
     const char* sep = "\\";   // (Explorer's /select takes back slashes only)
 #else
@@ -1789,6 +1799,7 @@ void share_pipeline_list() {
     std::string folder = dir;   // (its name alone: no user name on screen)
     while (folder.size() > 1 && (folder.back() == '/' || folder.back() == '\\')) folder.pop_back();
     folder = folder.substr(folder.find_last_of("\\/") + 1);
+    if (!where.empty()) folder = where;
     if (!written) {
         share_said = "The zip could not be written in " + folder + ".", share_value = "Not saved";
         logf("menu: Save my pipeline list: %s could not be written", name.c_str());
@@ -1806,28 +1817,33 @@ void share_pipeline_list() {
     // this is the present thread. Presses are ignored until it is done: share_busy)
     share_busy.store(true);
     share_said = share_saved + "Opening the issue...";
-    std::thread([lines, path, dir] {
+    try {
+        std::thread([lines, path, dir] {
 #ifdef _WIN32
-        using CoInitFn = HRESULT(WINAPI*)(void*, DWORD);
-        using CoUninitFn = void(WINAPI*)();
-        static const auto co_init = (CoInitFn)(void*)share_proc(L"ole32.dll", "CoInitializeEx");
-        static const auto co_uninit = (CoUninitFn)(void*)share_proc(L"ole32.dll", "CoUninitialize");
-        // (ShellExecute wants COM on its thread: apartment-threaded, no OLE1 DDE)
-        const bool com = co_init && co_uninit && SUCCEEDED(co_init(nullptr, 0x2 /*COINIT_APARTMENTTHREADED*/ | 0x4 /*COINIT_DISABLE_OLE1DDE*/));
+            using CoInitFn = HRESULT(WINAPI*)(void*, DWORD);
+            using CoUninitFn = void(WINAPI*)();
+            static const auto co_init = (CoInitFn)(void*)share_proc(L"ole32.dll", "CoInitializeEx");
+            static const auto co_uninit = (CoUninitFn)(void*)share_proc(L"ole32.dll", "CoUninitialize");
+            // (ShellExecute wants COM on its thread: apartment-threaded, no OLE1 DDE)
+            const bool com = co_init && co_uninit && SUCCEEDED(co_init(nullptr, 0x2 /*COINIT_APARTMENTTHREADED*/ | 0x4 /*COINIT_DISABLE_OLE1DDE*/));
 #endif
-        const bool copied = share_clipboard(lines);
+            const bool copied = share_clipboard(lines);
 #ifdef _WIN32
-        share_open(path, true);
+            share_open(path, true);
 #else
-        (void)path;
-        share_open(dir);
+            (void)path;
+            share_open(dir);
 #endif
-        const bool opened = share_open(ps::kIssueUrl);
+            const bool opened = share_open(ps::kIssueUrl);
 #ifdef _WIN32
-        if (com) co_uninit();
+            if (com) co_uninit();
 #endif
-        share_result.store((copied ? 1 : 0) | (opened ? 2 : 0));
-    }).detach();
+            share_result.store((copied ? 1 : 0) | (opened ? 2 : 0));
+        }).detach();
+    } catch (const std::system_error&) {   // (no thread to be had: the zip is saved; say so, and the next press works)
+        share_result.store(0);
+        share_finish();
+    }
 }
 
 /// A row's new value v, as the arrows set it (dir: 1 up, -1 down, for the rows that skip or wrap), saved unless !keep
@@ -2057,8 +2073,9 @@ float measure_help(ui::Ctx& c, float width) {
         for (int v = r.lo; r.value && r.hint && v <= r.hi; v++)
             for (int k = 0; const char* t = r.hint(v, k); k++)
                 hint = std::max(hint, ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, t, width - 18 * c.s, false));
-        if (is_share_row(r))   // (Save my pipeline list's line after a save, at its longest: the narrow layout keeps room for it)
-            hint = ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, kShareSaidLongest, width - 18 * c.s, false);
+        if (is_share_row(r))   // (Save my pipeline list's line after a save: the longest it can be, or the one shown when longer)
+            hint = std::max(ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, kShareSaidLongest, width - 18 * c.s, false),
+                            share_said.empty() ? 0.f : ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, share_said.c_str(), width - 18 * c.s, false));
         if (r.help) most = std::max(most, ui::para(c, c.f.body, 18 * c.s, ImVec2(), 0, r.help, width, false) + (hint ? 14 * c.s + hint : 0));
     }
     return most;
@@ -2502,7 +2519,9 @@ void draw_options(ui::Ctx& c) {
     if (is_share_row(selr) && !share_said.empty()) hint = share_said.c_str();   // (what the last save did)
     const std::string pending_line = (cur_tab == TAB_GRAPHICS || cur_tab == TAB_DEBUG) && restart_pending() ? restart_line(c, 16 * s, hx1 - hx0 - 66 * s) : "";
     static float help_tall = 0, help_tall_w = 0;
-    if (help_tall_w != hx1 - hx0) help_tall_w = hx1 - hx0, help_tall = measure_help(c, hx1 - hx0 - 48 * s);
+    static std::string help_said;   // (Save my pipeline list's line as measured: measured again when it changes)
+    if (help_tall_w != hx1 - hx0 || help_said != share_said)
+        help_tall_w = hx1 - hx0, help_said = share_said, help_tall = measure_help(c, hx1 - hx0 - 48 * s);
     // (a row that opens a page (Motion, Controls, Open debug tools): A or Enter opens it; Restart and Quit: A or Enter twice)
     const bool confirms = &selr == &rows[kRestartRow] || &selr == &rows[kQuitRow];
     ui::Prompt prompt_list[7] = {{ui::kUpDown, "Choose"}};
