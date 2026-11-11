@@ -22,6 +22,7 @@
 #endif
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
+#include "video_acquire_trace.h"
 
 #define RESULT_NO_OUTPUT 0x2a1ca   /* (a failure: "no picture yet"; the library polls again) */
 #define POOL_MAGIC 0x4c4f4f50u     /* 'POOL' */
@@ -94,6 +95,8 @@ typedef struct {
     int64_t clock_ns, clock_pts;
     int64_t last_pts;                /* the pts of the last picture handed out */
     int64_t log_submits;             /* (HOS_VIDEO_LOG) submissions still to log, after a flush or the end */
+    int trace_acquires;              /* HOS_VIDEO_ACQUIRE_TRACE=1, capped per decoder lifetime */
+    unsigned trace_rows;
     SRWLOCK lock;
 } Dec;
 
@@ -285,6 +288,8 @@ static void dec_init_sized(Ctx *c, enum AVCodecID id, const char *what, int w, i
 #endif
     if (!codec) codec = avcodec_find_decoder(id);
     Dec *d = (Dec *)calloc(1, sizeof *d);
+    const char *trace = getenv("HOS_VIDEO_ACQUIRE_TRACE");
+    d->trace_acquires = trace && strcmp(trace, "1") == 0;
     InitializeSRWLock(&d->lock);
     if (codec) {
         d->ctx = avcodec_alloc_context3(codec);
@@ -580,25 +585,40 @@ static void dec_acquire(Ctx *c) {
     Dec *d = (Dec *)host_of(ARG(2), DEC_MAGIC);
     if (ARG(1)) G64(ARG(1)) = 0;
     if (!d) { RET(RESULT_NO_OUTPUT); return; }
+    VideoAcquireTrace trace = video_acquire_trace_begin(d->trace_acquires);
+    trace.decoder = (uintptr_t)d;
+    int64_t decode_start = 0;
     /* (the library aborts on any failure here: the hardware call waits for a picture. Up to ~100 ms for one decoded
        by another thread's submission; then a free buffer as it was, so the caller is never refused) */
     AcquireSRWLockExclusive(&d->lock);
+    if (trace.enabled) {
+        trace.enabled = d->trace_rows < 12000;
+        if (trace.enabled) { d->trace_rows++; trace.locked = hos_now_ns(); }
+    }
+    if (trace.enabled) decode_start = hos_now_ns();
     decode_pending(d);
+    if (trace.enabled) trace.decode_ns += hos_now_ns() - decode_start;
     for (int tries = 0; !d->qn && !d->eos && tries < 50; tries++) {
         ReleaseSRWLockExclusive(&d->lock);
         hos_sleep_ns(2000000);
         AcquireSRWLockExclusive(&d->lock);
+        if (trace.enabled) { trace.waits++; decode_start = hos_now_ns(); }
         decode_pending(d);
+        if (trace.enabled) trace.decode_ns += hos_now_ns() - decode_start;
     }
+    if (trace.enabled) trace.ready = hos_now_ns();
     int slot = -1;
     for (int i = 0; i < MAX_SLOTS && slot < 0; i++)
         if (d->slots[i] && !d->busy[i] && host_of(d->slots[i], POOL_MAGIC)) slot = i;
     if (slot < 0) {
+        if (trace.enabled) { trace.selected = trace.end = hos_now_ns(); trace.queued = d->qn; }
         ReleaseSRWLockExclusive(&d->lock);
+        video_acquire_trace_end(&trace);
         RET(RESULT_NO_OUTPUT);
         return;
     }
     d->acquires++;
+    if (trace.enabled) { trace.acquire = d->acquires; trace.slot = slot; trace.eos = d->eos; }
     if (!d->qn) {   /* (nothing decoded: the buffer's last picture again; after the last submission, as the last) */
         d->busy[slot] = 1;
         if (d->eos) d->slot_last[slot] = 1, d->slot_pts[slot] = d->last_pts;   /* (the end at the last picture's time) */
@@ -609,7 +629,12 @@ static void dec_acquire(Ctx *c) {
                                  d->eos ? " (the end)" : idle ? " (idle: its sync not reached)" : "", slot);
         else if (d->acquires == 1 && !d->eos)   /* (the start: the frame shows the buffer as it was, black since the pool's fill) */
             hos_log("video: the first buffer went out before the first picture was decoded (shown black)");
+        if (trace.enabled) {
+            trace.pts = d->slot_pts[slot]; trace.repeated = 1;
+            trace.selected = trace.end = hos_now_ns();
+        }
         ReleaseSRWLockExclusive(&d->lock);
+        video_acquire_trace_end(&trace);
         if (ARG(0)) G32(ARG(0)) = (uint32_t)slot;
         RET(0);
         return;
@@ -628,7 +653,9 @@ static void dec_acquire(Ctx *c) {
             if (d->queue[d->qhead].pts + late >= due) break;
             if (d->qn < 2) {
                 if (!d->phead) break;
+                if (trace.enabled) decode_start = hos_now_ns();
                 decode_next(d);
+                if (trace.enabled) trace.decode_ns += hos_now_ns() - decode_start;
                 continue;
             }
             picture_free(&d->queue[d->qhead]);
@@ -636,8 +663,10 @@ static void dec_acquire(Ctx *c) {
             skipped++;
         }
         if (skipped && video_log()) hos_log("video: %d pictures skipped to catch up with the movie's clock", skipped);
+        if (trace.enabled) trace.skipped = skipped;
     }
     Picture *p = &d->queue[d->qhead];
+    if (trace.enabled) { trace.selected = hos_now_ns(); trace.pts = p->pts; trace.queued = d->qn; }
     Pool *o = (Pool *)host_of(d->slots[slot], POOL_MAGIC);
     /* (the picture at the pool's size: rows and columns past either are left out) */
     const int ok = o->nv12 != NULL && p->nv12 != NULL;   /* (an allocation that failed: nothing copied; issue 342) */
@@ -691,7 +720,9 @@ static void dec_acquire(Ctx *c) {
     }
     picture_free(p);
     d->qhead = (d->qhead + 1) % MAX_QUEUE, d->qn--;
+    if (trace.enabled) trace.end = hos_now_ns();
     ReleaseSRWLockExclusive(&d->lock);
+    video_acquire_trace_end(&trace);
     if (ARG(0)) G32(ARG(0)) = (uint32_t)slot;
     RET(0);
 }

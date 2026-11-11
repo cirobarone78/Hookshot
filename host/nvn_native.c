@@ -19,6 +19,7 @@
    own procs (program builders, native images, sparse tile layouts, recording modes). The SDK's exports reach the
    same functions as the proc table (nvn2_dispatch, from gen/nvn2_exports.c). */
 #include "hos.h"
+#include "hos_debug.h"
 #include "../gpu/render/rx_nvn.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -2501,7 +2502,7 @@ NV(nvnQueuePresentTexture) {
     }
     o->presents++;
     extern volatile LONG64 hos_present_count;   /* display.c */
-    InterlockedIncrement64(&hos_present_count);
+    hos_debug_present((uint64_t)InterlockedIncrement64(&hos_present_count));
     hos_vi_native_presented(phases);
 }
 

@@ -5,7 +5,8 @@
 
    The keyboard's state goes to hos_posix_keys (GetAsyncKeyState, for nn_hid.c and the Insert menu), the window's focus
    and the screen's size to hos_posix_window (GetForegroundWindow, GetSystemMetrics).
-   HOS_HEADLESS=1: no window. HOS_WINDOW_SIZE=<w>x<h>: its size (default 1280x720). F11: fullscreen (HOS_FULLSCREEN=1 to
+   HOS_HEADLESS=1: no window. HOS_START_MINIMIZED=1: a normal taskbar window, initially minimized.
+   HOS_WINDOW_SIZE=<w>x<h>: its size (default 1280x720). F11: fullscreen (HOS_FULLSCREEN=1 to
    start so). Mouse: a click in the window captures it (relative motion, for nn_hid.c), Esc or leaving releases it.
    While the Insert menu is open the mouse is free (the cursor shown, for the menu's clicks: hos_mouse_pointer) and
    the game gets none of it; the capture it had comes back when the menu closes. */
@@ -262,7 +263,9 @@ void hos_display_loop(void) {
         int w = 0, h = 0;
         if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
     }
-    window = hos_sdl_window(HOS_GAME_TITLE, win_w, win_h);
+    const char *min_env = getenv("HOS_START_MINIMIZED");
+    const int start_minimized = min_env && atoi(min_env) != 0;
+    window = hos_sdl_window(HOS_GAME_TITLE, win_w, win_h, start_minimized);
     if (!window) {
         hos_log("display: SDL_CreateWindow: %s: no window", hos_sdl_error());
         fprintf(stderr, "display: SDL_CreateWindow: %s: no window\n", hos_sdl_error());
@@ -270,7 +273,8 @@ void hos_display_loop(void) {
         ExitProcess(1);
     }
     vk_window.window = window;
-    hos_posix_window[0] = 1;
+    hos_posix_window[0] = !start_minimized;
+    if (start_minimized) hos_log("display: requested minimized startup; restore the window from the taskbar to view it");
     {   /* the window's icon: hookshot.png beside the game (make_game.py puts it there), for X11 and the compositors that
            take one from the window; the others find it through the menu entry */
         char png[MAX_PATH];
@@ -279,7 +283,7 @@ void hos_display_loop(void) {
         snprintf(png + n, sizeof png - n, "hookshot.png");
         hos_sdl_icon(window, png);
     }
-    if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
+    if (!start_minimized && getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
     __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);
     pointer_update(0, 0);
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));

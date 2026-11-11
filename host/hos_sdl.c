@@ -144,13 +144,15 @@ void hos_sdl_identity(const char *name, const char *app_id) {
 const char *hos_sdl_error(void) { return version ? CALL(const char *(*)(void), GetError)() : "no SDL"; }
 
 /* ---- the window ---- */
-enum { WIN_SHOWN2 = 0x4, WIN_RESIZABLE = 0x20, WIN_HIGH_DENSITY = 0x2000, WIN_VULKAN = 0x10000000, CENTRED = 0x2FFF0000 };
-void *hos_sdl_window(const char *title, int width, int height) {
+enum { WIN_SHOWN2 = 0x4, WIN_RESIZABLE = 0x20, WIN_MINIMIZED = 0x40, WIN_HIGH_DENSITY = 0x2000,
+       WIN_VULKAN = 0x10000000, CENTRED = 0x2FFF0000 };
+void *hos_sdl_window(const char *title, int width, int height, int start_minimized) {
+    /* SDL2 and SDL3 share the MINIMIZED flag. Request it at creation, before the renderer can show a frame. */
+    const uint32_t flags = WIN_RESIZABLE | WIN_HIGH_DENSITY | WIN_VULKAN | (start_minimized ? WIN_MINIMIZED : 0);
     if (version == 2)
         return CALL(void *(*)(const char *, int, int, int, int, uint32_t), CreateWindow)(
-            title, CENTRED, CENTRED, width, height, WIN_SHOWN2 | WIN_RESIZABLE | WIN_HIGH_DENSITY | WIN_VULKAN);
-    void *w = CALL(void *(*)(const char *, int, int, uint64_t), CreateWindow)(title, width, height,
-                                                                              WIN_RESIZABLE | WIN_HIGH_DENSITY | WIN_VULKAN);
+            title, CENTRED, CENTRED, width, height, WIN_SHOWN2 | flags);
+    void *w = CALL(void *(*)(const char *, int, int, uint64_t), CreateWindow)(title, width, height, flags);
     if (w) CALL(_Bool (*)(void *, int, int), SetWindowPosition)(w, CENTRED, CENTRED);
     return w;
 }

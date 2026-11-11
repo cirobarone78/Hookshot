@@ -579,10 +579,13 @@ static DWORD WINAPI sample_all_thread(void *p) {
             }
             CloseHandle(snap);
             t0 = hos_now_ns();
+            fprintf(out, "# clock_origin_ns %lld\n", (long long)t0);
             hos_log("prof: all-thread sampling of %d threads into %s", nt, path);
         }
         Sleep(2);
-        const long ms = (long)((hos_now_ns() - t0) / 1000000);
+        const int64_t batch_begin = hos_now_ns();
+        const long ms = (long)((batch_begin - t0) / 1000000);
+        fprintf(out, "# batch_begin_ns %lld\n", (long long)batch_begin);
         for (int i = 0; i < nt; i++) {
             if (SuspendThread(th[i]) == (DWORD)-1) continue;
             CONTEXT ctx = {0};
@@ -616,6 +619,7 @@ static DWORD WINAPI sample_all_thread(void *p) {
             ResumeThread(th[i]);
             fprintf(out, "%s\n", line);
         }
+        fprintf(out, "# batch_end_ns %lld\n", (long long)hos_now_ns());
     }
     return 0;
 }

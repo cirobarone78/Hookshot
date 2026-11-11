@@ -25,6 +25,7 @@
    Npad states share one layout (NpadCommonState): { s64 sampling; u64 buttons; s32 lx, ly; s32 rx, ry; u32 attributes;
    pad } = 0x28 bytes. */
 #include "hos.h"
+#include "hos_debug.h"
 #include "hos_paths.h"
 #include <math.h>
 #include <stdio.h>
@@ -792,7 +793,9 @@ static int flight_jump_shortcut(uint64_t *buttons, int mode, int menu_open, int 
 static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
-    scripted_input(buttons, stick);
+    const int debug_mode = hos_debug_input(buttons, stick);
+    if (debug_mode == HOS_DEBUG_EXCLUSIVE) return;
+    if (debug_mode == HOS_DEBUG_LEGACY) scripted_input(buttons, stick);
     /* A scripted run (a test) takes no input from the player's devices until 5 s after its last press (a variable
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
        while the game's window is in front, like the keyboard: XInput is global, so a test run in the background
@@ -801,7 +804,7 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
        the presses add to theirs. HOS_INPUT_EXCLUSIVE=1: the script alone until 5 s after its last press, as before */
     static int exclusive = -1;
     if (exclusive < 0) exclusive = getenv("HOS_INPUT_EXCLUSIVE") != NULL;
-    if (exclusive && npresses > 0 && script_elapsed_ms(hos_now_ns()) < script_end_ms + 5000)
+    if (debug_mode == HOS_DEBUG_LEGACY && exclusive && npresses > 0 && script_elapsed_ms(hos_now_ns()) < script_end_ms + 5000)
         return;
     /* (hookshot, issue 389) A scripted press (HOS_INPUT_SCRIPT, HOS_INPUT_LIVE) is the test's own, not the
        player's: it counts with the game's window behind another one, so a test run can drive the game on one
@@ -875,6 +878,10 @@ volatile int64_t hos_hid_last_read;
 
 /* GetNpadStates(State* out, int count, unsigned int const& npadId): the latest state first */
 static void npad_states(Ctx *c) {
+#ifdef __linux__
+    void hos_debug_scene_poll(Ctx *c);
+    hos_debug_scene_poll(c);
+#endif
     uint64_t out = ARG(0);
     int count = (int)ARG(1);
     uint32_t id = G32(ARG(2));
@@ -928,6 +935,7 @@ static void npad_states(Ctx *c) {
     if (connected) buttons = hos_title_input(buttons);
     uint64_t hos_frame_step_buttons(uint64_t buttons);   /* nn_vi.c: the frame step of the wheel and quick menus */
     if (connected) buttons = hos_frame_step_buttons(buttons);
+    if (connected && count > 0) hos_debug_observe_input(buttons, stick);
     int64_t s = ++sampling;
     for (int i = 0; i < count; i++) {
         uint64_t e = out + (uint64_t)i * STATE_SIZE;

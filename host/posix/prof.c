@@ -14,6 +14,8 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <limits.h>
+#include <pthread.h>
 #include <linux/hw_breakpoint.h>
 #include <linux/perf_event.h>
 #include <sched.h>
@@ -159,8 +161,23 @@ static DWORD WINAPI thread_times_thread(void *p) {
 /* ---- one thread's stack, taken inside it ---- */
 #define SAMPLE_SIG (SIGRTMIN + 3)
 enum { DEPTH = 48 };
-static volatile int sample_tid;
-static volatile int sample_done;
+/* Positive: armed TID; negative TID: handler owns the buffer. Timeout may
+   abandon a running handler, but only that handler can release its buffer. */
+enum { SAMPLE_DONE = INT_MIN, SAMPLE_ABANDONED = INT_MIN + 1 };
+static int sample_state;
+static pthread_mutex_t sample_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t sample_once = PTHREAD_ONCE_INIT;
+_Static_assert(__atomic_always_lock_free(sizeof(int), 0), "Signal sampling needs lock-free atomics");
+
+static int sample_claim(int tid) {
+    int expected = tid;
+    return __atomic_compare_exchange_n(&sample_state, &expected, -tid, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+static void sample_finish(int tid) {
+    int expected = -tid;
+    if (!__atomic_compare_exchange_n(&sample_state, &expected, SAMPLE_DONE, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED))
+        __atomic_store_n(&sample_state, 0, __ATOMIC_RELEASE);
+}
 static uintptr_t sample_pcs[DEPTH];
 static int sample_n;
 
@@ -180,20 +197,19 @@ static _Unwind_Reason_Code walk_step(struct _Unwind_Context *uc, void *p) {
 static void on_sample(int sig, siginfo_t *si, void *uctx) {
     (void)sig, (void)si;
     const int saved = errno;
-    if ((int)syscall(SYS_gettid) == sample_tid) {
+    const int tid = (int)syscall(SYS_gettid);
+    if (sample_claim(tid)) {
         const ucontext_t *u = (const ucontext_t *)uctx;
         const uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
         Walk w = {sample_pcs + 1, 0, DEPTH - 1, rip, 0};
         sample_pcs[0] = rip;
         _Unwind_Backtrace(walk_step, &w);
         sample_n = 1 + w.n;
-        __atomic_store_n(&sample_done, 1, __ATOMIC_RELEASE);
+        sample_finish(tid);
     }
     errno = saved;
 }
-static void sampling_init(void) {
-    static int done;
-    if (done++) return;
+static void sampling_init_once(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = on_sample;
@@ -203,20 +219,39 @@ static void sampling_init(void) {
     Walk w = {sample_pcs, 0, 1, 0, 1};
     _Unwind_Backtrace(walk_step, &w);   /* (the unwinder's first use loads and sets up: not in a handler) */
 }
-/* the thread's frames, leaf first, into pcs; 0 when it did not answer within 50 ms or has ended */
+static void sampling_init(void) {
+    pthread_once(&sample_once, sampling_init_once);
+}
+/* The caller lock is never taken by the handler. A timed-out handler may keep
+   the buffer; skip sampling until it releases it rather than reuse its storage. */
 static int sample_one(int tid, uintptr_t *pcs, int max) {
-    __atomic_store_n(&sample_done, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&sample_tid, tid, __ATOMIC_RELEASE);
-    if (syscall(SYS_tgkill, getpid(), tid, SAMPLE_SIG)) { sample_tid = 0; return -1; }
+    pthread_mutex_lock(&sample_mu);
+    int result = 0;
+    if (__atomic_load_n(&sample_state, __ATOMIC_ACQUIRE) != 0) goto done;
+    __atomic_store_n(&sample_state, tid, __ATOMIC_RELEASE);
+    if (syscall(SYS_tgkill, getpid(), tid, SAMPLE_SIG)) {
+        __atomic_store_n(&sample_state, 0, __ATOMIC_RELEASE);
+        result = -1;
+        goto done;
+    }
     const int64_t until = hos_now_ns() + 50000000;
-    while (!__atomic_load_n(&sample_done, __ATOMIC_ACQUIRE)) {
-        if (hos_now_ns() > until) { __atomic_store_n(&sample_tid, 0, __ATOMIC_RELEASE); return 0; }
+    while (__atomic_load_n(&sample_state, __ATOMIC_ACQUIRE) != SAMPLE_DONE) {
+        if (hos_now_ns() > until) {
+            int expected = tid;
+            if (__atomic_compare_exchange_n(&sample_state, &expected, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) goto done;
+            expected = -tid;
+            if (__atomic_compare_exchange_n(&sample_state, &expected, SAMPLE_ABANDONED, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) goto done;
+            /* The handler completed between the timeout checks. Consume it. */
+            break;
+        }
         sched_yield();
     }
-    sample_tid = 0;
-    const int n = sample_n < max ? sample_n : max;
-    memcpy(pcs, sample_pcs, sizeof *pcs * (size_t)n);
-    return n;
+    result = sample_n < max ? sample_n : max;
+    memcpy(pcs, sample_pcs, sizeof *pcs * (size_t)result);
+    __atomic_store_n(&sample_state, 0, __ATOMIC_RELEASE);
+done:
+    pthread_mutex_unlock(&sample_mu);
+    return result;
 }
 
 /* a code address as module + offset: the module's file name and load base (dladdr) */
@@ -323,6 +358,24 @@ static DWORD WINAPI sample_thread(void *p) {
 /* HOS_SAMPLE_ALL=<path> (with HOS_PROFILE): while <path>.go exists, every 2 ms every guest thread and the renderer's
    threads (names starting "mkw_vk") sampled one after another: a line per thread, "<ms> <name>|<frames>", 16 frames
    at most (scripts/crit.py, scripts/hotlist.py) */
+/* Movie/scene workers can be created after sampling starts. Refresh identities
+   between batches rather than keeping stale TIDs for the whole capture. */
+static int sample_all_refresh(FILE *out, int self, int *ids, char (*names)[64], int capacity) {
+    Task all[512];
+    const int n = tasks(all, 512);
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        if (all[i].tid == self || (!all[i].guest && strncmp(all[i].name, "mkw_vk", 6))) continue;
+        if (count == capacity) { fprintf(out, "# thread_limit %d\n", capacity); break; }
+        ids[count] = all[i].tid;
+        snprintf(names[count], 64, "%s", all[i].name);
+        for (char *q = names[count]; *q; q++) if (*q == ' ' || *q == '|') *q = '_';
+        fprintf(out, "# thread %d %s\n", ids[count], names[count]);
+        count++;
+    }
+    return count;
+}
+
 static DWORD WINAPI sample_all_thread(void *p) {
     const char *path = (const char *)p;
     char go[MAX_PATH];
@@ -333,7 +386,7 @@ static DWORD WINAPI sample_all_thread(void *p) {
     static int th[MAXT];
     static char tn[MAXT][64];
     int nt = 0;
-    int64_t t0 = 0;
+    int64_t t0 = 0, next_refresh = 0;
     const int self = (int)syscall(SYS_gettid);
     for (;;) {
         if (access(go, F_OK)) {
@@ -344,21 +397,20 @@ static DWORD WINAPI sample_all_thread(void *p) {
         if (!out) {
             out = fopen(path, "a");
             if (!out) { Sleep(1000); continue; }
-            static Task all[512];
-            const int n = tasks(all, 512);
-            nt = 0;
-            for (int i = 0; i < n && nt < MAXT; i++) {
-                if (all[i].tid == self || (!all[i].guest && strncmp(all[i].name, "mkw_vk", 6))) continue;
-                th[nt] = all[i].tid;
-                snprintf(tn[nt], sizeof tn[nt], "%s", all[i].name);
-                for (char *q = tn[nt]; *q; q++) if (*q == ' ' || *q == '|') *q = '_';
-                nt++;
-            }
+            nt = sample_all_refresh(out, self, th, tn, MAXT);
             t0 = hos_now_ns();
+            next_refresh = t0 + 250000000;
+            fprintf(out, "# clock_origin_ns %lld\n", (long long)t0);
             hos_log("prof: all-thread sampling of %d threads into %s", nt, path);
         }
         Sleep(2);
-        const long ms = (long)((hos_now_ns() - t0) / 1000000);
+        if (hos_now_ns() >= next_refresh) {
+            nt = sample_all_refresh(out, self, th, tn, MAXT);
+            next_refresh = hos_now_ns() + 250000000;
+        }
+        const int64_t batch_begin = hos_now_ns();
+        const long ms = (long)((batch_begin - t0) / 1000000);
+        fprintf(out, "# batch_begin_ns %lld\n", (long long)batch_begin);
         for (int i = 0; i < nt; i++) {
             uintptr_t pcs[16];
             const int n = sample_one(th[i], pcs, 16);
@@ -373,6 +425,7 @@ static DWORD WINAPI sample_all_thread(void *p) {
             }
             fprintf(out, "%s\n", line);
         }
+        fprintf(out, "# batch_end_ns %lld\n", (long long)hos_now_ns());
     }
     return 0;
 }

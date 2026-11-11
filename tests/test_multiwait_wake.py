@@ -52,9 +52,12 @@ static void ReleaseSRWLockExclusive(SRWLOCK *l) { lock_depth--; if ((void *)l ==
 static void WakeAllConditionVariable(CONDITION_VARIABLE *cv) { (void)cv; wakes++; }
 typedef struct Obj {
     uint64_t key, event; int sem_max, kind; struct Obj **links; int nlinks, caplinks; struct Obj *mw;
+    int64_t trace_signal_ns; unsigned long trace_signal_tid;
     int64_t due_ns, sig_ns; int sem, qlen, qcap, signaled, autoclear; SRWLOCK lk; CONDITION_VARIABLE cv;
 } Obj;
 typedef unsigned long DWORD;
+static int64_t sync_wait_trace_start(void) { return 0; }
+static void sync_wait_trace_emit(uint64_t,int64_t,int64_t,int64_t,DWORD,int) {}
 #define INFINITE 0xFFFFFFFFu
 static LONG InterlockedIncrement(volatile LONG *p) { return ++*p; }
 static LONG InterlockedDecrement(volatile LONG *p) { return --*p; }

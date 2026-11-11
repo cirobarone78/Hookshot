@@ -51,7 +51,8 @@ static int hos_sdl_init(unsigned flags) {
     return mode != "init_failure";
 }
 static int hos_sdl_desktop_size(int* w, int* h) { *w = 2560; *h = 1440; return 1; }
-static void* hos_sdl_window(const char*, int w, int h) {
+static void* hos_sdl_window(const char*, int w, int h, int minimized) {
+    require(!minimized, "default startup unexpectedly minimized");
     require(w == 1280 && h == 720, "changed default window size");
     ++windows;
     return mode == "window_failure" ? nullptr : &event_token;
@@ -99,6 +100,7 @@ static void WaitForSingleObject(HANDLE h, unsigned timeout) {
     ++waited;
 }
 static void load_hookshot_env() {}
+static void hos_debug_init() {}
 static void driver_cache_room() {}   // (host/hos_main.c: the drivers' shader caches' size, #2033)
 
 #include "display_startup_actual.inc"

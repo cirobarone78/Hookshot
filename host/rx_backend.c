@@ -263,6 +263,12 @@ static const MkwVkRenderer *load_vulkan(const char *dll) {
 }
 
 int rx_start(void *hwnd) {
+    /* Analysis requires a real window: never silently turn a failed display into an offscreen benchmark. */
+    const char *require_window = getenv("HOS_REQUIRE_WINDOW");
+    if (!hwnd && require_window && atoi(require_window) != 0) {
+        hos_fatal(NULL, "display: HOS_REQUIRE_WINDOW requested but no window was created; refusing offscreen rendering");
+        return 0;
+    }
     const char *b = getenv("RX_BACKEND");
     const int eden = b && !_stricmp(b, "eden");
     if (!b || !_stricmp(b, "vulkan") || eden) {   /* (hookshot: Vulkan unless told otherwise; a started game has no RX_BACKEND) */

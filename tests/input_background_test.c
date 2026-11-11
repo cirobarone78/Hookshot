@@ -6,6 +6,18 @@
 #include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 #include "input_constants.inc"
+/* Runtime API boundary spy; the separate socket fixture exercises its real state machine. */
+enum { HOS_DEBUG_LEGACY = -1, HOS_DEBUG_PLAYER, HOS_DEBUG_EXCLUSIVE, HOS_DEBUG_SHARED };
+static int debug_mode = HOS_DEBUG_LEGACY, observed;
+static int hos_debug_input(uint64_t *buttons, int32_t stick[4]) {
+    if (debug_mode == HOS_DEBUG_SHARED || debug_mode == HOS_DEBUG_EXCLUSIVE) {
+        *buttons |= 1; stick[1] = 12345;
+    }
+    return debug_mode;
+}
+static void hos_debug_observe_input(uint64_t buttons, const int32_t stick[4]) {
+    (void)buttons; (void)stick; observed++;
+}
 /* API spies must not collide with Windows SDK/import-library names. */
 #define GetCurrentProcessId fixture_GetCurrentProcessId
 #define InterlockedCompareExchange64 fixture_InterlockedCompareExchange64
@@ -14,6 +26,9 @@ typedef void *HWND;
 typedef uint32_t DWORD;
 typedef intptr_t LONG_PTR;
 typedef struct { uint64_t x[32]; } Ctx;
+#ifdef __linux__
+void hos_debug_scene_poll(Ctx *c) { (void)c; } /* Callee/context behavior has its own fixture. */
+#endif
 enum { GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x8000000,
        VK_MENU = 0x12, VK_RETURN = 0x0d, VK_LEFT = 0x25, VK_UP, VK_RIGHT, VK_DOWN,
        VK_LBUTTON = 1, VK_RBUTTON = 2, VK_MBUTTON = 4, VK_XBUTTON1 = 5, VK_XBUTTON2 = 6 };
@@ -169,6 +184,25 @@ int main(int argc, char **argv) {
     CHECK(!pads_in_background("0", 1));    /* HOS_INPUT_BACKGROUND=0 wins over the menu */
     memory = calloc(512, 1); CHECK(memory);
     const char *name = argv[1];
+    if (!strcmp(name, "debug-handoff")) {
+        /* A 24-hour legacy neutral script must not keep blocking the player after an API handoff. */
+        front = 1;
+        debug_mode = HOS_DEBUG_EXCLUSIVE;
+        packet(1ULL << B_A, 0, 12345, 0);
+        CHECK(!pad_merges && !key_queries);
+        debug_mode = HOS_DEBUG_PLAYER;
+        packet((1ULL << B_B) | (1ULL << B_X), 32767, 0, 8000);
+        debug_mode = HOS_DEBUG_SHARED;
+        packet((1ULL << B_A) | (1ULL << B_B) | (1ULL << B_X), 32767, 12345, 8000);
+        front = 0;
+        packet(1ULL << B_A, 0, 12345, 0);
+        debug_mode = HOS_DEBUG_PLAYER;
+        packet(0, 0, 0, 0);
+        CHECK(observed == 5);
+        free(memory);
+        puts("PASS: API exclusive/shared/player routing and handoff to foreground devices");
+        return 0;
+    }
     if (!strcmp(name, "frame-hold") || !strcmp(name, "live-frame") || !strcmp(name, "reuse-frame") ||
         !strcmp(name, "wall") || !strcmp(name, "zero") || !strcmp(name, "empty")) {
         frame_clock_case(name);

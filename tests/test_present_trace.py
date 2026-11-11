@@ -35,7 +35,7 @@ static int64_t next_frame_at, window_start, frames_in_window, shown_at[16];
 static volatile LONG64 presents, shown_count;
 static volatile uint64_t hos_mkw_pacer;
 static uint32_t guest32;
-static int scans, steps, sleeps, reads;
+static int scans, steps, sleeps, reads, debug_presents;
 static int64_t clock_now;
 typedef struct { int unused; } nvn_tex;
 typedef struct { int ntex, crop[4], presents; } nvn_win;
@@ -59,6 +59,10 @@ static void hos_vcore_back(void) { clock_now += back_work; }
 #define G64(a) ((uint64_t)0)
 #define GP(a) ((void *)(uintptr_t)(a))
 static int64_t InterlockedIncrement64(volatile LONG64 *p) { return ++*p; }
+static void hos_debug_present(uint64_t frame) {
+    ++debug_presents;
+    if (frame != (uint64_t)hos_present_count || frame != (uint64_t)debug_presents) exit(92);
+}
 static int64_t hos_now_ns(void) { ++reads; return clock_now; }
 static void hos_sleep_ns(int64_t ns) { (void)ns; ++sleeps; }
 static void scan_dt(long long frame) { (void)frame; ++scans; }
@@ -89,7 +93,8 @@ int main(int argc, char **argv) {
         }
     }
     if (presents != 5 || shown_count != 5 || scans != 5 || steps != 5 || sleeps != 0 ||
-        reads != (enabled ? 25 : 5) || window.presents != 5 || hos_present_count != 5) return 3;
+        reads != (enabled ? 25 : 5) || window.presents != 5 || hos_present_count != 5 ||
+        debug_presents != 5) return 3;
     printf("STATE %lld %lld %lld %d %d %d\n", (long long)presents, (long long)shown_count,
            (long long)next_frame_at, scans, steps, sleeps);
     if (!enabled) {

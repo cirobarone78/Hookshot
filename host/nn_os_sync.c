@@ -46,6 +46,8 @@ typedef struct Obj {
     struct Obj *mw;    /* holder -> the multi-wait it is linked to */
     int spin_misses, spin_waits;
     int64_t sig_ns;      /* (HOS_WAKE_LAT: when it was last signaled / sent to) */
+    int64_t trace_signal_ns; /* HOS_SYNC_WAIT_TRACE_MS: last signal, under lk */
+    DWORD trace_signal_tid;
     struct Obj *spare;   /* (on the spare list: see spares) */
 } Obj;
 
@@ -217,6 +219,8 @@ static Obj *obj_nockpt(uint64_t key, int kind) {
     }
     return obj_lookup(key, kind);
 }
+
+
 
 static Obj *obj_lookup(uint64_t key, int kind) {
     static int locked_reads = -1;
@@ -613,9 +617,44 @@ static void event_init(uint64_t key, int signaled, int clear_mode) {
     e->signaled = signaled;
     e->autoclear = clear_mode == 1;   /* EventClearMode_AutoClear = 1, ManualClear = 0 */
 }
+/* Per-wait diagnostics: copy signal metadata under the object lock, emit after
+   releasing it. The last signal is correlation evidence, not proof of a unique
+   causal producer (manual-reset events can have multiple waiters/signals). */
+static int sync_wait_trace_ms(void) {
+    static _Thread_local int initialized, threshold;
+    if (!initialized) {
+        const char *value = getenv("HOS_SYNC_WAIT_TRACE_MS");
+        threshold = value ? atoi(value) : 0;
+        if (threshold < 0) threshold = 0;
+        initialized = 1;
+    }
+    return threshold;
+}
+static int64_t sync_wait_trace_start(void) {
+    if (!sync_wait_trace_ms()) return 0;
+    const char *filter = getenv("HOS_SYNC_WAIT_TRACE_THREAD");
+    if (filter && strcmp(filter, hos_thread_name(hos_self()))) return 0;
+    return hos_now_ns();
+}
+static void sync_wait_trace_emit(uint64_t key, int64_t start, int64_t end,
+                                 int64_t signal_ns, DWORD signal_tid, int got) {
+    static volatile LONG count;
+    if (!start || end - start < (int64_t)sync_wait_trace_ms() * 1000000) return;
+    if (InterlockedIncrement(&count) > 4096) return;
+    hos_log("sync-wait: kind=event key=%#llx waiter_tid=%lu start_ns=%lld end_ns=%lld "
+            "signal_ns=%lld signal_tid=%lu got=%d name=%s",
+            (unsigned long long)key, (unsigned long)GetCurrentThreadId(),
+            (long long)start, (long long)end, (long long)signal_ns,
+            (unsigned long)signal_tid, got, hos_thread_name(hos_self()));
+}
+
 static void event_signal(Obj *e) {
     AcquireSRWLockExclusive(&e->lk);
     e->signaled = 1;
+    if (sync_wait_trace_ms()) {
+        e->trace_signal_ns = hos_now_ns();
+        e->trace_signal_tid = GetCurrentThreadId();
+    }
     if (wake_lat_on()) e->sig_ns = hos_now_ns();
     ReleaseSRWLockExclusive(&e->lk);
     WakeAllConditionVariable(&e->cv);
@@ -665,6 +704,7 @@ static void wake_lat_note(int how, int64_t lat_ns) {   /* how: 0 ready, 1 spun, 
 }
 
 static int event_wait(Obj *e, int64_t timeout_ns, int try_only) {
+    const int64_t trace_start = try_only ? 0 : sync_wait_trace_start();
     int64_t deadline = timeout_ns > 0 ? hos_now_ns() + timeout_ns : 0;
     const int was_set = e->signaled > 0;
     if (!try_only) spin_until_set(e, &e->signaled);
@@ -679,7 +719,12 @@ static int event_wait(Obj *e, int64_t timeout_ns, int try_only) {
     int got = e->signaled;
     if (got && !try_only && wake_lat_on()) wake_lat_note(slept ? 2 : spun ? 1 : 0, slept ? hos_now_ns() - e->sig_ns : 0);
     if (got && e->autoclear) e->signaled = 0;
+    const uint64_t trace_key = trace_start ? e->key : 0;
+    const int64_t trace_signal = trace_start ? e->trace_signal_ns : 0;
+    const DWORD trace_tid = trace_start ? e->trace_signal_tid : 0;
+    const int64_t trace_end = trace_start ? hos_now_ns() : 0;
     ReleaseSRWLockExclusive(&e->lk);
+    if (trace_start) sync_wait_trace_emit(trace_key, trace_start, trace_end, trace_signal, trace_tid, got);
     return got;
 }
 

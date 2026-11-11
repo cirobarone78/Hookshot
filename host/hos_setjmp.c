@@ -122,7 +122,10 @@ __attribute__((naked, returns_twice)) int recomp_sj_setjmp(void **buf) {
 }
 
 __attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int value) {
+    /* Registers and rsp change independently during this nonlocal transfer.
+       There is no single caller frame to unwind through at every instruction. */
     __asm__ volatile(
+        ".cfi_undefined %rip\n\t"
         "movq 0(%rdi), %rbx\n\t"
         "movq 8(%rdi), %rbp\n\t"
         "movq 32(%rdi), %r12\n\t"

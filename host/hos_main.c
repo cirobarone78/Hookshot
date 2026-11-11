@@ -9,6 +9,7 @@
    Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
+#include "hos_debug.h"
 #include "hos_paths.h"
 #include "hos_wide_size.h"   /* (the widescreen picture's size, shared with the Insert menu) */
 #include "../gpu/vk/vk_api.h"
@@ -1527,6 +1528,7 @@ static int game_main(int argc, char **argv) {
         return 1;
     }
     hos_mem_init(hos_image_end);
+    hos_debug_memory_window(A64_MEM, GUEST_SPACE, hos_image_base, hos_image_end);
     {   /* (hookshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
            Ultrawide (off unless it says 1) takes the main monitor's shape. The game's picture takes that shape at its own height (the
            world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio.
@@ -1654,6 +1656,7 @@ int main(int argc, char **argv) {
     load_hookshot_env();
     driver_cache_room();
     game_argc = argc, game_argv = argv;
+    hos_debug_init();
     int prepare_shaders = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--prepare-shaders")) prepare_shaders = 1;

@@ -28,6 +28,7 @@ struct HosThread {
     uint64_t tls_slots[HOS_TLS_SLOTS];
     char name[48];
     HANDLE handle;
+    DWORD host_tid; /* immutable after entry; correlates diagnostic waits with native stacks */
     int started;
     /* the kernel side (hos_svc.c): this thread's Horizon handle and the event it blocks on */
     uint32_t kernel_handle;
@@ -461,6 +462,7 @@ Ctx *hos_boot_main_thread(uint64_t stack_size) {
     setup_guest(t);
     t->ctx.x[31] = (t->stack + stack_size) & ~15ULL;
     cur = t;
+    t->host_tid = GetCurrentThreadId();
     track(t);
     hos_vcore_back();   /* (virtual cores: before any guest code) */
     return &t->ctx;
@@ -469,6 +471,7 @@ Ctx *hos_boot_main_thread(uint64_t stack_size) {
 static DWORD WINAPI thread_main(void *p) {
     HosThread *t = (HosThread *)p;
     cur = t;
+    t->host_tid = GetCurrentThreadId();
     Ctx *c = &t->ctx;
     c->x[0] = t->arg;
     c->x[30] = 0;
@@ -1341,6 +1344,53 @@ static int64_t vc_env_ns(const char *name, int64_t us) {
     const char *e = getenv(name);
     return (e ? atoll(e) : us) * 1000;
 }
+/* Opt-in, one ownership snapshot per slow acquisition, at most 256 per process.
+   Copy under vc_lock; format/output only after releasing it. No guest context is
+   read concurrently. Times share hos_now_ns with native present intervals. */
+typedef struct {
+    int64_t at_ns, waited_ns;
+    unsigned mask;
+    DWORD waiter;
+    struct { DWORD tid; int priority, kick; char name[48]; } owner[8];
+} VcWaitTrace;
+static void vc_trace_capture(VcWaitTrace *r, HosThread *t, int64_t now, int64_t waited) {
+    static int threshold_ms = -1;
+    static unsigned count;
+    static const char *thread_filter;
+    if (threshold_ms < 0) {
+        const char *e = getenv("HOS_VCORE_TRACE_MS");
+        threshold_ms = e ? atoi(e) : 0;
+        thread_filter = getenv("HOS_VCORE_TRACE_THREAD");
+        if (threshold_ms < 0) threshold_ms = 0;
+    }
+    if (!threshold_ms || r->at_ns || count >= 256 || waited < (int64_t)threshold_ms * 1000000) return;
+    if (thread_filter && strcmp(thread_filter, t->name)) return;
+    ++count;
+    r->at_ns = now;
+    r->waited_ns = waited;
+    r->waiter = t->host_tid;
+    r->mask = vc_allowed(t);
+    for (int k = 0; k < vc_cores(); ++k) {
+        HosThread *h = vc_owner[k];
+        if (!(r->mask >> k & 1) || !h) continue;
+        r->owner[k].tid = h->host_tid;
+        r->owner[k].priority = h->priority;
+        r->owner[k].kick = h->vc_kick;
+        memcpy(r->owner[k].name, h->name, sizeof r->owner[k].name);
+        r->owner[k].name[sizeof r->owner[k].name - 1] = 0;
+    }
+}
+static void vc_trace_emit(const VcWaitTrace *r, int64_t total_ns, int held) {
+    if (!r->at_ns) return;
+    hos_log("vcore-wait: at_ns=%lld waiter_tid=%lu waited_ns=%lld total_ns=%lld held=%d mask=%x",
+            (long long)r->at_ns, (unsigned long)r->waiter, (long long)r->waited_ns,
+            (long long)total_ns, held, r->mask);
+    for (int k = 0; k < 8; ++k)
+        if (r->mask >> k & 1)
+            hos_log("vcore-owner: at_ns=%lld waiter_tid=%lu core=%d owner_tid=%lu priority=%d kick=%d name=%s",
+                    (long long)r->at_ns, (unsigned long)r->waiter, k, (unsigned long)r->owner[k].tid,
+                    r->owner[k].priority, r->owner[k].kick, r->owner[k].tid ? r->owner[k].name : "-");
+}
 static void vc_acquire(HosThread *t) {
     static int64_t esc_better = -1, esc_eq, slice;
     if (esc_better < 0) {
@@ -1356,6 +1406,7 @@ static void vc_acquire(HosThread *t) {
         ReleaseSRWLockExclusive(&vc_lock);
         return;
     }
+    VcWaitTrace trace = {0};
     const int64_t t0 = hos_now_ns();
     t->vc_since = t0;
     t->vc_queued = 1;
@@ -1388,7 +1439,9 @@ static void vc_acquire(HosThread *t) {
             vc_take(t, c);
             break;
         }
-        const int64_t waited = hos_now_ns() - t0;
+        const int64_t now = hos_now_ns();
+        const int64_t waited = now - t0;
+        vc_trace_capture(&trace, t, now, waited);
         if (waited > (worst ? esc_better : esc_eq)) {
             vc_dequeue(t);
             vc_st.escapes++;
@@ -1411,7 +1464,9 @@ static void vc_acquire(HosThread *t) {
     vc_st.wait_ns += waited;
     if (waited > vc_st.max_ns) vc_st.max_ns = waited;
     vc_stats_locked(hos_now_ns());
+    const int held = t->vc_held;
     ReleaseSRWLockExclusive(&vc_lock);
+    vc_trace_emit(&trace, waited, held);
 }
 static void vc_release(HosThread *t) {
     if (!t->vc_held) return;
