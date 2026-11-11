@@ -6,8 +6,8 @@ game wrote through it. Builds host/oot_heap_retry.c, as it is, over a guest memo
 size, parent, a vtable with tryAlloc and getFreeSize) and a stand-in for the game's f_80522050, then checks:
 
 - an allocation that succeeds is the game's alone: one call, nothing logged, nothing changed;
-- a GPU allocation that fails is tried again after short waits (a free in flight), then in each parent with room, then in
-  the game's default heap; the request names its own heap again afterwards; nothing with room: it fails as before;
+- a GPU allocation that fails is tried again in each parent with room, then in the game's default heap (no waits:
+  it never sleeps); the request names its own heap again afterwards; nothing with room: it fails as before;
 - the CPU buffer is tried in each parent with room, returned in x0, the other registers and the flags as they were;
 - HOS_GPU_ALLOC_RETRY=0: the game's call alone, as shipped; HOS_GPU_ALLOC_TEST_FAIL=<n>: the first n refused by the named
   heap without calling it (nothing leaks), and the retry makes them;
@@ -175,11 +175,11 @@ int main(int argc, char **argv) {
     hos_oot_gpu_alloc(&c, game_gpu_alloc);
     CHECK((c.x[0] & 1) && game_calls == 1 && !logs && !sleeps && recomp_load64(&c, REQ + 8) == H(0));
 
-    /* a free in flight: made after a wait, in its own heap */
-    reset(), free_after_calls[0] = 2;
+    /* full, its parent with room: made there at once, no sleep */
+    reset(), room[1] = 1 << 20;
     request(&c, H(0), 4);
     hos_oot_gpu_alloc(&c, game_gpu_alloc);
-    CHECK((c.x[0] & 1) && game_calls == 2 && sleeps == 1 && recomp_load64(&c, REQ + 8) == H(0));
+    CHECK((c.x[0] & 1) && game_calls == 2 && !sleeps && room[1] == (1 << 20) - 0x400 && recomp_load64(&c, REQ + 8) == H(0));
 
     /* full, its parent too, the root has room: made there; the request names its heap again */
     reset(), room[2] = 1 << 20;
@@ -199,7 +199,8 @@ int main(int argc, char **argv) {
     request(&c, H(0), 4);
     hos_oot_gpu_alloc(&c, game_gpu_alloc);
     CHECK(!(c.x[0] & 1) && logs >= 3 && recomp_load64(&c, REQ + 8) == H(0));
-    puts("PASS: GPU memory from a full heap: after a wait, in a parent with room, in the default heap, or not at all");
+    CHECK(!sleeps);
+    puts("PASS: GPU memory from a full heap: in a parent with room, in the default heap, or not at all; never a sleep");
 
     /* the CPU buffer: in the nearest parent with room; x0 the block, everything else as it was */
     reset(), room[2] = 1 << 20;
@@ -219,20 +220,30 @@ int main(int argc, char **argv) {
     c = before;
     hos_oot_heap_retry(&c, H(0), 0x4198, 8, 0x80456910ull);
     CHECK(c.x[0] && room[1] == (1 << 20) - 0x4198);
+    reset(), room[1] = 1 << 20;   /* (the second site, the +168 buffer, the same way) */
+    c = before;
+    hos_oot_heap_retry(&c, H(0), 0x800, 8, 0x80456da4ull);
+    CHECK(c.x[0] && room[1] == (1 << 20) - 0x800);
     CHECK(!hos_oot_heap_refuse());
     puts("PASS: the model buffer from a full heap: made in its nearest parent with room, x0 alone changed");
     return 0;
 }
 '''
 
-# (lifted text shaped as the lift writes it: the two places' exact lines)
+# (lifted text shaped as the lift writes it: the four places' exact lines, and another caller of f_80522050)
 LIFTED = '''#include "a64.h"
 void f_80522050(Ctx *A64_NOESC);
 void f_804566e0(Ctx *__restrict A64_NOESC c) {
     c->x[8]=recomp_load64(c,c->x[8] + 48);
 { uint64_t _t = c->x[8]; c->x[30] = 0x80456910ULL; A64_ICALL(c, _t); }
     recomp_store64_sp(c,c->x[27] + 200,c->x[0]);
+{ uint64_t _t = c->x[8]; c->x[30] = 0x80456da4ULL; A64_ICALL(c, _t); }
+    recomp_store64_sp(c,c->x[27] + 168,c->x[0]);
 c->x[30] = 0x80456f1cULL; f_80522050(c);
+c->x[30] = 0x80457098ULL; f_80522050(c);
+}
+void f_80dfe000(Ctx *__restrict A64_NOESC c) {
+c->x[30] = 0x80dfe6a4ULL; f_80522050(c);
 }
 void f_80522050(Ctx *__restrict A64_NOESC c) {
     c->x[0] = 0x1ULL;
@@ -247,14 +258,22 @@ def main():
     a = p.parse_args()
 
     out, found = oot_patches.patch_heap_retry(LIFTED)
-    assert found == 3, found
-    assert out.count("static void f_80522050_game(Ctx *__restrict A64_NOESC c) {") == 1
-    assert out.count("void f_80522050(Ctx *__restrict A64_NOESC c) { hos_oot_gpu_alloc(") == 1
-    assert out.count("hos_oot_heap_retry(c, _hh, _hn, _ha, 0x80456910ULL)") == 1
-    assert oot_patches.patch_heap_retry(out) == (out, 3), "a second run changed the text"
-    other = LIFTED.replace("0x80456910ULL", "0x80456914ULL").replace("f_80522050(Ctx *__restrict", "f_80522054(Ctx *__restrict")
-    assert oot_patches.patch_heap_retry(other) == (other, 0), "another version's text was edited"
-    print("PASS: nx2/oot_patches.py: both places edited once, a second run changes nothing, other text is left alone")
+    assert found == [2, 2], found
+    assert out.count("hos_oot_gpu_alloc(c, f_80522050)") == 2
+    assert "c->x[30] = 0x80dfe6a4ULL; f_80522050(c);" in out, "another caller of f_80522050 was changed"
+    assert "void f_80522050(Ctx *__restrict A64_NOESC c) {" in out, "f_80522050 itself was changed"
+    for lr in ("0x80456910ULL", "0x80456da4ULL"):
+        assert out.count("hos_oot_heap_retry(c, _hh, _hn, _ha, %s)" % lr) == 1, lr
+    assert out.count(oot_patches.GPU_ALLOC_DECL) == 1 and out.count(oot_patches.HEAP_ALLOC_DECL) == 1
+    assert oot_patches.patch_heap_retry(out) == (out, [2, 2]), "a second run changed the text"
+    other = LIFTED.replace("0x80456910ULL", "0x80456914ULL").replace("0x80456da4ULL", "0x80456da8ULL") \
+                  .replace("0x80456f1cULL", "0x80456f20ULL").replace("0x80457098ULL", "0x8045709cULL")
+    assert oot_patches.patch_heap_retry(other) == (other, [0, 0]), "another version's text was edited"
+    import inspect
+    assert "patch_heap_retry(out) if protect_hearts else" in inspect.getsource(oot_patches.apply), \
+        "the edits are made on builds other than the supported one"
+    print("PASS: nx2/oot_patches.py: the four places edited once (f_80522050's other callers left), a second run changes "
+          "nothing, other text is left alone, the supported build only")
 
     cc = shutil.which(a.cc) or shutil.which("gcc") or shutil.which("clang")
     if not cc:

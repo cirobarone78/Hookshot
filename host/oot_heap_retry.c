@@ -2,27 +2,35 @@
    game going on with a null pointer and crashing a few frames later.
 
    The OptimizeChangeBank thread rebuilds a model's material block (f_804566e0, "gsys::ModelResource(MatBlock)") and takes
-   memory for it from heaps its caller names (its second argument's +8 for the CPU's part, +16 for the GPU's). When a heap is
-   full neither allocation is checked:
-   - the CPU part, a 0x4198-byte buffer from the heap's tryAlloc (main+0x456904, vtable +0x30), is stored null and the bump
-     allocator over it hands out guest address 0: the next store, in f_8044cb30, writes guest 0x8 (issue 1697: "CRASH:
-     exception 0xc0000005 (write ..., guest 0x8)", thread OptimizeChangeBanc, lr 0x80456d48, every time a few frames after
-     loading that player's save, since 2.0.12);
-   - the GPU part, f_80522050 (main+0x456f18), leaves the material block with no memory pool (main+0x457248), and the block
-     is written to guest address 0 two calls later (TomShafford/Hookshot's crash at backflip + attack).
-   Both are tried again: the GPU memory after a few 2 ms waits (the game frees a block once the GPU is done with it), then
-   in each parent heap up to the root that has room, then in the game's default heap; the CPU buffer in each parent heap
-   that has room. A block made in a parent heap is freed by sead's free, which finds the heap that holds it. Each failure
-   is logged with its heap's name, size and free space.
+   memory for it from heaps its caller names (its second argument's +8 for the CPU's parts, +16 for the GPU's): small heaps
+   of their own per model resource ("Model/....bfres", tens of KB), children of a large one. When such a heap is full none
+   of these allocations is checked:
+   - two CPU buffers from the heap's tryAlloc (vtable +0x30), at 0x8045690c (stored at the MatBlock's +200, its bump
+     allocator's memory) and 0x80456da0 (stored at +168, the same base/used/size layout), each sized for the model. A
+     null one makes its bump allocator hand out guest address 0: the next store, in f_8044cb30, writes guest 0x8 (issue
+     1697: "CRASH: exception 0xc0000005 (write ..., guest 0x8)", thread OptimizeChangeBanc, lr 0x80456d48, every time a few
+     frames after loading that player's save, since 2.0.12);
+   - the GPU memory, f_80522050 called at 0x80456f18 and 0x80457094, leaves the material block with no memory pool
+     (0x80457248), and the block is written to guest address 0 two calls later (TomShafford/Hookshot's crash at
+     backflip + attack).
+   Each is tried again in the heap's parents up to the root, the first with room (the GPU memory then in the game's
+   default heap). Only these call sites are changed: f_80522050's other callers (some 30) are as shipped.
 
-   The GPU part is ported from TomShafford/Hookshot 55d68e8cd6 and 65c1998222 (GPL-3.0, a Hookshot fork), by TomShafford.
+   Freeing: the MatBlock's destructor (f_8093f940) frees +168 and +200 through f_8021dea0, the game's free by address,
+   which walks the heap tree for the heap whose range holds the block (read from the lifted code, not traced in a run), so
+   a block from a parent goes back to that parent. The model's own heap does not count it (MatBlock +680's accounting
+   neither). Every block moved to a parent is counted per call site, and the totals are logged every 16 moves after the
+   first 60 log lines (a growing total over a session would be a leak).
+
+   The GPU part is ported from TomShafford/Hookshot 55d68e8cd6 and 65c1998222 (GPL-3.0, a Hookshot fork), by TomShafford;
+   its waits before the parents are left out (its own log showed they did not help).
 
    A sead heap here (vtable 0x84c172c8, the heap class of these): +0x20 its name, +0x28 its memory, +0x30 its size, +0x38 its
    parent, vtable +0x30 tryAlloc(size, alignment), vtable +0x80 its free size (ExpHeap: the free list summed, main+0x834916d0).
 
-   HOS_GPU_ALLOC_RETRY=0: neither is tried again (as shipped).
-   HOS_GPU_ALLOC_TEST_FAIL=<n> or <gpu>,<cpu> (a test): the first n allocations of each kind (or that many of the GPU memory
-   and of the CPU buffer) are refused by the heap they name, as a full heap would, so the retry runs (with
+   HOS_GPU_ALLOC_RETRY=0: none is tried again (as shipped).
+   HOS_GPU_ALLOC_TEST_FAIL=<n> or <gpu>,<cpu> (a test): the first n allocations of each kind at these sites (or that many of
+   the GPU memory and of the CPU buffers) are refused by the heap they name, as a full heap would, so the retry runs (with
    HOS_GPU_ALLOC_RETRY=0: the game's crash, as shipped). */
 #include "hos.h"
 #include <stdio.h>
@@ -38,12 +46,20 @@ static int retry_on(void) {
 }
 /* HOS_GPU_ALLOC_TEST_FAIL: 1 while this kind's first n allocations are refused (kind 0 the GPU memory, 1 the CPU buffer) */
 static int test_fail(int kind) {
-    static long left[2] = {-1, -1};
-    if (left[kind] < 0) {   /* ("<n>": both kinds; "<gpu>,<cpu>": each its own) */
-        const char *e = getenv("HOS_GPU_ALLOC_TEST_FAIL"), *comma = e ? strchr(e, ',') : NULL;
-        left[kind] = !e ? 0 : kind && comma ? atol(comma + 1) : atol(e);
+    static long left[2];
+    static volatile int read;   /* (set once both counts are in: no thread decrements a count another is still setting) */
+    if (!__atomic_load_n(&read, __ATOMIC_ACQUIRE)) {   /* ("<n>": both kinds; "<gpu>,<cpu>": each its own) */
+        static volatile long lock;
+        while (__sync_lock_test_and_set(&lock, 1)) {}
+        if (!read) {
+            const char *e = getenv("HOS_GPU_ALLOC_TEST_FAIL"), *comma = e ? strchr(e, ',') : NULL;
+            left[0] = e ? atol(e) : 0;
+            left[1] = !e ? 0 : comma ? atol(comma + 1) : atol(e);
+            __atomic_store_n(&read, 1, __ATOMIC_RELEASE);
+        }
+        __sync_lock_release(&lock);
     }
-    return __atomic_load_n(&left[kind], __ATOMIC_RELAXED) > 0 && __atomic_sub_fetch(&left[kind], 1, __ATOMIC_RELAXED) >= 0;
+    return __atomic_sub_fetch(&left[kind], 1, __ATOMIC_RELAXED) >= 0;
 }
 static int readable(uint64_t a) { return a >= 0x80000000ULL && a < (1ULL << 39) - 0x100; }
 static int guest_string(Ctx *c, uint64_t at, char *out, int n) {   /* (a guest C string: 1 if it reads as one) */
@@ -94,10 +110,20 @@ static int tell(void) {   /* (the first 60 failures logged) */
     static volatile long told;
     return __atomic_fetch_add(&told, 1, __ATOMIC_RELAXED) < 60;
 }
+/* Blocks moved to a parent heap, per call site (0, 1: the CPU buffers at 0x8045690c and 0x80456da0; 2: the GPU memory),
+   and their bytes: the totals logged every 16th move after the log budget, and with each move while it lasts */
+static volatile long moved_n[3], moved_bytes[3];
+static void count_moved(int site, uint64_t bytes, int say) {
+    static const char *const names[] = {"model buffer (0x8045690c)", "model buffer (0x80456da0)", "GPU memory"};
+    const long n = __atomic_add_fetch(&moved_n[site], 1, __ATOMIC_RELAXED);
+    const long b = __atomic_add_fetch(&moved_bytes[site], (long)bytes, __ATOMIC_RELAXED);
+    if (say || n % 16 == 0)
+        hos_log("oot: heap-full retries so far: %s %ld blocks, %ld KB in parent heaps", names[site], n, b >> 10);
+}
 
 /* ---- the GPU memory: f_80522050(x0 the memory block, x1 the request: +0 the count, +8 the heap, +0x20 what it is for; x2
-   the size of one). nx2/oot_patches.py renames the game's function f_80522050_game and makes f_80522050 call this ---- */
-static int gpu_alloc_in(Ctx *c, void (*game)(Ctx *), uint64_t a0, uint64_t a1, uint64_t a2, uint64_t lr, uint64_t heap,
+   the size of one). nx2/oot_patches.py makes f_804566e0's two calls of it call this, with the game's function ---- */
+static int gpu_alloc_in(Ctx *c, A64Fn game, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t lr, uint64_t heap,
                         uint64_t in) {
     recomp_store64(c, a1 + 8, in);
     c->x[0] = a0, c->x[1] = a1, c->x[2] = a2, c->x[30] = lr;
@@ -105,7 +131,7 @@ static int gpu_alloc_in(Ctx *c, void (*game)(Ctx *), uint64_t a0, uint64_t a1, u
     recomp_store64(c, a1 + 8, heap);
     return (int)(c->x[0] & 1);
 }
-void hos_oot_gpu_alloc(Ctx *c, void (*game)(Ctx *)) {
+void hos_oot_gpu_alloc(Ctx *c, A64Fn game) {
     const uint64_t a0 = c->x[0], a1 = c->x[1], a2 = c->x[2], lr = c->x[30];
     const int on = retry_on() && readable(a1);
     const int refused = readable(a1) && recomp_load64(c, a1 + 8) && test_fail(0);
@@ -127,15 +153,7 @@ void hos_oot_gpu_alloc(Ctx *c, void (*game)(Ctx *)) {
     if (say)
         hos_log("oot: GPU memory for %s, %#llx bytes from %s, %s (lr %#llx)", name, (unsigned long long)(count * a2), where,
                 refused ? "refused by HOS_GPU_ALLOC_TEST_FAIL" : "failed", (unsigned long long)lr);
-    int ok = 0, waits = 0;
-    for (; !refused && waits < 3 && !ok; waits++) {   /* (frees in flight) */
-        hos_sleep_ns(2000000);
-        ok = gpu_alloc_in(c, game, a0, a1, a2, lr, heap, heap);
-    }
-    if (ok) {
-        if (say) hos_log("oot: GPU memory: made after %d waits of 2 ms", waits);
-        return;
-    }
+    int ok = 0;
     /* (the heaps it was made in: their parents up to the root, the free left in them after their children) */
     uint64_t h = heap;
     for (int up = 0; up < 8 && readable(h) && !ok; up++) {
@@ -154,11 +172,13 @@ void hos_oot_gpu_alloc(Ctx *c, void (*game)(Ctx *)) {
         ok = gpu_alloc_in(c, game, a0, a1, a2, lr, heap, 0);
         if (say) hos_log("oot: GPU memory: %s in the game's default heap", ok ? "made" : "not made either");
     }
+    if (ok) count_moved(2, count * a2, say);
     if (!ok && say) hos_log("oot: GPU memory: no heap had room: the game goes on without it (and crashes writing to it)");
 }
 
-/* ---- the CPU buffer: the heap's tryAlloc at main+0x456904 gave x0 = 0 (or HOS_GPU_ALLOC_TEST_FAIL refused it: nx2/oot_patches.py
-   then made no call). Tried in each parent with room; x0 the block, or 0 still ---- */
+/* ---- the CPU buffers: the heap's tryAlloc at 0x8045690c or 0x80456da0 (lr 0x80456910, 0x80456da4) gave x0 = 0 (or
+   HOS_GPU_ALLOC_TEST_FAIL refused it: nx2/oot_patches.py then made no call). Tried in each parent with room; x0 the block,
+   or 0 still ---- */
 int hos_oot_heap_refuse(void) { return test_fail(1); }
 void hos_oot_heap_retry(Ctx *c, uint64_t heap, uint64_t size, uint64_t align, uint64_t lr) {
     if (!retry_on()) {
@@ -184,6 +204,7 @@ void hos_oot_heap_retry(Ctx *c, uint64_t heap, uint64_t size, uint64_t align, ui
             hos_log("oot: model buffer: %s in its parent %s", got ? "made" : "not made either", where);
         }
     }
+    if (got) count_moved(lr == 0x80456da4ULL, size, say);
     if (!got && say) hos_log("oot: model buffer: no heap had room: the game goes on without it (and crashes writing to it)");
     c->x[0] = got;
 }
