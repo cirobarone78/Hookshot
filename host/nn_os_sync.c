@@ -443,7 +443,7 @@ static void mutex_lock_owed(Obj *m, uint64_t guest, int owed) {
 }
 static int handoff_on(void) {   /* HOS_NO_HANDOFF=1: the old way (any thread may take a mutex a signal's waiter is owed) */
     static int v = -1;
-    if (v < 0) v = getenv("HOS_NO_HANDOFF") ? 0 : 1;
+    if (v < 0) v = env_on("HOS_NO_HANDOFF") ? 0 : 1;
     return v;
 }
 /* a waiter in: (cv->lk held) */

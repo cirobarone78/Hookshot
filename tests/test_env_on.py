@@ -95,20 +95,31 @@ def main():
                             str(src), "-o", str(exe)], check=True)
             subprocess.run([str(exe), *argv], check=True)
 
-    # (no on/off switch read the old way: a name read only as getenv(name) != NULL / == NULL anywhere in host/ or gpu/vk)
+    # (no on/off switch read the old way, set-means-on: a game switch (RX_, HOS_, HOOKSHOT_, EDEN_, NVN_) whose every read in
+    # host/ or gpu/ only asks whether it is set: getenv(name) != NULL / == NULL, !getenv(name), getenv(name) followed by ?,
+    # && or ||, or alone between ( or && / || and ) or && / || or the line's end. A line that reads the name twice reads its
+    # value too (getenv(x) ? atoi(getenv(x)) : ...), and a getenv inside a call (atoi(getenv(x)), parse(getenv(x))) is a value)
+    name = r'(?:std::)?getenv\("((?:RX|HOS|HOOKSHOT|EDEN|NVN)_[A-Z0-9_]+)"\)'
+    forms = [re.compile(name + r"\s*[!=]=\s*(?:nullptr|NULL)"), re.compile(r"!\s*" + name),
+             re.compile(name + r"\s*(?:\?|&&|\|\|)"),
+             re.compile(r"(?:(?<![A-Za-z0-9_])\(|(?<=\bif)\(|(?<=while)\(|&&|\|\|)\s*" + name + r"\s*(?:\)|&&|\|\||$)")]
     reads, presence = {}, {}
-    for path in [p for d in ("host", "gpu") for p in (ROOT / d).rglob("*") if p.suffix in (".c", ".cpp", ".h")]:
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for name in re.findall(r'getenv\("([A-Z0-9_]+)"\)', text):
-            reads[name] = reads.get(name, 0) + 1
-        if "gpu/render" in path.as_posix() or "third_party" in path.as_posix():
+    for path in sorted(p for d in ("host", "gpu") for p in (ROOT / d).rglob("*") if p.suffix in (".c", ".cpp", ".h")):
+        rel = path.relative_to(ROOT).as_posix()
+        if "gpu/render" in rel or "third_party" in rel or "/tests/" in rel or "sirit" in rel:
             continue
-        for name in re.findall(r'getenv\("([A-Z0-9_]+)"\)\s*[!=]=\s*(?:nullptr|NULL)', text):
-            presence.setdefault(name, []).append(path.relative_to(ROOT).as_posix())
+        for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").split("\n"), 1):
+            if line.strip().startswith(("//", "/*", "*")):
+                continue
+            for m in re.finditer(name, line):
+                n = m.group(1)
+                reads[n] = reads.get(n, 0) + 1
+                if line.count('getenv("%s")' % n) == 1 and any(f.group(1) == n for form in forms for f in form.finditer(line)):
+                    presence.setdefault(n, []).append("%s:%d" % (rel, number))
     old = sorted(n for n, where in presence.items() if len(where) == reads.get(n, 0))
     if old:
-        raise SystemExit("FAIL: on/off switches still read as set-means-on (getenv(...) != NULL): use env_on:\n  " +
-                         "\n  ".join("%s (%s)" % (n, ", ".join(sorted(set(presence[n])))) for n in old))
+        raise SystemExit("FAIL: on/off switches still read as set-means-on (set to 0 they are on): use env_on:\n  " +
+                         "\n  ".join("%s (%s)" % (n, ", ".join(presence[n])) for n in old))
     print("PASS: env_on's rule in C, C++ and Python (%d values); no on/off switch read the old way" % len(CASES))
 
 

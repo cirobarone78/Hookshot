@@ -908,7 +908,7 @@ static void texels(Ctx *c, int write, int strided) {
     const unsigned level = v && v->set_levels ? v->base_level : 0, layer0 = v && v->set_layers ? v->min_layer : 0;
     if (v && v->set_format && v->format != t->d.format) die("%sTexels through a format view", write ? "Write" : "Read");
     static int texels_log = -1;
-    if (texels_log < 0) texels_log = getenv("RX_NVN_TEXELS_LOG") != NULL;
+    if (texels_log < 0) texels_log = env_on("RX_NVN_TEXELS_LOG");
     if (texels_log) {   /* (debugging: who, from where, and how much of the data is not zero) */
         size_t nz = 0;
         for (uint64_t i = 0; data && i < extent && i < (64u << 20); i++) nz += data[i] != 0;

@@ -567,7 +567,7 @@ Shader::HostTranslateInfo host_info() {
     h.support_float64 = true;
     // (RX_VK_NO_F16, a test: the game's f16 math lowered to f32, as a card without f16 shaders would need (GTX 10xx, issue 98). Eden's
     // lowering made a picture of noise of Kokiri on an RTX card, so it is not used by itself)
-    h.support_float16 = !getenv("RX_VK_NO_F16");
+    h.support_float16 = !env_on("RX_VK_NO_F16");
     h.support_int64 = true;
     h.needs_demote_reorder = false;
     h.support_snorm_render_buffer = true;
@@ -621,7 +621,7 @@ uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uin
         // (as the stream's place sees it, not the game's memory now: that may be its next frames' already, and a
         // handle read from it sampled their textures, for one frame: MKW's shadows in bands. RX_VK_HANDLES_LIVE=1:
         // as before)
-        static const bool live = getenv("RX_VK_HANDLES_LIVE") != nullptr;
+        static const bool live = env_on("RX_VK_HANDLES_LIVE");
         // (EvilOOT: and a binding of no recorded size read as far as asked, as the storage buffer descriptors had it before)
         if (u.addr && (!u.size || (uint64_t)offset + 4 <= (uint64_t)u.size)) {
             if (live) host->gpu_read(u.addr + offset, &v, 4);
@@ -643,7 +643,7 @@ uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program) {
                    const uint64_t base = stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset) |
                                          (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset + 4) << 32;
                    uint32_t v = 0;
-                   static const bool live = getenv("RX_VK_HANDLES_LIVE") != nullptr;
+                   static const bool live = env_on("RX_VK_HANDLES_LIVE");
                    if (base) {
                        if (live) host->gpu_read(base + offset, &v, 4);
                        else ub_read(base + offset, &v, 4);
@@ -710,7 +710,7 @@ uint8_t answer_of(uint32_t handle, bool image) {
 uint8_t canonical_answer(const Program& p, const Program::Answer& a, uint8_t type) {
     static const bool strict = [] {
         const char* capture = getenv("RX_VK_CAPTURE");
-        return getenv("RX_VK_HANDLES_LIVE") || env_on("RX_VK_REGISTER_AT_ONCE") ||
+        return env_on("RX_VK_HANDLES_LIVE") || env_on("RX_VK_REGISTER_AT_ONCE") ||
                (capture && atoi(capture) == 0);
     }();
     if (strict) return type;
@@ -1598,7 +1598,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                     kept_one = !k.empty() && !strncmp(hex, k.c_str(), k.size());
                     at = e == std::string::npos ? keep.size() : e + 1;
                 }
-                if ((!kept_one && (Shader::Backend::SPIRV::mma_software || dev.props.vendorID != 0x10DE)) || getenv("RX_VK_NO_F16"))
+                if ((!kept_one && (Shader::Backend::SPIRV::mma_software || dev.props.vendorID != 0x10DE)) || env_on("RX_VK_NO_F16"))
                     throw std::runtime_error("a network left out on this card");
             }
             const std::vector<uint32_t> spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_pinned(), rt, t->program, bindings);

@@ -2577,7 +2577,7 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
             return {cur->stream, at, n};
         }
         const bool grid_same = st.nvn_stage != 5 || !std::memcmp(c.grid, s.grid, sizeof c.grid);
-        static const bool no_bank_cache = desc_reuse_level() == 0;   // (RX_VK_DESC_REUSE=0: filled every time)
+        static const bool no_bank_cache = desc_reuse_level() == 0;   // (RX_VK_DESC_REUSE=never: filled every time)
         // (hookshot) a graphics stage's c2 is made from its textures, samplers and images, its c0 from its storage buffers: it stands while
         // those do, whatever else was bound (a uniform buffer for each draw). RX_VK_BANK_GEN_OFF=1: while nothing at all was bound anew)
         static const bool stage_gen_off = env_on("RX_VK_BANK_GEN_OFF");
@@ -2734,7 +2734,7 @@ bool slow_desc_timing() {
 /// file, no line, or a file older than options_version since (one whose line was only ever the old default, vk_menu.cpp
 /// load))
 bool menu_env_on(const char* env_name, const char* ini_key_name, bool def = false, int since = 0) {
-    if (const char* e = getenv(env_name)) return atoi(e) != 0;
+    if (const char* e = getenv(env_name)) return !env_value_off(e);   // (hookshot_env.h: the switches' one rule)
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);   // (the game folder, not bin beside the launcher: vk_paths.h)
     std::string ini(exe, n);
@@ -2758,17 +2758,18 @@ bool menu_env_on(const char* env_name, const char* ini_key_name, bool def = fals
 ///      generation, instead of the global one every registration moves
 ///   1  the row's Off: kept while no registration at all was made since
 ///   0  never: every draw builds its own and fills its banks (an A/B against the reuse itself)
-/// RX_VK_DESC_REUSE=0/1/2 goes over the row for a run (it replaces RX_VK_DESC_SLOTGEN, RX_VK_NO_DESC_REUSE and
-/// RX_VK_DESC_REUSE_DGEN, which turned off the texture-destroy check of issue 1126 and is gone)
+/// RX_VK_DESC_REUSE goes over the row for a run, with the row's values: 0 (or off) its Off, 1 (or on) its On; never: level 0.
+/// (It replaces RX_VK_DESC_SLOTGEN, same values, RX_VK_NO_DESC_REUSE=1, now never, and RX_VK_DESC_REUSE_DGEN, which turned
+/// off the texture-destroy check of issue 1126 and is gone: host/hos_main.c names the replacement when one is still set)
 int desc_reuse_level() {
     static int level = -1;
     if (level < 0) {
         const char* e = getenv("RX_VK_DESC_REUSE");
-        level = e ? std::clamp(atoi(e), 0, 2) : menu_env_on("RX_VK_DESC_REUSE", "descriptor_reuse", true, 4) ? 2 : 1;
+        level = e && !strcmp(e, "never") ? 0 : menu_env_on("RX_VK_DESC_REUSE", "descriptor_reuse", true, 4) ? 2 : 1;
         if (level == 2)
             logf("vk: descriptor slotgen ready: draws keep their descriptors through the registrations of slots they do not "
                  "sample (menu: Descriptor reuse)");
-        if (level == 0) logf("vk: RX_VK_DESC_REUSE=0: every draw builds its own descriptors");
+        if (level == 0) logf("vk: RX_VK_DESC_REUSE=never: every draw builds its own descriptors");
     }
     return level;
 }
@@ -6319,9 +6320,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // (hookshot) and no texture went since (texture_destroy_generation: an image evicted, or made again at another size or format,
     // in the same recording): the set it pushed or bound named that texture's old views, which go once the GPU is past the texture's
     // last use, a use the reused set no longer counted. The draws after it sampled freed memory, whatever the driver put there next:
-    // plants and fences glowing white on a Legion Go S, which RX_VK_DESC_REUSE=0 took away (issue 1126)
+    // plants and fences glowing white on a Legion Go S, which RX_VK_DESC_REUSE=never took away (issue 1126)
     const uint64_t reg_gen = registrations_generation(), ub_gen = ub_generation();
-    static const bool no_reuse = desc_reuse_level() == 0;   // (RX_VK_DESC_REUSE=0: every draw builds its own)
+    static const bool no_reuse = desc_reuse_level() == 0;   // (RX_VK_DESC_REUSE=never: every draw builds its own)
     const uint64_t dgen = texture_destroy_generation();
     // (hookshot, issue 640: a mesh fallback draw also pushes the writes at the compute bind point, for its task and mesh
     // dispatches, so they must be its own. A dispatch since its last draw built the compute program's over them: pushed
@@ -7024,7 +7025,7 @@ bool taau_key(uint64_t key) {
     // (the real network where the card runs it as the console does; on the software multiplies it cost most of a frame on AMD's cards, and a
     // locked 60 with this in its place: Hookshot issue 52)
     static const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS")
-                              : Shader::Backend::SPIRV::mma_software || getenv("RX_VK_NO_F16")
+                              : Shader::Backend::SPIRV::mma_software || env_on("RX_VK_NO_F16")
                                     ? "fd029a317a9a4b94" : "-";   // (RX_VK_NO_F16: vk_shader.cpp leaves the network out)
     char hex[24];
     snprintf(hex, sizeof hex, "%016llx", (unsigned long long)key);
