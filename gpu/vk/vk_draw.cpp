@@ -8145,6 +8145,8 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
             if (counted < list.size()) pre->done += list.size() - counted;   // (and the notes no kept variant answered)
         }
     };
+    // (the driver's faults before this run's workers start: one in their first milliseconds counts as this run's, below)
+    const int faults_before = driver_faults();
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
     for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
@@ -8156,7 +8158,6 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     //   game's own start too, where no watchdog is; a real hang before then is the --prepare-shaders watchdog's (vk_main.cpp).
     // Before, it waited for ever. RX_VK_PREDICT_STALL_S=<s>, 0: wait for all
     static const int stall_s = getenv("RX_VK_PREDICT_STALL_S") ? atoi(getenv("RX_VK_PREDICT_STALL_S")) : 30;
-    const int faults_before = driver_faults();
     size_t last_done = 0;
     auto last_change = std::chrono::steady_clock::now();
     bool gone_on = false;

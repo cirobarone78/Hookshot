@@ -754,9 +754,11 @@ std::string skipped_path() {
 //   line, and the game's first start then stopped in the same place
 // - The pipeline cache's save, the last part, has no count and can take minutes on a large cache. When the run went on from a
 //   part and left workers inside the driver (prepare_left_workers), or the driver faulted, the save can wait on them for ever
-//   (vkGetPipelineCacheData), and so can exit() unloading the driver: then the save is stopped as the other parts are, and a run
-//   that gets through it ends at once (prepare_end). Otherwise the save is only reported, and its lines stop after the same 300 s
-//   so that make_game.py's 15 minutes with no line (PREPARE_SILENCE) still stop a save that never ends
+//   (vkGetPipelineCacheData), and so can exit() unloading the driver: then the save is stopped too, after twice the parts' limit
+//   (600 s), and a run that gets through it ends at once (prepare_end). Twice: a fault AMD's retry recovered from ("recovered
+//   with optimization disabled") counts as one, so on such a card every run is risky, and a save that is only slow should not be
+//   stopped at the parts' limit. Otherwise the save is only reported, and its lines stop after the parts' 300 s so that
+//   make_game.py's 15 minutes with no line (PREPARE_SILENCE) still stop a save that never ends
 /// (where the run is, for the watchdog: under one lock, so it reads a part with its own count)
 struct PrepareSeen {
     int part = -1;
@@ -793,6 +795,7 @@ void prepare_watchdog() {
         static const char* const parts[] = {"the shader programs", "the predicted pipelines", "the noted pipelines",
                                             "the pipeline cache's save"};
         const int64_t limit_s = stall_s > 0 ? stall_s : 300;   // (the save's lines stop after this, whatever RX_VK_PREPARE_STALL_S)
+        const int save_stall_s = stall_s * 2;   // (a risky save's stop: twice the parts', above)
         for (;;) {
             Sleep(1000);
             const int64_t now = steady_ms();
@@ -814,14 +817,14 @@ void prepare_watchdog() {
             if (faults != driver_faults_seen.exchange(faults))
                 logf("vk: preparation: the GPU driver faulted %d time%s so far (above): a driver can stop responding after one, so a "
                      "stop here would be why", faults, faults == 1 ? "" : "s");
-            if (stall_s > 0 && still >= stall_s && (at.part < 3 || risky)) {
+            if (stall_s > 0 && (at.part < 3 ? still >= stall_s : risky && still >= save_stall_s)) {
                 if (at.part < 3)
                     logf("vk: preparation: STOPPED: nothing moved for %d s in %s (%zu of %zu): the GPU driver stopped responding%s. "
                          "The rest is built in play, when first drawn; updating the GPU driver may help", stall_s, what, at.done,
                          at.total, faults ? " after it faulted (above)" : "");
                 else
                     logf("vk: preparation: STOPPED: %s waited %d s on the GPU driver, %s. The pipelines are made; only this "
-                         "file is left out. Updating the GPU driver may help", what, stall_s,
+                         "file is left out. Updating the GPU driver may help", what, save_stall_s,
                          faults ? "which faulted (above)" : "which still has pipelines it did not finish");
                 if (FILE* f = fopen(skipped_path().c_str(), "wb")) fclose(f);
                 prepare_end(4);
@@ -837,7 +840,7 @@ void prepare_watchdog() {
                 if (!quiet) continue;
                 if (risky)
                     logf("vk: preparation: still writing %s (%lld s), %s. Stopped at %d s if it does not end", what,
-                         (long long)still, waiting_on, stall_s);
+                         (long long)still, waiting_on, save_stall_s);
                 else if (still < limit_s)
                     logf("vk: preparation: still writing %s (%lld s): every pipeline is made, this is the disk", what,
                          (long long)still);

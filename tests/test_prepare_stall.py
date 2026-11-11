@@ -13,8 +13,9 @@ showing the last line written ("vertex format NVN 0xe -> vk 17"). In one log the
   the pipeline steps' own progress lines (#2186) coming every 10 s; the shader programs' count after a quiet spell, and nothing of
   its own while the pipeline steps move (their lines say it); once nothing has moved for RX_VK_PREPARE_STALL_S, the reason,
   hookshot_prepare_skipped and exit status 4.
-  The pipeline cache's save is stopped the same way only when workers were left in the driver or it faulted; otherwise it is
-  reported, and its lines end so that make_game.py's silence limit still applies.
+  The pipeline cache's save is stopped only when workers were left in the driver or it faulted, and after twice that limit (a
+  fault AMD's retry recovered from counts, so a slow save there is not stopped as early); otherwise it is reported, and its lines
+  end so that make_game.py's silence limit still applies.
 - make_game.py says "the GPU driver stopped responding" for exit status 4.
 
 python -I -B tests/test_prepare_stall.py --cxx clang++
@@ -71,6 +72,7 @@ struct PipeNote { uint64_t key, prog, variant; uint32_t topo; NvnState s; };
 struct Program { uint64_t key; uint64_t variant; };
 struct { uintptr_t device = 1; } dev;
 thread_local bool driver_cache_only = false;
+static bool env_on(const char* n) { const char* v = std::getenv(n); return v && *v && std::strcmp(v, "0"); }   // (a stand-in for compat/hookshot_env.h)
 // 0 quick; 1 one program's pipelines never finish (the last stragglers); 2 each pipeline slow, every program longer than the
 // stall; 3 the driver faults, then nothing finishes, early in the run; 4 nothing finishes early in the run, no fault
 static int mode;
@@ -223,7 +225,7 @@ int main(int argc, char** argv) {
         Sleep(7000);
         return 0;
     }
-    if (c == "save-left") {   // (workers were left in the driver: the save waits on them, and is stopped)
+    if (c == "save-left") {   // (workers were left in the driver: the save waits on them, and is stopped, at twice the parts' limit)
         prepare_moved(3, 0, 0);
         Sleep(20000);
         return 8;
@@ -293,7 +295,8 @@ def check_watchdog(cxx, tmp):
              []),
             ("moving", 0, ["still working on the shader programs"], ["STOPPED", "waiting:"]),
             ("save", 0, ["still writing the pipeline cache's save", "this is the disk"], ["STOPPED", "(5 s)", "(6 s)"]),
-            ("save-left", 4, ["which still has pipelines it did not finish", "STOPPED: the pipeline cache's save waited 4 s"], []),
+            ("save-left", 4, ["which still has pipelines it did not finish", "(5 s)", "Stopped at 8 s",
+                               "STOPPED: the pipeline cache's save waited 8 s"], []),
             ("end", 0, ["@@done shaders"], ["STOPPED"]),
             ("busy-stuck", 4, ["waiting: nothing in the predicted pipelines has finished", "STOPPED"], []),
             ("busy-moving", 0, ["progress line"], ["still working", "waiting:", "STOPPED"])):
