@@ -247,7 +247,17 @@ bool create_device() {
         if (const char* e = getenv("RX_VK_FORCE_MESH_FALLBACK")) v = atoi(e) != 0 ? 2 : v;
         return v >= 0 && v <= 2 ? v : 0;
     }();
-    if (mesh_mode == 2) dev.mesh_shader = false;
+    // (hookshot, issue 2245) RADV's native task/mesh path deadlocks the GPU: the gfx ring and RADV's gang compute ring
+    // end up waiting on each other, and a mesh-only draw hangs with the compute queue empty (devcoredumps on an
+    // RX 6800: no VM fault; waves stuck on gfx in the second). Task + mesh draws alone on the fallback still crash, so
+    // only full Compute is stable there, and the reports span Navi 2x (RX 6800, RX 6600 XT) and the RDNA3 APUs (Steam
+    // Deck OLED, Rog Xbox Ally X). On Linux, where AMD's Vulkan driver is RADV, Automatic picks Compute; Native stays
+    // a choice in the row. RDNA1 and older have no mesh shaders on RADV: for them a no-op.
+    int mesh_mode_used = mesh_mode;
+#ifndef _WIN32
+    if (mesh_mode_used == 0 && dev.props.vendorID == 0x1002) mesh_mode_used = 2;   // (Linux AMD is RADV)
+#endif
+    if (mesh_mode_used == 2) dev.mesh_shader = false;
     else optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
     optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev.external_memory_host);
     optional(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, dev.external_memory_fd);   // (guest memory as udmabufs: vk_memory.cpp import_dma_buf)
