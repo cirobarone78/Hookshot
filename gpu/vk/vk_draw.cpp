@@ -7910,10 +7910,39 @@ void note_color_types(const PipeNote& n, uint8_t types[8]) {
 }
 
 void predicted_sample_write(const std::vector<std::unique_ptr<PipeNote>>& predicted);
+// (hookshot) The prediction under way: hookshot_pipelines.bin.predicting from its start to its end. A start closed (or ended) in it
+// left the rest of the predicted pipelines unbuilt for good: the next start found the programs prepared, so it skipped the
+// prediction, and play compiled them as they were drawn. With the marker there, the next start runs it again; what the driver
+// kept from the first try comes back from its cache at once (a second prediction over a full driver cache: 7.9 s for 43,414)
+std::string predict_pending_path() { return pipe_notes_path() + ".predicting"; }
+bool predict_pending() {
+    FILE* f = fopen(predict_pending_path().c_str(), "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
+}
 void predict_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
-    if (notes.empty() || getenv("RX_VK_NO_PREDICT")) return;
+    if (notes.empty() || getenv("RX_VK_NO_PREDICT")) {
+        remove(predict_pending_path().c_str());
+        return;
+    }
+    // (the marker counts the starts that began it: two that did not get through it (a driver that hangs or ends the process on one
+    // of these pipelines) and it is let go, the rest left to play, as precompile_run does with its notes)
+    int began = 0;
+    if (FILE* f = fopen(predict_pending_path().c_str(), "rb")) {
+        if (fscanf(f, "%d", &began) != 1) began = 1;
+        fclose(f);
+    }
+    if (began >= 2) {
+        remove(predict_pending_path().c_str());
+        logf("vk: the last two starts did not get through the predicted pipelines: the rest are built in play");
+        return;
+    }
+    if (began) logf("vk: the last start did not finish building the predicted pipelines: they are built again (what the driver "
+                    "kept comes from its cache)");
+    if (FILE* f = fopen(predict_pending_path().c_str(), "wb")) fprintf(f, "%d\n", began + 1), fclose(f);
     size_t programs = 0;
     PredictCounts left_out;
     const std::vector<std::unique_ptr<PipeNote>> predicted = predict_pipelines(notes, &programs, &left_out);
@@ -7982,6 +8011,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
          out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)"
          : prepare_stopped() ? " (stopped: the window was closed; the driver keeps what was built)" : "");
     if (!prepare_stopped() && !out_of_time.load()) predicted_sample_write(predicted);
+    if (!prepare_stopped()) remove(predict_pending_path().c_str());
     driver_cache_log("after the prediction");
 }
 
