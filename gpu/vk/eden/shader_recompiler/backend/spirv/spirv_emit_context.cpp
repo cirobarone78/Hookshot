@@ -1214,6 +1214,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         const Id table_counter{global_table_loop && add_label && !ssbo_tables.empty()
                                    ? AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]), spv::StorageClass::Function)
                                    : Id{}};
+        if (Sirit::ValidId(table_counter)) AddCapability(spv::Capability::StorageBufferArrayDynamicIndexing);   // (the tables by k)
         const size_t num_buffers{info.storage_buffers_descriptors.size()};
         // (from Fritchii) Info::native_global_bounds: the candidate pointers the storage buffer pass bound for accesses it
         // left global (any single descriptor not in the driver bank) carry no NVN size word: the address goes to the

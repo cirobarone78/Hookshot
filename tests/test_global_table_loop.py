@@ -13,6 +13,9 @@ import tempfile
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
+ENV_H = ROOT / "gpu/vk/compat/hookshot_env.h"   # (env_value_off)
+DRIVER_IDS = {"VK_DRIVER_ID_MESA_RADV": 3, "VK_DRIVER_ID_NVIDIA_PROPRIETARY": 4,   # (as the Vulkan headers number them)
+              "VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS": 5, "VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA": 6}
 
 
 def block(text, marker, start=0):
@@ -34,23 +37,29 @@ def switch(cxx):
     if not call:
         raise SystemExit("coopmat_init does not set global_table_loop from table_loop_wanted")
     args = " ".join(call.group(1).split())
-    for needed in ("dev.props.vendorID", "shaderStorageBufferArrayDynamicIndexing", '"RX_VK_GM_LOOP"'):
+    for needed in ("dev.driver_id", "shaderStorageBufferArrayDynamicIndexing", '"RX_VK_GM_LOOP"'):
         if needed not in args:
             raise SystemExit(f"table_loop_wanted is not given {needed}")
-    cases = [  # vendor, dynamic indexing, RX_VK_GM_LOOP, wanted
-        (0x8086, True, None, True, "Intel"),
-        (0x8086, False, None, False, "Intel without dynamic indexing"),
-        (0x8086, True, "0", False, "Intel, RX_VK_GM_LOOP=0"),
-        (0x10DE, True, None, False, "NVIDIA"),
-        (0x1002, True, None, False, "AMD"),
-        (0x1002, True, "1", True, "AMD, RX_VK_GM_LOOP=1"),
-        (0x10DE, False, "1", False, "NVIDIA without dynamic indexing, RX_VK_GM_LOOP=1"),
+    mesa, windows = "VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA", "VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS"
+    nvidia, radv = "VK_DRIVER_ID_NVIDIA_PROPRIETARY", "VK_DRIVER_ID_MESA_RADV"
+    cases = [  # driver, dynamic indexing, RX_VK_GM_LOOP, wanted
+        (mesa, True, None, True, "Intel, Mesa"),
+        (mesa, False, None, False, "Intel, Mesa, without dynamic indexing"),
+        (mesa, True, "0", False, "Intel, Mesa, RX_VK_GM_LOOP=0"),
+        (windows, True, None, False, "Intel, Windows driver"),
+        (nvidia, True, None, False, "NVIDIA"),
+        (radv, True, None, False, "AMD, RADV"),
+        (radv, True, "1", True, "AMD, RADV, RX_VK_GM_LOOP=1"),
+        (radv, True, "true", True, "AMD, RADV, RX_VK_GM_LOOP=true"),
+        (nvidia, False, "1", False, "NVIDIA without dynamic indexing, RX_VK_GM_LOOP=1"),
     ]
     checks = "\n".join(
-        f'    if (table_loop_wanted({v:#x}u, {str(d).lower()}, {"nullptr" if e is None else chr(34) + e + chr(34)}) != '
+        f'    if (table_loop_wanted({v}, {str(d).lower()}, {"nullptr" if e is None else chr(34) + e + chr(34)}) != '
         f'{str(w).lower()}) {{ std::puts("FAIL: {name}"); return 1; }}'
         for v, d, e, w, name in cases)
-    source = "#include <cstdint>\n#include <cstdio>\n#include <cstdlib>\n" + fn + "\nint main() {\n" + checks + "\n    return 0;\n}\n"
+    driver_enum = "enum VkDriverId { " + ", ".join(f"{k} = {n}" for k, n in DRIVER_IDS.items()) + " };\n"
+    source = (ENV_H.read_text(encoding="utf-8") + "\n#include <cstdint>\n#include <cstdio>\n#include <cstdlib>\n" + driver_enum + fn +
+              "\nint main() {\n" + checks + "\n    return 0;\n}\n")
     with tempfile.TemporaryDirectory(prefix="table-loop-") as folder:
         folder = Path(folder)
         (folder / "t.cpp").write_text(source, encoding="utf-8")
