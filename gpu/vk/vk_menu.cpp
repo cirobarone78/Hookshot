@@ -1756,6 +1756,8 @@ void help_box(ui::Ctx& c, float x0, float x1, float y0, const char* title, const
     // (y_max: the box ends above it, the prompt strip's top: moved up as far as y_min (under the banner) when it is taller than
     // the room below y0, its reserved height (min_h) given up first, its text cut at its foot only if it still does not fit)
     const float s = c.s, w = x1 - x0 - 48 * s;
+    // (return early if the box bounds collapsed: avoids zero-width or zero-height scissor clip rects)
+    if (x1 <= x0 + 4 * s || y_max <= y_min + 4 * s) return;
     const float th = help ? ui::para(c, c.f.body, 18 * s, ImVec2(), 0, help, w, false) : 0,
                 hh = hint ? ui::para(c, c.f.body, 16 * s, ImVec2(), 0, hint, w - 18 * s, false) : 0;
     const float text_h = th + (hint ? 14 * s + hh : 0), note = after_restart ? 30 * s : 0;
@@ -1763,7 +1765,10 @@ void help_box(ui::Ctx& c, float x0, float x1, float y0, const char* title, const
     float body = std::max(min_h, text_h);
     if (y0 + fixed + body > y_max) y0 = std::max(y_min, y_max - fixed - body);
     if (y0 + fixed + body > y_max) body = std::max(text_h, y_max - y0 - fixed);
-    const float y1 = std::min(y0 + fixed + body, y_max);
+    y0 = std::min(y0, y_max);
+    const float y1 = std::max(y0, std::min(y0 + fixed + body, y_max));
+    // (never push an inverted or collapsed clip rect: Min.y must be strictly less than Max.y for Vulkan scissors)
+    if (y1 <= y0) return;
     ui::box(c, ImVec2(x0, y0), ImVec2(x1, y1));
     c.d->PushClipRect(ImVec2(x0, y0), ImVec2(x1, y1), true);
     float y = y0 + 22 * s;
@@ -2134,10 +2139,12 @@ void draw_options(ui::Ctx& c) {
     }
     const float bar_top = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
-    const bool after = restart_changed(selr);
+    const float rh = 40 * s, pitch = 48 * s, top = hh + 24 * s, rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.55f;
     if (narrow) {   // (the help over the column's foot, the rows above it: at most half the room, the rows get the rest)
+        // (bound help height so it leaves room for at least one row above it)
+        const float max_help = std::max(0.0f, (bottom - top - rh - 16 * s) * 0.5f);
         const float help_h = std::min(22 * s + 32 * s + help_tall + (after ? 30 * s : 0) + (pending_line.empty() ? 0 : 52 * s) + 22 * s,
-                                      (bottom - hh) * 0.5f);
+                                      max_help);
         bottom = std::min(bar_top, c.h - c.safe) - help_h - 16 * s;
         help_box(c, hx0, hx1, bottom + 8 * s, selr.name, selr.help, hint, pending_line.empty() ? nullptr : pending_line.c_str(), help_tall,
                  after, bottom + 8 * s, bar_top - 10 * s);
@@ -2145,7 +2152,8 @@ void draw_options(ui::Ctx& c) {
         help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), selr.name, selr.help, hint,
                  pending_line.empty() ? nullptr : pending_line.c_str(), help_tall, after, hh + 18 * s, bar_top - 12 * s);
     }
-    const float rh = 40 * s, pitch = 48 * s, top = hh + 24 * s, rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.55f;
+    // (guarantee bottom stays at or below top + rh so scroll_rows and PushClipRect never receive an inverted range)
+    bottom = std::max(bottom, top + rh);
     if (cur_tab == TAB_DEBUG) {   // (the Debug tab: its own layout of the same rows)
         marquee_max = 0;
         draw_debug_rows(c, cx0, cx1, top, bottom, sel);
@@ -2268,8 +2276,12 @@ void draw_controls(ui::Ctx& c) {
     const char* hint = page_row ? (page_row->hint ? page_row->hint(*page_row->value, -1) : nullptr)
                                 : "Gamepad: the D-pad moves, A binds, B goes back.";
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
+    const float rh = 36 * s, pitch = 42 * s, top = hh + 48 * s;
     if (narrow) {
-        bottom = std::min(bar_top, c.h - c.safe) - 200 * s;
+        // (bound help height so it leaves room for at least one controls row above it)
+        const float max_help = std::max(0.0f, (bottom - top - rh - 16 * s) * 0.5f);
+        const float help_h = std::min(200 * s, max_help);
+        bottom = std::min(bar_top, c.h - c.safe) - help_h - 16 * s;
         help_box(c, hx0, hx1, bottom + 8 * s, nullptr, help, hint, nullptr, 0, page_row && restart_changed(*page_row), bottom + 8 * s,
                  bar_top - 10 * s);
     } else {
@@ -2277,12 +2289,11 @@ void draw_controls(ui::Ctx& c) {
                  hh + 18 * s, bar_top - 12 * s);
     }
     const float rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, pad_x = rx0 + (rx1 - rx0) * 0.36f, key_x = rx0 + (rx1 - rx0) * 0.68f;
-    float top = hh + 22 * s;
-    ui::text_mid(c, c.f.body, 15 * s, rx0 + 20 * s, top + 10 * s, ui::kDim, "Button");
-    ui::text_mid(c, c.f.body, 15 * s, pad_x + 14 * s, top + 10 * s, ui::kDim, "Gamepad");
-    ui::text_mid(c, c.f.body, 15 * s, key_x + 14 * s, top + 10 * s, ui::kDim, "Keyboard");
-    top += 26 * s;
-    const float rh = 36 * s, pitch = 42 * s;
+    ui::text_mid(c, c.f.body, 15 * s, rx0 + 20 * s, hh + 32 * s, ui::kDim, "Button");
+    ui::text_mid(c, c.f.body, 15 * s, pad_x + 14 * s, hh + 32 * s, ui::kDim, "Gamepad");
+    ui::text_mid(c, c.f.body, 15 * s, key_x + 14 * s, hh + 32 * s, ui::kDim, "Keyboard");
+    // (guarantee bottom stays at or below top + rh so controls rows and clip rects never invert)
+    bottom = std::max(bottom, top + rh);
     int shown = 0;
     const float first = scroll_rows(kControlsSlot, n, csel, top, bottom, pitch, &shown);
     scroll_bar(c, cx0 + 20 * s, top, top + shown * pitch - (pitch - rh), n, shown, first);
