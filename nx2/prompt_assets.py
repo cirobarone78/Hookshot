@@ -41,6 +41,7 @@ sys.path.insert(0, HERE)   # (python -I leaves the script folder off)
 from prompt_faces import FACES, override, parts   # noqa: E402 (the faces: their icons, drawings and their parts)
 import prompt_keys   # noqa: E402 (the keyboard face)
 KENNEY = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input")
+KENNEY_KEYBOARD = os.path.join(os.path.dirname(HERE), "third_party", "kenney_input_keyboard")   # (the keyboard face's)
 FONT = "Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs"
 MAGIC = 0x18029A7F
 PAD_BASE = 0xF700
@@ -239,8 +240,9 @@ def faces_font(otf, faces, label_otf=None):
                     placed[base + STATIC_AT + k] = add(f"static_{face}_{c:04x}", *draw(cmap[c], kn)) if kn in kset else cmap[c]
         widths[face] = [hmtx[placed[base + i]][0] for i in range(len(PADS))]
         if face == "keyboard":
-            kset = TTFont(os.path.join(KENNEY, prompt_keys.FONT)).getGlyphSet()
-            keys, widths[face] = prompt_keys.keyboard_glyphs(add, gset, cmap, chars, hmtx, label_otf, kset, drawer(kset))
+            import prompt_draw
+            kset = TTFont(os.path.join(KENNEY_KEYBOARD, prompt_keys.FONT)).getGlyphSet()
+            keys, widths[face] = prompt_draw.keyboard_glyphs(add, gset, cmap, chars, hmtx, label_otf, kset, drawer(kset))
             placed.update(keys)
             for i in range(prompt_keys.SLOTS):   # (host/prompts.c points each at its key when it gives it out)
                 placed[prompt_keys.SLOT_BASE + i] = cmap[SWITCH[0]]

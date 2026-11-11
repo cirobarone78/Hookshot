@@ -975,6 +975,10 @@ static int key_slot(int b, int k) {
             slot_button[s] = (uint8_t)b, slot_key[s] = (uint8_t)k;
             nslots = s + 1;
         } else {
+            static int full_said;   /* (said once: every text after asks again) */
+            if (s == SLOTS && !full_said++)
+                hos_log("prompts: the %d codes for buttons on keys are all given out: a key bound from now on shows the Switch's "
+                        "icon in texts until the next start", SLOTS);
             s = -1;
         }
     }
