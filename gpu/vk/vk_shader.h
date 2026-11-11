@@ -21,9 +21,14 @@ struct Stage {
     int nvn_stage = 0;   // 0 vertex, 1 fragment, 5 compute (what its banks are read for)
     VkShaderStageFlagBits vk_stage = VK_SHADER_STAGE_VERTEX_BIT;
     VkShaderModule module = VK_NULL_HANDLE;
+    bool subgroups = true;   // its SPIR-V asks for a subgroup capability (spirv_uses_subgroups); true when not known
     Shader::Info info;
     std::vector<uint8_t> c1;   // its c1 constants (the code area's tail)
 };
+
+/// The SPIR-V declares a capability that lets it see its subgroup (GroupNonUniform*, the KHR ballot and vote,
+/// cooperative matrices, Groups): its lanes' count matters to it. Read from the capabilities at the module's head
+bool spirv_uses_subgroups(const std::vector<uint32_t>& spirv);
 
 /// A texture handle the stage reads from a storage buffer: its handle program (Shader::Info::handle_programs, Eden's
 /// recompiler) run over the stage's constant banks and storage buffers as the draw has them
