@@ -65,16 +65,19 @@ struct Face {
 };
 /// Whether a module whose variables at those locations have those types could be drawn with these attribute types (graphics_key's
 /// for vertex inputs, color_types_of's for colour targets). Only a definite difference says no: an integer type where the module
-/// has a float, a float where it has an integer, or the other signedness. The scaled types are let through: whether the translator
-/// made them float or integer depends on the GPU (support_scaled_attributes)
+/// has a float, a float where it has an integer, or the other signedness. The scaled types are integers here: make_profile
+/// (vk_shader.cpp) sets support_scaled_attributes = false on every GPU, so the translator declares them as integer inputs of
+/// their signedness and converts in the shader (GetAttributeType)
 bool types_fit(const Locations& l, uint32_t locs, const uint8_t types[], int count) {
     for (int i = 0; i < count; i++) {
         if (!(locs >> i & 1)) continue;
         const bool is_int = l.ints >> i & 1, is_signed = l.sign >> i & 1;
         switch ((Shader::AttributeType)types[i]) {
         case Shader::AttributeType::Float: if (is_int) return false; break;
-        case Shader::AttributeType::SignedInt: if (!is_int || !is_signed) return false; break;
-        case Shader::AttributeType::UnsignedInt: if (!is_int || is_signed) return false; break;
+        case Shader::AttributeType::SignedInt:
+        case Shader::AttributeType::SignedScaled: if (!is_int || !is_signed) return false; break;
+        case Shader::AttributeType::UnsignedInt:
+        case Shader::AttributeType::UnsignedScaled: if (!is_int || is_signed) return false; break;
         default: break;
         }
     }

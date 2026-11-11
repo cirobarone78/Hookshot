@@ -6,7 +6,7 @@ the seed makes each skinned program three times, for float and for unsigned inte
 one layout their signature's notes had most, and a draw with that layout has one of the three keys: the other two pipelines could
 never be looked up. Each is a program of its own modules, a full driver compile. Now a candidate whose types differ from what the
 module declares (an integer where it has a float, a float where it has an integer, the other signedness) is left out; scaled types
-are let through (float or integer by the GPU). The signature fallback picks the most common class that fits (candidates), so the
+count as integers of their signedness (make_profile turns support_scaled_attributes off on every GPU). The signature fallback picks the most common class that fits (candidates), so the
 other variants get a layout of their own types rather than none.
 
 Checked here: Locations, spirv_locations and types_fit, extracted unmodified, on hand-made SPIR-V; and in the source, that the
@@ -103,8 +103,13 @@ int main() {
     CHECK(!types_fit(in, in.mask, t.data(), 16));
     t = types({{0, T::UnsignedInt}, {6, T::UnsignedInt}, {7, T::SignedInt}});   // (an integer where it reads a float)
     CHECK(!types_fit(in, in.mask, t.data(), 16));
-    t = types({{0, T::SignedScaled}, {6, T::UnsignedScaled}, {7, T::SignedScaled}});   // (scaled: either way, by the GPU)
+    // (scaled: integers of their signedness, support_scaled_attributes being off on every GPU)
+    t = types({{6, T::UnsignedScaled}, {7, T::SignedScaled}});
     CHECK(types_fit(in, in.mask, t.data(), 16));
+    t = types({{0, T::SignedScaled}, {6, T::UnsignedInt}, {7, T::SignedInt}});   // (scaled where it reads a float)
+    CHECK(!types_fit(in, in.mask, t.data(), 16));
+    t = types({{6, T::SignedScaled}, {7, T::SignedInt}});                         // (scaled of the other signedness)
+    CHECK(!types_fit(in, in.mask, t.data(), 16));
     t = types({{3, T::UnsignedInt}, {6, T::UnsignedInt}, {7, T::SignedInt}});   // (a location it does not read)
     CHECK(types_fit(in, in.mask, t.data(), 16));
     uint8_t o[8]{(uint8_t)T::UnsignedInt};
