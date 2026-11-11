@@ -33,6 +33,12 @@ elif "$DOCKER" info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootle
 else
     RUN+=(--user "$(id -u):$(id -g)")
 fi
+# (SELinux enforcing (Fedora, RHEL): a container reads only files labelled for containers, and the checkout is not, so
+# every access to /src is denied. label=disable lifts that for this container alone; a :z mount would relabel the
+# checkout on the host for good)
+if [ "$(cat /sys/fs/selinux/enforce 2>/dev/null)" = 1 ]; then
+    RUN+=(--security-opt label=disable)
+fi
 [ -t 0 ] && RUN+=(-it)
 # (its own deps folder: deps.sh keeps any part already built, and parts built on the host link against the host's
 # newer glibc. build-linux/AppDir and the AppImage are made again on every run, so they are shared)

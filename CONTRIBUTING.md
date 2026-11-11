@@ -106,6 +106,8 @@ scripts/linux/docker.sh shell       # a shell in that environment, with the chec
 The AppImage lands in `build-linux/` as above. The container keeps its own `build-linux/docker-deps` and
 `build-linux/docker-vk-work`: parts built on the host link against its newer glibc and would not load on older systems.
 The Dockerfile's packages are the workflow's (`tests/test_linux_docker_packages.py` checks that they stay the same).
+Where SELinux is enforcing (Fedora, RHEL), the script runs the container with `--security-opt label=disable`: the
+checkout is not labelled for containers, and relabelling it with `:z` would change it on the host.
 
 The AppImage needs glibc 2.35 or newer and a Vulkan 1.3 driver with mesh shaders. `HOOKSHOT_JOBS` sets how many files
 compile at once. The README's [Linux section](readme.md#on-linux) has the details and the runtime paths.
