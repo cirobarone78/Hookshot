@@ -1371,8 +1371,9 @@ void save() {
         if (!mic_want.empty()) fprintf(f, "microphone_device=%s\n", mic_want.c_str());   // (hookshot: also while it is unplugged)
         if (opts.budget > 0) fprintf(f, "memory_budget=%d\n", opts.budget);   // (not a row: the budgets Custom keeps)
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
-        // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on)
-        fprintf(f, "options_version=4\n");
+        // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on; 5: the
+        // Aspect ratio's 16:9 from before moves on a screen narrower than 16:9, see menu_init and host/hos_wide_size.h)
+        fprintf(f, "options_version=5\n");
         fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
         for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the keys-only controls, HOS_KEY_*, have no pad_ line)
@@ -2951,6 +2952,14 @@ void menu_init() {
         // (Descriptor reuse is on by default from options_version 4: a file from before wrote its 0 whether chosen or not, as
         // the off default it then was; fewer stutters and a better 1% low in the field, the flash checks clean, 2026-11-10)
         if (version < 4) opts.descriptor_reuse = 1;
+        // (the Aspect ratio from options_version 5: a file from before wrote ultrawide=0, the 16:9 default then, whether
+        // chosen or not. On a screen narrower than 16:9 host/hos_main.c starts the game at the monitor's shape for it
+        // (host/hos_wide_size.h hos_aspect_on), and the row follows what the host started with: a picture narrower than
+        // 16:9 there. On Linux too, where the menu has no screen size of its own)
+        if (version < 5 && opts.ultrawide == 0 && host && host->aspect_ratio) {
+            const float started = host->aspect_ratio();
+            if (started > 1.0f && started < 16.0f / 9.0f * 0.99f) opts.ultrawide = 1;
+        }
     }
     first_start = !has_options;
     // An opt-in profile for 4 GB cards: keep existing options authoritative, but make a first run usable on
