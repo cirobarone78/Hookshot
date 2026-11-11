@@ -258,43 +258,56 @@ def write_costs(gen_dir, costs):
         f.write("".join("%s %d\n" % kv for kv in sorted(known.items())))
 
 
-def split_big(gen_dir, files, budget=None):
+def _split_one(job):
+    """(split_big, one chunk, in a process of its own where there are several) the chunk cut into parts when its cost is past the
+    budget: (the parts made besides the chunk itself, {file: cost}, the line to print or None)"""
+    gen_dir, path, budget = job
+    m = re.fullmatch(r"code_(\d{3})\.c", os.path.basename(path))
+    if not m:
+        return [], {}, None
+    with open(path, encoding="utf-8", newline="") as f:
+        text = f.read()
+    marks = [h.start() for h in HEAD.finditer(text)]
+    ends = marks[1:] + [len(text)]
+    cost = [fn_cost(b - a) for a, b in zip(marks, ends)]
+    total = sum(cost)
+    if total <= budget * 3 // 2 or len(marks) < 2:
+        return [], {os.path.basename(path): marks[0] + total if marks else len(text)}, None
+    made, costs = [], {}
+    parts = -(-total // budget)
+    cuts, run, k = [0], 0, 1   # (indexes into marks where a part starts)
+    for i, c in enumerate(cost):
+        if i and run >= total * k // parts:
+            cuts.append(i)
+            k = run * parts // total + 1   # (past a giant function: the next share, not a sliver after it)
+        run += c
+    bounds = [marks[i] for i in cuts] + [len(text)]
+    preamble = text[:marks[0]]
+    for j in range(len(cuts)):
+        out = path if j == 0 else os.path.join(gen_dir, "code_%s_%d.c" % (m.group(1), j))
+        piece = text[:bounds[1]] if j == 0 else preamble + text[bounds[j]:bounds[j + 1]]
+        whole_write.write_whole(out, piece)
+        costs[os.path.basename(out)] = len(preamble) + sum(cost[cuts[j]:cuts[j + 1] if j + 1 < len(cuts) else len(cost)])
+        if j:
+            made.append(out)
+    return made, costs, "chunks: %s (%d MB, cost %d MB) in %d parts" % (os.path.basename(path), len(text) >> 20, total >> 20, len(cuts))
+
+
+def split_big(gen_dir, files, budget=None, jobs=None):
     """Chunks whose estimated compile time (fn_cost) is well past a plain chunk's, cut at function starts into parts of about equal
     cost: code_NNN.c, code_NNN_1.c ... A chunk of the giant functions took 350 s, alone at the end of the build, where a chunk of
     ordinary functions takes 45; the boundaries kept in chunks.txt also let chunks grow (44 MB beside 25). The first part keeps the
-    name, so seed_from_gen and the boundaries are as before. Writes chunk_costs.txt for every chunk; returns the new parts' paths"""
+    name, so seed_from_gen and the boundaries are as before. Writes chunk_costs.txt for every chunk; returns the new parts' paths.
+    Each chunk is read (1.5 GB in all) and cut in a process of its own (jobs: emit_jobs(); one where there is no fork): 5 s on
+    one core before"""
     budget = budget or a64_lift.CHUNK_BYTES
+    jobs = emit_jobs() if jobs is None else jobs
     made, costs = [], {}
-    for path in files:
-        m = re.fullmatch(r"code_(\d{3})\.c", os.path.basename(path))
-        if not m:
-            continue
-        with open(path, encoding="utf-8", newline="") as f:
-            text = f.read()
-        marks = [h.start() for h in HEAD.finditer(text)]
-        ends = marks[1:] + [len(text)]
-        cost = [fn_cost(b - a) for a, b in zip(marks, ends)]
-        total = sum(cost)
-        if total <= budget * 3 // 2 or len(marks) < 2:
-            costs[os.path.basename(path)] = marks[0] + total if marks else len(text)
-            continue
-        parts = -(-total // budget)
-        cuts, run, k = [0], 0, 1   # (indexes into marks where a part starts)
-        for i, c in enumerate(cost):
-            if i and run >= total * k // parts:
-                cuts.append(i)
-                k = run * parts // total + 1   # (past a giant function: the next share, not a sliver after it)
-            run += c
-        bounds = [marks[i] for i in cuts] + [len(text)]
-        preamble = text[:marks[0]]
-        for j in range(len(cuts)):
-            out = path if j == 0 else os.path.join(gen_dir, "code_%s_%d.c" % (m.group(1), j))
-            piece = text[:bounds[1]] if j == 0 else preamble + text[bounds[j]:bounds[j + 1]]
-            whole_write.write_whole(out, piece)
-            costs[os.path.basename(out)] = len(preamble) + sum(cost[cuts[j]:cuts[j + 1] if j + 1 < len(cuts) else len(cost)])
-            if j:
-                made.append(out)
-        print("chunks: %s (%d MB, cost %d MB) in %d parts" % (os.path.basename(path), len(text) >> 20, total >> 20, len(cuts)))
+    for parts, cost, line in _each(_split_one, [(gen_dir, path, budget) for path in files], jobs):
+        made += parts
+        costs.update(cost)
+        if line:
+            print(line)
     for f in os.listdir(gen_dir):   # (parts of an earlier lift that this one did not make)
         if PART.fullmatch(f) and os.path.join(gen_dir, f) not in made:
             os.remove(os.path.join(gen_dir, f))
