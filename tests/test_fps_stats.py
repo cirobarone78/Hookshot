@@ -70,7 +70,7 @@ def main():
          "the present's wait is not split into the GPU's (the copy not done before, done after) and the pacing's")
     need("(::vkx::vkWaitForFences)(dev.device, 1, &copy, VK_TRUE, 0)" in out and out.count("vkWaitForFences") == 1,
          "present_out waits for the copy to time it (only a wait of no time, its state): the Breakdown would change the present")
-    need("presenter.copy_done_at" in body(replay, "void presenter_wait_idle(") and "presenter_wait_idle(lk)" in body(
+    need("presenter.copy_done_at" in body(replay, "bool presenter_wait_idle(") and "presenter_wait_idle(lk)" in body(
         replay, "void present_hand_off(uint32_t index, VkFence done) {"), "the wait for the presenter thread is not split at the end of its wait for the copy")
     fps = (vk / "vk_fps.cpp").read_text(encoding="utf-8")
     # (off and FPS: nothing measured; the Breakdown's timers only while it shows)

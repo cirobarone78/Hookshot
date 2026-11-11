@@ -97,6 +97,16 @@ struct Device {
     bool present_queue_supported = false;
     std::mutex present_queue_mu;
     uint32_t present_family = 0;   // (present_queue's family, the swapchain's images shared with it)
+    // (hookshot) the presenter thread's own queue (vk_replay.cpp, RX_VK_PRESENT_THREAD=0: none): a second queue of the replay's
+    // family where it has one, else a queue of a compute family; no other thread submits or presents on it, so the presents never
+    // take the replay's lock. VK_NULL_HANDLE, or a family that cannot present to the window: the presents stay on the game's
+    // thread. Its lock is taken after present_queue_mu (device_wait_idle_locked), never before it
+    VkQueue presenter_queue = VK_NULL_HANDLE;
+    uint32_t presenter_family = 0;
+    bool presenter_supported = false;   // (its family presents to the window's surface: choose_present_queue)
+    std::mutex presenter_queue_mu;
+    bool present_wait = false;   // (VK_KHR_present_id + VK_KHR_present_wait enabled: the presenter waits for each present to be shown)
+    VkPresentModeKHR swap_mode = VK_PRESENT_MODE_FIFO_KHR;   // (the swapchain's present mode, as made)
 };
 extern Device dev;
 

@@ -1,8 +1,11 @@
-"""The presenter thread (RX_VK_PRESENT_THREAD=1) keeps the presents in order, one out at most, and off the swapchain's remaking.
+"""The presenter thread (on by default, RX_VK_PRESENT_THREAD=0: off) keeps the presents in order, one out at most, and off the
+swapchain's remaking.
 
 present_out hands a present to the presenter thread only from present_image (it alone sets the copy's fence; frame generation's
 present_commit paces its presents itself) and with NVIDIA Reflex off (its markers belong to the game's thread). The presenter waits
-for the copy's fence before it presents, and takes the replay's queue lock only around vkQueuePresentKHR. The game's thread waits
+for the copy's fence before it presents, on a queue of its own (never the replay's lock), under FIFO until the present is shown
+(VK_KHR_present_wait), and never without end. The device makes that queue only when it has a second one that can present; otherwise
+the presents stay on the game's thread. The game's thread waits
 while the frame before's present is still out; a present made directly waits for the one handed over with the queue's lock let go;
 the swapchain is made again only with the presenter idle, and the wait for that comes before the queue's lock (the presenter takes
 it). The presenter never makes a swapchain itself: an out-of-date or suboptimal present asks the next present_image for one.
@@ -56,18 +59,27 @@ def main():
          "frame generation's paced presents are handed over")
 
     give = block(replay, "void present_hand_off(uint32_t index, VkFence done) {")
-    idle = block(replay, "void presenter_wait_idle(std::unique_lock<std::mutex>& lk) {")
-    need("presenter.cv.wait(lk, [] { return !presenter.busy; });" in idle, "presenter_wait_idle does not wait for the presenter")
+    idle = block(replay, "bool presenter_wait_idle(std::unique_lock<std::mutex>& lk, int limit_ms = 0) {")
+    need("presenter.cv.wait(lk, idle);" in idle, "presenter_wait_idle does not wait for the presenter")
     need(give.index("presenter_wait_idle(lk);") < give.index("presenter.busy = true"),
          "a present is handed over before the one before is made")
-    need("presenter_wait_idle(lk);" in block(replay, "void present_thread_drain() {"), "present_thread_drain does not wait")
+    need("presenter_wait_idle(lk, 5000)" in block(replay, "void present_thread_drain() {"), "present_thread_drain does not wait, or without a limit")
 
     loop = block(replay, "void presenter_loop() {")
-    need(loop.index("vkWaitForFences(dev.device, 1, &done") < loop.index("vkQueuePresentKHR"),
+    need(loop.index("presenter_wait_copy(done)") < loop.index("vkQueuePresentKHR"),
          "the presenter presents before the copy is done (the driver's wait comes back)")
-    need("std::lock_guard qk(dev.present_mu);\n            res = vkQueuePresentKHR(dev.queue, &pi);" in loop,
-         "on the replay's queue the presenter presents without the queue's lock, or holds it longer")
-    need("std::lock_guard pq(dev.present_queue_mu)" in loop, "the presents' own queue is used without its lock")
+    copy = block(replay, "bool presenter_wait_copy(VkFence done) {")
+    need("UINT64_MAX" not in copy and "100000000ull" in copy and "VK_ERROR_DEVICE_LOST" in copy,
+         "the presenter's wait for the copy has no limit, or misses a device lost")
+    need("vkQueuePresentKHR(dev.presenter_queue, &pi)" in loop and "std::lock_guard pq(dev.presenter_queue_mu);" in loop,
+         "the presenter does not present on its own queue, under its own lock")
+    need("dev.present_mu" not in loop and "dev.queue," not in loop, "the presenter takes the replay's queue or its lock")
+    need("wait_for_present(dev.device, sc, id, 20000000ull)" in loop and "dev.swap_mode == VK_PRESENT_MODE_FIFO_KHR" in loop,
+         "under FIFO the presenter does not wait (with a limit) for its present to be shown")
+    need("UINT64_MAX" not in loop, "a wait without end on the presenter")
+    wait_idle = block(main_cpp, "") if False else replay[replay.index("void device_wait_idle_locked() {"):]
+    wait_idle = wait_idle[:wait_idle.index("\n}") + 2]
+    need("std::lock_guard pr(dev.presenter_queue_mu);" in wait_idle, "vkDeviceWaitIdle runs with the presenter's queue in use")
     need("presenter.busy = false" in loop and "notify_all" in loop, "the presenter does not say it is done")
     need("create_swapchain" not in loop and "reflex_presented" not in loop,
          "the presenter makes a swapchain itself, or sets Reflex's present marker")
@@ -88,7 +100,19 @@ def main():
     need(make[make.index("{") + 1:].lstrip().startswith("present_thread_drain();"),
          "create_swapchain does not wait for the presenter first")
     on = block(replay, "bool present_thread_on() {")
-    need('getenv("RX_VK_PRESENT_THREAD")' in on and "atoi(e) != 0" in on, "the switch is not RX_VK_PRESENT_THREAD, off by default")
+    need('getenv("RX_VK_PRESENT_THREAD")' in on and "!e || atoi(e) != 0" in on, "the switch is not RX_VK_PRESENT_THREAD, on by default")
+    need("dev.presenter_queue && dev.presenter_supported" in on, "the presenter thread runs without a queue of its own that presents")
+    dev_make = block(main_cpp, "bool create_device() {")
+    need("families[dev.queue_family].queueCount >= 2" in dev_make and "presenter_index = 1" in dev_make,
+         "the presenter's queue is not a second queue of the replay's family where there is one")
+    need("!(families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) || (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)" in dev_make,
+         "without a second graphics queue the presenter's queue is not a compute family's")
+    swap = block(main_cpp, "bool create_swapchain(uint32_t width, uint32_t height) {")
+    need("if (dev.presenter_supported) share(dev.presenter_family);" in swap and "VK_SHARING_MODE_CONCURRENT" in swap,
+         "a presenter queue of another family presents images it does not share")
+    choose = block(main_cpp, "static void choose_present_queue() {")
+    need("vkGetPhysicalDeviceSurfaceSupportKHR(dev.physical, dev.presenter_family" in choose,
+         "the presenter's family is not checked against the window's surface")
     print("PASS: the presenter thread waits for the copy, keeps the presents in order and off the swapchain's remaking")
 
 
