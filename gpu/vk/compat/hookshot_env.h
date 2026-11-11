@@ -7,7 +7,18 @@
    cache out and HOS_HEADLESS=0 opened no window. Read once where it matters (a static): getenv walks the environment. */
 #pragma once
 
+/* (Windows' CRT marks getenv deprecated (C4996, clang's -Wdeprecated-declarations) unless _CRT_SECURE_NO_WARNINGS is set
+   when its headers first come in: the checks paste this file ahead of code that sets it itself, so it is set here for
+   that first include and taken back after, leaving a file's own #define of it no redefinition) */
+#if defined(_WIN32) && !defined(_CRT_SECURE_NO_WARNINGS)
+#define _CRT_SECURE_NO_WARNINGS
+#define HOOKSHOT_ENV_CRT_SET
+#endif
 #include <stdlib.h>
+#ifdef HOOKSHOT_ENV_CRT_SET
+#undef _CRT_SECURE_NO_WARNINGS
+#undef HOOKSHOT_ENV_CRT_SET
+#endif
 
 #ifndef HOOKSHOT_ENV_H   /* (and a guard: the checks paste this file before the code they cut out) */
 #define HOOKSHOT_ENV_H

@@ -403,7 +403,9 @@ const char* hn_resolution(int v, int variant) {
     if (up == ur::FSR3 || up == ur::FSR4) {   // (the same modes, AMD's ratios)
         switch (p) {
         case 0: return "The game lowers it when the GPU is busy, and FSR follows.";
-        case 67: return "FSR's Quality mode, 1.5x: its sharpest.";
+        case 100: return "FSR 3.1's native AA: the 3D at the picture's full size, anti-aliased by FSR. The sharpest, and the heaviest.";
+        case 92: case 83: case 75: return "Between native AA and Quality: sharper than Quality, a little slower.";
+        case 67: return "FSR's Quality mode, 1.5x: the sharpest of AMD's upscaling modes.";
         case 58: return "FSR's Balanced mode, 1.7x.";
         case 50: return "FSR's Performance mode, 2x: faster, and softer.";
         case 33: return "FSR's Ultra Performance mode, 3x: its fastest, and its softest.";
@@ -2619,6 +2621,7 @@ void startup_screen(const StartupView* view) {
     probe_upscalers_soon();
 }
 
+static bool first_start = false;   // (menu_init: no options file yet. menu_first_start_for_gpu picks the preset for the card)
 void menu_init() {
     static bool done;
     if (done) return;
@@ -2677,9 +2680,10 @@ void menu_init() {
         // the off default it then was; fewer stutters and a better 1% low in the field, the flash checks clean, 2026-11-10)
         if (version < 4) opts.descriptor_reuse = 1;
     }
+    first_start = !has_options;
     // An opt-in profile for 4 GB cards: keep existing options authoritative, but make a first run usable on
     // low-VRAM hardware without requiring the menu to render first.
-    if (!has_options && getenv("RX_VK_LOW_SPEC") && atoi(getenv("RX_VK_LOW_SPEC")) != 0) {
+    if (!has_options && env_on("RX_VK_LOW_SPEC")) {
         apply_preset(1);
         opts.upscale = 0;
         opts.sharpness = 0;
@@ -2699,6 +2703,37 @@ void menu_init() {
         env_override(&opts.output_res, parse_output(e));
     }
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
+}
+
+/// (hookshot) The first start (no options file yet), once the card is chosen: the Quality preset for its memory, so an older or
+/// smaller card does not start at the docked 2048 x 1152 with the full-size memory budget. A GTX 1050 (4 GB) lost the device at
+/// the first scene that way (Discord 2026-11-10); the Minimum preset's handheld picture and budget are what such cards run.
+/// An integrated GPU or a card of up to 4.5 GB: Minimum, with the plain scale (as RX_VK_LOW_SPEC=1); up to 6.5 GB: Low; larger:
+/// the defaults, as before. Docked either way (the handheld profile gave a GTX 1050 a black picture). Options already saved are never changed. RX_VK_AUTO_PRESET=0: off
+void menu_first_start_for_gpu(const VkPhysicalDeviceProperties& props, const VkPhysicalDeviceMemoryProperties& mem) {
+    if (!first_start) return;
+    first_start = false;
+    if (!env_int("RX_VK_AUTO_PRESET", 1)) return;
+    if (env_on("RX_VK_LOW_SPEC")) return;   // (chosen already, menu_init)
+    uint64_t vram = 0;
+    for (uint32_t i = 0; i < mem.memoryHeapCount; i++)
+        if (mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) vram = std::max<uint64_t>(vram, mem.memoryHeaps[i].size);
+    const bool integrated = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+    // (RX_VK_AUTO_PRESET_VRAM_MB=<n>: the card's memory taken as n MB, to try the choice on a larger card)
+    const uint64_t mb = getenv("RX_VK_AUTO_PRESET_VRAM_MB") ? (uint64_t)atoll(getenv("RX_VK_AUTO_PRESET_VRAM_MB")) : vram >> 20;
+    const int preset = integrated || mb <= 4608 ? 1 : mb <= 6656 ? 2 : 0;
+    if (!preset) return;
+    opts.preset = opts.budget = preset;
+    apply_preset(preset);
+    sync_preset_budgets(preset);
+    if (preset == 1) opts.upscale = 0, opts.sharpness = 0;
+    // (docked kept: the presets' handheld profile is what a player chooses; on the GTX 1050 above it gave a black picture.
+    // The Render resolution and the memory budget are what lighten the card)
+    opts.handheld = 0;
+    restart_init();   // (what this run starts with)
+    save();   // (host/nn_applet.c reads handheld_profile from the file when the game first asks its mode, after this)
+    logf("vk: first start on %s (%s, %llu MB of VRAM): the %s preset", props.deviceName, integrated ? "integrated" : "dedicated",
+         (unsigned long long)mb, tx_preset(preset));
 }
 
 int menu_vsync() { return env_on("RX_VK_FIFO") ? 1 : env_on("RX_VK_IMMEDIATE") ? 2 : opts.vsync; }

@@ -184,7 +184,8 @@ def main():
             command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/D_CRT_SECURE_NO_WARNINGS", "/I" + str(args.source / "host"), str(src),
                        "/Fo" + str(Path(tmp) / "menu_env.obj"), "/Fe" + str(exe)]
         else:
-            command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I", str(args.source / "host"), str(src), "-o", str(exe)]
+            command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-I", str(args.source / "host"),
+                       str(src), "-o", str(exe)]
         subprocess.run(command, cwd=tmp, check=True)
         subprocess.run([str(exe), str(Path(tmp) / "hookshot_options.ini")], check=True)
 
