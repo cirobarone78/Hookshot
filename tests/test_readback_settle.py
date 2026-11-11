@@ -3,8 +3,8 @@
 A range's write-back value is known only once the work that writes it is recorded. With per-queue fences (the default) the
 readback skipped the catch-up, written when a catch-up forced stopped work past its waits; d6c5ddcc made it let on only
 the met waits, but the readback kept skipping it. Work stopped at a wait that was met by then (a CPU event, signalled,
-not applied yet) was not recorded, its write-back unknown, and the CPU read the range before it: cyan flashes and the UI
-thrown about for a frame. Reads the source: the readback settles (never forcing) before it looks the value up.
+not applied yet) was not recorded, its write-back unknown, and the CPU read the range before it, waiting for nothing.
+Reads the source: the readback settles (never forcing) before it looks the value up.
 python -I -B tests/test_readback_settle.py
 """
 from pathlib import Path

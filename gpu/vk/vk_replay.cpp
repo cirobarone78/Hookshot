@@ -2296,9 +2296,8 @@ void invalidate(uint64_t gpu, uint64_t size) {
             // does not hold back. The stopped work whose waits are met goes on first, never forced (sync_settle): it may be what
             // writes this range, and its write-back is known only once it is recorded. Without it the CPU read the range
             // before that work, with nothing to wait for (once d6c5ddcc's catch-up no longer forced anything, it was left
-            // out here too): cyan flashes and the UI thrown about for a frame, in Hyrule Market and with the window
-            // unfocused (RX 5500M) and on a 760M (issue #1005), gone with RX_VK_PER_QUEUE_FENCES=0, whose wait for every
-            // queue's work held the game's readbacks 19-87 ms each (0.02-0.19 ms here)
+            // out here too). RX_VK_PER_QUEUE_FENCES=0 waits for every queue's work instead: the game's readbacks 19-87 ms
+            // each on an RX 5500M, against ~1 ms here
             const bool unforced = !async_on() && sync_waits_on() && !per_queue_fences_off();
             if (behind0 && !no_catchup) {   // (work handed over may write it back too)
                 unforced ? sync_settle() : wait_queue_empty();
