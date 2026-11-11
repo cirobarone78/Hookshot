@@ -91,6 +91,9 @@ struct State {
     // picture. Then the feature takes HDR colour, linear, with its own exposure, and the chain does not clamp it: hdr())
     bool feature_hdr = false;
     uint64_t features_made = 0;      // (how many times: a feature made again in play costs a stall, so each says why)
+    // (the preset, output and HDR a creation failed for: not tried again each frame, but once any of them changes, so the
+    // menu's DLSS rows bring DLSS back without a restart. 0: none failed)
+    uint64_t refused = 0;
 };
 State& st() {
     static State s;
@@ -364,6 +367,8 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
             logf("vk: NVIDIA DLSS: the render size %ux%u is a little outside quality mode %d's range (%ux%u to %ux%u): taken by "
                  "it (a rounded size)", rw, rh, (int)mode, ranges[k].min_w, ranges[k].min_h, ranges[k].max_w, ranges[k].max_h);
     }
+    const uint64_t key = (uint64_t)ow << 44 ^ (uint64_t)oh << 24 ^ (uint64_t)preset << 1 ^ (hdr ? 1 : 0) ^ 1ull << 63;
+    if (s.refused == key) return *fail = "its feature was not made", 0;
     if (s.feature) {   // (the old one, once a new one is to be made)
         NVSDK_NGX_Handle* old = s.feature;
         temporal_later([old] { NVSDK_NGX_VULKAN_ReleaseFeature(old); });
@@ -392,11 +397,15 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     if (NVSDK_NGX_FAILED(r) || !s.feature) {
         logf("vk: NVIDIA DLSS: its feature was not made (%#x) for %ux%u -> %ux%u", (unsigned)r, max_w, max_h, ow, oh);
         s.feature = nullptr;
-        return *fail = "its feature was not made", -1;
+        // (a transient one too, out of video memory while menu switches had old features still waiting to be let go: the
+        // game's upscale until a DLSS setting changes, not for the rest of the run)
+        s.refused = key;
+        return *fail = "its feature was not made", 0;
     }
     s.feature_rw = max_w, s.feature_rh = max_h, s.feature_ow = ow, s.feature_oh = oh, s.min_rw = min_w, s.min_rh = min_h;
     s.feature_preset = preset;
     s.feature_hdr = hdr;
+    s.refused = 0;
     s.features_made++;
     logf("vk: NVIDIA DLSS: feature %llu made (%s; frame %llu, %.1f ms of CPU): %ux%u (%ux%u to %ux%u) -> %ux%u, mode %d, "
          "preset %c%s%s", (unsigned long long)s.features_made, why, (unsigned long long)texture_frame_no(), made_ms, rw, rh,
