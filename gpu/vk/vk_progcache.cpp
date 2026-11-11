@@ -669,19 +669,19 @@ void program_cache_each(const std::function<void(const KeptProgram&)>& fn) {
                     payload = plain.data();
                     payload_size = plain.size();
                 }
-                Reader rec{payload, payload + payload_size};
+                Reader r{payload, payload + payload_size};
                 Program p;
                 p.key = key;
-                get_head(rec, p);   // (the whole head: reading past only part of it took the fallback's fields for the stage count)
+                get_head(r, p);   // (the whole head: reading past only part of it took the fallback's fields for the stage count)
                 k.key = key, k.variant = answers_hash(p), k.mesh = p.mesh, k.at = d.at;
-                const uint64_t n = rec.count(1);
+                const uint64_t n = r.count(1);
                 k.stages.resize(n <= 8 ? n : 0);
                 for (auto& [stage, spirv] : k.stages) {
-                    rec.get<int>();
-                    stage = rec.get<VkShaderStageFlagBits>();
-                    rec.list(spirv);
+                    r.get<int>();
+                    stage = r.get<VkShaderStageFlagBits>();
+                    r.list(spirv);
                     std::vector<uint8_t> c1;
-                    rec.list(c1);
+                    r.list(c1);
                     Shader::Info info;
                     get_info(r, info);
                 }
