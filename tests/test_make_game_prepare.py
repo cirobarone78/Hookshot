@@ -163,8 +163,12 @@ class LanguageTests(unittest.TestCase):
     def test_the_systems_language_is_read_as_gettext_reads_it(self):
         for env, code in (({"LANG": "nl_NL.UTF-8"}, "nl"), ({"LANG": "nl_NL.UTF-8", "LC_MESSAGES": "pl_PL.UTF-8"}, "pl"),
                           ({"LANG": "nl_NL.UTF-8", "LC_MESSAGES": "pl_PL.UTF-8", "LC_ALL": "ko_KR.UTF-8"}, "ko"),
-                          ({"LANG": "ru_RU.UTF-8", "LC_ALL": ""}, "ru"), ({}, None)):
-            clean = {k: v for k, v in os.environ.items() if k not in ("LC_ALL", "LC_MESSAGES", "LANG")}
+                          ({"LANG": "ru_RU.UTF-8", "LC_ALL": ""}, "ru"), ({}, None),
+                          # (LANGUAGE's first entry over them, as GNOME's language setting leaves it; not under the C locale)
+                          ({"LANG": "en_US.UTF-8", "LANGUAGE": "de:en"}, "de"), ({"LC_ALL": "fr_FR.UTF-8", "LANGUAGE": "it"}, "it"),
+                          ({"LANG": "C.UTF-8", "LANGUAGE": "de:en"}, None), ({"LANGUAGE": "de"}, None),
+                          ({"LANG": "nl_NL.UTF-8", "LANGUAGE": ""}, "nl")):
+            clean = {k: v for k, v in os.environ.items() if k not in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE")}
             with mock.patch.dict(os.environ, dict(clean, **env), clear=True):
                 self.assertEqual(make_game.system_language(), code, env)
 

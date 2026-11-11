@@ -1117,15 +1117,31 @@ def folder_language(out):
     return None
 
 
+def windows_ui_language():
+    """Windows' display language ("de-DE"): the first of the user's preferred UI languages, else the user's default UI language;
+    "" when neither can be read. Not GetUserDefaultLocaleName: that is the regional format (Settings > Region), often another"""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.windll.kernel32
+    count, size = wintypes.ULONG(0), wintypes.ULONG(0)
+    if k32.GetUserPreferredUILanguages(0x8, ctypes.byref(count), None, ctypes.byref(size)) and size.value:   # (MUI_LANGUAGE_NAME)
+        buf = ctypes.create_unicode_buffer(size.value)
+        if k32.GetUserPreferredUILanguages(0x8, ctypes.byref(count), buf, ctypes.byref(size)) and buf.value:
+            return buf.value   # (a list ended by an empty name: the first)
+    buf = ctypes.create_unicode_buffer(85)
+    return buf.value if k32.LCIDToLocaleName(k32.GetUserDefaultUILanguage(), buf, 85, 0) else ""
+
+
 def system_language(name=None):
     """The game language closest to the system's own, as the Windows builder's window picks its first one: the exact one, then the same
     family; None when the game has none of it. name: the system's, "de-DE" or "pt_BR.UTF-8" (asked for when not given)"""
-    if name is None and os.name == "nt":
-        import ctypes
-        buf = ctypes.create_unicode_buffer(85)
-        name = buf.value if ctypes.windll.kernel32.GetUserDefaultLocaleName(buf, 85) else ""
-    elif name is None:   # (the first of these that is set, as gettext reads them)
+    if name is None and os.name == "nt":   # (the display language, as .NET's CurrentUICulture, not the regional format)
+        name = windows_ui_language()
+    elif name is None:   # (as gettext reads them: the first of these that is set, and LANGUAGE's first over it unless that is C)
         name = next((v for v in map(os.environ.get, ("LC_ALL", "LC_MESSAGES", "LANG")) if v), "")
+        first = os.environ.get("LANGUAGE", "").split(":")[0]
+        if first and name and re.split("[.@]", name)[0] not in ("C", "POSIX"):
+            name = first
     name = re.split("[.@]", name)[0].replace("_", "-")
     family = name.split("-")[0].lower()
     for code, _ in LANGUAGES:
