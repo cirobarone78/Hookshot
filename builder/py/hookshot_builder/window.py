@@ -7,6 +7,7 @@ import math
 import os
 import re
 import sys
+import tempfile
 import time
 import winreg
 
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (QAbstractButton, QApplication, QFileDialog, QFram
                                QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit, QScrollArea, QSizePolicy, QStackedLayout,
                                QVBoxLayout, QWidget)
 
-from . import core, paths, setup_parts, strings, updater
+from . import core, launch_page, paths, setup_parts, strings, updater
 from .theme import (C, MONO, W_BOLD, W_MEDIUM, W_SEMIBOLD, Bar, Button, Card, Chip, Choice, PathEdit, Ring, Tick, argb, css,
                     faint, font, glow, heading, label, note, rounded, section, set_color, sub, tick_path)
 
@@ -662,8 +663,28 @@ class Window(QWidget):
         self.step_pill.setParent(head)
         self.step_pill.move((960 - self.step_pill.width()) // 2, 12)
 
+        # the launcher page's chrome for every page: a dark strip along the foot that each page lays its action row on, and the
+        # green rail at the left (the launch page draws its own pair inside, so the chrome stands down for it)
+        self.chrome_strip = QFrame(self.main)
+        self.chrome_strip.setObjectName("strip")
+        self.chrome_strip.setGeometry(0, 540, 960, 60)
+        self.chrome_strip.setStyleSheet("#strip { background:#0C0E12; }")
+        hair = QFrame(self.chrome_strip)
+        hair.setGeometry(0, 0, 960, 1)
+        hair.setStyleSheet("background:#18FFFFFF;")
+        self.chrome_rail = launch_page.Rail(self.hook)
+        self.chrome_rail.setParent(self.main)
+        self.chrome_rail.setGeometry(20, 80, 240, 448)
+        try:
+            found = core.Tools.find()
+        except Exception:
+            found = None
+        self.chrome_rail.set_caption("Hookshot Builder %s" % found.version if found is not None and getattr(found, "version", "") else
+                                     "Hookshot Builder")
+
         body = QWidget(self.main)
-        body.setGeometry(64, 64 + 16, 960 - 128, 600 - 64 - 16 - 34)
+        self.body_frame = body
+        body.setGeometry(20 + 240 + 16, 64 + 16, 960 - (20 + 240 + 16) - 20, 600 - (64 + 16) - 14)   # (its last 46px ride the strip)
         self.pages = QStackedLayout(body)
         self.files_page = self._files_page()
         self.build_page = self._build_page()
@@ -797,31 +818,21 @@ class Window(QWidget):
         self.storage_row = holder(vbox(hbox(None, self.storage_note, None), 8, hbox(None, self.free_button, 18, show, None)))
         self.storage_row.hide()
         col = vbox(None, hbox(None, Glyph("ready"), None), 24 - 20, hbox(None, self.ready_title, None), hbox(None, self.ready_note, None),
-                   28, hbox(None, self.play_button, 12, self.open_button, None), 22,
-                   hbox(None, self.desktop_tick, 18, self.start_tick, None), 26, self.storage_row, None)
+                   22, hbox(None, self.desktop_tick, 18, self.start_tick, None), 26, self.storage_row, None,
+                   14, hbox(None, self.open_button, 12, self.play_button))   # (the action row rides the chrome strip)
         return holder(col)
 
     def _launch_page(self):
-        z = section("THE LEGEND OF ZELDA")
-        z.setContentsMargins(0, 0, 0, 0)
-        t = heading("Ocarina of Time")
-        t.setFont(font(34, W_BOLD))
-        self.launch_version = sub("")
-        self.launch_version.setContentsMargins(0, 8, 0, 0)
-        self.launch_version.setWordWrap(False)
-        self.launch_status = label("Checking for updates…", 13, color="InkSoft")
-        self.launch_update = Button("Update", "primary")
-        self.launch_update.setFixedHeight(50)
-        self.launch_update.fixed_h, self.launch_update.padx = 50, 26
-        self.launch_update.hide()
+        """The mockup launcher: the green rail, the game hero, the Play disc over it, "Build & Update" and the version chain over the
+        scrim, and the status strip along the foot (launch_page.py draws it; the hero is the player's own picture, never ours)."""
+        page = launch_page.LaunchPage(self.hook)
+        self.launch_version, self.launch_status = page.version, page.status
+        self.launch_update, self.launch_play = page.update_button, page.play
         self.launch_update.clicked.connect(lambda: updater.update_folder(self, self.launch_folder, self.update_target, False))
-        self.launch_play = Button(self.T("Play"), "go", icon="play")
         self.launch_play.clicked.connect(self.launch_play_click)
-        fold = Button("Open the game folder", "link", color=C["InkFaint"])
-        fold.clicked.connect(lambda: core.open_folder(self.launch_folder))
-        return holder(vbox(None, hbox(None, z, None), 4, hbox(None, t, None), hbox(None, self.launch_version, None), 16,
-                           hbox(None, self.launch_status, None), 28, hbox(None, self.launch_update, 12, self.launch_play, None), 22,
-                           hbox(None, fold, None), None))
+        self.launch_play.setToolTip(self.T("Play"))
+        page.fold.clicked.connect(lambda: core.open_folder(self.launch_folder))
+        return page
 
     def _problem_page(self):
         self.problem_title, self.problem_sub = heading("The build stopped"), sub("Nothing was changed in your game folder.")
@@ -964,6 +975,13 @@ class Window(QWidget):
 
     def show_page(self, page):
         self.pages.setCurrentWidget(page)
+        chrome_on = page is not self.launch_page   # (the launch page draws its own rail and strip, as the mockup draws them: for
+        self.chrome_strip.setVisible(chrome_on)    #  it the body takes the whole width back, or the page would squeeze inside)
+        self.chrome_rail.setVisible(chrome_on)
+        if chrome_on:
+            self.body_frame.setGeometry(20 + 240 + 16, 80, 960 - (20 + 240 + 16) - 20, 600 - 80 - 14)
+        else:
+            self.body_frame.setGeometry(64, 80, 960 - 128, 600 - 80 - 14)
 
     def set_step(self, on):
         self.step_pill.set(on)
@@ -1019,8 +1037,12 @@ class Window(QWidget):
         self.out_path.setText(folder)
         self.step_pill.hide()
         game = core.game_version(folder) or core.read_version(folder)
-        self.launch_version.setText(("Hookshot %s" % game if game else "Hookshot") + " · " + folder)
-        self.launch_play.setEnabled(os.path.isfile(core.game_exe(folder)))
+        built = os.path.isfile(core.game_exe(folder))
+        self.launch_page.set_hero(folder)   # (the player's own hookshot_hero.png, when the folder keeps one: never art of ours)
+        self.launch_page.set_ready("Ocarina of Time: %s" % ("Ready" if built else "not built in this folder yet"))
+        self.launch_page.set_caption("Hookshot Launcher " + game if game else "Hookshot Launcher")
+        self.launch_version.setText(("Version " + game) if game else "This folder has no game built in it yet")
+        self.launch_play.setEnabled(built)
         self.show_page(self.launch_page)
         import threading
 
@@ -1033,17 +1055,22 @@ class Window(QWidget):
         self.latest_tag = tag
         tools = core.Tools.find()
         self.update_target = tag or (tools.version if tools else None)
+        ready = " (Built & Installed, Ready to play)" if os.path.isfile(core.game_exe(folder)) else ""
         if not self.update_target:
-            self.launch_status.setText("Could not check for updates (GitHub did not answer)")
+            self.launch_status.setText("Hookshot: Could not check for updates (GitHub did not answer)")
         elif game and game != self.update_target and core.game_version(folder):
-            self.launch_status.setText("Update available: %s" % self.update_target)
+            self.launch_version.setText("Version %s → %s" % (game, self.update_target))
+            set_color(self.launch_version, "White")
+            self.launch_status.setText("Hookshot: Update available: %s" % self.update_target)
             self.launch_status.setFont(font(13, W_SEMIBOLD))
             set_color(self.launch_status, argb("#B9C8FF"))
             self.launch_update.show()
         elif game and game != self.update_target:
-            self.launch_status.setText("%s is out: build this folder again with the Hookshot Builder to get it" % self.update_target)
+            self.launch_status.setText("Hookshot: %s is out: build this folder again with the Hookshot Builder to get it" % self.update_target)
+        elif not tag:
+            self.launch_status.setText("Hookshot: Up to date with this builder (GitHub did not answer)")
         else:
-            self.launch_status.setText("Up to date with this builder (GitHub did not answer)" if not tag else "Up to date")
+            self.launch_status.setText(("Hookshot: Version " + game + ready) if game else "Hookshot: this folder has no game built in it yet")
 
     def launch_play_click(self):
         core.start_game(self.launch_folder)
@@ -1100,7 +1127,24 @@ class Window(QWidget):
             self.set_progress(0.62)
             self.build_note.setText("About 3 minutes left. Your current game stays as it is until the new one is complete.")
         elif what == "launch":
-            self.show_launcher(self.out_path.text())
+            folder = self.preview_game_folder()
+            tag = os.environ.setdefault("HOOKSHOT_LATEST_TAG", "v2.0.2")   # (the update chain the mockup shows, without the network)
+            self.show_launcher(folder)
+            self.launcher_latest(folder, "v2.0.1", tag)
+
+    def preview_game_folder(self):
+        """(development) A made-up built game folder for the launcher preview: the names a built folder has (its version line, the
+        update markers, bin\\hookshot.exe) and nothing else. It holds no game data: only file names."""
+        d = os.path.join(tempfile.gettempdir(), "hookshot_ui_preview")
+        for sub in (".hookshot_exefs", "romfs", "bin"):
+            os.makedirs(os.path.join(d, sub), exist_ok=True)
+        paths.write_small(os.path.join(d, "hookshot_version.txt"), "version=v2.0.1")
+        try:
+            with open(os.path.join(d, "bin", "hookshot.exe"), "wb"):
+                pass
+        except OSError:
+            pass
+        return d
 
     # ================= 1: game files =================
 

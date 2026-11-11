@@ -232,6 +232,33 @@ TICK_LINE = mix(WHITE, PAGE, 0x40 / 255)
 TRACK = mix(WHITE, PAGE, 0x12 / 255)          # a bar's empty part
 LOG = mix("#000000", GLASS, 0x33 / 255)       # the build's lines
 
+# (the launcher page adds only these, as the mockup draws it: the green rail, the dusk-green hero, the dark bands, and the
+#  grays of the Play disc; everything else takes the Slate colours above)
+GREEN_TOP, GREEN_BOT = "#006701", "#001F00"
+FIELD_TOP, FIELD_BOT, HERO_BAND, HERO_FOOT = "#14291F", "#0B1014", "#1C1E22", "#101216"
+DISC, DISC_HOT, DISC_OFF, DISC_LINE = "#3F434A", "#50555E", "#23262B", "#5A5F66"
+HERO_FILE = "hookshot_hero.png"
+
+
+def hero_image(folder):
+    """The player's hero picture for this game folder, when it has one ("" when it does not). Never art of ours: the builder
+    ships no picture of the game (CONTRIBUTING.md, "The rule with no exceptions")."""
+    p = os.path.join(folder, HERO_FILE)
+    return p if os.path.isfile(p) else ""
+
+
+def gradient(canvas, width, height, top, bottom):
+    """A vertical gradient: Tk draws no alpha, so it is bands of interpolated colour here (mix() would need a colour per band
+    painted over a widget; the canvas takes the bands directly)."""
+    def rgb(c):
+        return int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
+    t, b, steps = rgb(top), rgb(bottom), 48
+    for k in range(steps):
+        f = k / (steps - 1)
+        col = "#%02X%02X%02X" % tuple(round(t[i] + (b[i] - t[i]) * f) for i in range(3))
+        y0 = int(height * k / steps)
+        canvas.create_rectangle(0, y0, width, int(height * (k + 1) / steps) + 1, fill=col, outline=col)
+
 
 def box(x, y, w, h, r):
     """a distance function: from a point to the box at x, y of w x h with corners of radius r (negative inside)"""
@@ -556,23 +583,25 @@ class Builder(tk.Tk):
         return image
 
     def load_logo(self, size):
-        """assets/hookshot.png (the Windows head's and the game's icon), size pixels wide over the page: averaged down with its
-        alpha on Tk 9, every nth pixel on an older Tk"""
-        self.images["logo"] = None
+        """assets/hookshot.png (the Windows head's and the game's icon), size pixels wide over the page"""
+        self.images["logo"] = self.logo(size)
+
+    def logo(self, size, over=PAGE):
+        """assets/hookshot.png averaged down to size pixels wide over the colour over: averaged down with its alpha on Tk 9,
+        every nth pixel on an older Tk. The launcher page draws its own, bigger copy over the rail's green."""
         path = os.path.join(ROOT, "assets", "hookshot.png")
         try:
             full = tk.PhotoImage(master=self, file=path)
         except (tk.TclError, OSError):
-            return
+            return None
         w, h = full.width(), full.height()
         try:
             rows = [self.tk.splitlist(row) for row in
                     self.tk.splitlist(self.tk.call(full, "data", "-format", "default -colorformat rgba"))]
         except tk.TclError:
-            self.images["logo"] = full.subsample(max(1, w // size))
-            return
+            return full.subsample(max(1, w // size))
         tw, th = size, max(1, round(h * size / w))
-        page = [int(PAGE[i:i + 2], 16) for i in (1, 3, 5)]
+        page = [int(over[i:i + 2], 16) for i in (1, 3, 5)]
         out = []
         for j in range(th):
             y0, y1 = j * h // th, max(j * h // th + 1, (j + 1) * h // th)
@@ -594,7 +623,7 @@ class Builder(tk.Tk):
             out.append("{%s}" % " ".join(line))
         logo = tk.PhotoImage(master=self, width=tw, height=th)
         logo.put(" ".join(out))
-        self.images["logo"] = logo
+        return logo
 
     def header(self, parent, step=None, chip=None):
         """the window's head, as Windows draws it: the hookshot and Hookshot at the left, and in the middle the steps (Game files >
@@ -876,45 +905,103 @@ class Builder(tk.Tk):
         target = linux_update.update_target(self.latest, self.tools, self.switching())
         show = False
         if target and game and game != target and kept:
-            self.launch_status.set("Update available: %s" % target)
+            self.launch_status.set("Hookshot: Update available: %s" % target)
+            self.launch_version.set("Version %s -> %s" % (game, target))
+            self.hero.itemconfig(self.version_id, fill=INK)
+            self.hero.itemconfig(self.status_id, fill=BRAND_INK)
             show = True
         elif target and game and game != target:
-            self.launch_status.set("%s is out. Build this folder again with Hookshot Builder to get it." % target)
+            self.launch_status.set("Hookshot: %s is out. Build this folder again with Hookshot Builder to get it." % target)
         elif game and self.latest is None:
-            self.launch_status.set("Up to date with this builder (GitHub did not answer)")
+            self.launch_status.set("Hookshot: Up to date with this builder (GitHub did not answer)")
         elif game:
-            self.launch_status.set("Up to date")
+            self.launch_status.set("Hookshot: Version %s (Built & Installed, Ready to play)" % game
+                                   if game_ready(self.launch_folder) else "Hookshot: Version %s" % game)
         else:
-            self.launch_status.set("Could not check for updates (GitHub did not answer)" if self.latest is None else "Hookshot")
+            self.launch_status.set("Hookshot: Could not check for updates (GitHub did not answer)" if self.latest is None else "Hookshot")
         if hasattr(self, "launch_update"):
-            self.launch_update.pack(side="right", padx=self.px(4)) if show else self.launch_update.pack_forget()
+            self.hero.itemconfig(self.update_id, state="normal" if show else "hidden")
+
+    def make_rail(self, parent):
+        """The launcher page's green rail: its gradient, the hookshot at the size the rail wants (the same averaged-down copy
+        the head uses, just big), and room for the page to write its own caption under it."""
+        px = self.px
+        rail_w, h = px(250), px(560)
+        rail = tk.Canvas(parent, width=rail_w, height=h, background=GREEN_TOP, highlightthickness=0, borderwidth=0)
+        gradient(rail, rail_w, h, GREEN_TOP, GREEN_BOT)
+        try:
+            art = tk.PhotoImage(master=self, file=os.path.join(ROOT, "assets", "hookshot.png"))
+            step = max(1, round(art.width() / px(190)))
+            self.rail_art = art.subsample(step, step) if step > 1 else art   # (Tk 9 averages subsample with the alpha, so the
+            rail.create_image(rail_w // 2, px(150), image=self.rail_art)      #  art lays over the rail's bands, no patch)
+        except (tk.TclError, OSError):
+            self.rail_art = self.logo(px(190), over=mix(GREEN_TOP, GREEN_BOT, 1 - 150.0 / 560))   # (an older Tk: the flattened copy)
+            if self.rail_art is not None:
+                rail.create_image(rail_w // 2, px(150), image=self.rail_art)
+        return rail, rail_w
 
     def show_launch(self, folder):
+        """The mockup launcher: the green hookshot rail on the left, the game hero filling the right with the Play disc over it,
+        "Build & Update" over the top band and the "Hookshot: ..." status strip along the foot. The hero is the player's own
+        hookshot_hero.png when the folder has one (never a picture of the game shipped by us), a dusk-green gradient
+        otherwise. The builder's own Slate look (header, cards, Play's green) carries its words and its buttons."""
         if self.page:
             self.page.destroy()
         self.title("Hookshot")
         px = self.px
-        page = self.page = ttk.Frame(self)
-        page.pack(fill="both", expand=True)
         game, _kept = linux_update.game_version(folder)
-        self.header(page, chip=game)
-        # (the Windows launcher's page: the game's name in the middle, Update beside Play when there is one, the folder below)
-        f = ttk.Frame(page, padding=(px(48), px(24), px(48), px(56)))
-        f.pack(fill="both", expand=True)
-        ttk.Frame(f, width=px(800), height=0).pack()
-        ttk.Label(f, text="THE LEGEND OF ZELDA", style="Section.TLabel").pack()
-        ttk.Label(f, text="Ocarina of Time", style="Display.TLabel").pack(pady=(px(4), 0))
-        ttk.Label(f, text=folder, style="Sub.TLabel", wraplength=px(600), justify="center").pack(pady=(px(8), 0))
+        ready = game_ready(folder)
+        w, h = px(900), px(560)
+        self.geometry("%dx%d" % (w, h))
+        self.resizable(False, False)
+        page = self.page = tk.Frame(self, background=PAGE)
+        page.pack(fill="both", expand=True)
+        rail, rail_w = self.make_rail(page)
+        rail.pack(side="left", fill="y")
+        rail.create_text(rail_w // 2, px(300), text="Hookshot Launcher", font="HsNoteStrong", fill=INK)
+        rail.create_text(rail_w // 2, px(324), text=game or "", font="HsSmall", fill=INK_SOFT)
+        self.hero = hero = tk.Canvas(page, width=w - rail_w, height=h, background=FIELD_BOT, highlightthickness=0, borderwidth=0)
+        hero.pack(side="left", fill="both", expand=True)
+        self.hero_w, self.hero_h = w - rail_w, h
+        self.hero_px = None
+        picture = hero_image(folder)
+        if picture:   # (the player's own picture, centred: the canvas crops what falls outside)
+            self.hero_px = tk.PhotoImage(master=self, file=picture)
+            zoom = max(1, min(self.hero_w // max(self.hero_px.width(), 1), self.hero_h // max(self.hero_px.height(), 1)))
+            if zoom > 1:
+                self.hero_px = self.hero_px.zoom(zoom, zoom)
+            hero.create_image(self.hero_w // 2, self.hero_h // 2, image=self.hero_px)
+        else:
+            gradient(hero, self.hero_w, self.hero_h, FIELD_TOP, FIELD_BOT)
+        hero.create_rectangle(0, 0, self.hero_w, px(88), fill=HERO_BAND, outline=HERO_BAND)   # (the scrim band, as the mockup draws it)
+        hero.create_rectangle(0, self.hero_h - px(40), self.hero_w, self.hero_h, fill=HERO_FOOT, outline=HERO_FOOT)
+        hero.create_text(px(24), px(44), anchor="w", text="Build & Update", font="HsTitle", fill=INK)
+        self.launch_version = tk.StringVar(value="Version " + game if game else "This folder has no game built in it yet")
+        self.version_id = hero.create_text(px(25), px(66), anchor="w", text=self.launch_version.get(), font="HsNote", fill=INK_SOFT)
+        self.launch_version.trace_add("write", lambda *_: hero.itemconfig(self.version_id, text=self.launch_version.get()))
+        hero.create_text(self.hero_w // 2, px(200), text="Ocarina of Time: %s" % ("Ready" if ready else "not built in this folder yet"),
+                         font="HsStrong", fill=INK)
+        cx, cy = self.hero_w // 2, px(280)
+        self.disc = hero.create_oval(cx - px(48), cy - px(48), cx + px(48), cy + px(48),
+                                     fill=DISC if ready else DISC_OFF, outline=DISC_LINE, width=2)
+        self.disc_tri = hero.create_polygon(cx - px(10), cy - px(20), cx + px(22), cy, cx - px(10), cy + px(20),
+                                            fill=INK if ready else DISC_LINE, outline="")
+        if ready:   # (the disc is Play, the mockup's way)
+            hero.tag_bind(self.disc, "<Button-1>", lambda e: self.play_and_close(folder))
+            hero.tag_bind(self.disc_tri, "<Button-1>", lambda e: self.play_and_close(folder))
+            hero.tag_bind(self.disc, "<Enter>", lambda e: hero.itemconfig(self.disc, fill=DISC_HOT))
+            hero.tag_bind(self.disc, "<Leave>", lambda e: hero.itemconfig(self.disc, fill=DISC))
         self.launch_status = tk.StringVar(value="Checking for updates...")
-        ttk.Label(f, textvariable=self.launch_status, style="Note.TLabel", wraplength=px(600), justify="center").pack(pady=(px(16), 0))
-        buttons = ttk.Frame(f)
-        buttons.pack(pady=(px(28), 0))
-        self.launch_update = ttk.Button(buttons, text="Update", style="Primary.TButton", cursor="hand2",
+        self.status_id = hero.create_text(px(24), self.hero_h - px(20), anchor="w", text=self.launch_status.get(), font="HsNote",
+                                          fill=INK)
+        self.launch_status.trace_add("write", lambda *_: hero.itemconfig(self.status_id, text=self.launch_status.get()))
+        link = hero.create_text(self.hero_w - px(20), self.hero_h - px(20), anchor="e", text="Open the game folder",
+                                font="HsNoteStrong", fill=INK_FAINT)
+        hero.tag_bind(link, "<Button-1>", lambda e: subprocess.Popen(["xdg-open", folder]))
+        self.launch_update = ttk.Button(hero, text="Update", style="Primary.TButton", cursor="hand2",
                                         command=lambda: self.begin_update(folder))
-        ttk.Button(buttons, text="Play", style="Go.TButton", image=self.images["play"], compound="left", cursor="hand2",
-                   command=lambda: self.play_and_close(folder)).pack(side="right", padx=px(4))
-        ttk.Button(f, text="Open the game folder", style="Link.TButton", cursor="hand2",
-                   command=lambda: subprocess.Popen(["xdg-open", folder])).pack(pady=(px(22), 0))
+        self.update_id = hero.create_window(self.hero_w - px(20), px(30), window=self.launch_update, anchor="ne", width=px(96))
+        self.hero.itemconfig(self.update_id, state="hidden")
         self.lookup_latest()
 
     def track_id(self):
