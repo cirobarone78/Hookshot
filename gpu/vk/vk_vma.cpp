@@ -103,7 +103,7 @@ VmaPool images_pool() {
     return image_pool;
 }
 
-// (hookshot) The sampled textures' own pool, when they are compacted (RX_VK_COMPACT=1): VMA's defragmentation asks to move any
+// (hookshot) The sampled textures' own pool, when they are compacted (unless RX_VK_COMPACT=0): VMA's defragmentation asks to move any
 // allocation of the pool it works on, and only vk_texture.cpp's images can be moved (it knows what they hold and who uses
 // them) or kept from being freed while a pass is open. The render targets' images stay in their blocks above; DLSS's, the
 // frame interpolation's and the scratch ones in the images' pool
@@ -275,6 +275,12 @@ void flush_mapped_range(VmaAllocation allocation, uint64_t offset, uint64_t size
 }
 void invalidate_mapped(VmaAllocation allocation, uint64_t size) {
     if (size) vmaInvalidateAllocation(vma, allocation, 0, size);
+}
+bool flush_mapped_checked(VmaAllocation allocation, uint64_t size) {
+    return !size || vmaFlushAllocation(vma, allocation, 0, size) == VK_SUCCESS;
+}
+bool invalidate_mapped_checked(VmaAllocation allocation, uint64_t size) {
+    return !size || vmaInvalidateAllocation(vma, allocation, 0, size) == VK_SUCCESS;
 }
 void destroy_buffer(VkBuffer buffer, VmaAllocation allocation) {
     vmaDestroyBuffer(vma, buffer, allocation);
