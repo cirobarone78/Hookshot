@@ -2327,7 +2327,7 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
         if (in) fclose(in);
     };
     {
-        const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
+        const unsigned cpus = usable_cpus();
         std::vector<std::thread> threads;
         for (unsigned i = 1; i < std::min({cpus, 16u, (unsigned)work.size()}); i++) threads.emplace_back(worker);
         worker();
@@ -2435,7 +2435,7 @@ void program_cache_each(const std::function<void(const KeptProgram&)>& fn) {
         }
         if (in) fclose(in);
     };
-    const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
+    const unsigned cpus = usable_cpus();
     std::vector<std::thread> threads;
     for (unsigned i = 1; i < std::min<size_t>({cpus, 16u, (all.size() + kRun - 1) / kRun}); i++) threads.emplace_back(worker);
     worker();
@@ -2850,6 +2850,19 @@ const Program* program_find(uint64_t key, uint64_t variant) {
     for (auto& p : it->second)
         if (p->variant == variant && p->ready.load(std::memory_order_acquire) && !p->failed) return p.get();
     return nullptr;
+}
+
+unsigned usable_cpus() {
+    const unsigned all = std::max(1u, std::thread::hardware_concurrency());
+    DWORD_PTR proc = 0, sys = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) || !proc) return all;
+    unsigned n = 0;
+    for (uint64_t m = (uint64_t)proc; m; m &= m - 1) n++;
+    // (a mask covers one processor group, 64 CPUs at most: past that, Windows may run the process on every group)
+    return n < 64 ? std::clamp(n, 1u, all) : all;
+}
+unsigned half_cpus() {
+    return std::max(1u, std::min(std::max(1u, std::thread::hardware_concurrency()) / 2, usable_cpus()));
 }
 
 void shader_stats(int64_t* translated, int64_t* failed) {

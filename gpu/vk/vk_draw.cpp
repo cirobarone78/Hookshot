@@ -1576,8 +1576,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
         }
     };
     std::vector<std::thread> threads;
-    const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
-    for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(worker);
+    for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(worker);
     for (std::thread& t : threads) t.join();
     // then each pipeline, noted as a draw would note it
     std::unordered_set<uint64_t> keys;
@@ -1619,7 +1618,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
         }
     };
     threads.clear();
-    for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(variant_worker);
+    for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(variant_worker);
     for (std::thread& t : threads) t.join();
     size_t noted_n = 0, no_variant = 0, noted_mesh = 0, noted_fallback = 0;
     auto s = std::make_unique<NvnState>();
@@ -7488,8 +7487,7 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
         }
     };
     std::vector<std::thread> threads;
-    const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
-    for (unsigned i = 0; i < std::clamp(cpus / 2, 1u, 32u); i++) threads.emplace_back(worker);
+    for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load(), total);
         Sleep(100);
@@ -7660,9 +7658,10 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         }
     };
     std::vector<std::thread> threads;
-    const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
+    const unsigned cpus = usable_cpus();
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
-    const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : std::clamp(cpus / 2, 1u, 32u);
+    const unsigned quarter = std::clamp(std::max(1u, std::thread::hardware_concurrency()) / 4, 2u, 4u);
+    const unsigned workers = background ? std::min(quarter, cpus) : std::clamp(half_cpus(), 1u, 32u);
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
@@ -7838,7 +7837,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         }
     };
     std::vector<std::thread> threads;
-    const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
+    const unsigned cpus = usable_cpus();
     for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
     static const int stall_s = getenv("RX_VK_PRECOMPILE_STALL_S") ? atoi(getenv("RX_VK_PRECOMPILE_STALL_S")) : 30;
     size_t last_done = 0;
@@ -7960,7 +7959,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
         }
     };
     std::vector<std::thread> threads;
-    const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
+    const unsigned cpus = usable_cpus();
     for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
     while (next.load() < keys.size() + threads.size() && !prepare_stopped() && !out_of_time.load()) {
         if (progress) progress(done.load(), predicted.size());

@@ -301,6 +301,12 @@ bool prepare_is_update();
 void prepare_background();
 void state_list_run();                        // (an update: the state list's pipelines noted before precompile_run)
 void predict_run(void (*progress)(size_t done, size_t total));   // (after a prepare_run that prepared: the notes' predictions)
+/// (hookshot) The CPUs this process may run on: its affinity mask (sched_getaffinity on Linux, through host/posix), not every CPU
+/// the PC has. The prepare's pools are sized from it: a process limited to 12 of 24 CPUs ran 24 threads on them
+unsigned usable_cpus();   // vk_shader.cpp
+/// (hookshot) Half the PC's CPUs (one a core where a core runs two threads: the translation's and the stage libraries' workers, at
+/// below normal priority), and never more than usable_cpus: on 12 of 24 CPUs, 6 workers made the translation 40% slower than 12
+unsigned half_cpus();   // vk_shader.cpp
 void prepare_guess(size_t out[3]);   // (the three parts' counts from the files, before they run: PrepareBar)
 /// (hookshot) The window was closed while the shaders were prepared: prepare_run and precompile_run take nothing more and return,
 /// what is done kept (the program cache, the driver's) and not counted as a start that ended inside them
