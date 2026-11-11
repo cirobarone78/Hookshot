@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import tempfile
 
+RUN_ALL_ARGS = ["--cc", "clang"]
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
