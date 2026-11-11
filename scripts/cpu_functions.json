@@ -786,7 +786,7 @@
   "source": "read"
  },
  "mkwvk::log_big_copy": {
-  "does": "(RX_VK_LOG_BIG_COPY=1: copies into textures of 32 MB or more, the course maps' kind, 300 lines).",
+  "does": "(RX_VK_LOG_BIG_COPY=1: copies into textures of 32 MB or more, 300 lines).",
   "source": "read"
  },
  "mkwvk::log_img_wanted": {
