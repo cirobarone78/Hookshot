@@ -9,7 +9,7 @@ Toggle switches on a press, not while the Insert menu has the keys or the window
 as they come back counts after its release; the key can be rebound (a mouse button too) and taken by another control;
 an options file from before the Walk control that gives Caps Lock to another control leaves Walk without a key. The
 wiring (option ids, the renderer's answer, the menu's rows and Controls page row, both bind_names copies, the docs) is
-read from the source.
+read from the source. The compiled fixture uses the real header's option constants to answer the host's live reads.
 
 python -I -B tests/test_walk_key.py   (needs a C compiler)
 """
@@ -45,7 +45,8 @@ def block(text, marker):
 def between(text, first, last):
     """from the line that holds first to the end of the block or statement that starts at last"""
     start = text.rindex("\n", 0, text.index(first)) + 1
-    return text[start:text.index(last)] + block(text, last)
+    end = text.index(last, start)
+    return text[start:end] + block(text[end:], last)
 
 
 PRELUDE = r"""
@@ -55,8 +56,16 @@ PRELUDE = r"""
 #include <string.h>
 #include <stdint.h>
 #include "vk_api.h"
+_Static_assert(HOS_OPT_WALK_MODE == 52, "Walk mode option ID");
+_Static_assert(HOS_OPT_WALK_SPEED == 53, "Walk speed option ID");
 typedef long LONG;
 typedef unsigned long DWORD;
+typedef int SRWLOCK;
+#define SRWLOCK_INIT 0
+static void AcquireSRWLockExclusive(SRWLOCK *p) { (void)p; }
+static void ReleaseSRWLockExclusive(SRWLOCK *p) { (void)p; }
+static void AcquireSRWLockShared(SRWLOCK *p) { (void)p; }
+static void ReleaseSRWLockShared(SRWLOCK *p) { (void)p; }
 #define VK_LBUTTON 0x01
 #define VK_RBUTTON 0x02
 #define VK_MBUTTON 0x04
@@ -319,7 +328,7 @@ class WalkKeyTests(unittest.TestCase):
     def test_wiring(self):
         api, hid, menu = read("gpu", "vk", "vk_api.h"), read("host", "nn_hid.c"), read("gpu", "vk", "vk_menu.cpp")
         header, replay = read("gpu", "vk", "vk_menu.h"), read("gpu", "vk", "vk_replay.cpp")
-        self.assertIn("enum { HOS_OPT_WALK_MODE = 46, HOS_OPT_WALK_SPEED };", api)
+        self.assertIn("enum { HOS_OPT_WALK_MODE = 52, HOS_OPT_WALK_SPEED };", api)
         self.assertRegex(api, r"HOS_KEY_CAM_RIGHT, HOS_KEY_WALK, HOS_KEY_N \};")
         # (the host's two copies of the names: the ini's key_walk)
         self.assertEqual(names(hid), names(menu))
