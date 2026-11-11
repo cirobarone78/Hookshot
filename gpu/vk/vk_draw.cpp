@@ -7873,9 +7873,9 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
 // once for the driver's own cache and let go. Not into ours (mkw_vk_pipelines.bin, read whole at every start: ~40000 more pipelines made
 // it 1.7 GB), nor kept: each program is borrowed from hookshot_programs.bin for its pipelines and let go
 /// (hookshot) The preparation's three parts as the files on disk count them before it runs: PrepareBar's guesses, so that the bar
-/// has every part in its total from the start. The seed's programs (its header); the pipelines the notes will predict, about one for
-/// each graphics program variant no note names, about as many as the seed has programs (38,809 programs, 43,000-46,000 predicted
-/// on a played folder); the pipelines the notes and state lists name, and the compute programs play dispatched
+/// has every part in its total from the start. The seed's programs (its header); the pipelines the notes will predict, about one and
+/// a half a seed program (56,588 for 38,809 programs with the shipped list of 25,251 states); the pipelines the notes and state
+/// lists name, and the compute programs play dispatched
 void prepare_guess(size_t out[3]) {
     out[0] = out[1] = out[2] = 0;
     const auto size_of = [](const std::string& path) -> int64_t {
@@ -7891,7 +7891,9 @@ void prepare_guess(size_t out[3]) {
         uint32_t programs = 0;
         if (fread(head, 1, 16, f) == 16 && !memcmp(head, "HKSEED01", 8)) std::memcpy(&programs, head + 8, 4);
         fclose(f);
-        out[0] = out[1] = programs;
+        // (the predicted pipelines: about one and a half a seed program with the shipped list, 56,588 for 38,809 programs, not one;
+        // at one the bar ran ahead through the programs and then slowed for minutes. The count replaces the guess once decided)
+        out[0] = programs, out[1] = programs + programs / 2;
     }
     const int64_t notes = size_of(pipe_notes_path()), computes = size_of(computes_path());
     const int64_t lists = std::max<int64_t>(0, size_of(state_list_path("hookshot_pipeline_states_shipped.bin")) - 12) +
