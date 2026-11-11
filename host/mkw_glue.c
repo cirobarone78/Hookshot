@@ -51,6 +51,42 @@ DWORD WINAPI hos_out_of_memory_box(LPVOID unused) {
     return 0;
 }
 
+/* (hookshot) HOS_HEAP_LAZY=1 (Windows, experimental; off by default): the game's heap is committed where it is first used, a
+   64 KB run at a time (commit_on_touch), instead of all of it when the game sizes it (SetMemoryHeapSize). Windows counts
+   every committed page against RAM plus the page file whether it is ever used or not, and the game sizes its heap whole up
+   front (6.9 GB here): the commit-limit crashes of long sessions (an RTX 3060's at 30.7 GB of commit after 54 minutes). The
+   host APIs that read or write guest memory without faulting (a file's read and write, nn_fs.c) commit their range first
+   (hos_commit_reserved); the GPU's host-pointer imports commit theirs already (vk_memory.cpp). Linux commits on first touch
+   anyway. */
+int hos_heap_lazy(void) {
+    static int on = -1;
+#ifdef _WIN32
+    if (on < 0) on = env_on("HOS_HEAP_LAZY");
+#else
+    on = 0;
+#endif
+    return on;
+}
+static volatile LONG64 lazy_faults, lazy_bytes;
+/* the reserved pages of [addr, addr + size) committed; committed ones are left as they are (a page a write watch or the
+   shadow writes guard keeps its protection, which committing it again would reset). Nothing unless HOS_HEAP_LAZY */
+void hos_commit_reserved(uint64_t addr, uint64_t size) {
+    if (!size || !hos_heap_lazy() || !hos_guest_range(addr, size)) return;
+    uint8_t *q = (uint8_t *)GP(addr & ~0xFFFULL), *end = (uint8_t *)GP(addr) + size;
+    while (q < end) {
+        MEMORY_BASIC_INFORMATION mi;
+        if (!VirtualQuery(q, &mi, sizeof mi)) break;
+        uint8_t *next = (uint8_t *)mi.BaseAddress + mi.RegionSize;
+        if (next > end) next = (uint8_t *)(((uintptr_t)end + 0xFFF) & ~(uintptr_t)0xFFF);
+        if (mi.State == MEM_RESERVE && next > q) {
+            if (VirtualAlloc(q, (SIZE_T)(next - q), MEM_COMMIT, PAGE_READWRITE)) InterlockedAdd64(&lazy_bytes, next - q);
+            else hos_commit((uint64_t)(q - (uint8_t *)GP(0)), (uint64_t)(next - q));   /* (its failure logged there, the commit limit too) */
+        }
+        if (next <= q) break;
+        q = next;
+    }
+}
+
 static LONG CALLBACK commit_on_touch(EXCEPTION_POINTERS *info) {
     EXCEPTION_RECORD *rec = info->ExceptionRecord;
     if (rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || rec->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
@@ -60,11 +96,21 @@ static LONG CALLBACK commit_on_touch(EXCEPTION_POINTERS *info) {
     if (guest < 0x100000) return EXCEPTION_CONTINUE_SEARCH;   /* (a null pointer: the game's own fault) */
     MEMORY_BASIC_INFORMATION mbi;
     if (!VirtualQuery(p, &mbi, sizeof mbi) || mbi.State != MEM_RESERVE) return EXCEPTION_CONTINUE_SEARCH;
+    const int heap = hos_heap_lazy() && guest >= HOS_HEAP_BASE && guest - HOS_HEAP_BASE < hos_heap_size;
     static volatile LONG touched;
-    if (InterlockedIncrement(&touched) <= 16)
+    if (!heap && InterlockedIncrement(&touched) <= 16)
         hos_log("mem: %#llx committed on first touch (nothing handed it out)", (unsigned long long)guest);
-    return VirtualAlloc(GP(guest & ~0xFFFFULL), 0x10000, MEM_COMMIT, PAGE_READWRITE) ? EXCEPTION_CONTINUE_EXECUTION
-                                                                                      : EXCEPTION_CONTINUE_SEARCH;
+    if (!VirtualAlloc(GP(guest & ~0xFFFFULL), 0x10000, MEM_COMMIT, PAGE_READWRITE)) {
+        if (heap) hos_commit(guest & ~0xFFFFULL, 0x10000);   /* (logs why: the commit limit reached, said once) */
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (heap) {   /* (the lazy heap's first uses: a line every 16384, with what they committed) */
+        InterlockedAdd64(&lazy_bytes, 0x10000);
+        if ((InterlockedIncrement64(&lazy_faults) & 16383) == 0)
+            hos_log("mem: lazy heap: %lld first uses so far, %lld MB of the heap's %llu committed (HOS_HEAP_LAZY)",
+                    (long long)lazy_faults, (long long)(lazy_bytes >> 20), (unsigned long long)(hos_heap_size >> 20));
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
 }
 
 /* A crash nothing handles: what, where (mkw.exe+offset: nx2/dllmap.py reads mkw.map the same way), and the guest
