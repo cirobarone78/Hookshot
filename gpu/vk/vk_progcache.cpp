@@ -225,7 +225,7 @@ void disk_init() {
                     }
                 }
                 size_t scanned = 0;
-                while (good + (int64_t)head_size <= whole) {
+                while (good + 20 <= whole) {
                     uint64_t rec[2];
                     uint32_t kind = 0;
                     _fseeki64(f, good, SEEK_SET);
