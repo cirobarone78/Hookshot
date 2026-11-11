@@ -1429,8 +1429,9 @@ void save() {
         fprintf(f, "memory_budget=%d\n", opts.budget);
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on; 5: the
-        // Aspect ratio's 16:9 from before moves on a screen narrower than 16:9, see menu_init and host/hos_wide_size.h)
-        fprintf(f, "options_version=5\n");
+        // Menu shortcut "Insert, F1 or Esc" by default, see menu_init; 6: the Aspect ratio's 16:9 from before moves on a
+        // screen narrower than 16:9, see menu_init and host/hos_wide_size.h)
+        fprintf(f, "options_version=6\n");
         fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
         for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the keys-only controls, HOS_KEY_*, have no pad_ line)
@@ -3114,11 +3115,15 @@ void menu_init() {
         // (Descriptor reuse is on by default from options_version 4: a file from before wrote its 0 whether chosen or not, as
         // the off default it then was; fewer stutters and a better 1% low in the field, the flash checks clean, 2026-11-10)
         if (version < 4) opts.descriptor_reuse = 1;
-        // (the Aspect ratio from options_version 5: a file from before wrote ultrawide=0, the 16:9 default then, whether
+        // (Esc opens the menu by default from options_version 5, as a PC game's pause menu: a file from before wrote its
+        // Menu shortcut 0, Insert or F1, whether chosen or not, and moves to Insert, F1 or Esc, where Insert and F1 still
+        // work. F1 only was chosen: kept)
+        if (version < 5 && opts.menu_shortcut == 0) opts.menu_shortcut = 2;
+        // (the Aspect ratio from options_version 6: a file from before wrote ultrawide=0, the 16:9 default then, whether
         // chosen or not. On a screen narrower than 16:9 host/hos_main.c starts the game at the monitor's shape for it
         // (host/hos_wide_size.h hos_aspect_on), and the row follows what the host started with: a picture narrower than
         // 16:9 there. On Linux too, where the menu has no screen size of its own)
-        if (version < 5 && opts.ultrawide == 0 && host && host->aspect_ratio) {
+        if (version < 6 && opts.ultrawide == 0 && host && host->aspect_ratio) {
             const float started = host->aspect_ratio();
             if (started > 1.0f && started < 16.0f / 9.0f * 0.99f) opts.ultrawide = 1;
         }
@@ -3587,8 +3592,9 @@ void menu_tick() {
         restart_state.choose_later(now);
         open_now = false, page = 0, tune_mode = false, changed = true;
     };
-    // (Menu shortcut "Insert, F1 or Esc": Esc on a closed menu opens it, the keyboard's alone (the
-    // gamepad's back is Esc only while it is open, above). The press that opened it does not go back a page below. No
+    // (Menu shortcut "Insert, F1 or Esc", the default: Esc on a closed menu opens it, the keyboard's and RX_VK_MENU_SCRIPT's
+    // ESC alone (the gamepad's back is Esc only while it is open, above). The press that opened it does not go back a page
+    // below; with the compact menu key held it opens the compact bar, as Insert and F1 do (tune_mode). No
     // control can be bound to Esc, so nothing in play changes; the window gives the captured mouse back on the close)
     const bool esc_opens = opts.menu_shortcut == 2 && press[5] && !open_now.load();
     if (esc_opens) press[5] = false;
