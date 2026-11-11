@@ -8104,6 +8104,9 @@ void driver_cache_log(const char* when) {
 /// (the start after a preparation, behind the game on a thread of its own) the sample asked of the driver, logged
 void predicted_check() {
     if (predicted_this_run || getenv("RX_VK_NO_PREDICT_CHECK")) return;
+    // (not in a --prepare-shaders run (vk_main.cpp prepare_only): it exits right after, and a detached thread still asking the
+    // driver then would race the process's exit, its static destructors and the driver's teardown; the game's next start checks)
+    if (getenv("HOOKSHOT_PREPARE_ONLY")) return;
     std::vector<PipeNote> sample;
     if (FILE* f = fopen(predicted_sample_path().c_str(), "rb")) {
         uint64_t head[3]{};

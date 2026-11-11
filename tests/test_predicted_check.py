@@ -38,6 +38,8 @@ def main():
         raise SystemExit("FAIL: the sample is not stamped, or the building process would check itself")
     check = body(draw, "void predicted_check() {")
     for need, why in (("predicted_this_run", "the process that built them asks the driver, which answers from memory"),
+                      ('if (getenv("HOOKSHOT_PREPARE_ONLY")) return;',
+                       "a --prepare-shaders run starts the check on a thread that would race its exit"),
                       ("head[0] == program_cache_stamp()", "a sample of another translator or cache format is asked"),
                       ("std::thread(", "the check holds up the start"),
                       ("THREAD_PRIORITY_IDLE", "the check competes with the game"),
