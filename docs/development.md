@@ -303,6 +303,9 @@ record it again, and make a new tour list. The folder's layout stays the same.
 
 ## The options file
 
+A new row on the Graphics, Audio, Gameplay or Controls tab needs a line in the README's option table too, in the
+menu's order, with its choices and default: `tests/test_readme_menu_rows.py` fails without it.
+
 `hookshot_options.ini`, in the game folder, holds the Insert menu's rows as `<key>=<number>`: the row's name in lower
 case with `_` for spaces (`frame_generation=2`, `invert_camera_x=1`), except Output resolution, which is `output_res`.
 `gpu/vk/vk_menu.cpp` writes the whole file at every change (`save`), with `options_version=5`,
