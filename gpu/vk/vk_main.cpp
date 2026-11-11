@@ -619,6 +619,11 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     ci.surface = dev.surface;
     ci.minImageCount = std::max(caps.minImageCount, 4u);   // (hookshot: mailbox with frame interpolation: an image always free)
+    // (hookshot) A fixed frame generation multiplier's set is presented ahead (vk_framegen.cpp present_ahead_wanted): each
+    // of its frames holds an image from the copy to its present, so the set needs as many spare images as it has frames. 3x
+    // and 4x ask for that many over the surface's least (an NVIDIA surface: 5 and 6 images); the menu's later changes keep
+    // the chain, and a set it cannot hold is shown one at a time as before
+    if (opts.framegen >= 3) ci.minImageCount = std::max(ci.minImageCount, caps.minImageCount + (uint32_t)std::min(opts.framegen, 4));
     if (caps.maxImageCount) ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount);
     ci.imageFormat = fmt.format;
     ci.imageColorSpace = fmt.colorSpace;

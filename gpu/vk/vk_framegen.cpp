@@ -404,7 +404,10 @@ void wait_until_near(int64_t ns) {
 /// swapchain images acquired at once, so only where the swapchain has two to spare (an acquire past them has to time out,
 /// the Vulkan spec). Larger sets present one at a time, as before
 static bool present_ahead_wanted(bool env_on, bool pace, int shown, uint32_t spare) {
-    return env_on && pace && shown == 2 && spare >= 2;
+    // (each frame of the set holds a swapchain image from its copy to its present: as many spare images as frames. 2x was
+    // the only one at first; at 3x and 4x the made frames' copies queued behind the game's next frame the same way, so their
+    // presents reached the screen unevenly. vk_main.cpp asks for the images 3x and 4x need)
+    return env_on && pace && shown >= 2 && spare >= (uint32_t)shown;
 }
 
 void display_main() {
