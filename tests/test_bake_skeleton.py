@@ -5,8 +5,10 @@ program), enumerates a synthetic BAHS blob through shader_census.programs_in,
 then runs nx2/bake.py bake -> bank manifest, checking determinism, dedupe and
 --resume idempotence. Run with: python3 -I -B tests/test_bake_skeleton.py
 """
+import atexit
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -15,6 +17,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+RUN_ALL_SKIP = {"windows": "its translate tests compile the whole recompiler (~164 files): over the runner's 600 s on Windows; Linux runs it"}
 sys.path.insert(0, str(ROOT / "nx2"))
 import shader_census as sc  # noqa: E402
 import bake  # noqa: E402
@@ -85,6 +88,28 @@ def require_toolchain(case):
     if not bake_mimo.spirv_headers():
         case.skipTest("no SPIR-V headers (HOOKSHOT_SPIRV_HEADERS or a CPM "
                        "cache): only the miner could run")
+
+
+_BUILT = None   # (gpu/shaderbatch as the first translate built it: obj/, the flags and the executable)
+
+
+def translate(tmp, seed, bank, **kw):
+    """bake.translate_seed with its tool folder in tmp. The tool (the vendored recompiler, ~164 files) is built by
+    the first test that translates and copied, with its file times, into the others' folders, where build_tool finds
+    it current: one build for this file instead of one per test. Each test's translation is still its own."""
+    global _BUILT
+    tool = os.path.join(tmp, "sb-tool-cache")
+    no_output = shutil.ignore_patterns("translate")
+    if _BUILT:
+        shutil.copytree(_BUILT, tool, ignore=no_output)
+    else:
+        os.makedirs(tool)
+    out = bake.translate_seed(seed, bank, tool_dir=tool, **kw)
+    if not _BUILT:
+        _BUILT = os.path.join(tempfile.mkdtemp(prefix="bake-sb-built-"), "tool")
+        atexit.register(shutil.rmtree, os.path.dirname(_BUILT), True)
+        shutil.copytree(tool, _BUILT, ignore=no_output)
+    return out
 
 
 class BakeSkeletonTests(unittest.TestCase):
@@ -192,15 +217,12 @@ class BakeTranslateTests(unittest.TestCase):
 
     def test_translate_exact_keys_and_spirv(self):
         require_toolchain(self)
-        import shutil
         with tempfile.TemporaryDirectory(prefix="bake-sb-") as tmp:
             seed = os.path.join(tmp, "hookshot_shaders.bin")
             self.real_seed(seed)
             bank = os.path.join(tmp, "bank")
             bake.bake_seed(seed, bank)
-            tool = os.path.join(tmp, "sb-tool-cache")
-            os.makedirs(tool, exist_ok=True)
-            tr, rows = bake.translate_seed(seed, bank, tool_dir=tool)
+            tr, rows = translate(tmp, seed, bank)
             self.assertTrue(rows, "no program rows from shaderbatch")
             for (idx, inputs), r in sorted(rows.items()):
                 self.assertRegex(r["runtime_key"], r"^[0-9a-f]{16}$", r)
@@ -260,9 +282,7 @@ class BakeVerifyTests(unittest.TestCase):
             t.real_seed(seed)
             bank = os.path.join(tmp, "bank")
             bake.bake_seed(seed, bank)
-            tool = os.path.join(tmp, "sb-tool-cache")
-            os.makedirs(tool, exist_ok=True)
-            bake.translate_seed(seed, bank, tool_dir=tool)
+            translate(tmp, seed, bank)
             summary, ok = bake.verify_bank(bank)
             self.assertTrue(summary["manifest"])
             self.assertTrue(summary["seed_ok"])
@@ -300,9 +320,7 @@ class BakeVerifyTests(unittest.TestCase):
             t.real_seed(seed)
             bank = os.path.join(tmp, "bank")
             bake.bake_seed(seed, bank)
-            tool = os.path.join(tmp, "sb-tool-cache")
-            os.makedirs(tool, exist_ok=True)
-            bake.translate_seed(seed, bank, tool_dir=tool, limit=1)
+            translate(tmp, seed, bank, limit=1)
             summary, ok = bake.verify_bank(bank)
             self.assertEqual(summary["seed_programs"], 2)
             self.assertEqual(summary["coverage_programs"], 1)
