@@ -648,7 +648,32 @@ def apply(gen, *, protect_hearts=False, required=False):
     elif whole_sites != len(WHOLE_SITES):   # (the frames' own time without them: the pick-up indicator stays above 60 fps)
         print("oot_patches: WARNING: %d of %d frame counters found for the step's whole frames (above 60 fps a counter can stop: "
               "the pick-up indicator)" % (whole_sites, len(WHOLE_SITES)))
+    if protect_hearts:
+        apply_pause_menu(gen)
     apply_output_size(gen, required=required)
+
+
+def apply_pause_menu(gen):
+    """The pause menu's "Recomp Options" button (nx2/oot_pause_menu.py): all its edits, or none"""
+    import oot_pause_menu
+    found, holders = [0] * len(oot_pause_menu.EDITS), []
+    for path in sorted(glob.glob(os.path.join(gen, "code_*.c"))):
+        with open(path, encoding="utf-8", newline="") as f:
+            s = f.read()
+        n = oot_pause_menu.count([s])
+        if any(n):
+            holders.append(path)
+            found = [a + b for a, b in zip(found, n)]
+    if found != [1] * len(found):
+        print("oot_patches: WARNING: the pause menu's places were found %s times: its Recomp options button is left out" % found)
+        return
+    for path in holders:
+        with open(path, encoding="utf-8", newline="") as f:
+            s = f.read()
+        out = oot_pause_menu.edit(s)
+        if out != s:
+            whole_write.write_whole(path, out, newline="")
+            print("oot_patches: the pause menu's Recomp options button in", os.path.basename(path))
 
 
 # Output size (host/nn_applet.c hos_output_size: the Insert menu's Output resolution, 2560 x 1440 as shipped):

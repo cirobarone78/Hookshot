@@ -79,6 +79,8 @@ static const char *desired_language(void) {
     else hos_log("oe: language %s (%s)", lang, from);
     return lang;
 }
+/* (host/oot_pause_menu.c: the Recomp options button's text in the game's language) */
+const char *hos_game_language(void) { return desired_language(); }
 HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
     uint64_t v = 0;
     memcpy(&v, desired_language(), strlen(desired_language()));

@@ -155,7 +155,8 @@ int hos_sdl_gyro_status(void);   /* pad_sdl.c */
 extern const char *hos_romfs_dir;   /* nn_fs.c, set by hos_main.c */
 static const char *host_romfs_dir(void) { return hos_romfs_dir; }
 
-#ifdef _WIN32
+/* (the keys pressed since the Insert menu last looked: host/display.c on Windows, host/posix/display_sdl.c on Linux, and the
+   pause menu's Recomp Options button, host/oot_pause_menu.c, which asks for F1) */
 static unsigned char menu_key_press[256];
 void hos_vk_note_key_press(unsigned key) {
     if (key < sizeof menu_key_press) __atomic_store_n(&menu_key_press[key], 1, __ATOMIC_RELAXED);
@@ -165,9 +166,6 @@ int hos_vk_take_key_press(int key) {
            __atomic_exchange_n(&menu_key_press[key], 0, __ATOMIC_RELAXED);
 }
 #define host_take_key_press hos_vk_take_key_press
-#else
-#define host_take_key_press NULL
-#endif
 
 /* (hookshot) the FPS counter's Breakdown: this thread's sleeps so far (host/hos_thread.c) */
 extern _Thread_local int64_t hos_slept_ns[2];

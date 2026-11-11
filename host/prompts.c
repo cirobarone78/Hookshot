@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "../gpu/vk/vk_api.h"   /* (HOS_SW_*, HOS_PAD_*, HOS_BIND_PAD) */
@@ -1128,6 +1129,14 @@ static int layout_runs(const char *dir, int face, const int *bind, Layout *o) {
     size_t cap_runs = 64;
     o->runs = (Run *)malloc(cap_runs * sizeof *o->runs);
     o->h = fnv(0xcbf29ce484222325ull, o->place, sizeof o->place);
+    {   /* (and the file as built, its size and time: a build that changed it, as nx2/pause_layout.py's Recomp options button
+           does, makes the served file again) */
+        struct stat st;
+        if (!stat(path, &st)) {
+            const int64_t size = (int64_t)st.st_size, when = (int64_t)st.st_mtime;
+            o->h = fnv(fnv(o->h, &size, 8), &when, 8);
+        }
+    }
     long tn = 0, hn = 0;
     snprintf(path, sizeof path, "%sprompts/ring.bin", dir);
     uint8_t *t = o->ring = ring_moved ? read_all(path, "HPRG", &tn) : NULL;

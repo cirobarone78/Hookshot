@@ -944,6 +944,9 @@ static void npad_states(Ctx *c) {
     if (connected) buttons = hos_title_input(buttons);
     uint64_t hos_frame_step_buttons(uint64_t buttons);   /* nn_vi.c: the frame step of the wheel and quick menus */
     if (connected) buttons = hos_frame_step_buttons(buttons);
+    /* oot_pause_menu.c: A on the pause menu's Recomp options button opens the Insert menu */
+    uint64_t hos_pausebtn_buttons(uint64_t buttons, uint64_t a);
+    if (connected) buttons = hos_pausebtn_buttons(buttons, 1ULL << B_A);
     int64_t s = ++sampling;
     for (int i = 0; i < count; i++) {
         uint64_t e = out + (uint64_t)i * STATE_SIZE;

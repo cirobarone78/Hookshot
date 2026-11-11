@@ -110,7 +110,15 @@ static void keys_update(void) {
         const uint32_t b = hos_sdl_mouse_buttons();
         v[VK_LBUTTON] = (b & 1) != 0, v[VK_MBUTTON] = (b & 2) != 0, v[VK_RBUTTON] = (b & 4) != 0;
     }
-    for (int i = 0; i < 256; i++) hos_posix_keys[i] = v[i];
+    /* (each key that went down since the last look, for the Insert menu's queue as host/display.c's WM_KEYDOWN gives it on
+       Windows: host/rx_backend.c hos_vk_note_key_press. The pause menu's Recomp Options button asks for F1 there too) */
+    static uint8_t was[256];
+    void hos_vk_note_key_press(unsigned key);
+    for (int i = 0; i < 256; i++) {
+        if (v[i] && !was[i]) hos_vk_note_key_press((unsigned)i);
+        was[i] = v[i];
+        hos_posix_keys[i] = v[i];
+    }
 }
 
 /* ---- the window ---- */

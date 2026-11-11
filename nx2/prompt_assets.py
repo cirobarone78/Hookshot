@@ -92,11 +92,12 @@ def read_zs(romfs, rel, dictionary):
         return d.decompressobj().decompress(f.read())
 
 
-def size_table(romfs, dictionary, game_size, font_size):
+def size_table(romfs, dictionary, game_size, font_size, grown=None):
     """the game's resource size table (System/Resource/ResourceSizeTable.*.rsizetable.zs: "RESTBL", u32 version, u32 name length,
     u32 hashed entries, u32 named entries; the hashed ones u32 CRC-32 of the path, u32 size, by hash) with the External font's
-    entry raised from the game's font (game_size bytes) to fit one of font_size: the game drops a file larger than its entry. None
-    when it fits already"""
+    entry raised from the game's font (game_size bytes) to fit one of font_size: the game drops a file larger than its entry; and
+    each file of grown ({path without .zs: bytes added}: the layouts with the Recomp options button, nx2/pause_layout.py) raised
+    by what it gained. None when they fit already"""
     import zlib
     folder = os.path.join(romfs, "System", "Resource")
     name = next((n for n in sorted(os.listdir(folder)) if n.startswith("ResourceSizeTable.") and n.endswith(".rsizetable.zs")),
@@ -108,16 +109,25 @@ def size_table(romfs, dictionary, game_size, font_size):
         raise SystemExit(f"prompts: {name} is not a RESTBL table")
     hashed, = struct.unpack_from("<I", b, 14)
     want = zlib.crc32(FONT[:-3].encode())
+    more = {zlib.crc32(p.encode()): n for p, n in (grown or {}).items() if n > 0}
+    changed, found = False, False
     for i in range(hashed):
         at = 22 + 8 * i
         h, size = struct.unpack_from("<II", b, at)
         if h == want:
+            found = True
             fit = font_size + size - game_size   # (the entry's allowance over the file kept: 288 bytes)
-            if fit <= size:
-                return None
-            struct.pack_into("<I", b, at + 4, fit)
-            return bytes(b)
-    raise SystemExit(f"prompts: {name} has no entry for {FONT[:-3]}")
+            if fit > size:
+                struct.pack_into("<I", b, at + 4, fit)
+                changed = True
+        elif h in more:
+            struct.pack_into("<I", b, at + 4, size + more.pop(h))
+            changed = True
+    if not found:
+        raise SystemExit(f"prompts: {name} has no entry for {FONT[:-3]}")
+    if more:
+        print("prompts: the size table has no entry for %d grown file(s)" % len(more), file=sys.stderr)
+    return bytes(b) if changed else None
 
 
 def unwrap(blob):
@@ -954,6 +964,10 @@ def main():
             f.write(textures)
         tex = bntx_textures(textures)
     blarc = read_zs(a.romfs, LAYOUTS, dictionary)
+    import pause_layout   # (the pause menu's Recomp options button: host/oot_pause_menu.c)
+    blarc, added = pause_layout.edit_blarc(blarc)
+    if added:
+        print(f"prompts: the pause menu's Recomp options button ({added} bytes of layout)", file=sys.stderr)
     hint = hint_panes(blarc)
     if not hint:
         print("prompts: the ocarina's hint keeps the game's spacing (its layout is not the one known)", file=sys.stderr)
@@ -977,7 +991,7 @@ def main():
                 dump(a.dump, face, textures, tex, layers)
         print(f"prompts: {face}", file=sys.stderr)
     ring = ring_entries(blarc)
-    if ring or hint:
+    if ring or hint or added:
         with open(os.path.join(a.out, "Common.blarc"), "wb") as f:
             f.write(blarc)
     if ring:
@@ -985,7 +999,7 @@ def main():
         print("prompts: the Talk ring", file=sys.stderr)
     else:
         print("prompts: the Talk ring keeps the Switch's places (its layout is not the one known)", file=sys.stderr)
-    table, path = size_table(a.romfs, dictionary, len(game_font), len(font)), os.path.join(a.out, "rsizetable.zs")
+    table, path = size_table(a.romfs, dictionary, len(game_font), len(font), {LAYOUTS[:-3]: added}), os.path.join(a.out, "rsizetable.zs")
     if table:
         import zstandard
         with open(path, "wb") as f:
