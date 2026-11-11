@@ -66,7 +66,9 @@ def main():
 typedef size_t SIZE_T;
 constexpr uint64_t kPageShift = 12;
 static std::vector<uint8_t> guest(4096 * 4096);   // (16 MB of "guest memory")
-struct Host { void* guest_base() { return guest.data(); } uint64_t guest_size() { return guest.size(); } } host_obj, *host = &host_obj;
+struct StageTrace { template<class... T> StageTrace(T...) {} };
+void background_thread_affinity(uint64_t) {}
+struct Host { uint64_t (*reserved_cpus)() = nullptr; void* guest_base() { return guest.data(); } uint64_t guest_size() { return guest.size(); } } host_obj, *host = &host_obj;
 static std::atomic<bool> hold_guest{false};   // (copy_pages' guest copies wait while it is set: the helpers kept busy)
 static std::atomic<int> held{0};
 static bool guarded_copy(void* dst, const void* src, size_t n) {

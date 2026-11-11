@@ -65,6 +65,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice, VkImageView view, const 
 }
 /* ACTUAL_FUNCTION */
 int commands = 0;
+PresentContentSize made_size{};
 VkImage made_src{};
 void image_barrier(VkCommandBuffer, VkImage image, VkImageLayout, VkImageLayout) {
     require(image && live.count(reinterpret_cast<uintptr_t>(image)), "barrier on unmade image");

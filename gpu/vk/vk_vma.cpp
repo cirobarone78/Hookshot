@@ -250,6 +250,11 @@ bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, V
 }
 /// A buffer in cached host memory, mapped: written on one thread, read back on the CPU too (the captures: the game's
 /// threads copy pages into it, the replay reads texture pages out of it and the GPU copies the rest from it)
+uint32_t allocation_memory_flags(VmaAllocation allocation) {
+    VkMemoryPropertyFlags flags = 0;
+    if (allocation) vmaGetAllocationMemoryProperties(vma, allocation, &flags);
+    return flags;
+}
 bool create_buffer_cached(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buffer, VmaAllocation& allocation,
                           void** mapped, bool dedicated) {
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -261,6 +266,17 @@ bool create_buffer_cached(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
     if (dedicated) ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;   // (its own memory object: no part of a 64 MB block left unused)
     VmaAllocationInfo info{};
     if (vmaCreateBuffer(vma, &bi, &ai, &buffer, &allocation, &info) != VK_SUCCESS) return false;
+    if (getenv("RX_VK_STAGE_TRACE")) {
+        // One report per actual type, not an assumption from VMA's preference.
+        static std::atomic<uint32_t> reported{0};
+        const uint32_t bit = uint32_t(1) << info.memoryType;
+        if (!(reported.fetch_or(bit, std::memory_order_relaxed) & bit)) {
+            const auto& type = dev.memory.memoryTypes[info.memoryType];
+            logf("vk: host-read buffer memory type %u, flags %#x, heap %u, heap flags %#x",
+                 info.memoryType, type.propertyFlags, type.heapIndex,
+                 dev.memory.memoryHeaps[type.heapIndex].flags);
+        }
+    }
     if (mapped) *mapped = info.pMappedData;
     return true;
 }

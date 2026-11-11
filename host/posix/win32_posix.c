@@ -294,21 +294,22 @@ DWORD_PTR SetThreadAffinityMask(HANDLE h, DWORD_PTR mask) {
     for (int i = 0; i < 64; i++) if (CPU_ISSET(i, &old)) r |= (DWORD_PTR)1 << i;
     return r ? r : 1;
 }
-/* The process's affinity as the process started: Windows keeps a process mask apart from its threads' masks, Linux has
-   only the threads'. Read from the asking thread each time, it was that thread's own mask, which shrank once hos_thread_pin
-   pinned it off the reserved core: the Presentation Thread's pin, asked for from a game thread kept off that core, then
-   saw no reserved core in the "process" mask and kept the Presentation Thread off it too, against render_thread_on_reserved
-   (host/hos_thread.c; Ryzen 9 9950X3D, 2026-11-09). Taken once, before main, when no thread is pinned yet. */
+/* Linux affinity is per thread. Remember the launch allowance before guest
+   threads are pinned; querying the caller's current mask here made a child
+   unable to select the renderer's reserved core. This file also lives in the
+   renderer DSO: use the process leader's allowance when that copy is loaded.
+   There is no SetProcessAffinityMask implementation; per-thread changes
+   must not change this process policy. External launch restrictions are kept. */
 static DWORD_PTR process_affinity;
-__attribute__((constructor)) static void init_process_affinity(void) {
+__attribute__((constructor)) static void remember_process_affinity(void) {
     cpu_set_t s;
     CPU_ZERO(&s);
-    if (sched_getaffinity(0, sizeof s, &s) == 0)
-        for (int i = 0; i < 64; i++) if (CPU_ISSET(i, &s)) process_affinity |= (DWORD_PTR)1 << i;
+    if (sched_getaffinity(getpid(), sizeof s, &s)) return;
+    for (int i = 0; i < 64; i++) if (CPU_ISSET(i, &s)) process_affinity |= (DWORD_PTR)1 << i;
 }
 BOOL GetProcessAffinityMask(HANDLE p, DWORD_PTR *proc, DWORD_PTR *sys) {
     (void)p;
-    if (!process_affinity) init_process_affinity();   /* (the constructor did not run, or the call failed then) */
+    if (!proc || !sys || !process_affinity) { last_error = ERROR_INVALID_PARAMETER; return FALSE; }
     long n = sysconf(_SC_NPROCESSORS_CONF);
     *proc = process_affinity;
     *sys = n >= 64 ? ~(DWORD_PTR)0 : (((DWORD_PTR)1 << n) - 1);

@@ -1,3 +1,4 @@
+struct SlowStageTrace { template<class... T> SlowStageTrace(T...) {} void mark(const char*) {} };
 #include <vulkan/vulkan.h>
 #include <algorithm>
 #include <atomic>

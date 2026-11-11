@@ -14,6 +14,8 @@
 #include "import_hold.h"
 
 namespace fixture {
+// Production import diagnostics; rollback and ownership checks remain below.
+thread_local const char* import_stage = "range";
 template<class T> T handle(uintptr_t n) { return reinterpret_cast<T>(n); }
 enum { HostMemory, DmaMemory, EveryMemory };
 enum class Fault { None, Create, Allocate, HostOOM, DeviceOOM, Unknown, Properties };

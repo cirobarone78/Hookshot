@@ -39,13 +39,14 @@ void submit_recording(decltype(r)&) {
     queue.push_back(recorded); submitted=true;
     complete_through(fast ? uint64_t(presents) : 2);
 }
+PresentContentSize shot_size{kShotW,kShotH};
 /* STATE */
 /* READ_HELPER */
 void run(int64_t current,bool fast_new,bool pending_old) {
     queue.clear(); std::memset(pixels,0,sizeof pixels);finished=1;submitted=false;fast=fast_new;
     waits=waits_before_submit=0;
     PendingShot pending;
-    if (pending_old) { pending.on=true;pending.value=2;pending.presents=2;queue.push_back({0,2,false}); }
+    if (pending_old) { pending.on=true;pending.value=2;pending.presents=2;pending.size={1,1};queue.push_back({0,2,false}); }
     std::vector<std::pair<int64_t,std::vector<uint8_t>>> captures;
     /* TAKE */
         captures.emplace_back(at_present,*px);
@@ -59,6 +60,7 @@ void run(int64_t current,bool fast_new,bool pending_old) {
     /* CONSUME */
     if (pending_old) {
         CHECK(captures.size()==1 && captures[0].first==2);
+        CHECK(captures[0].second.size()==4); // the older frame keeps its smaller dimensions
         CHECK(std::all_of(captures[0].second.begin(),captures[0].second.end(),[](uint8_t b){return b==2;}));
         CHECK(waits==1);
         CHECK(waits_before_submit==int((current & 1)==0));
@@ -66,8 +68,9 @@ void run(int64_t current,bool fast_new,bool pending_old) {
     // Re-arming must discard a saved snapshot, not attach it to the new frame.
     /* REARM */
     CHECK(pending.on && pending.value==value && pending.presents==current);
-    take(value,current);
+    take(value,current,shot_size);
     CHECK(captures.back().first==current);
+    CHECK(captures.back().second.size()==8); // the newly armed frame uses its own dimensions
     CHECK(std::all_of(captures.back().second.begin(),captures.back().second.end(),[current](uint8_t b){return b==(current & 255);}));
 }
 int main() {

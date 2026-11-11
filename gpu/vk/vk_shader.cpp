@@ -93,6 +93,7 @@ void ptr_diag_log(uint64_t key, const char* kind) {
 }
 } // namespace
 #include "vk_shader.h"
+#include "vk_stage_cache.h"
 
 namespace mkwvk {
 namespace {
@@ -157,7 +158,26 @@ Code read_code(const nvn_stage_data& sd) {
         snprintf(path, sizeof path, "%s/%016llx.bin", dir, (unsigned long long)code_key(ctl, area.data(), end));
         if (FILE* f = fopen(path, "wb")) fwrite(ctl, 1, sizeof ctl, f), fwrite(area.data(), 1, end, f), fclose(f);
     }
-    return parse_code(ctl, area);
+    // Different NVN program serials often share exactly the same stages. Keep the
+    // lowering, not the program variant: texture-dependent translation still runs
+    // through the existing variant validation. Keep the existing stage reads
+    // above on every miss of the serial cache; never key this by guest addresses.
+    static const bool cache_on = !getenv("RX_VK_STAGE_CACHE") || atoi(getenv("RX_VK_STAGE_CACHE")) != 0;
+    if (!cache_on) return parse_code(ctl, area);
+    static thread_local StageCache<Code, kControlSize> cache(64u << 20);
+    static thread_local uint64_t hits = 0, misses = 0;
+    const uint64_t key = code_key(ctl, area.data(), end);
+    const Code* kept = cache.find(key, ctl, area);
+    if (kept) ++hits;
+    else ++misses;
+    if ((hits + misses) % 1024 == 0)
+        logf("vk: stage lowering cache: %llu hits, %llu misses, %zu bytes",
+             (unsigned long long)hits, (unsigned long long)misses, cache.bytes());
+    if (kept) return *kept;
+    Code result = parse_code(ctl, area);
+    if (result.ok) cache.insert(key, ctl, area, result,
+                               result.code.size() * sizeof(uint64_t) + result.c1.size());
+    return result;
 }
 
 /// A control section and its code, from the game's memory or the archives (the seed)
@@ -2019,7 +2039,7 @@ namespace {
 /// kept while the handles it was checked against are the same
 struct Pick {
     const Program* p = nullptr;
-    std::vector<uint32_t> handles;   // (at its answers' descriptors: their slots and the slots' versions)
+    std::vector<uint32_t> handles;   // (full handles and their texture-slot versions, in answer order)
 };
 thread_local std::unordered_map<uint64_t, Pick> picks;   // (each recording thread's: program_pick has its own lock)
 uint64_t pick_inputs(const NvnState& s, const uint8_t color_types[8]) {
@@ -2033,11 +2053,23 @@ uint64_t pick_inputs(const NvnState& s, const uint8_t color_types[8]) {
 void answer_handles(const NvnState& s, const Program& p, std::vector<uint32_t>& out) {
     out.clear();
     for (const Program::Answer& a : p.answers) {
-        const uint32_t id = answer_handle(s, p, a) & 0xFFFFF;
-        out.push_back(id);
-        out.push_back(texture_slot_version((int)id));
+        const uint32_t handle = answer_handle(s, p, a);
+        out.push_back(handle);   // retain sampler-only handles: nonzero with texture slot zero is not unbound
+        out.push_back(texture_slot_version((int)(handle & 0xFFFFF)));
     }
 }
+// The pick just resolved these handles to compare their slots and versions. Validate the
+// same submitted bindings without evaluating the descriptor programs a second time.
+bool resolved_answers_valid(const Program& p, const std::vector<uint32_t>& handles) {
+    if (handles.size() != p.answers.size() * 2) return false;
+    for (size_t i = 0; i < p.answers.size(); ++i) {
+        const auto& a = p.answers[i];
+        const uint32_t h = handles[i * 2];
+        if (h && canonical_answer(p, a, answer_of(h, a.image)) != canonical_answer(p, a, a.type)) return false;
+    }
+    return true;
+}
+
 } // namespace
 
 /// (hookshot) the bound program's stages and code keys, as "stage:key" words (RX_VK_SKIP_PROG's log)
@@ -2183,7 +2215,12 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
         answer_handles(s, *pk.p, now);
         if (now == pk.handles) return st_hit++, keep(pk.p);
         st_differ++;
-        if (still_valid(s, *pk.p)) {   // (other textures of the same types: the same variant)
+        static const bool reread = [] {
+            const char* capture = getenv("RX_VK_CAPTURE");
+            return getenv("RX_VK_PICK_REREAD") || getenv("RX_VK_HANDLES_LIVE") ||
+                   getenv("RX_VK_REGISTER_AT_ONCE") || (capture && atoi(capture) == 0);
+        }();
+        if (reread ? still_valid(s, *pk.p) : resolved_answers_valid(*pk.p, now)) {   // same types, same variant
             pk.handles.swap(now);
             return keep(pk.p);
         }

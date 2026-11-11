@@ -765,6 +765,21 @@ uint64_t hos_reserved_cpus(void) {
     return mask;
 }
 
+/* The renderer's scoped ReplayPin is Windows-only: on Linux its worker threads
+   would inherit that temporary mask. Keep the synchronous presentation thread
+   on the reserved core instead, as before the scoped replay pin was introduced.
+   Explicit HOS_PIN entries below still take precedence. */
+static int render_thread_on_reserved(const char *name) {
+#if defined(__linux__)
+    const char *on = getenv("HOS_PIN_RENDER"), *async = getenv("RX_VK_ASYNC");
+    return (!on || atoi(on) != 0) && !(async && atoi(async) != 0) &&
+           name && strcmp(name, "Presentation Thread") == 0;
+#else
+    (void)name;
+    return 0;
+#endif
+}
+
 void hos_thread_pin(void *h, const char *name) {
     const uint64_t reserved = hos_reserved_cpus();
 #if defined(_WIN32)
@@ -777,7 +792,11 @@ void hos_thread_pin(void *h, const char *name) {
         GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys);
         uint64_t may = (uint64_t)proc;
         if (cache && (may & cache)) may &= cache;
-        if (may & ~reserved) SetThreadAffinityMask(h, (DWORD_PTR)(may & ~reserved));
+        if (render_thread_on_reserved(name) && (may & reserved)) {
+            SetThreadAffinityMask(h, (DWORD_PTR)(may & reserved));
+        } else if (may & ~reserved) {
+            SetThreadAffinityMask(h, (DWORD_PTR)(may & ~reserved));
+        }
     }
     static NameSpec pins[24], prios[24];
     static int npins = -1, nprios;

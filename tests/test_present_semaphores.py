@@ -20,7 +20,7 @@ start = replay.index('void present_image(')
 present = replay[start:replay.index('\n}', start) + 2]
 # (present ahead, #1702: the present itself is present_image's end, present_out, which present_commit also runs; its wait
 # is read from there, the complete function as above)
-out_start = replay.index('static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {')
+out_start = replay.index('static VkResult present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {')
 present_out = replay[out_start:replay.index('\n}', out_start) + 2]
 signal = re.search(r'    signal\.semaphore = [^;]+;', present)[0]
 wait = re.search(r'    pi\.pWaitSemaphores = [^;]+;', present_out)[0]
@@ -39,6 +39,7 @@ fixture = r'''
 #include <set>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <utility>
 #include <atomic>
 #include <mutex>
@@ -115,6 +116,13 @@ bool create_swapchain(unsigned width,unsigned height) {
     return recreate();
 }
 bool reflex_swapchain_stale() {return stale;}
+// Timing is inert here; the production swapchain decisions remain intact.
+struct StageTrace { StageTrace(const char*, int) {} void mark(const char*) {} };
+struct PresentStageSample {
+    enum Stage { Lock };
+    PresentStageSample(bool, int64_t) {} void mark(Stage) {}
+};
+int64_t prof_now() { return 0; }
 int menu_vsync() {return 0;}   // (vk_menu.cpp: the V-Sync row, Auto)
 std::mutex present_image_mu;
 void present_begin() {
