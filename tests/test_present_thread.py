@@ -56,8 +56,11 @@ def main():
          "frame generation's paced presents are handed over")
 
     give = block(replay, "void present_hand_off(uint32_t index, VkFence done) {")
-    need(give.index("presenter.cv.wait(lk, [] { return !presenter.busy; });") < give.index("presenter.busy = true"),
+    idle = block(replay, "void presenter_wait_idle(std::unique_lock<std::mutex>& lk) {")
+    need("presenter.cv.wait(lk, [] { return !presenter.busy; });" in idle, "presenter_wait_idle does not wait for the presenter")
+    need(give.index("presenter_wait_idle(lk);") < give.index("presenter.busy = true"),
          "a present is handed over before the one before is made")
+    need("presenter_wait_idle(lk);" in block(replay, "void present_thread_drain() {"), "present_thread_drain does not wait")
 
     loop = block(replay, "void presenter_loop() {")
     need(loop.index("vkWaitForFences(dev.device, 1, &done") < loop.index("vkQueuePresentKHR"),

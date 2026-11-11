@@ -3763,14 +3763,24 @@ static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
     // ~15% to submit. With a queue of their own (dev.present_queue, a compute family's: vk_main.cpp create_device) the presents go
     // out with the submits' lock let go: the blit above signals swap_rendered on the replay's queue (submitted already, as a binary
     // semaphore's wait needs). (Waiting for the blit's fence before the present, with the lock let go, was worse.)
+    // (the FPS counter's Breakdown: the present's wait is vsync's, the pacing's; unless the frame's copy was not done when it was
+    // called and was when it returned. Then the present waited for the GPU: NVIDIA's driver on Linux waits there for the copy, after
+    // all of the frame's work, ~2 ms a frame on an RTX 3090. Two reads of its fence, while the Breakdown shows; nothing waits)
+    const VkFence copy = fps_breakdown_on() ? present_copy_done : VK_NULL_HANDLE;
+    // (a wait of no time: the fence's state. Not through the recorder's boundary: nothing recorded is behind a fence's state)
+    const auto copy_done = [&] { return (::vkx::vkWaitForFences)(dev.device, 1, &copy, VK_TRUE, 0) == VK_SUCCESS; };
+    const bool copy_was_done = copy && copy_done();
+    const int64_t present_t0 = fps_breakdown_on() ? fps_clock() : 0;
     if (dev.present_queue) {
         qk.unlock();
         std::lock_guard pq(dev.present_queue_mu);
-        FpsWait fw(fps_stats::kPace);   // (the FPS counter's Breakdown: vsync)
         res = vkQueuePresentKHR(dev.present_queue, &pi);
     } else {
-        FpsWait fw(fps_stats::kPace);
         res = vkQueuePresentKHR(dev.queue, &pi);
+    }
+    if (present_t0) {
+        const bool waited_gpu = copy && !copy_was_done && copy_done();
+        fps_wait(waited_gpu ? fps_stats::kGpuWait : fps_stats::kPace, fps_clock() - present_t0);
     }
     if (res == VK_ERROR_DEVICE_LOST) device_lost();
     reflex_presented();
@@ -3827,6 +3837,7 @@ struct Presenter {
     uint32_t index = 0;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkFence done = VK_NULL_HANDLE;   // (the copy's fence)
+    int64_t copy_done_at = 0;        // (fps_clock() when the presenter's wait for it ended: the FPS counter's Breakdown)
     bool started = false;
 };
 Presenter presenter;
@@ -3841,6 +3852,11 @@ void presenter_loop() {
         const auto t0 = std::chrono::steady_clock::now();
         if (done && vkWaitForFences(dev.device, 1, &done, VK_TRUE, UINT64_MAX) == VK_ERROR_DEVICE_LOST) device_lost();
         const auto t1 = std::chrono::steady_clock::now();
+        if (fps_breakdown_on()) {
+            const int64_t at = fps_clock();
+            std::lock_guard g(presenter.mu);
+            presenter.copy_done_at = at;
+        }
         VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         pi.waitSemaphoreCount = 1;
         pi.pWaitSemaphores = &dev.swap_rendered[index];
@@ -3882,6 +3898,18 @@ bool present_thread_on() {
     }();
     return on;
 }
+/// Waits, with presenter.mu held in lk, until the presenter has made the present it was handed. For the FPS counter's Breakdown, the
+/// wait is the GPU's until the presenter's wait for the copy ended, and the pacing's after it (the present itself, vsync)
+void presenter_wait_idle(std::unique_lock<std::mutex>& lk) {
+    if (!presenter.busy) return;
+    const int64_t t0 = fps_breakdown_on() ? fps_clock() : 0;
+    presenter.cv.wait(lk, [] { return !presenter.busy; });
+    if (!t0) return;
+    const int64_t t1 = fps_clock();
+    const int64_t gpu = presenter.copy_done_at ? std::clamp<int64_t>(presenter.copy_done_at - t0, 0, t1 - t0) : 0;
+    fps_wait(fps_stats::kGpuWait, gpu);
+    fps_wait(fps_stats::kPace, t1 - t0 - gpu);
+}
 /// The present of image index, whose copy signals done, to the presenter thread (started at the first), once the one before is made
 void present_hand_off(uint32_t index, VkFence done) {
     std::unique_lock lk(presenter.mu);
@@ -3889,8 +3917,9 @@ void present_hand_off(uint32_t index, VkFence done) {
         presenter.started = true;
         std::thread(presenter_loop).detach();
     }
-    presenter.cv.wait(lk, [] { return !presenter.busy; });   // (the frame before's present made: one out at most)
+    presenter_wait_idle(lk);   // (the frame before's present made: one out at most)
     presenter.index = index, presenter.swapchain = dev.swapchain, presenter.done = done, presenter.busy = true;
+    presenter.copy_done_at = 0;
     presenter.cv.notify_all();
 }
 }  // namespace
@@ -3898,7 +3927,7 @@ void present_hand_off(uint32_t index, VkFence done) {
 /// and never with dev.present_mu held (the presenter takes it on the replay's queue)
 void present_thread_drain() {
     std::unique_lock lk(presenter.mu);
-    presenter.cv.wait(lk, [] { return !presenter.busy; });
+    presenter_wait_idle(lk);
 }
 
 
