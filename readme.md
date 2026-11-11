@@ -222,7 +222,8 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
 | The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all, and an update keeps the one you set there |
 
 If the problem continues, [report it](https://github.com/NotRexed/Hookshot/issues/new/choose) with the version, where
-you were in the game, your graphics card, `hookshot_log.txt` and a screenshot or video. Never send game files.
+you were in the game, your graphics card, `hookshot_log.txt` and a screenshot or video. Never send game files. The
+in-game menu's **Gameplay → Bug report** gathers all of it in one press ([In-game menu](#in-game-menu)).
 
 #### Low FPS or stutter
 
@@ -319,6 +320,7 @@ HDR peak brightness show only while HDR is on, the HDR tone mapper only with HDR
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
 | | Microphone | Off, Default, or each microphone by name | Default |
+| | Bug report | Saves a report into a new folder in `bug-reports` (below) | |
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
 | | Disable camera centering | Off, On | Off |
@@ -360,6 +362,19 @@ HDR peak brightness show only while HDR is on, the HDR tone mapper only with HDR
   **Uncapped** renders as fast as the PC can (the game still keeps real time). A display that waits for its refresh still
   holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=<61-1000>` sets a cap for one
   run.
+- **Bug report** writes a folder `bug-reports/<date>_<time>` in the game folder with what an issue needs: `report.txt`,
+  which answers the [game problem form](https://github.com/NotRexed/Hookshot/issues/new?template=1-game-problem.yml)'s
+  questions under its own headings (the version, the map you are in, your graphics card and driver, CPU, RAM and
+  system, the menu options and the `RX_`/`HOS_` switches you changed) and ends with a link that opens the form with them
+  filled in (the switches by name only); `hookshot_log.txt` (this run's log so far) and `hookshot_log.1.txt` (the run
+  before's, which has the crash if the game crashed last time); and `picture.png`, the game's picture without the menu.
+  Your home folder is written `~` (`%USERPROFILE%` on Windows) and your user name `<user>` in the logs' paths. A switch's
+  value is written only when it is a number, a size or on/off, and never for a name with `TOKEN`, `KEY`, `ROOM`,
+  `SECRET`, `PASS`, `SERVER` or `USER` in it; other values read `(value left out)`. Nothing else goes in (no saves, no
+  game files, not `hookshot_options.ini` or `hookshot_env.txt` themselves), and nothing is sent: open the form, write
+  what happened, and drag the folder's files into it (from File Explorer on Windows, a file manager on Linux; on a Steam
+  Deck, in Desktop Mode). The row then shows the folder's name. A game that stops before its menu can be used leaves its
+  log as `hookshot_log.1.txt`: start it again, or attach that file yourself.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
   included. The **Upscaler** fills it from the 3D: the game's own network, NVIDIA DLSS or DLAA (the 3D at full size,
   edges smoothed), AMD FSR 3.1, or AMD FSR 4 or its Native AA (below). DLSS and DLAA look softer than the game's own: set

@@ -38,6 +38,7 @@
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_dlss.h"
+#include "vk_bug_report.h"   // (the Gameplay tab's Bug report: what it writes, and how)
 #include "../../host/hos_wide_size.h"   // (the widescreen picture's size, as host/hos_main.c works it out)
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
@@ -990,7 +991,13 @@ Row rows[] = {
     {TAB_DEBUG, "ASTC as RGBA8", &opts.astc_rgba8, 0, 1, 1, tx_onoff,
      "Big ASTC textures kept as decoded RGBA8 instead of re-encoded to BC3: a workaround for texture artifacts seen on some AMD "
      "cards (issues 57 and 1006). Takes far more video memory. Applies after restart.", hn_astc_rgba8, true, true},
-    // (Restart and Quit stay the table's last two: kRestartRow and kQuitRow count back from its end)
+    // (hookshot) the Gameplay tab's Bug report (vk_bug_report.h): A or Enter writes the report's folder; the help says what is in it
+    {TAB_GAMEPLAY, "Bug report", nullptr, 0, 0, 0, nullptr,
+     "Saves what an issue needs in a new folder, bug-reports in the game folder: report.txt with the issue form's answers (this "
+     "version, where you are, your graphics card and driver, CPU, RAM and system, the options and switches you changed), the logs "
+     "of this run and the last one, and a picture of the game. Your user name and home folder are taken out of them. No saves "
+     "or game files go in, and nothing is sent."},
+    // (Restart and Quit stay the table's last two: kRestartRow and kQuitRow count back from its end; Bug report is before them)
     {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
      "Starts the game again. Save your progress first. Press Enter or A twice to restart. Esc or B "
      "cancels."},
@@ -999,6 +1006,7 @@ Row rows[] = {
 };
 constexpr int kQuitRow = sizeof rows / sizeof rows[0] - 1;
 constexpr int kRestartRow = kQuitRow - 1;
+constexpr int kBugReportRow = kRestartRow - 1;
 const Row* pending = nullptr;   // (Restart or Quit: shows Confirm until its second press)
 bool cheats_env = false;   // (HOS_OOT_CHEATS=1: on whatever the Debug tab says)
 /// The debug tools: the Debug tab's row, or HOS_OOT_CHEATS=1
@@ -2081,6 +2089,8 @@ ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
 /// The banner's height
 float banner_h(const ui::Ctx& c) { return std::max(58 * c.s, c.safe + 40 * c.s); }
 
+/// (the Bug report's line under its help once saved, below: measure_help makes room for the longest)
+std::string bug_report_saved_text(const std::string& folder);
 /// The tallest help a row of the options can have, in pixels at width: its help and the tallest line any of its values can
 /// have: the help box keeps that height whichever row is selected and whatever its value
 float measure_help(ui::Ctx& c, float width) {
@@ -2093,6 +2103,9 @@ float measure_help(ui::Ctx& c, float width) {
         if (is_share_row(r))   // (Save my pipeline list's line after a save: the longest it can be, or the one shown when longer)
             hint = std::max(ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, kShareSaidLongest, width - 18 * c.s, false),
                             share_said.empty() ? 0.f : ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, share_said.c_str(), width - 18 * c.s, false));
+        if (&r == &rows[kBugReportRow])   // (the Bug report's line once saved, with the longest folder name it can have)
+            hint = ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, bug_report_saved_text("bug-reports/2026-12-31_23-59-59-99").c_str(),
+                            width - 18 * c.s, false);
         if (r.help) most = std::max(most, ui::para(c, c.f.body, 18 * c.s, ImVec2(), 0, r.help, width, false) + (hint ? 14 * c.s + hint : 0));
     }
     return most;
@@ -2442,6 +2455,73 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
     c.d->PopClipRect();
 }
 
+// (hookshot) the Gameplay tab's Bug report: the rows not at their defaults, as the menu shows them, for its "Changes from the
+// defaults"
+std::string changed_rows_text() {
+    static const Options defaults{};
+    std::string out;
+    for (const Row& r : rows) {
+        const char* at = (const char*)r.value;
+        if (!r.value || !r.text || r.heading || at < (const char*)&opts || at >= (const char*)(&opts + 1)) continue;
+        const int was = *(const int*)((const char*)&defaults + (at - (const char*)&opts));
+        if (*r.value == was) continue;
+        // (a microphone chosen by its name, not the name: a device's name can be a person's)
+        const std::string now = r.value == &opts.mic && *r.value >= 2 ? "a microphone by its name" : r.text(*r.value);
+        out += std::string(r.name) + ": " + now + " (default: " + r.text(was) +
+               (restart_changed(r) ? "; takes effect after a restart" : "") + ")\n";
+    }
+    return out;
+}
+/// (the report's picture: the control bridge's kind of shot, of the next present, vk_replay.cpp shot_ask_next: an image and a
+/// buffer of its own, 1280x720, copied from the game's frame, which the menu is never drawn into, read back once the GPU is past it)
+bool bug_report_picture(const char* path, uint64_t ticket) {
+    return shot_ask_next(path, [](void* asked, int64_t, int ok) { bug_report::picture_written((uint64_t)(uintptr_t)asked, ok != 0); },
+                         (void*)(uintptr_t)ticket) != 0;
+}
+/// A or Enter on the Bug report: the report gathered here (the menu's part) and written on a thread of its own
+void bug_report_save() {
+    if (bug_report::state() == bug_report::kSaving) return;
+    if (host && host->log_flush) host->log_flush();   // (the log's queued lines into the file first)
+    bug_report::Inputs in;
+    bug_report::fill_here(in);
+    in.version = HOOKSHOT_VERSION;
+    in.gpu = device_report_text();
+    in.options = changed_rows_text();
+    const std::string ini = ini_path();
+    in.game_dir = ini.substr(0, ini.find_last_of("\\/") + 1);
+    in.log = [](const char* line) { logf("%s", line); };
+    in.ask_picture = bug_report_picture;
+    logf("menu: bug report asked for");
+    bug_report::start(std::move(in));
+}
+/// The Bug report's value cell: what A or Enter does, or how the last report went
+const char* bug_report_cell() {
+    switch (bug_report::state()) {
+    case bug_report::kSaving: return "Saving...";
+    case bug_report::kSaved: return "Saved";
+    case bug_report::kFailed: return "Not saved";
+    default: return "Press to save";
+    }
+}
+/// Under its help once saved: where the report is and what to do with it (the game opens nothing: no browser or file manager is
+/// sure to be there, as on a Steam Deck in Game Mode)
+std::string bug_report_saved_text(const std::string& folder) {
+    return "Saved in the game folder as " + folder + ". To send it, open github.com/NotRexed/Hookshot/issues, choose New issue and "
+           "Game problem, copy report.txt's answers into the form and drag the folder's files into it: on Windows from File "
+           "Explorer, on Linux from a file manager (on a Steam Deck, in Desktop Mode).";
+}
+/// Under its help once pressed: how the report goes
+const char* bug_report_hint() {
+    static std::string text;
+    switch (bug_report::state()) {
+    case bug_report::kSaving: text = "Saving: the logs are copied and the picture taken."; break;
+    case bug_report::kSaved: text = bug_report_saved_text(bug_report::shown()); break;
+    case bug_report::kFailed: text = "Not saved: " + bug_report::shown() + "."; break;
+    default: return nullptr;
+    }
+    return text.c_str();
+}
+
 const char* const tab_titles[TAB_COUNT] = {"Graphics", "Audio", "Gameplay", "Controls", "Debug"};
 inline const char* tab_title(int t) { return t >= 0 && t < TAB_COUNT ? tab_titles[t] : "Settings"; }
 inline bool cheat_is_toggle(int c) { return c == 0 || c == 1 || c == 7; }
@@ -2461,6 +2541,7 @@ void row_value_cell(ui::Ctx& c, const Row& r, ImVec2 va, ImVec2 vb, bool selecte
     } else if (!r.value) {
         if (pending == &r) choice_cell(c, va, vb, "Press again to confirm", selected, false, false);
         else if (is_share_row(r)) choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value, selected, false, false);   // (an action, not a page)
+        else if (&r == &rows[kBugReportRow]) choice_cell(c, va, vb, bug_report_cell(), selected, false, false);   // (how the last report went)
         else {
             choice_cell(c, va, vb, "", selected, false, false);
             ui::triangle(c, ImVec2(vb.x - 15 * s, mid), 10 * s, 1, selected ? ui::kGoldInk : ui::kInk);
@@ -2534,6 +2615,7 @@ void draw_options(ui::Ctx& c) {
     const Row& selr = rows[tab_row_to_global(cur_tab, sel)];
     const char* hint = selr.value && selr.hint ? selr.hint(*selr.value, -1) : nullptr;
     if (is_share_row(selr) && !share_said.empty()) hint = share_said.c_str();   // (what the last save did)
+    if (&selr == &rows[kBugReportRow]) hint = bug_report_hint();   // (the Bug report: where it was saved, or why not)
     const std::string pending_line = (cur_tab == TAB_GRAPHICS || cur_tab == TAB_DEBUG) && restart_pending() ? restart_line(c, 16 * s, hx1 - hx0 - 66 * s) : "";
     static float help_tall = 0, help_tall_w = 0;
     static std::string help_said;   // (Save my pipeline list's line as measured: measured again when it changes)
@@ -2552,7 +2634,7 @@ void draw_options(ui::Ctx& c) {
         if (const char* says = cheat_confirm(selr.cheat)) prompt_list[prompts_n++] = {ui::kConfirm, says};
         prompt_list[prompts_n++] = {ui::kCompact, "Compact", compact_key_name};
     } else {
-        prompt_list[prompts_n++] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : is_share_row(selr) ? "Save" : "Open"};
+        prompt_list[prompts_n++] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : &selr == &rows[kBugReportRow] || is_share_row(selr) ? "Save" : "Open"};
     }
     if (cur_tab == TAB_MOTION) prompt_list[prompts_n++] = {ui::kBack, "Back"};   // (Esc: to Controls)
     else {
@@ -2664,7 +2746,7 @@ void draw_tune_bar(ui::Ctx& c) {
     if (r.cheat >= 0 && cheat_confirm(r.cheat)) {
         tune_prompts[1] = {ui::kConfirm, cheat_confirm(r.cheat)};
     } else if (!r.value && r.cheat < 0) {
-        tune_prompts[1] = {ui::kConfirm, confirms ? (pending == &r ? "Confirm" : r.name) : is_share_row(r) ? "Save" : "Open"};
+        tune_prompts[1] = {ui::kConfirm, confirms ? (pending == &r ? "Confirm" : r.name) : &r == &rows[kBugReportRow] || is_share_row(r) ? "Save" : "Open"};
     }
     const float pw = ui::prompts(c, ImVec2(0, 0), tune_prompts, 4, false);
     const float px0 = bx0 + (bw - pw) * 0.5f;
@@ -4343,6 +4425,7 @@ void menu_tick() {
         } else if (r.cheat >= 0) cheat_press(r.cheat, press, changed);   // (a debug tool: on the Debug tab itself)
         else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
         else if (press[7] && is_share_row(r)) share_pipeline_list(), press[7] = false, changed = true;
+        else if (press[7] && &r == &rows[kBugReportRow]) bug_report_save(), press[7] = false, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = menu_hit::kCtlPrimary, changed = true;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
             if (press[7]) press[4] = true;

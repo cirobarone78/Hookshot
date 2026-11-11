@@ -3548,6 +3548,8 @@ void do_present(const nvn_tex* t, const int crop[4]) {
 
 } // namespace
 
+int shot_ask_next(const char* path, void (*done)(void* ctx, int64_t present, int ok), void* ctx) { return shot_ask(path, -1, done, ctx); }
+
 // (hookshot) RX_VK_FRAMELOG=<file>: every frame shown, the game's and the made ones, as they go to the screen, 320x180, while
 // <file>.go exists (scripts/framelog.py finds the flashes). Taken at the last step and written on a thread of its own, so
 // that the game keeps its speed: a shot of every frame at 1280x720 held it at 30 fps, where the flashes may not show.

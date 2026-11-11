@@ -319,6 +319,12 @@ bool vram_usage_now(uint64_t* used, uint64_t* budget);
 void vma_log_heaps();
 void vma_log_image_blocks();   // (the image pools' blocks: what they hold, and their free ranges)
 PFN_vkGetInstanceProcAddr instance_proc();   // vk_main.cpp
+/// (hookshot, the Insert menu's Bug report) The device the game runs on and its driver, as the issue form asks them: "NVIDIA
+/// GeForce RTX 4090, NVIDIA 580.95.05" (vk_main.cpp; the log has only the driver's packed number)
+std::string device_report_text();
+/// (hookshot, the Insert menu's Bug report: its picture) A PNG of the next present, as the control bridge's shots are taken
+/// (vk_replay.cpp shot_ask: an image and a buffer of their own, copied from the game's frame, read back once the GPU is past it)
+int shot_ask_next(const char* path, void (*done)(void* ctx, int64_t present, int ok), void* ctx);
 
 bool create_swapchain(uint32_t width, uint32_t height);
 void present_thread_drain();   // (vk_replay.cpp: the presenter thread's present made, RX_VK_PRESENT_THREAD)

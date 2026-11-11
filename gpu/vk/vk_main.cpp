@@ -582,6 +582,17 @@ bool create_device() {
 
 } // namespace
 
+std::string device_report_text() {
+    if (!dev.physical) return "";
+    VkPhysicalDeviceDriverProperties drv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    p2.pNext = &drv;
+    vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+    // (driverName and driverInfo: "NVIDIA" "580.95.05", "radv" "Mesa 25.2.4", "Intel Corporation" "101.6130")
+    std::string text = std::string(p2.properties.deviceName) + ", " + drv.driverName;
+    if (drv.driverInfo[0]) text += std::string(" ") + drv.driverInfo;
+    return text;
+}
 /// (hookshot) The UNORM format of an sRGB one (the same bytes, read and written as they are), else the format itself
 VkFormat unorm_of(VkFormat f) {
     switch (f) {

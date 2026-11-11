@@ -641,6 +641,7 @@ static const unsigned char oot_item_kinds[] = {OOT_CHEAT_ITEMS(OOT_NO_SECTION, O
 static int oot_item_count(Ctx *c, const char *name);
 static int oot_gamedata_bool(Ctx *c, uint32_t hash, int *value);
 static int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value);
+static int oot_gamedata_string(Ctx *c, uint32_t hash, char *buf, size_t size);
 
 static void oot_inventory_refresh(Ctx *c, int64_t now) {
     void rx_option_set(int id, int value);
@@ -657,6 +658,17 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
     {   /* Link's age for the Debug tab's Switch age row: 0 child, 1 adult, -1 no save loaded (Sequence_IsChildhood) */
         int child = 1;
         rx_option_set(OOT_CHEAT_AGE_ID, loaded && oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? 0 : 1) : -1);
+    }
+    if (loaded) {   /* the map Link is in and his age, logged when either changes: where a log's problem happened, the "Where in
+                       the game" of the Insert menu's Bug report (gpu/vk/vk_bug_report.cpp reads the last of these lines) */
+        static char logged[100];
+        char map[80], line[100];
+        int child = 1;
+        if (oot_gamedata_string(c, 0x1d6189dau, map, sizeof map) && map[0]) {   /* Sequence_CurrentBanc */
+            snprintf(line, sizeof line, "%s (%s)", map,
+                     oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? "child" : "adult") : "age not known");
+            if (strcmp(line, logged)) hos_log("map: %s", line), memcpy(logged, line, sizeof logged);
+        }
     }
     if (!probed && oot_pouch_count(c, "Item_DekuSeed") >= 0) {
         probed = 1;   /* (one line naming every count, both spellings: which names the pouch knows) */
