@@ -1206,21 +1206,60 @@ def shader_census_cmd(romfs, out):
 LIFT_KEY = ".lift_key"   # (in <work>/sa/gen: what the lifted C there was made from)
 
 
+LIFT_SCRIPTS = ("lift.py", "split_hot.py")   # (in nx2/: the two steps of the lift)
+LIFT_DATA = (".c", ".h", ".cpp", ".hpp", ".txt", ".json")
+
+
+def lift_sources():
+    """The translator's files: the Python modules the lift's scripts import, followed through every import statement (in functions
+    too) to the modules in nx2/ and the vendored a64-kit, found as kit.py puts them on the path (a64-kit's folders first); and
+    every other source file there (a64emit.cpp, compiled when the lift starts, and whatever data a module may read). The other
+    Python in nx2/ (the builder, the compile, the bake, the prompts, the shader census: 60 modules) is not the lift's: a change
+    there no longer translates the game again, minutes on every build"""
+    import ast
+    kit_dir = os.path.join(ROOT, "third_party", "a64-kit")
+    path = [os.path.join(kit_dir, d) for d in ("rt", "hos", "tools", "lift")] + [HERE]
+    todo = [os.path.join(HERE, f) for f in LIFT_SCRIPTS]
+    seen = set()
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        with open(f, "rb") as src:
+            tree = ast.parse(src.read(), f)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [n.name for n in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                names = [node.module]
+            else:
+                continue
+            for name in names:
+                for d in path:
+                    mod = os.path.join(d, name.split(".")[0] + ".py")
+                    if os.path.isfile(mod):
+                        todo.append(mod)
+                        break
+    for top in (HERE, kit_dir):
+        for d, dirs, fs in os.walk(top):
+            dirs[:] = sorted(x for x in dirs if x != "__pycache__")
+            seen.update(os.path.join(d, f) for f in fs if f.endswith(LIFT_DATA))
+    return sorted(seen)
+
+
 def lift_key(exefs, work, env):
-    """What the lift's output depends on: the game's code, the translator (nx2/, the vendored a64-kit), the HLE functions host/ defines
-    (hooked in the lift; the rest of host/ is compiled after it, so a change there alone does not lift again), the hot list and chunk
-    boundaries, the lift's environment and the Python running it. A file the lift never reads may be in it (a new build then lifts
-    again); one it reads must be"""
+    """What the lift's output depends on: the game's code, the translator (lift_sources: the modules the lift imports from nx2/ and
+    the vendored a64-kit, and their other files), the HLE functions host/ defines (hooked in the lift; the rest of host/ is compiled
+    after it, so a change there alone does not lift again), the hot list and chunk boundaries, the lift's environment and the
+    Python running it. A file the lift never reads may be in it (a new build then lifts again); one it reads must be"""
     import kit  # noqa: F401  (a64-kit on the path, for standalone)
     import standalone
     h = hashlib.sha1(sys.version.encode(), usedforsecurity=False)
     h.update(" ".join(sorted(standalone.implemented())).encode())
     # (each file named from its own base: the exefs and the work folder may be on another drive than the source, which relpath refuses)
     files = [(exefs, os.path.join(exefs, f)) for f in sorted(os.listdir(exefs))]
-    for top in (HERE, os.path.join(ROOT, "third_party", "a64-kit")):
-        for d, dirs, fs in os.walk(top):
-            dirs[:] = sorted(x for x in dirs if x != "__pycache__")
-            files += [(ROOT, os.path.join(d, f)) for f in sorted(fs) if f.endswith((".py", ".c", ".h", ".cpp", ".hpp", ".txt", ".json"))]
+    files += [(ROOT, f) for f in lift_sources()]
     files += [(work, os.path.join(work, "hot_funcs.txt")), (work, os.path.join(work, "image", "chunks.txt"))]
     for base, f in files:
         if os.path.isfile(f):

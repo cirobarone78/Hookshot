@@ -56,6 +56,15 @@ def main():
                 return f
             with mock.patch("builtins.open", edited):
                 check("a change to the translator changes the key", make_game.lift_key(str(exefs), str(work), env) != key)
+            for name in ("nx2/whole_write.py", "nx2/oot_patches.py", "nx2/oot_native_resolution.py",
+                         "third_party/a64-kit/lift/a64_lift.py", "third_party/a64-kit/lift/a64emit.cpp"):
+                changed = str(ROOT / name)   # (imported by an import, in a function, or compiled when the lift starts)
+                with mock.patch("builtins.open", edited):
+                    check("a change to %s changes the key" % name, make_game.lift_key(str(exefs), str(work), env) != key)
+            for name in ("nx2/build.py", "nx2/make_game.py", "nx2/pipeline_states.py", "nx2/prompt_assets.py", "nx2/shader_census.py"):
+                changed = str(ROOT / name)   # (the builder's other steps: not the lift's)
+                with mock.patch("builtins.open", edited):
+                    check("a change to %s leaves the key" % name, make_game.lift_key(str(exefs), str(work), env) == key)
             check("the inputs back as they were give the key again", make_game.lift_key(str(exefs), str(work), env) == key)
             import standalone
             names = standalone.implemented()
@@ -89,7 +98,32 @@ def main():
               not make_game.lifted_before(str(work), key))
         make_game.write_lift_key(str(work), key)
         check("a finished lift with another key is not", not make_game.lifted_before(str(work), "0" * 40))
-    print("ok: the lift key follows the game, the tools, the hot list, the chunks and the settings")
+    check_lift_sources()
+    print("ok: the lift key follows the game, the tools (the modules the lift imports), the hot list, the chunks and the settings")
+
+
+def check_lift_sources():
+    """Every module of nx2/ and a64-kit that loading the lift's two scripts really imports is one lift_sources() hashes (its
+    import walk reads the source; this imports them, capstone stood in for where it is not installed)"""
+    import subprocess
+    import sys
+    code = ("import os, sys, types\n"
+            "try:\n    import capstone\nexcept ImportError:\n"
+            "    class Stub(types.ModuleType):\n        def __getattr__(self, n):\n            return 0\n"
+            "    sys.modules['capstone'] = Stub('capstone')\n"
+            "sys.path.insert(0, sys.argv[1])\nsys.argv[1:] = []\n"
+            "import lift, split_hot\n"
+            "print('\\n'.join(os.path.abspath(m.__file__) for m in list(sys.modules.values()) if getattr(m, '__file__', None)))\n")
+    out = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(ROOT / "nx2")], capture_output=True, text=True, check=True).stdout
+    tops = (str(ROOT / "nx2") + os.sep, str(ROOT / "third_party" / "a64-kit") + os.sep)
+    loaded = {f for f in out.split() if f.startswith(tops)}
+    check("the lift loads its modules (%d)" % len(loaded), len(loaded) > 12 and str(ROOT / "nx2" / "chunks.py") in loaded)
+    sources = {os.path.abspath(f) for f in make_game.lift_sources()}
+    missing = sorted(loaded - sources)
+    check("every module the lift loads is in its key (missing: %s)" % missing, not missing)
+    check("the lift's later imports too", {str(ROOT / "nx2" / f) for f in ("oot_patches.py", "oot_wide.py", "oot_native_resolution.py")}
+          <= sources)
+    check("the builder's other modules are not", str(ROOT / "nx2" / "build.py") not in sources)
 
 
 if __name__ == "__main__":
