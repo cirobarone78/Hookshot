@@ -56,14 +56,14 @@ CANDIDATES = {"candidates": [{"id": "t", "title": "Test draw", "match": "^draw_o
                               "risk": "r", "evidence": "e"}], "game_own": []}
 
 
-def run(tmp, cats_text=None, extra=(), candidates=None, guest=True):
+def run(tmp, cats_text=None, extra=(), candidates=None, guest=True, samples=None):
     maps, rundir = tmp / "maps", tmp / "run1"
     maps.mkdir(exist_ok=True)
     rundir.mkdir(exist_ok=True)
     (maps / "hookshot.map").write_text(EXE_MAP, encoding="utf-8")
     (maps / "hookshot_vk.map").write_text(VK_MAP, encoding="utf-8")
     (maps / "ntdll.dll.map").write_text(NTDLL_MAP, encoding="utf-8")
-    (rundir / "all.txt").write_text("\n".join(SAMPLES) + "\n", encoding="utf-8")
+    (rundir / "all.txt").write_text("\n".join(samples or SAMPLES) + "\n", encoding="utf-8")
     scripts = tmp / "scripts"
     scripts.mkdir(exist_ok=True)
     (scripts / "cpu_report.py").write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
@@ -141,6 +141,13 @@ def main():
             failures.append("CONTROL: with no rules, everything should be unclassified")
         # (what may be published: no guest map, so no guest address and no game subsystem; lifted code is one row)
         pub = run(Path(t), guest=False)
+        # (a Linux capture names hookshot / hookshot_vk.so, whose maps are not read: refused, even with Windows maps present)
+        try:
+            run(Path(t), samples=["0 sead::MainThread|hookshot+1010;hookshot+2020"])
+            failures.append("a Linux capture should be refused, not mislabelled")
+        except SystemExit as e:
+            if "Linux capture" not in str(e):
+                failures.append("a Linux capture failed for another reason: %s" % e)
         if re.search(r"f_[0-9a-fA-F]{8}", pub) or "game/main" in pub or not row(pub, "lifted game code"):
             failures.append("without --guest-map the report must print no guest address or subsystem, and one lifted row")
         if not row(pub.split("## By category: who executes it")[0], "game/lifted"):

@@ -978,7 +978,7 @@
   "source": "read"
  },
  "mkwvk::skin_check": {
-  "does": "(hookshot) A skinned draw into the scene, for the temporal upscaler's actor motion (vk_temporal.cpp: DLSS's and FSR's). OoT's characters and the things that move by themselves are indexed draws of one vertex stream.",
+  "does": "Decides whether a draw is a skinned (moving) draw, whose motion the temporal upscalers need (vk_temporal.cpp).",
   "source": "read"
  },
  "mkwvk::skip_live": {
@@ -1018,7 +1018,7 @@
   "source": "read"
  },
  "mkwvk::taau_key": {
-  "does": "(hookshot) OoT's gameplay TAAU network (fd029a317a9a4b94) stood in for: its input upscaled into its output (shaders/taau_upscale.comp). The network's translation loses the blue channel, the yellow cast over every scene; with this the picture is right, without the network's temporal anti-aliasing..",
+  "does": "Whether a shader program is the one Hookshot replaces with its own upscale (shaders/taau_upscale.comp).",
   "source": "read"
  },
  "mkwvk::taau_stand_in": {
@@ -1030,7 +1030,7 @@
   "source": "read"
  },
  "mkwvk::target_write_mask": {
-  "does": "A target's write mask: the state's channel mask, nothing for a target the fragment shader leaves unwritten (Maxwell keeps its texels; Vulkan writes undefined values: TOTK's maxwell.md 1.1).",
+  "does": "A target's write mask: the state's channel mask, or nothing for a target the fragment shader leaves unwritten.",
   "source": "read"
  },
  "mkwvk::targets": {
@@ -1171,7 +1171,7 @@
   "source": "read"
  },
  "n_nvnCommandBufferSetRenderEnableConditional": {
-  "does": "rendering on when the two NVNcounterData.counter values at addr, addr + 16 are equal (mode 0) / differ (1). TOTK gates clears with it: the CPU writes counter = 1 to ask for a clear and the TIMESTAMP_TOP report after it resets it.",
+  "does": "Turns rendering on or off by comparing two counter values in GPU memory (equal or different, by mode).",
   "source": "read"
  },
  "n_nvnCommandBufferSetRenderTargets": {

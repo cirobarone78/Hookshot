@@ -113,6 +113,8 @@ class Names:
         r = self.cache.get(frame)
         if r is None:
             mod, _, off = frame.rpartition("+")
+            if mod in ("hookshot", "hookshot_vk.so"):   # (a Linux capture: its ELF maps are not read, so do not mislabel it)
+                raise SystemExit("a Linux capture (%s): cpu_report.py reads Windows captures with lld-link maps only" % mod)
             if mod not in self.syms and self.system.search(mod):
                 local = os.path.join(self.maps_dir, mod + ".map")
                 self.syms[mod] = load_map(local) if os.path.exists(local) else load_exports(self.readobj, mod)
