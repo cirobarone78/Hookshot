@@ -289,7 +289,8 @@ removed.
 ## Saves
 
 **saves** (no opt-in needed: it lists files, reads no game memory): the folder the game's saves are mounted from
-(`<data>/hookshot/save/<user id>` on Linux), read on the bridge's thread. A slot the game is writing at that moment may
+(`<data>/hookshot/save/<user id>` on Linux; with the save journal, its working copy `<data>/hookshot/save-tx/<user id>/work`:
+what the game has now, committed or not), read on the bridge's thread. A slot the game is writing at that moment may
 show a size or time between two writes. `unavailable` until the game has opened its saves.
 
 ```

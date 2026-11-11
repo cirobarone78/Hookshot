@@ -54,6 +54,7 @@ typedef unsigned long DWORD;
 #define GENERIC_WRITE 0x40000000u
 #define FILE_SHARE_READ 1
 #define FILE_SHARE_WRITE 2
+#define FILE_SHARE_DELETE 4
 #define OPEN_EXISTING 3
 #define FILE_ATTRIBUTE_NORMAL 0x80
 typedef struct { uint64_t x[32]; } Ctx;

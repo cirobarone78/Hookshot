@@ -182,9 +182,14 @@ def pick(found, name, flag, wanted=None):
 
 def pending_commit(save):
     """NX2navi writes a save to profile/save-tx first and moves it into profile/save/<account> after: while something is
-    waiting there, that is the save the game loads next, not the account folder."""
+    waiting there, that is the save the game loads next, not the account folder. Hookshot's journal (host/save_journal.c)
+    has a folder per user id there, save-tx/<user id>: only a finished commit, ready-<n>, is a save waiting (its working
+    copy, work, holds changes the game never committed, and the next start drops them)."""
     parent = os.path.dirname(os.path.normpath(save))
     tx = os.path.join(os.path.dirname(parent), "save-tx")
+    own = os.path.join(tx, os.path.basename(os.path.normpath(save)))
+    if os.path.basename(parent).lower() == "save" and os.path.isdir(own):
+        return own if any(n.startswith("ready-") for n in subdirs(own)) else None
     if os.path.basename(parent).lower() == "save" and os.path.isdir(tx):
         for _, _, files in os.walk(tx):
             if files:
@@ -250,7 +255,7 @@ def show(title, folder, found):
         for line in describe(found[k]) or ["(no slots)"]:
             print("      " + line)
         if pending_commit(found[k]):
-            print("      (a save is still waiting in %s: start and quit NX2navi before copying)" % pending_commit(found[k]))
+            print("      (a save is still waiting in %s: start and quit that game before copying)" % pending_commit(found[k]))
 
 
 def list_all(args):
@@ -361,6 +366,10 @@ def run(args):
         if tx:
             raise Fail("NX2navi still has a save waiting in %s, which it loads instead of %s: start NX2navi and quit "
                        "it from the game, then copy (or pass --force)" % (tx, em_path))
+        tx = pending_commit(hs_path)
+        if tx:
+            raise Fail("Hookshot still has a save waiting in %s, which it loads instead of %s: start Hookshot and quit "
+                       "it, then copy (or pass --force)" % (tx, hs_path))
     if not args.dry_run and not args.force:
         busy = running_games()
         if busy:

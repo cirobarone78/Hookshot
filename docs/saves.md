@@ -46,6 +46,23 @@ Eden's save path, under that data folder: `nand/user/save/0000000000000000/<prof
   above when that folder exists (their "portable" mode). Point the script at it with `--from`/`--to`.
 - Newer Eden code also reads a save from `nand/user/save/account/<profile>/0400486024DEC000/0/` when that folder
   exists, and then uses it first. The script looks there too.
+- Hookshot writes a save to `save-tx/<user id>` beside `save` first and swaps it into
+  `save/<user id>` in one step when the game commits it, so a crash or a power cut in the middle of a save leaves the
+  save before it. The files in `save/<user id>` keep the layout above. The three saves before the current one are kept
+  in `save-backup/<user id>/<date>-<time>-<ms>/` (UTC), each a whole save folder. To go back to one, close Hookshot,
+  empty `save/<user id>` and copy the backup's contents into it (copying over it would mix the two saves).
+- If a commit could not be swapped in (on Windows, another program held a file of the save open), it waits in
+  `save-tx/<user id>/ready-<n>` and is put in place at the next start, unless `save/<user id>` was changed meanwhile:
+  then the changed save stays and the waiting one goes to `save-backup/<user id>/unapplied-<time>`. The script refuses
+  to copy while one waits (or `--force`). `save-tx/<user id>/work` is only the game's working copy.
+- A commit only renames folders, so it needs no free space. Only the game's next working copy does: when the disk is
+  too full for it, the rest of that run writes `save/<user id>` in place, as Hookshot did before (the log says so), and
+  the next start uses the journal again. A commit that fails (a file held open) leaves the save as it was, and the game's
+  next save tries again.
+- Changes the game never committed (Hookshot closed or crashed after its last save, or a commit that failed) are not
+  loaded at the next start, as on a console. They are kept in `save-tx/<user id>/uncommitted-<time>` (the newest three).
+- Hookshot writes the save in place, as before, when `save/<user id>` or `save` is a link (a cloud folder), when it is
+  on another drive than `save-tx`, or when another Hookshot is running on the same save (the log says why).
 - NX2navi writes a save to `profile/save-tx` first and moves it into place after. While something is waiting there,
   that is the save the game loads next, so the script refuses to copy until NX2navi has been started and quit (or
   `--force`). NX2navi's launcher also has its own **Import Saves**, which takes an emulator's save folder.

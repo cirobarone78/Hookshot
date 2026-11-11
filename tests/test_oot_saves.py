@@ -415,6 +415,30 @@ class NX2navi(Case):
         self.assertEqual(code, 0, err)
 
 
+class HookshotJournal(Case):
+    """Hookshot's save-tx/<user id> (host/save_journal.c): a finished commit not swapped in yet is the save Hookshot
+    loads next, so the script refuses to copy over or from save/<user id>; its working copy alone is no reason to"""
+    def test_working_copy_is_no_waiting_save(self):
+        tx = self.data / "hookshot" / "save-tx" / UID
+        make_save(tx / "work", b"WORK")
+        code, out, err = self.run_main("export", "lichii")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tree(self.li), tree(self.hs))
+
+    def test_finished_commit_refused(self):
+        tx = self.data / "hookshot" / "save-tx" / UID
+        make_save(tx / "ready-0000000003", b"READY")
+        before = (tree(self.hs), tree(self.li))
+        for command in ("import", "export"):
+            code, out, err = self.run_main(command, "lichii")
+            self.assertEqual(code, 1)
+            self.assertIn("Hookshot still has a save waiting", err)
+        self.assertEqual((tree(self.hs), tree(self.li)), before)
+        self.assertEqual(self.backup_dirs(), [])
+        code, out, err = self.run_main("export", "lichii", "--force")
+        self.assertEqual(code, 0, err)
+
+
 class Guard(Case):
     def test_refuses_while_running(self):
         self.running.return_value = ["Hookshot"]

@@ -95,6 +95,8 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `HOOKSHOT_NO_UPDATE_CHECK=1` | No look for a newer release at the start |
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
 | `RX_BACKEND=<name>` | Unset or `vulkan`: `hookshot_vk.dll`; any other value: the WebGPU renderer, when the exe was built with one |
+| `HOS_SAVE_JOURNAL=0` | The save written in place (a commit still waiting in `save-tx/<user id>/ready-<n>` is the save then), `nn::fs::Commit` doing nothing, as before the journal (`host/save_journal.c`: the game's writes go to `save-tx/<user id>/work` and Commit makes them `save/<user id>` in one step) |
+| `HOS_SAVE_CRASH_AT=<n>` | A test: the process ends at the n-th step of the first commit that writes the save, as a crash or a kill there would; the next start finishes or rolls it back |
 | `HOS_GPU_ALLOC_RETRY=0` | A model's material-block allocations from a full heap (the OptimizeChangeBank thread's two CPU buffers and two GPU-memory calls in f_804566e0) not tried in the heap's parents, as shipped (`host/oot_heap_retry.c`, issue 1697) |
 | `HOS_GPU_ALLOC_TEST_FAIL=<n>` or `<gpu>,<cpu>` | A test: the first n of those allocations of each kind (or that many of the GPU memory and of the CPU buffers) refused by the heap they name, as a full heap would, so the retry runs |
 

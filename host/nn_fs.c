@@ -1,11 +1,13 @@
 /* nn::fs: mounts map to host folders.
      rom:      the game's RomFS (extracted by tools/nx.py romfs), read-only
-     save:     <user>/save/<uid>     (MountSaveData / MountSaveDataReadOnly)
+     save:     <user>/save/<uid>     (MountSaveData / MountSaveDataReadOnly; MountSaveData's writes go to a working copy that
+                                    Commit makes the save in one step: host/save_journal.c)
      cache:    <user>/cache/<index>  (MountCacheStorage)
      temp:     <user>/temp           (MountTemporaryStorage)
    hos_romfs_dir and hos_user_dir are set by hos_main.c. Reads are positional (ReadFile with an offset), so any number
    of guest threads can read one file at once. Results: switchbrew "Error codes" (module 2 = fs). */
 #include "hos.h"
+#include "save_journal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,12 +92,12 @@ const char *hos_romfs_dir, *hos_user_dir;
 
 #define FS_PATH_MAX 0x302                /* (nn::fs paths: 0x300 bytes and the NUL; DirectoryEntry's name is 0x301) */
 
-typedef struct { char name[32]; char root[HOS_FS_PATH]; int writable; } Mount;
+typedef struct { char name[32]; char root[HOS_FS_PATH]; int writable, journal; } Mount;   /* (journal: its index + 1) */
 static Mount mounts[16];
 static int nmounts;
 static SRWLOCK mount_lock = SRWLOCK_INIT;
 
-static int mount(const char *name, const char *root, int writable) {   /* 0: the table is full (16 mounts) */
+static int mount_journal(const char *name, const char *root, int writable, int journal) {   /* 0: the table is full (16) */
     AcquireSRWLockExclusive(&mount_lock);
     int i;
     for (i = 0; i < nmounts && strcmp(mounts[i].name, name); i++) {}
@@ -110,11 +112,13 @@ static int mount(const char *name, const char *root, int writable) {   /* 0: the
     snprintf(mounts[i].name, sizeof mounts[i].name, "%s", name);
     snprintf(mounts[i].root, sizeof mounts[i].root, "%s", root);
     mounts[i].writable = writable;
+    mounts[i].journal = journal;
     ReleaseSRWLockExclusive(&mount_lock);
     if (writable) CreateDirectoryA(root, NULL);
     hos_log("fs: mounted %s: -> %s", name, root);
     return 1;
 }
+static int mount(const char *name, const char *root, int writable) { return mount_journal(name, root, writable, 0); }
 
 int hos_mods_romfs(const char *rel, char *out, size_t cap);   /* mods.c */
 int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *, const char *, int, uint64_t), void *arg);
@@ -232,6 +236,127 @@ static void free_handle(uint64_t id) {
     ReleaseSRWLockExclusive(&handle_lock);
 }
 
+/* ---- journaled save data (host/save_journal.c) -------------------------------------------------------------------
+   (hookshot) nn::fs::Commit did nothing and the game wrote its save files in place, so a crash, a kill or a power cut
+   in the middle of a save could leave a slot half written. MountSaveData's root is now a working copy of the save; the
+   game's Commit makes it the save in one step, and the next start finishes or rolls back a commit that was cut short.
+   The save itself stays <user>/save/<uid> with the files the emulators use (docs/saves.md). Changes the game never
+   committed are dropped at its last Unmount, and not loaded at the next start, as on the console.
+   A Commit is renames only and needs no free space. A Commit that fails (a file of the working copy still open, a
+   folder another program holds) leaves the save as it was and the working copy mounted, and the next Commit or the last
+   Unmount tries again. When the next working copy cannot be made (a full disk), the rest of the run writes the newest
+   save in place, as before the journal (logged), and the next start uses the journal again.
+   The journal is left off for a save (it is mounted directly, as before, and said in the log) when another Hookshot holds
+   the same data folder's journal (save-tx/<uid>/lock), or when the save folder is a link or on another drive.
+   HOS_SAVE_JOURNAL=0: the save mounted directly, written in place, Commit doing nothing (as before).
+   HOS_SAVE_CRASH_AT=<n> (a test): the process ends at the n-th step of the first commit that writes, as a kill there would.
+   journal_lock is taken with no virtual core held (journal_enter: the core first given up, as hos_cv_sleep does), so a
+   thread waiting for it never holds a core the thread inside needs back */
+/* (off: used directly, as before; busy: because another Hookshot holds its lock; place: the folder then written in
+   place, the same one for every mount of the run) */
+typedef struct { char uid[40]; SaveJournal j; int mounts, dirty, off, busy; char place[HOS_FS_PATH]; } Journal;
+static Journal journals[4];
+static int njournals;
+static SRWLOCK journal_lock = SRWLOCK_INIT;   /* (taken before mount_lock, never inside it) */
+static int journal_enter(void) {
+    const int away = hos_vcore_away();
+    AcquireSRWLockExclusive(&journal_lock);
+    return away;
+}
+static void journal_leave(int away) {
+    ReleaseSRWLockExclusive(&journal_lock);
+    if (away) hos_vcore_back();
+}
+static int journal_on(void) {
+    static int on = -1;
+    if (on < 0) on = !getenv("HOS_SAVE_JOURNAL") || atoi(getenv("HOS_SAVE_JOURNAL")) != 0;
+    return on;
+}
+static void journal_crash(int step) {
+    hos_log("fs: HOS_SAVE_CRASH_AT: the process ends at step %d of the commit", step);
+    hos_log_flush();
+#ifdef _WIN32
+    TerminateProcess(GetCurrentProcess(), 3);
+#endif
+    _exit(3);
+}
+/* The journal of user id folder uid (index + 1; 0: none, the save is used directly), locked and recovered at its first use.
+   Under journal_lock, no core held */
+static int journal_of(const char *uid) {
+    if (!journal_on() || !hos_user_dir) return 0;
+    for (int i = 0; i < njournals; i++)
+        if (!strcmp(journals[i].uid, uid)) return journals[i].off ? 0 : i + 1;
+    if (njournals == (int)(sizeof journals / sizeof *journals)) return 0;
+    Journal *n = &journals[njournals++];
+    memset(n, 0, sizeof *n);
+    snprintf(n->uid, sizeof n->uid, "%s", uid);
+    n->off = 1;
+    if (!sj_paths(&n->j, hos_user_dir, uid)) {
+        hos_log("fs: save %s: its paths are too long for the journal: it is written in place, as before", uid);
+        return 0;
+    }
+    sj_log = hos_log;
+    const char *why = sj_unsuitable(&n->j);
+    if (why) {
+        hos_log("fs: save %s: %s: no journal for it, it is written in place, as before", uid, why);
+        return 0;
+    }
+    const int locked = sj_lock(&n->j);
+    if (locked) {   /* (never recovery, a working copy or a commit over another live process's) */
+        n->busy = 1;
+        hos_log("fs: save %s: %s: no journal in this run, the save is written in place, as before (do not play two games on "
+                "one save)", uid, locked > 0 ? "another Hookshot is using this save's journal" : "its journal could not be locked");
+        return 0;
+    }
+    const char *at = getenv("HOS_SAVE_CRASH_AT");
+    if (at) n->j.crash_at = atoi(at), n->j.crash = journal_crash;
+    hos_log("fs: save %s: %s", uid, sj_recover(&n->j));
+    n->off = 0;
+    return njournals;
+}
+/* The folder a save whose journal is off this run is used in: the one its first mount chose, else save\<uid>. 0 when
+   that is missing and a rollback that failed left the save before it in save-tx\<uid>\old: never an empty save made
+   there, which a later journaled start would keep and set the real one aside for */
+static int save_place(const char *uid, char *out, size_t cap) {
+    int busy = 0;
+    for (int i = 0; i < njournals; i++)
+        if (!strcmp(journals[i].uid, uid)) {
+            if (journals[i].place[0]) return snprintf(out, cap, "%s", journals[i].place), 1;
+            busy = journals[i].busy;
+        }
+    snprintf(out, cap, "%s\\save\\%s", hos_user_dir, uid);
+    SaveJournal peek;   /* (a commit waiting in save-tx is the newest save, unless another Hookshot's journal holds it) */
+    if (!busy && hos_user_dir && sj_paths(&peek, hos_user_dir, uid) && sj_peek_newest(&peek) != peek.save) {
+        snprintf(out, cap, "%s", peek.ready);
+        return 1;
+    }
+    char old[HOS_FS_PATH];
+    snprintf(old, sizeof old, "%s\\save-tx\\%s\\old", hos_user_dir, uid);
+    return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES || GetFileAttributesA(old) == INVALID_FILE_ATTRIBUTES;
+}
+static int journal_mounted(const char *name) {   /* the journal of a mount, by its name (0: none) */
+    int j = 0;
+    AcquireSRWLockShared(&mount_lock);
+    for (int i = 0; i < nmounts; i++)
+        if (!strcmp(mounts[i].name, name)) j = mounts[i].journal;
+    ReleaseSRWLockShared(&mount_lock);
+    return j;
+}
+static void journal_dirty(int j) {   /* (a change to the working copy: the next Commit writes it. 2: a failed Commit's, kept) */
+    if (j > 0 && j <= njournals) {
+        int was = 0;
+        __atomic_compare_exchange_n(&journals[j - 1].dirty, &was, 1, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    }
+}
+static void journal_dirty_path(const char *guest) {   /* (the mount a "name:/path" is on) */
+    char name[32];
+    const char *colon = strchr(guest, ':');
+    if (!colon || (size_t)(colon - guest) >= sizeof name) return;
+    memcpy(name, guest, (size_t)(colon - guest));
+    name[colon - guest] = 0;
+    journal_dirty(journal_mounted(name));
+}
+
 /* ---- mounts --------------------------------------------------------------------------------------------------- */
 HLE(_ZN2nn2fs22QueryMountRomCacheSizeEPm) { G64(ARG(0)) = 0x10000; RET(0); }
 HLE(_ZN2nn2fs8MountRomEPKcPvm) {
@@ -271,22 +396,83 @@ static int user_mount(const char *name, const char *sub) {
 
 /* nn::fs::IsSaveDataExisting(ApplicationId, account::Uid const&) -> bool */
 HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
-    char root[HOS_FS_PATH];
-    snprintf(root, sizeof root, "%s\\save\\%016llx%016llx", hos_user_dir, (unsigned long long)G64(ARG(1) + 8),
-             (unsigned long long)G64(ARG(1)));
-    RET(GetFileAttributesA(root) != INVALID_FILE_ATTRIBUTES);
+    char root[HOS_FS_PATH], uid[40];
+    snprintf(uid, sizeof uid, "%016llx%016llx", (unsigned long long)G64(ARG(1) + 8), (unsigned long long)G64(ARG(1)));
+    const int away = journal_enter();
+    const int j = journal_of(uid);   /* (a commit cut short between its renames is finished first: the save is there again) */
+    int known = 1;
+    if (j) snprintf(root, sizeof root, "%s", sj_newest(&journals[j - 1].j));
+    else known = save_place(uid, root, sizeof root);
+    journal_leave(away);
+    RET(!known || GetFileAttributesA(root) != INVALID_FILE_ATTRIBUTES);   /* (a save in save-tx: it exists, not a new one) */
 }
-/* MountSaveData(char const*, account::Uid const&) */
+/* MountSaveData(char const*, account::Uid const&): the working copy of the save (above), made at the uid's first mount */
 HLE(_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE) {
-    char sub[64];
-    snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)G64(ARG(1) + 8), (unsigned long long)G64(ARG(1)));
-    RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
+    char uid[40];
+    snprintf(uid, sizeof uid, "%016llx%016llx", (unsigned long long)G64(ARG(1) + 8), (unsigned long long)G64(ARG(1)));
+    const int away = journal_enter();
+    int j = journal_of(uid), ok = 0;
+    char newest[HOS_FS_PATH] = "";
+    if (j && !journals[j - 1].mounts) {
+        const int r = sj_work_open(&journals[j - 1].j);
+        if (r == -2) {   /* (a failed rollback: never an empty save over it) */
+            journal_leave(away);
+            hos_fatal(c, "fs: save %s: the save is not where it belongs (see the lines above): the game stops rather than "
+                      "start without it. Look in %s\\save-tx\\%s and %s\\save-backup\\%s", uid, hos_user_dir, uid, hos_user_dir, uid);
+            return;
+        }
+        if (r) {
+            snprintf(newest, sizeof newest, "%s", sj_newest(&journals[j - 1].j));
+            hos_log("fs: save %s: NO JOURNAL from here: no working copy could be made (disk full?), so this run writes %s in "
+                    "place, as before the journal (a crash mid-save can leave it half written); the next start uses the "
+                    "journal again", uid, newest);
+            journals[j - 1].off = 1;
+            snprintf(journals[j - 1].place, sizeof journals[j - 1].place, "%s", newest);
+            j = 0;
+        }
+    }
+    if (!j && !newest[0] && !save_place(uid, newest, sizeof newest)) {
+        journal_leave(away);
+        hos_fatal(c, "fs: save %s: %s\\save\\%s is missing and the save before a commit that failed is still in "
+                  "%s\\save-tx\\%s\\old: the game stops rather than start without it (put that folder back as save\\%s)",
+                  uid, hos_user_dir, uid, hos_user_dir, uid, uid);
+        return;
+    }
+    if (j) {
+        ok = mount_journal(gstr(ARG(0)), journals[j - 1].j.work, 1, j);
+        journals[j - 1].mounts += ok;
+        if (ok) {   /* (the control bridge's saves: what the game has now, the working copy) */
+            AcquireSRWLockExclusive(&mount_lock);
+            snprintf(save_root, sizeof save_root, "%s", journals[j - 1].j.work);
+            ReleaseSRWLockExclusive(&mount_lock);
+        }
+    }
+    journal_leave(away);
+    if (!j) {   /* (in place: over the newest save, a commit waiting in save-tx included; else save\<uid>) */
+        for (int i = 0; i < njournals; i++)   /* (every mount of the run the same folder, IsSaveDataExisting too) */
+            if (!strcmp(journals[i].uid, uid) && !journals[i].busy && !journals[i].place[0])
+                snprintf(journals[i].place, sizeof journals[i].place, "%s", newest);
+        make_dirs(newest);
+        CreateDirectoryA(newest, NULL);
+        ok = mount(gstr(ARG(0)), newest, 1);
+        AcquireSRWLockExclusive(&mount_lock);
+        if (ok) snprintf(save_root, sizeof save_root, "%s", newest);
+        ReleaseSRWLockExclusive(&mount_lock);
+    }
+    RET(ok ? 0 : R_NOT_MOUNTED);
 }
 /* MountSaveDataReadOnly(char const*, ApplicationId, account::Uid const&) */
+/* (the newest committed save: with the journal, a commit waiting in save-tx included, as MountSaveData's copy is made) */
 HLE(_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE) {
-    char sub[64];
-    snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)G64(ARG(2) + 8), (unsigned long long)G64(ARG(2)));
-    RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
+    char uid[40], root[HOS_FS_PATH];
+    snprintf(uid, sizeof uid, "%016llx%016llx", (unsigned long long)G64(ARG(2) + 8), (unsigned long long)G64(ARG(2)));
+    const int away = journal_enter();
+    const int j = journal_of(uid);
+    int known = 1;
+    if (j) snprintf(root, sizeof root, "%s", sj_newest(&journals[j - 1].j));
+    else known = save_place(uid, root, sizeof root);
+    journal_leave(away);
+    RET(known && GetFileAttributesA(root) != INVALID_FILE_ATTRIBUTES && mount(gstr(ARG(0)), root, 0) ? 0 : R_NOT_MOUNTED);
 }
 HLE(_ZN2nn2fs21MountTemporaryStorageEPKc) { RET(user_mount(gstr(ARG(0)), "temp") ? 0 : R_NOT_MOUNTED); }
 /* MountCacheStorage(char const*, int index) */
@@ -321,13 +507,103 @@ HLE(_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorage
     RET(0);
 }
 HLE(_ZN2nn2fs21CloseCacheStorageListENS0_22CacheStorageListHandleE) {}
+/* Whether a file of journal j's mounts is open for writing (its handle would follow the working copy's rename) */
+static int journal_files_open(int j) {
+    int open = 0;
+    AcquireSRWLockShared(&mount_lock);
+    AcquireSRWLockShared(&handle_lock);
+    for (int i = 0; i < 4096 && !open; i++) {
+        const Handle *h = handles[i];
+        if (!h || !h->writable || h->is_dir) continue;
+        for (int m = 0; m < nmounts && !open; m++) {
+            const size_t n = strlen(mounts[m].name);
+            open = mounts[m].journal == j && !strncmp(h->path, mounts[m].name, n) && h->path[n] == ':';
+        }
+    }
+    ReleaseSRWLockShared(&handle_lock);
+    ReleaseSRWLockShared(&mount_lock);
+    return open;
+}
+/* The rest of the run without the journal for this save: its mounts moved to the newest save, written in place */
+static void journal_in_place(int j) {
+    Journal *jr = &journals[j - 1];
+    jr->off = 1;
+    snprintf(jr->place, sizeof jr->place, "%s", sj_newest(&jr->j));
+    AcquireSRWLockExclusive(&mount_lock);
+    for (int i = 0; i < nmounts; i++)
+        if (mounts[i].journal == j) {
+            snprintf(mounts[i].root, sizeof mounts[i].root, "%s", jr->place);
+            mounts[i].journal = 0;
+        }
+    snprintf(save_root, sizeof save_root, "%s", jr->place);
+    ReleaseSRWLockExclusive(&mount_lock);
+    jr->mounts = 0;
+    hos_log("fs: save %s: NO JOURNAL from here: the commit is in, but no new working copy could be made (disk full?), so "
+            "the rest of this run writes %s in place, as before the journal (a crash mid-save can leave it half written); "
+            "the next start uses the journal again", jr->uid, jr->place);
+}
+/* A journaled save's Commit, under journal_lock: the working copy made the save. 1 when the changes are saved */
+static int journal_commit(int j) {
+    Journal *jr = &journals[j - 1];
+    char what[512];
+    int changed = 0, r = -1;
+    const int64_t t0 = hos_now_ns();
+    if (journal_files_open(j))
+        snprintf(what, sizeof what, "a file of the save is still open for writing: nothing was committed, the next Commit "
+                 "tries again");
+    else
+        r = sj_commit(&jr->j, &changed, what, sizeof what);
+    hos_log("fs: commit of save %s %s: %s (%.1f ms)", jr->uid, r < 0 ? "FAILED" : changed ? "made" : "skipped", what,
+            (hos_now_ns() - t0) / 1e6);
+    if (r == 1) journal_in_place(j);
+    return r >= 0;
+}
 HLE(_ZN2nn2fs7UnmountEPKc) {
+    if (!journal_mounted(gstr(ARG(0)))) {   /* (no journal: no journal_lock) */
+        AcquireSRWLockExclusive(&mount_lock);
+        for (int i = 0; i < nmounts; i++)
+            if (!strcmp(mounts[i].name, gstr(ARG(0)))) { mounts[i] = mounts[--nmounts]; break; }
+        ReleaseSRWLockExclusive(&mount_lock);
+        return;
+    }
+    const int away = journal_enter();
+    int j = 0;
+    AcquireSRWLockShared(&mount_lock);
+    for (int i = 0; i < nmounts; i++)
+        if (!strcmp(mounts[i].name, gstr(ARG(0)))) j = mounts[i].journal;
+    ReleaseSRWLockShared(&mount_lock);
+    if (j && journals[j - 1].mounts == 1) {   /* (the uid's last mount) */
+        Journal *jr = &journals[j - 1];
+        const int dirty = __atomic_exchange_n(&jr->dirty, 0, __ATOMIC_RELAXED);
+        int kept = 0;
+        if (dirty == 2 && !journal_commit(j)) {   /* (a Commit that failed: tried once more, then never dropped) */
+            kept = 1;
+            hos_log("fs: save %s unmounted with changes no Commit could save: they are NOT in the save; the working copy %s "
+                    "is kept (save-tx\\%s\\uncommitted-... from the next start)", jr->uid, jr->j.work, jr->uid);
+        } else if (dirty == 1)   /* (what no Commit took is dropped, as on the console) */
+            hos_log("fs: save %s unmounted without Commit: its changes since the last Commit are dropped", jr->uid);
+        if (!kept && !jr->off) sj_work_drop(&jr->j);
+    }
     AcquireSRWLockExclusive(&mount_lock);
     for (int i = 0; i < nmounts; i++)
         if (!strcmp(mounts[i].name, gstr(ARG(0)))) { mounts[i] = mounts[--nmounts]; break; }
     ReleaseSRWLockExclusive(&mount_lock);
+    if (j && journals[j - 1].mounts) journals[j - 1].mounts--;
+    journal_leave(away);
 }
-HLE(_ZN2nn2fs6CommitEPKc) { RET(0); }
+/* Commit(char const* name): a journaled save mount's working copy becomes the save (host/save_journal.c). A commit that
+   fails leaves the save as it was and the working copy mounted: the next Commit or the last Unmount tries again. The
+   game is told it worked either way: the game's dialog for a failed save was not tried */
+HLE(_ZN2nn2fs6CommitEPKc) {
+    const int j = journal_mounted(gstr(ARG(0)));
+    if (!j) { RET(0); return; }
+    const int away = journal_enter();
+    Journal *jr = &journals[j - 1];
+    const int dirty = __atomic_exchange_n(&jr->dirty, 0, __ATOMIC_RELAXED);
+    if (dirty && !jr->off && !journal_commit(j)) __atomic_store_n(&jr->dirty, 2, __ATOMIC_RELAXED);
+    journal_leave(away);
+    RET(0);
+}
 HLE(_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE) {}
 
 /* ---- files ---------------------------------------------------------------------------------------------------- */
@@ -385,8 +661,9 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
             }
         }
     }
-    HANDLE h = CreateFileA(path, GENERIC_READ | (want_write ? GENERIC_WRITE : 0), FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    /* (FILE_SHARE_DELETE: a save file open for reading never holds up a commit's renames of its folder) */
+    HANDLE h = CreateFileA(path, GENERIC_READ | (want_write ? GENERIC_WRITE : 0),
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (away) hos_vcore_back();
     if (h == INVALID_HANDLE_VALUE) {
         if (hos_trace || fs_trace()) hos_log("fs: OpenFile(%s): not found", g);
@@ -470,6 +747,7 @@ HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE) {
     DWORD put = 0;
     /* (hookshot) from guest memory only, and the whole size: a DWORD cut wrote less than asked and said so */
     if (ARG(3) <= 0xFFFFFFFFu && hos_guest_range(ARG(2), ARG(3))) WriteFile(fh->h, GP(ARG(2)), (DWORD)ARG(3), &put, &ov);
+    journal_dirty_path(fh->path);   /* (a write to a journaled save's working copy: the next Commit takes it) */
     RET(put == ARG(3) ? 0 : 0x2EE202);
 }
 HLE(_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl) {
@@ -478,6 +756,7 @@ HLE(_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl) {
     sz.QuadPart = (LONGLONG)ARG(1);
     SetFilePointerEx(fh->h, sz, NULL, FILE_BEGIN);
     SetEndOfFile(fh->h);
+    journal_dirty_path(fh->path);
     RET(0);
 }
 HLE(_ZN2nn2fs9FlushFileENS0_10FileHandleE) { FlushFileBuffers(get_handle(c, ARG(0))->h); RET(0); }
@@ -494,6 +773,7 @@ HLE(_ZN2nn2fs10CreateFileEPKcl) {
     int writable = 0;
     if (!host_path(gstr(ARG(0)), path, sizeof path, &writable) || !writable) { RET(R_PATH_NOT_FOUND); return; }
     make_dirs(path);
+    journal_dirty_path(gstr(ARG(0)));
     HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) { RET(GetLastError() == ERROR_FILE_EXISTS ? R_PATH_EXISTS : R_PATH_NOT_FOUND); return; }
     LARGE_INTEGER sz;
@@ -507,6 +787,7 @@ HLE(_ZN2nn2fs10DeleteFileEPKc) {
     char path[HOS_FS_PATH];
     int writable = 0;
     if (!host_path(gstr(ARG(0)), path, sizeof path, &writable) || !writable || !DeleteFileA(path)) { RET(R_PATH_NOT_FOUND); return; }
+    journal_dirty_path(gstr(ARG(0)));
     RET(0);
 }
 HLE(_ZN2nn2fs15CreateDirectoryEPKc) {
@@ -514,6 +795,7 @@ HLE(_ZN2nn2fs15CreateDirectoryEPKc) {
     int writable = 0;
     if (!host_path(gstr(ARG(0)), path, sizeof path, &writable) || !writable) { RET(R_PATH_NOT_FOUND); return; }
     make_dirs(path);
+    journal_dirty_path(gstr(ARG(0)));
     RET(CreateDirectoryA(path, NULL) ? 0 : GetLastError() == ERROR_ALREADY_EXISTS ? R_PATH_EXISTS : R_PATH_NOT_FOUND);
 }
 static void delete_tree(const char *dir) {
@@ -539,6 +821,7 @@ HLE(_ZN2nn2fs26DeleteDirectoryRecursivelyEPKc) {
     char path[HOS_FS_PATH];
     int writable = 0;
     if (!host_path(gstr(ARG(0)), path, sizeof path, &writable) || !writable) { RET(R_PATH_NOT_FOUND); return; }
+    journal_dirty_path(gstr(ARG(0)));
     /* (hookshot) the folder named itself a link: the link goes, never what it points to (as for the links inside) */
     const DWORD at = GetFileAttributesA(path);
     if (at != INVALID_FILE_ATTRIBUTES && (at & FILE_ATTRIBUTE_REPARSE_POINT)) {
@@ -553,6 +836,7 @@ HLE(_ZN2nn2fs10RenameFileEPKcS2_) {
     char a[HOS_FS_PATH], b[HOS_FS_PATH];
     int w1 = 0, w2 = 0;
     if (!host_path(gstr(ARG(0)), a, sizeof a, &w1) || !host_path(gstr(ARG(1)), b, sizeof b, &w2) || !w1 || !w2) { RET(R_PATH_NOT_FOUND); return; }
+    journal_dirty_path(gstr(ARG(0)));
     RET(MoveFileExA(a, b, MOVEFILE_REPLACE_EXISTING) ? 0 : R_PATH_NOT_FOUND);
 }
 /* a RomFS folder that only mods have: rom:/x -> some mod entry lies under x */

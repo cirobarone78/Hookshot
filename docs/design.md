@@ -37,6 +37,7 @@ changes: TOTKPort's `hos/nvn_native.c` (NVN 55.15) would sit under this reposito
 | **mkw-recomp** `7336f0a` (`..\mkw-recomp`, local) | lift driver and its fixes, Switch 2 forms, DT_RELR, Eden's image layout, 64-bit guest window, loop-header polls, stable chunks, Unicorn tests, build; the standalone runtime; the native NVN2 layer; the Vulkan back end | `nx2/`, `host/`, `gpu/`, `third_party/` (commit `86871a1`, byte-identical) |
 | **a64-kit** (Rexcomp's AArch64 kit, TOTKPort `60de030`, via mkw-recomp) | NSO loader, image builder, lifter, suyu's translator, instruction harness | `third_party/a64-kit` (unmodified) |
 | **Eden's shader recompiler** (Eglantine build 181, via mkw-recomp) | SM86 -> IR -> SPIR-V, task/mesh programs | `gpu/vk/eden` |
+| **totk-pc-recomp** (valentderah, MIT; its `runtime/fs_host.c`, itself from MacNativeGames, MIT) | the save journal: working copy, commit by rename, recovery at start | `host/save_journal.c` (its notice kept) |
 | **TOTKPort** (`Desktop\Ports\TOTK\TOTKPort`) | the original HLE runtime and NVN layer that mkw-recomp's are forks of | reference only |
 | **Eglantine** (`..\Eglantine`, read and run only) | Switch 2 service protocols, the reference renderer, an A/B oracle | reference only; its CPM cache supplies the Vulkan/SPIR-V headers, VMA, FFmpeg |
 
