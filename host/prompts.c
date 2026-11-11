@@ -549,8 +549,10 @@ static size_t put_runs(Live *l, const Run *runs, size_t nruns, size_t *written, 
     uint8_t *ok = (uint8_t *)calloc(nruns ? nruns : 1, 1);
     size_t outside = 0;
     *written = *put_back = 0;
-    for (size_t r = 0; f && chunk && r < l->nranges; r++) {
-        const uint64_t off = l->ranges[r][0], len = l->ranges[r][1], a = l->base + off;
+    const uint64_t base = l->base;   /* (once: 0 when the game let the memory go, nothing written then) */
+    if (!base) nruns = 0;
+    for (size_t r = 0; base && f && chunk && r < l->nranges; r++) {
+        const uint64_t off = l->ranges[r][0], len = l->ranges[r][1], a = base + off;
         uint8_t *q = a >= l->lo && a + len <= l->hi ? (uint8_t *)hos_guest_range(a, len) : NULL;
         if (!q) continue;
         for (uint64_t k = 0; k < len;) {
@@ -563,7 +565,7 @@ static size_t put_runs(Live *l, const Run *runs, size_t nruns, size_t *written, 
         (*put_back)++;
     }
     for (size_t r = 0; r < nruns && ok; r++) {
-        const uint64_t a = l->base + runs[r].off, len = runs[r].len;
+        const uint64_t a = base + runs[r].off, len = runs[r].len;
         const uint8_t *q = a >= l->lo && a + len <= l->hi ? (const uint8_t *)hos_guest_range(a, len) : NULL;
         ok[r] = q != NULL;
         for (uint64_t k = 0; ok[r] && l->guarded && k < len;) {
@@ -578,7 +580,12 @@ static size_t put_runs(Live *l, const Run *runs, size_t nruns, size_t *written, 
             outside++;
             continue;
         }
-        uint8_t *q = (uint8_t *)hos_guest_range(l->base + runs[r].off, runs[r].len);
+        const uint64_t a = base + runs[r].off;
+        uint8_t *q = a >= l->lo && a + runs[r].len <= l->hi ? (uint8_t *)hos_guest_range(a, runs[r].len) : NULL;
+        if (!q) {
+            outside++;
+            continue;
+        }
         memcpy(q, runs[r].data, runs[r].len);
         HOS_WRITTEN(q, runs[r].len);
         (*written)++;
@@ -657,6 +664,7 @@ static void live_textures_start(const char *bntx, const Run *runs, size_t nruns)
 
 /* nvn_native.c: a memory pool the game made (its storage, size bytes): the one Common.bntx's texture data is in? (Its
    texture data there, or the whole file) */
+static SRWLOCK tex_lock = SRWLOCK_INIT;   /* (the textures' pool: found, let go, written; the game's threads and the input's) */
 void hos_prompts_pool(uint64_t mem, uint64_t size) {
     if (!tex.data_len || tex.l.base || size < SAMPLE_LEN) return;
     const uint8_t *p = (const uint8_t *)hos_guest_range(mem, 4);
@@ -667,21 +675,32 @@ void hos_prompts_pool(uint64_t mem, uint64_t size) {
         const uint8_t *q = a >= mem && a + SAMPLE_LEN <= mem + size ? (const uint8_t *)hos_guest_range(a, SAMPLE_LEN) : NULL;
         if (!q || memcmp(q, tex.want[s], SAMPLE_LEN)) return;
     }
-    tex.l.lo = mem, tex.l.hi = mem + size;
-    part_face[PART_TEXTURES] = start_face;   /* (the file as served: a change since is written at the next look) */
-    memcpy(part_bind[PART_TEXTURES], start_bind, sizeof start_bind);
-    __atomic_store_n(&tex.l.base, base, __ATOMIC_RELEASE);   /* (lo and hi first: the input thread reads them once base is set) */
-    hos_log("prompts: the textures' pool at %#llx (+%#llx): a new face or new controls show at once", (unsigned long long)mem,
-            (unsigned long long)size);
+    AcquireSRWLockExclusive(&tex_lock);
+    const int first = !tex.l.base;
+    if (first) {
+        tex.l.lo = mem, tex.l.hi = mem + size;
+        part_face[PART_TEXTURES] = start_face;   /* (the file as served: a change since is written at the next look) */
+        memcpy(part_bind[PART_TEXTURES], start_bind, sizeof start_bind);
+        __atomic_store_n(&tex.l.base, base, __ATOMIC_RELEASE);   /* (lo and hi first: the input thread reads them once base is set) */
+    }
+    ReleaseSRWLockExclusive(&tex_lock);
+    if (first)
+        hos_log("prompts: the textures' pool at %#llx (+%#llx): a new face or new controls show at once", (unsigned long long)mem,
+                (unsigned long long)size);
 }
 
 /* nvn_native.c: the game finalized a memory pool (its storage): the textures' one? Then nothing is written there any more
-   (the memory may hold something else), until the game makes it again (hos_prompts_pool) */
+   (the memory may hold something else), until the game makes it again (hos_prompts_pool). A change being written waits
+   (tex_lock): the game frees the memory once this returns */
 void hos_prompts_pool_gone(uint64_t mem) {
     if (!__atomic_load_n(&tex.l.base, __ATOMIC_ACQUIRE) || mem != tex.l.lo) return;
-    __atomic_store_n(&tex.l.base, 0, __ATOMIC_RELEASE);
-    hos_log("prompts: the textures' pool at %#llx was finalized: not written until the game makes it again",
-            (unsigned long long)mem);
+    AcquireSRWLockExclusive(&tex_lock);
+    const int ours = tex.l.base && mem == tex.l.lo;
+    if (ours) __atomic_store_n(&tex.l.base, 0, __ATOMIC_RELEASE);
+    ReleaseSRWLockExclusive(&tex_lock);
+    if (ours)
+        hos_log("prompts: the textures' pool at %#llx was finalized: not written until the game makes it again",
+                (unsigned long long)mem);
 }
 
 /* the pool's textures as this face and these controls choose them; 0 when they could not be */
@@ -693,7 +712,7 @@ static int live_textures(const char *dir, int face, const int *bind) {
         if (!tex.bins[face]) return 0;
     }
     size_t nruns, written, put_back;
-    if (!__atomic_load_n(&tex.l.base, __ATOMIC_ACQUIRE)) return 0;   /* (finalized since: hos_prompts_pool_gone) */
+    if (!__atomic_load_n(&tex.l.base, __ATOMIC_ACQUIRE)) return 0;   /* (finalized since: hos_prompts_pool_gone; tex_lock held) */
     Run *runs = texture_runs(tex.bins[face], tex.nbins[face], bind, &nruns);
     const size_t outside = put_runs(&tex.l, runs, nruns, &written, &put_back);
     free(runs);
@@ -938,17 +957,21 @@ void hos_prompts_live(void) {
         const int face = live_face();
         live_face_now = face;
         memcpy(live_bind_now, bind, sizeof live_bind_now);
-        const int found[PARTS] = {pool, lay.base != 0, font.at != 0};
+        const int found[PARTS] = {0, lay.base != 0, font.at != 0};   /* (the textures: looked at under tex_lock) */
         char dir[MAX_PATH];
         int start, ready = -1;
         for (int p = 0; p < PARTS; p++) {
-            if (!found[p] || (part_face[p] == face && !memcmp(part_bind[p], bind, sizeof bind))) continue;
-            if (ready < 0) ready = setup(dir, sizeof dir, &start);
-            if (ready && p == PART_TEXTURES) live_textures(dir, face, bind);
-            if (ready && p == PART_LAYOUTS) live_layouts(dir, face, bind);
-            if (ready && p == PART_FONT) live_font(dir, face);
-            part_face[p] = face;   /* (also when it failed: not tried again until the next change) */
-            memcpy(part_bind[p], bind, sizeof part_bind[p]);
+            if (p == PART_TEXTURES) AcquireSRWLockExclusive(&tex_lock);   /* (the pool kept, or let go, till its writes end) */
+            const int here = p == PART_TEXTURES ? tex.l.base != 0 : found[p];
+            if (here && (part_face[p] != face || memcmp(part_bind[p], bind, sizeof bind))) {
+                if (ready < 0) ready = setup(dir, sizeof dir, &start);
+                if (ready && p == PART_TEXTURES) live_textures(dir, face, bind);
+                if (ready && p == PART_LAYOUTS) live_layouts(dir, face, bind);
+                if (ready && p == PART_FONT) live_font(dir, face);
+                part_face[p] = face;   /* (also when it failed: not tried again until the next change) */
+                memcpy(part_bind[p], bind, sizeof part_bind[p]);
+            }
+            if (p == PART_TEXTURES) ReleaseSRWLockExclusive(&tex_lock);
         }
     }
     InterlockedExchange(&busy, 0);

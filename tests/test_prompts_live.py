@@ -3,8 +3,9 @@ file in a guest window: the game's own bytes come back where the runs before wer
 (a later one over an earlier), a run past the range found is left alone and counted, and every write is marked
 (HOS_WRITTEN: the renderer uploads it again). Guarded (the layouts, whose offsets the game makes pointers where they lie):
 a run over bytes the game changed is left alone, the rest written, and only those written are put back at the next change.
-The textures' pool finalized (nvn_native.c's nvnMemoryPoolFinalize: hos_prompts_pool_gone): not written any more, and
-another pool's finalize leaves it be.
+The textures' pool finalized (nvn_native.c's nvnMemoryPoolFinalize: hos_prompts_pool_gone): not written any more (put_runs
+over a range let go writes nothing), it is let go under the lock a change is written under, and another pool's finalize
+leaves it be.
 
 python -I -B tests/test_prompts_live.py [--cc gcc]
 """
@@ -101,6 +102,13 @@ int main(int argc, char **argv) {
     Run none[1] = {{N + 10, 8, 0, bb}};
     CHECK(put_runs(&l, none, 1, &written, &put_back) == 1 && put_back == 1 && window[AT + 300] == 0x7f &&
           !memcmp(window + AT + 400, game + 400, 8));
+    /* the memory let go (base 0, hos_prompts_pool_gone): nothing written, not even at a run's offset from 0 */
+    uint8_t before_all[WINDOW / 16];
+    memcpy(before_all, window, sizeof before_all);
+    l.base = 0;
+    Run low[1] = {{0x1000, 8, 0, bb}};
+    CHECK(put_runs(&l, low, 1, &written, &put_back) == 0 && written == 0 && put_back == 0);
+    CHECK(!memcmp(before_all, window, sizeof before_all));
     puts("ok");
     return 0;
 }
@@ -109,6 +117,11 @@ int main(int argc, char **argv) {
 GONE = r'''
 #include <stdint.h>
 static void hos_log(const char *fmt, ...) { (void)fmt; }
+typedef int SRWLOCK;
+static SRWLOCK tex_lock;
+static int held, taken;
+static void AcquireSRWLockExclusive(SRWLOCK *l) { held += l == &tex_lock, taken += l == &tex_lock; }
+static void ReleaseSRWLockExclusive(SRWLOCK *l) { held -= l == &tex_lock; }
 static struct { struct { volatile uint64_t base; uint64_t lo, hi; } l; } tex;
 %(gone)s
 int main(void) {
@@ -116,7 +129,7 @@ int main(void) {
     hos_prompts_pool_gone(0x6000);   /* (another pool) */
     if (tex.l.base != 0x4f00) return 1;
     hos_prompts_pool_gone(0x5000);
-    return tex.l.base != 0 ? 2 : 0;
+    return tex.l.base != 0 ? 2 : held || !taken ? 3 : 0;
 }
 '''
 
@@ -129,8 +142,9 @@ def pool_gone(cc, src, tmp):
     c.write_text(GONE % {"gone": block(src, "void hos_prompts_pool_gone(")}, encoding="utf-8")
     subprocess.run([cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
     r = subprocess.run([str(exe)]).returncode
-    check(r == 0, "hos_prompts_pool_gone: %s" % ("another pool's finalize dropped the textures' pool" if r == 1 else
-                                                    "the textures' pool finalized is still written"))
+    check(r == 0, "hos_prompts_pool_gone: %s" % {1: "another pool's finalize dropped the textures' pool",
+                                                   2: "the textures' pool finalized is still written",
+                                                   3: "the pool let go outside tex_lock (a change being written does not wait)"}.get(r, r))
 
 
 def main():
@@ -154,7 +168,7 @@ def main():
         pool_gone(a.cc, src, tmp)
     check(out.returncode == 0 and out.stdout.strip() == "ok", "exit %d: %s%s" % (out.returncode, out.stdout, out.stderr))
     print("ok: put_runs puts the game's bytes back, writes the runs in order, leaves one past the range; guarded, never over "
-          "bytes the game changed; the textures' pool finalized is not written")
+          "bytes the game changed; the textures' pool finalized is not written, under its lock")
 
 
 if __name__ == "__main__":
