@@ -45,12 +45,19 @@ FIXTURE = r"""
 #include <cstdlib>
 #include <iterator>
 #include <utility>
+#include <string>
+#include <vector>
 #include "hos_wide_size.h"
 #include "upscaler_rows.h"
+#include "display_modes.h"
 namespace ur = mkwvk::upscaler_rows;
+using namespace mkwvk;
+// (the screen's display modes: none, so the sizes offered before them, 16:9 but 5120x1440, 32:9)
+std::vector<display_modes::Size> screen_modes() { return {}; }
 
 #define CHECK(x, ...) do { if (!(x)) { std::fprintf(stderr, "FAIL %d: %s: ", __LINE__, #x); std::fprintf(stderr, __VA_ARGS__); std::fputc('\n', stderr); failed = 1; } } while (0)
 /* OUTPUTS */
+dm::Size size_of(Out o) { return {o.w, o.h}; }   // (vk_menu.cpp's, after the part cut out)
 /* STEP_OUTPUT */
 /* WALK */
 
@@ -76,6 +83,16 @@ void set_row(Row& r, int v, int dir) {
     if (r.value == &dlss) resolution = ur::snap_render(upscaler(), resolution);
 }
 bool set(Row& r, int want) {   // (menu_setting_set's call)
+    // (a size of another shape: menu_setting_set moves the Aspect ratio to its shape first, which takes the output to one of
+    // that shape's sizes, the largest with no screen known; the arrows keep to one shape)
+    const auto shape = [](int v) { return display_modes::ratio_name(size_of(output_at(v))); };
+    if (r.value == &output && output_choice(want) == want && shape(want) != shape(output)) {
+        int to = -1;
+        for (int v = 0; v <= last_output(); v++)
+            if (output_choice(v) == v && shape(v) == shape(want) &&
+                (to < 0 || (uint64_t)output_at(v).w * output_at(v).h > (uint64_t)output_at(to).w * output_at(to).h)) to = v;
+        output = to;
+    }
     const auto native = [&] { return r.value == &resolution && ur::full_scale(upscaler()); };
     const int render = resolution, was = dlss;
     const bool ok = walk_to([&] { return std::pair(native() ? -1 : *r.value, dlss); }, [&] { return *r.value == want && !native(); },
@@ -89,10 +106,10 @@ int main() {
     // (the output sizes: every size from every size, with and without a size of the player's own)
     for (int custom = 0; custom < 2; custom++) {
         custom_output = custom ? Out{3440, 1440} : Out{0, 0};
-        Row r{&output, 0, kLastOutput};
-        for (int from = 0; from <= kLastOutput; from++) {
+        Row r{&output, 0, last_output()};
+        for (int from = 0; from <= last_output(); from++) {
             if (output_choice(from) != from) continue;
-            for (int want = 0; want <= kLastOutput; want++) {
+            for (int want = 0; want <= last_output(); want++) {
                 output = from;
                 const bool ok = set(r, want);
                 if (output_choice(want) == want) CHECK(ok && output == want, "custom %d: %d to %d gave %d", custom, from, want, output);
@@ -169,7 +186,11 @@ int main() {
 def fixture(source):
     menu = (source / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
     outputs_from = menu.index("struct Out {")
-    outputs_to = menu.index("// (the choices from smallest to largest", outputs_from)
+    outputs_to = menu.index("dm::Size size_of(Out o)", outputs_from)
+    # (a size of another shape than the one chosen: menu_setting_set moves the Aspect ratio to its shape before the walk)
+    setter_text = definition(menu, "int menu_setting_set")
+    if "aspect_of_choice(want" not in setter_text:
+        raise SystemExit("menu_setting_set no longer moves the Aspect ratio to a size of another shape before the walk")
     walk = re.search(r"template <class State, class At, class Step>\s*bool walk_to\(", menu)
     if not walk:
         raise SystemExit("missing definition: walk_to")
