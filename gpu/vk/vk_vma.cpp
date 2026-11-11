@@ -213,6 +213,18 @@ bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& al
         vai.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
         if (vmaCreateImage(vma, &ci, &vai, &image, &allocation, nullptr) == VK_SUCCESS) return true;
     }
+    // Free idle pooled render targets and retry in DEVICE_LOCAL before spilling over PCIe (4 GB cards).
+    if (size_t freed = pool_empty()) {
+        static std::atomic<int> told_pool{0};
+        if (told_pool++ < 8)
+            logf("vk: VRAM short: emptied %zu pooled render targets before retry", freed);
+        if (vmaCreateImage(vma, &ci, &ai, &image, &allocation, nullptr) == VK_SUCCESS) return true;
+        if (ai.flags & VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT) {
+            VmaAllocationCreateInfo vai = ai;
+            vai.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+            if (vmaCreateImage(vma, &ci, &vai, &image, &allocation, nullptr) == VK_SUCCESS) return true;
+        }
+    }
     // (hookshot) VRAM is full (a 4 GB card at a high resolution, #96): an image left unmade is a black screen, so it goes
     // to system memory instead, slow but drawn
     if (getenv("RX_VK_IMAGES_VRAM_ONLY")) return false;

@@ -3000,6 +3000,14 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         interpolated = framegen_on() && tex && fg_inline &&
                        framegen_record(r.cmd, texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample), sw,
                                        sh, crop);
+        {
+            // (hookshot) menus/map draw far fewer than the open world: texture_frame keeps the scene cache warm then
+            static int64_t prev_draws = 0;
+            int64_t d = 0, sk = 0, di = 0, pl = 0;
+            draw_stats(&d, &sk, &di, &pl);
+            texture_note_present_draws(d - prev_draws);
+            prev_draws = d;
+        }
         texture_frame(completed());
         full_barrier(r.cmd);
         presents++;

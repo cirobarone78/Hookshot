@@ -563,7 +563,10 @@ const char* tx_preset(int v) {
 }
 void sync_preset_budgets(int p) {
     switch (p) {
-    case 1: opts.vram_mb = 2200;  opts.mirror_mb = 256;  break;
+    // Minimum: leave room for mirrors, render targets, staging and write-back shadows on 4 GB cards.
+    // 2200 MB of textures alone pushed GTX 1650 / RTX 3050 4 GB past the driver's ~3.2 GB allowance
+    // (spill to system memory, 50-100 ms submits). 1500 MB + 384 MB mirrors fits the measured headroom.
+    case 1: opts.vram_mb = 1500;  opts.mirror_mb = 384;  break;
     case 2: opts.vram_mb = 3600;  opts.mirror_mb = 512;  break;
     case 3: opts.vram_mb = 4800;  opts.mirror_mb = 1024; break;
     case 4: opts.vram_mb = 7500;  opts.mirror_mb = 2048; break;
@@ -577,7 +580,8 @@ void sync_preset_budgets(int p) {
 void apply_preset(int p) {
     switch (p) {
     case 1: // Minimum (4GB VRAM / iGPU)
-        opts.resolution = 4; opts.upscale = 2; opts.sharpness = 30;
+        // 33% (Ultra Performance stop): at 50% a GTX 1650 still saw 50-70 ms GPU time in open world (~15 fps floor).
+        opts.resolution = 6; opts.upscale = 2; opts.sharpness = 30;
         opts.pace = 1;    opts.realtime = 1; opts.handheld = 1;
         break;
     case 2: // Low (6GB VRAM)
@@ -607,7 +611,7 @@ void apply_preset(int p) {
 }
 
 MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself comes back to Custom, with the preset's memory caps kept.",
-           "Resolution 50% (with DLSS its nearest mode), Lanczos, Sharpness 30%, the Handheld Profile.",
+           "Resolution 33% (with DLSS/FSR its nearest mode), Lanczos, Sharpness 30%, the Handheld Profile.",
            "Resolution 75% (with DLSS its nearest mode), Lanczos, Sharpness 30%, the Handheld Profile.",
            "Resolution 100% (with DLSS its nearest mode), Catmull-Rom, Sharpness 30%.",
            "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 40%.",
@@ -2638,7 +2642,10 @@ void menu_init() {
         opts.sharpness = 0;
     }
     if (opts.preset > 0) opts.budget = opts.preset;   // (a file from before memory_budget: its preset's)
-    sync_preset_budgets(opts.budget);
+    // A file that only saved quality_preset (or an older Custom resolution) still needs the preset's picture
+    // scale: otherwise Minimum keeps Auto/100% and blows a 4 GB card. apply_preset also refreshes the budgets.
+    if (opts.preset > 0) apply_preset(opts.preset);
+    else sync_preset_budgets(opts.budget);
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) opts.framegen = std::min(std::max(atoi(e), 2), 8);
     if (const char* e = getenv("RX_VK_PACE")) opts.pace = atoi(e) != 0;
     if (const char* e = getenv("RX_VK_UPSCALE"))
