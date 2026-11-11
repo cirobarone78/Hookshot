@@ -4,8 +4,9 @@ The game's idle job workers sleep 20 us and look again, thousands of times a sec
 a sleep under a millisecond by yielding until its time (the Windows timer wakes about 0.5 ms late), which keeps a
 processor busy for each sleeping thread. With SHORT_SLEEP_TIMER_THREADS logical processors or fewer those loops take the
 time the frame's threads need, so there the game's own sleeps (SleepThread) wait on the timer; the host's own short
-sleeps (the frame limiter, the audio renderer) still yield and come back at their time. HOS_SHORT_SLEEP_TIMER is read by
-its value: 1 is the timer for every short sleep, 0 is yielding for every one.
+sleeps (the frame limiter, the audio renderer) still yield and come back at their time. HOS_SHORT_SLEEP_TIMER, when it is
+set, is read by env_on's rule (gpu/vk/compat/hookshot_env.h): on is the timer for every short sleep, off (0, false, off,
+no, empty) is yielding for every one; not set, the processors decide.
 
 The fixture runs the real code cut from the source (the choice, hos_sleep_ns, sleep_ns and the game's entry
 hos_sleep_logged) over stubs that count the yields and the timer waits, one process a case (the choice is made once).
@@ -47,6 +48,7 @@ FIXTURE = r'''#define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "hookshot_env.h"   /* (env_value_off: the switches' one rule) */
 #ifndef _WIN32
 #define _WIN32 1   /* (the choice by processors is the Windows build's: the cut code is that build on every runner) */
 #endif
@@ -133,8 +135,10 @@ int main(int argc, char **argv) {
     CHECK(hos_short_sleep_timer(NULL, SHORT_SLEEP_TIMER_THREADS) == 1);
     CHECK(hos_short_sleep_timer(NULL, SHORT_SLEEP_TIMER_THREADS + 1) == 0);
     CHECK(hos_short_sleep_timer(NULL, 1) == 1 && hos_short_sleep_timer(NULL, 0) == 0 && hos_short_sleep_timer(NULL, -1) == 0);
-    CHECK(hos_short_sleep_timer("", 1) == 1 && hos_short_sleep_timer("", 64) == 0);   /* (set but empty: not asked) */
+    CHECK(hos_short_sleep_timer("", 1) == 0 && hos_short_sleep_timer("", 64) == 0);   /* (set but empty: off, as env_on has it) */
     CHECK(hos_short_sleep_timer("1", 64) == 2 && hos_short_sleep_timer("1", 1) == 2 && hos_short_sleep_timer("0", 1) == 0);
+    CHECK(hos_short_sleep_timer("on", 64) == 2 && hos_short_sleep_timer("yes", 64) == 2 && hos_short_sleep_timer("true", 1) == 2);
+    CHECK(hos_short_sleep_timer("off", 1) == 0 && hos_short_sleep_timer("No", 1) == 0 && hos_short_sleep_timer(" false ", 1) == 0);
     /* the host's own short sleeps (the frame limiter's last part), then the game's 20 us sleeps, then one more of each */
     for (int i = 0; i < 2; i++) CHECK(short_sleep(0, 20000) == (how == 2));
     for (int i = 0; i < 3; i++) CHECK(short_sleep(1, 20000) == (how >= 1));
@@ -160,7 +164,8 @@ int main(int argc, char **argv) {
 # logical processors the process may run on (-1: not known), HOS_SHORT_SLEEP_TIMER (None: not set), how short sleeps wait
 CASES = [(1, None, 1), (2, None, 1), (4, None, 1), (6, None, 1),
          (7, None, 0), (8, None, 0), (12, None, 0), (16, None, 0), (64, None, 0), (-1, None, 0), (0, None, 0),
-         (16, "1", 2), (4, "1", 2), (-1, "1", 2), (4, "0", 0), (16, "0", 0), (4, "", 1), (16, "", 0)]
+         (16, "1", 2), (4, "1", 2), (-1, "1", 2), (4, "0", 0), (16, "0", 0), (4, "", 0), (16, "", 0),
+         (16, "on", 2), (16, "yes", 2), (16, "true", 2), (4, "off", 0), (4, "no", 0), (4, "false", 0), (4, " 0 ", 0), (16, "2", 2)]
 
 
 def main():
@@ -185,7 +190,8 @@ def main():
             text = text.replace(key, changed.get(key.strip("@").lower(), part))
         c, exe = Path(tmp) / (name + ".c"), Path(tmp) / (name + ".exe")
         c.write_text(text, encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", str(c), "-o", str(exe)], check=True)
+        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-I", str(ROOT / "gpu" / "vk" / "compat"),
+                        str(c), "-o", str(exe)], check=True)
         return exe
 
     def run(exe, threads, asked, how, groups=1):
@@ -219,8 +225,10 @@ def main():
         # broken variants: each must fail the case it breaks
         broken(tmp, "never", "@CHOICE@", "threads > 0 && threads <= SHORT_SLEEP_TIMER_THREADS ? 1 : 0", "threads < 0 ? 1 : 0",
                (4, None, 1), "all yielding on 4 threads passes: the processors are not looked at")
-        broken(tmp, "presence", "@CHOICE@", "atoi(asked) != 0 ? 2 : 0", "2",
+        broken(tmp, "presence", "@CHOICE@", "env_value_off(asked) ? 0 : 2", "2",
                (4, "0", 0), "HOS_SHORT_SLEEP_TIMER=0 read by its presence passes")
+        broken(tmp, "number", "@CHOICE@", "env_value_off(asked) ? 0 : 2", "atoi(asked) != 0 ? 2 : 0",
+               (16, "on", 2), "HOS_SHORT_SLEEP_TIMER=on read as a number passes: not env_on's rule")
         broken(tmp, "unwired", "@GUEST@", "sleep_away(ns, 1)", "sleep_away(ns, 0)",
                (4, None, 1), "the game's sleeps passed on as the host's pass on 4 threads")
         broken(tmp, "host-too", "@SLEEP@", "short_timer < (guest ? 1 : 2)", "!short_timer && (guest || 1)",
