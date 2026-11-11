@@ -1033,8 +1033,23 @@ static int present_poll(Ctx *c, int64_t ns) {
     if (away) hos_vcore_back();
     return 1;
 }
+/* (hookshot) The FPS counter's Breakdown (gpu/vk/vk_fps.cpp, through MkwVkHost slept_ns): the time slept in OoT's present poll
+   (0x80590520 above: waiting for its frame's GPU work) and in the window's acquire (host/nn_vi.c: the frame pacing), whichever
+   thread they are on (OoT simulates on its main thread and records on its presentation thread, which waits for it), and each
+   thread's other guest sleeps. A clock read before and after a sleep, only while the Breakdown shows (hos_fps_timing, set by the
+   back end through MkwVkHost fps_timing): off, a load of that flag */
+volatile int hos_fps_timing;
+volatile int64_t hos_poll_slept_ns, hos_acquire_slept_ns;
+_Thread_local int64_t hos_slept_ns[2];
+static void slept_since(uint64_t lr, int64_t t0) {
+    if (!t0) return;
+    const int64_t d = hos_now_ns() - t0;
+    if ((lr & ~1ull) == 0x80590520) InterlockedAdd64(&hos_poll_slept_ns, d);
+    else hos_slept_ns[1] += d;
+}
 HLE(_ZN2nn2os11SleepThreadENS_8TimeSpanE) {
-    if (present_poll(c, (int64_t)ARG(0))) return;
+    const int64_t t0 = hos_fps_timing ? hos_now_ns() : 0;
+    if (present_poll(c, (int64_t)ARG(0))) { slept_since(c->x[30], t0); return; }
     if (c->x[30] == 0x80590520 && getenv("HOS_SLEEP_LOG")) {   /* (hookshot, diagnostic: OoT's present poll) */
         static int logged;
         if (logged++ < 3) {
@@ -1046,6 +1061,7 @@ HLE(_ZN2nn2os11SleepThreadENS_8TimeSpanE) {
         }
     }
     hos_sleep_logged((int64_t)ARG(0), c->x[30]);
+    slept_since(c->x[30], t0);
 }
 
 /* ---- TLS slots --------------------------------------------------------------------------------------------- */
@@ -1261,8 +1277,11 @@ void hos_thread_log_handles(void) {
    then the one waiting longest). A waiter better than a holder asks it to give the core up (vc_kick), which it does at
    its next checkpoint (every nn::os call and SVC: hos_vcore_checkpoint), as Horizon would run the better thread at
    once. Guest code with no checkpoint (a spin loop) keeps its core, so a waiter that has waited too long runs anyway
-   without one (an "escape", logged with the holders): HOS_VCORE_ESCAPE_US for a better waiter (default 1000),
-   HOS_VCORE_ESCAPE_EQ_US otherwise (20000). Every 5 s the log has a "vcores:" line. GetCurrentCoreNumber answers the
+   without one (an "escape", logged with the holders): HOS_VCORE_ESCAPE_US for a better waiter, HOS_VCORE_ESCAPE_EQ_US
+   otherwise (both 2000000: 2 s). An escape runs a thread with no core while the holder still runs on it, so two threads
+   share per-core state (#1929); it is kept only as a deadlock breaker. 250 ms was the default before: on the 25-minute
+   route it escaped 6-8 times a run, at waits that ended by themselves within 1.2 s (0 escapes at 2 s, frame times the
+   same or better). Every 5 s the log has a "vcores:" line. GetCurrentCoreNumber answers the
    core a thread holds. */
 #if !defined(__EMSCRIPTEN__)
 static SRWLOCK vc_lock = SRWLOCK_INIT;
@@ -1341,8 +1360,8 @@ static int64_t vc_env_ns(const char *name, int64_t us) {
 static void vc_acquire(HosThread *t) {
     static int64_t esc_better = -1, esc_eq, slice;
     if (esc_better < 0) {
-        esc_eq = vc_env_ns("HOS_VCORE_ESCAPE_EQ_US", 250000);
-        esc_better = vc_env_ns("HOS_VCORE_ESCAPE_US", 250000);
+        esc_eq = vc_env_ns("HOS_VCORE_ESCAPE_EQ_US", 2000000);
+        esc_better = vc_env_ns("HOS_VCORE_ESCAPE_US", 2000000);
         slice = vc_env_ns("HOS_VCORE_SLICE_US", 2000);
     }
     AcquireSRWLockExclusive(&vc_lock);
