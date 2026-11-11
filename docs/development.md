@@ -94,6 +94,8 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `HOOKSHOT_NO_UPDATE_CHECK=1` | No look for a newer release at the start |
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
 | `RX_BACKEND=<name>` | Unset or `vulkan`: `hookshot_vk.dll`; any other value: the WebGPU renderer, when the exe was built with one |
+| `HOS_GPU_ALLOC_RETRY=0` | The OptimizeChangeBank thread's allocations from a full heap not tried again (`host/oot_heap_retry.c`, issue 1697) |
+| `HOS_GPU_ALLOC_TEST_FAIL=<n>` or `<gpu>,<cpu>` | A test: the first n of each of those allocations (or that many of the GPU memory and of the model buffer) refused by the heap they name, as a full heap would, so the retry runs |
 
 ### Input for scripted runs
 

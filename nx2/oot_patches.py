@@ -19,6 +19,9 @@ Each is a runtime switch where it can be, so the game's own path stays reachable
 - Camera speed (the Insert menu's "Camera speed", the supported build only): the player camera's update (f_80644c80) turns the
   camera each frame by the speeds the right stick's turn functions return in s0; hos_camera_scale multiplies them at each of
   their returns, 1.0 as shipped. Even the fastest of the game's own camera speeds turned slowly for players.
+- The OptimizeChangeBank thread's allocations tried again when their heap is full (host/oot_heap_retry.c): the GPU memory of
+  f_80522050 (the GPU_ALLOC_* texts: its function renamed f_80522050_game and wrapped) and the CPU buffer of f_804566e0's
+  tryAlloc at main+0x456904 (HEAP_ALLOC_*). Both went on with a null pointer and crashed writing through it (issue 1697).
 """
 import glob
 import os
@@ -504,6 +507,44 @@ def patch_camera_speed(s):
     return s, found
 
 
+# (from TomShafford/Hookshot 55d68e8cd6 and 65c1998222) f_80522050, the GPU memory a model's material block is made with,
+# renamed and wrapped: host/oot_heap_retry.c hos_oot_gpu_alloc calls the game's own and tries a full heap's failure again
+GPU_ALLOC_ENTRY = "void f_80522050(Ctx *__restrict A64_NOESC c) {"
+GPU_ALLOC_GAME = "static void f_80522050_game(Ctx *__restrict A64_NOESC c) {"
+GPU_ALLOC_WRAPPER = (
+    "/* (nx2/oot_patches.py: f_80522050 tried again when its heap is full, host/oot_heap_retry.c) */\n"
+    "void hos_oot_gpu_alloc(Ctx *c, void (*game)(Ctx *));\n"
+    "static void f_80522050_game(Ctx *__restrict A64_NOESC c);\n"
+    "void f_80522050(Ctx *__restrict A64_NOESC c) { hos_oot_gpu_alloc(c, (void (*)(Ctx *))f_80522050_game); }\n")
+# f_804566e0's tryAlloc of the 0x4198-byte buffer its bump allocator hands out (x0 the heap, x1 the size, x2 the alignment):
+# a null result tried in the heap's parents (host/oot_heap_retry.c hos_oot_heap_retry)
+HEAP_ALLOC_OLD = "{ uint64_t _t = c->x[8]; c->x[30] = 0x80456910ULL; A64_ICALL(c, _t); }\n"
+HEAP_ALLOC_NEW = ("{ const uint64_t _hh = c->x[0], _hn = c->x[1], _ha = c->x[2];   /* (nx2/oot_patches.py: host/oot_heap_retry.c) */\n"
+                  "  if (hos_oot_heap_refuse()) c->x[0] = 0;\n"
+                  "  else { uint64_t _t = c->x[8]; c->x[30] = 0x80456910ULL; A64_ICALL(c, _t); }\n"
+                  "  if (!c->x[0]) hos_oot_heap_retry(c, _hh, _hn, _ha, 0x80456910ULL); }\n")
+HEAP_ALLOC_DECL = "int hos_oot_heap_refuse(void);\nvoid hos_oot_heap_retry(Ctx *c, uint64_t heap, uint64_t size, uint64_t align, uint64_t lr);\n"
+
+
+def patch_heap_retry(s):
+    """The two allocations above (the GPU memory's wrapper, the CPU buffer's check) in one file's text: (text, places made or
+    found made). Anything but exactly one place each over the lift is a warning in apply()"""
+    found = 0
+    if GPU_ALLOC_GAME in s:
+        found += 1
+    elif s.count(GPU_ALLOC_ENTRY) == 1 and s.count('#include "a64.h"\n') == 1:
+        s = s.replace(GPU_ALLOC_ENTRY, GPU_ALLOC_GAME, 1)   # (first: the wrapper has the same opening line)
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + GPU_ALLOC_WRAPPER, 1)
+        found += 1
+    if HEAP_ALLOC_NEW in s:
+        found += 2
+    elif s.count(HEAP_ALLOC_OLD) == 1 and s.count('#include "a64.h"\n') == 1:
+        s = s.replace(HEAP_ALLOC_OLD, HEAP_ALLOC_NEW, 1)
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + HEAP_ALLOC_DECL, 1)
+        found += 2
+    return s, found
+
+
 def apply(gen, *, protect_hearts=False, required=False):
     """required: the lift of the supported build (LIFE_BUILD_ID), whole: a missing output-size edit stops it (apply_output_size).
     The other patches only warn when their place is not found once."""
@@ -524,6 +565,7 @@ def apply(gen, *, protect_hearts=False, required=False):
     camera_speed = 0   # (the turn-speed functions that scale by hos_camera_scale: patch_camera_speed)
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
     whole_sites = 0   # (the counters of WHOLE_SITES with the whole frames: patch_whole_frames)
+    heap_sites = [0, 0]   # (the GPU memory's wrapper, the CPU buffer's check: patch_heap_retry)
     for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
@@ -622,12 +664,21 @@ def apply(gen, *, protect_hearts=False, required=False):
             step_files.append(path)
         if sites:
             print("oot_patches: the frame's time at %d step divide(s) in %s" % (sites, os.path.basename(path)))
+        heap, found = patch_heap_retry(out)
+        heap_sites[0] += found & 1
+        heap_sites[1] += found >> 1
+        if heap != out:
+            print("oot_patches: heap-full retries of the OptimizeChangeBank allocations in", os.path.basename(path))
+        out = heap
         out, whole = patch_whole_frames(out)
         whole_sites += out.count(WHOLE_MARK)   # (made now, or by an earlier run over this file)
         if whole:
             print("oot_patches: %d frame counter(s) with the step's whole frames in %s" % (whole, os.path.basename(path)))
         if out != s:
             whole_write.write_whole(path, out, newline="")
+    if protect_hearts and heap_sites != [1, 1]:   # (the supported build's functions)
+        print("oot_patches: WARNING: the OptimizeChangeBank allocations were found %s times, not once each: a full heap is "
+              "not tried again" % heap_sites)
     for what, n in done.items():
         if n != 1:
             print("oot_patches: WARNING: the %s was found %d times" % (what, n))
