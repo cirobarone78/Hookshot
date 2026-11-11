@@ -508,6 +508,10 @@ face button), then the new button or key. <kbd>Esc</kbd> cancels, <kbd>Delete</k
 puts them all back. A gamepad button taken from another Switch button swaps with it. The page saves them in
 `hookshot_options.ini`.
 
+**Ocarina notes:** the page gains five rows, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)`, `(X)`, unset by default: the game's own
+buttons play until you bind a note to a key or gamepad input of your own, and a bound note then answers only that input while
+the game waits for it. A dialogue or cutscene that takes the buttons ends the wait, and a song lesson keeps the game's own too.
+
 <details>
 <summary>Writing the controls in hookshot_options.ini yourself</summary>
 
@@ -522,8 +526,9 @@ key_a=69,13
 [Windows key codes](https://learn.microsoft.com/windows/win32/inputdev/virtual-key-codes) in decimal (69 is
 <kbd>E</kbd>, 13 <kbd>Enter</kbd>), 0 none; the mouse's buttons are 1 (left), 2 (right), 4 (middle), 5 and 6 (side
 buttons), and count while the mouse is captured. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls`
-`rs` `left` `up` `right` `down`, and for keys only the left stick's and the camera's directions: `move_up`
-`move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right`. A button the file leaves out keeps
+`rs` `left` `up` `right` `down`, for keys only the left stick's and the camera's directions: `move_up`
+`move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right`, and the ocarina's five notes,
+which also take a `pad_` line: `note_l` `note_r` `note_a` `note_y` `note_x`. A button the file leaves out keeps
 its default.
 
 </details>
