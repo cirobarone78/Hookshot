@@ -135,8 +135,8 @@ def main():
     main_cpp = (ROOT / "gpu" / "vk" / "vk_main.cpp").read_text(encoding="utf-8")
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
 
-    need(menu, r'\{TAB_GRAPHICS, "V-Sync", &opts\.vsync, 0, 2, 1, tx_vsync,[^}]*hn_vsync, false, true\}',
-         "no V-Sync row on the Graphics tab (Auto, On, Off; applied at once; leaves the Quality preset alone)")
+    need(menu, r'\{TAB_DISPLAY, "V-Sync", &opts\.vsync, 0, 2, 1, tx_vsync,[^}]*hn_vsync, false, true\}',
+         "no V-Sync row on the Display tab (Auto, On, Off; applied at once; leaves the Quality preset alone)")
     need(menu, r'if \(r\.value == &opts\.vsync\) return "vsync";', "the V-Sync row is not saved as vsync=")
     swap = block(main_cpp, "bool create_swapchain(")
     need(swap, r"menu_vsync\(\)", "create_swapchain does not ask the V-Sync row")

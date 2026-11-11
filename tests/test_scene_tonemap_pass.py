@@ -67,7 +67,7 @@ def wiring():
         fails.append("the picks not dropped when the tone mapper changes")
     if "bool scene_tonemap_on() { return dev.hdr && opts.hdr == 2 && opts.hdr_tonemap == 1; }" not in menu:
         fails.append("scene_tonemap_on is not Native HDR with the row on")
-    if not re.search(r'\{TAB_GRAPHICS, "HDR tone mapper", &opts\.hdr_tonemap, 0, 1, 1, tx_tonemap,', menu):
+    if not re.search(r'\{TAB_DISPLAY, "HDR tone mapper", &opts\.hdr_tonemap, 0, 1, 1, tx_tonemap,', menu):
         fails.append("the HDR tone mapper row")
     if "(v != &opts.hdr_tonemap || opts.hdr == 2)" not in menu:
         fails.append("the tone mapper row shown without Native HDR")

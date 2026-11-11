@@ -1,11 +1,13 @@
 """The Insert menu's sections: heading rows group a tab's rows, and none can be left empty (gpu/vk/vk_menu.cpp).
 
 A heading row (Row::heading) is a section's title: draw_options draws it (a gold title and a rule, nothing to click) and
-menu_tick's keys step over it. The Graphics tab is grouped as Resolution and upscaling, Frame generation and latency,
-Screen, HDR, Detail, and GPU and memory, after the Quality preset that sets rows in all of them. Each section must keep a
-row on every PC: a row row_shown can hide (Reflex, Anti-Lag 2, the Upscaler, the DLSS model, HDR's levels) cannot be a
-section's only row, or a GPU without it would show a title over nothing. The rows table is read from the source; nothing
-runs.
+menu_tick's keys step over it. The strip reads Game (where the menu opens: Restart and Quit), Graphics, Display. The
+Graphics tab is how the picture is made: the Quality preset (it sets rows in all of them), then Resolution and upscaling,
+Frame generation and latency, Detail, and GPU and memory. The Display tab, after it, is how the finished picture gets to
+the screen and what is drawn over it: Screen, HDR and Overlays. Each section
+must keep a row on every PC: a row row_shown can hide (Reflex, Anti-Lag 2, the Upscaler, the DLSS model, HDR's levels)
+cannot be a section's only row, or a GPU without it would show a title over nothing. The rows table is read from the
+source; nothing runs.
 
     python -I -B tests/test_menu_sections.py
 """
@@ -18,10 +20,13 @@ GRAPHICS = [
     ("Resolution and upscaling", ["Output resolution", "Profile", "Upscaler", "DLSS model", "Render resolution", "Sharpness"]),
     ("Frame generation and latency", ["Frame generation", "Frame generation by", "Frame pacing", "Game frame rate cap",
                                       "NVIDIA Reflex", "AMD Anti-Lag 2"]),
-    ("Screen", ["Fullscreen", "V-Sync", "Window scaling filter", "Aspect ratio", "Ultrawide menus"]),
-    ("HDR", ["HDR", "HDR paper white", "HDR peak brightness", "HDR contrast", "HDR tone mapper"]),
     ("Detail", ["Anisotropic filtering"]),
     ("GPU and memory", ["GPU device", "VRAM budget", "Mesh shaders"]),
+]
+DISPLAY = [
+    ("Screen", ["Fullscreen", "V-Sync", "Window scaling filter", "Aspect ratio", "Ultrawide menus"]),
+    ("HDR", ["HDR", "HDR paper white", "HDR peak brightness", "HDR contrast", "HDR tone mapper"]),
+    ("Overlays", ["FPS counter", "FPS counter position", "Menu size"]),
 ]
 
 
@@ -46,6 +51,24 @@ def rows_of(menu):
         heading = bool(re.search(r"nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true\}", entry))
         out.append((m.group(1), m.group(2), m.group(3).strip(), heading))
     return out
+
+
+def check_tab(tab, entries, want):
+    """The tab's sections are want's, in its order, and each row (by name, or by value: &opts....) is under its section"""
+    titles = [name for name, _, heading in entries if heading]
+    if titles != [title for title, _ in want]:
+        raise SystemExit("FAIL: %s: the sections are %r, not %r" % (tab, titles, [title for title, _ in want]))
+    section_of, current = {}, None
+    for name, value, heading in entries:
+        if heading:
+            current = name
+        elif current:
+            section_of.setdefault(name, current)
+            section_of.setdefault(value, current)
+    for title, members in want:
+        for name in members:
+            if section_of.get(name) != title:
+                raise SystemExit("FAIL: %s: %r is under %r, not %r" % (tab, name, section_of.get(name), title))
 
 
 def main():
@@ -80,20 +103,17 @@ def main():
     graphics = tabs.get("TAB_GRAPHICS", [])
     if not graphics or graphics[0][0] != "Quality preset" or graphics[0][2]:
         raise SystemExit("FAIL: the Graphics tab does not start with the Quality preset")
-    titles = [name for name, _, heading in graphics if heading]
-    want = [title for title, _ in GRAPHICS]
-    if titles != want:
-        raise SystemExit("FAIL: the Graphics tab's sections are %r, not %r" % (titles, want))
-    section_of, current = {}, None
-    for name, value, heading in graphics:
-        if heading:
-            current = name
-        elif current:
-            section_of[name] = current
-    for title, members in GRAPHICS:
-        for name in members:
-            if section_of.get(name) != title:
-                raise SystemExit("FAIL: Graphics: %r is under %r, not %r" % (name, section_of.get(name), title))
+    check_tab("Graphics", graphics, GRAPHICS)
+    check_tab("Display", tabs.get("TAB_DISPLAY", []), DISPLAY)
+
+    # the strip: Game first (TAB_GAMEPLAY, titled Game), where the menu opens; then Graphics, then Display
+    if not re.search(r"TAB_GAMEPLAY = 0,[^\n]*\n(?:\s*//[^\n]*\n)*\s*TAB_GRAPHICS = 1,\s*\n\s*TAB_DISPLAY = 2,", menu):
+        raise SystemExit("FAIL: enum MenuTab does not read Game, Graphics, Display first")
+    titles = re.search(r"tab_titles\[TAB_COUNT\] = \{([^}]*)\}", menu)
+    if not titles or re.findall(r'"([^"]+)"', titles.group(1))[:3] != ["Game", "Graphics", "Display"]:
+        raise SystemExit("FAIL: the tab strip does not read Game, Graphics, Display first")
+    if not re.search(r"^int cur_tab = TAB_GAMEPLAY;", menu, re.M):
+        raise SystemExit("FAIL: the menu does not open on the strip's first tab, Game")
 
     # the heading rows are drawn as titles and stepped over by the keys (no code of their own per tab)
     draw = function(menu, "void draw_options(ui::Ctx& c) {")
@@ -102,7 +122,8 @@ def main():
     tick = function(menu, "void menu_tick() {")
     if "while (heading_at(selected));" not in tick:
         raise SystemExit("FAIL: menu_tick's keys no longer step over heading rows")
-    print("menu sections: OK (%d headings; Graphics in %d sections)" % (sum(r[3] for r in rows), len(titles)))
+    print("menu sections: OK (%d headings; Graphics in %d sections, Display in %d)"
+          % (sum(r[3] for r in rows), len(GRAPHICS), len(DISPLAY)))
 
 
 if __name__ == "__main__":
