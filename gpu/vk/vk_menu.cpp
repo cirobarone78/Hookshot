@@ -3354,7 +3354,8 @@ bool walk_to(State state, At at, Step step, int limit) {
 /// The settings row whose ini key is key, set to value as the menu's Left and Right set it (set_row: cut to its range, the
 /// Quality preset made Custom unless the row is exempt, a restart noted, kept in the options file). The rows the arrows step
 /// through a list of their own (the Upscaler, Render resolution, the output resolution) are walked to value: walk_to. out: the
-/// row as it is now. 1 set, 0 no such row, -1 nothing to choose on this PC (row_fixed)
+/// row as it is now. 1 set, 0 no such row, -1 nothing to choose on this PC (row_fixed), -2 none of a list row's steps reach
+/// value here (the row and the rest as they were)
 int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
     bridge_probe_first();
     std::lock_guard lk(menu_mu);
@@ -3369,8 +3370,22 @@ int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
         // Upscaler that runs, as set_row steps it: a saved DLAA that cannot run here is the game's own, and its values count)
         const auto native = [&] { return r.value == &opts.resolution && ur::full_scale(upscaler()); };
         const int render = opts.resolution, upscaler_was = opts.dlss;
-        walk_to([&] { return std::pair(native() ? -1 : *r.value, opts.dlss); }, [&] { return *r.value == want && !native(); },
-                [&](int dir) { set_row(r, *r.value + dir * r.step, dir, false); }, 64);
+        // (a value none of the steps reach: everything the steps on the way changed is put back, the Quality preset and the
+        // rows the environment holds too)
+        const Options opts_was = opts;
+        EnvOverride env_was[sizeof env_overrides / sizeof env_overrides[0]];
+        std::copy(std::begin(env_overrides), std::end(env_overrides), env_was);
+        const mr::State restart_was = restart_state;
+        if (!walk_to([&] { return std::pair(native() ? -1 : *r.value, opts.dlss); }, [&] { return *r.value == want && !native(); },
+                     [&](int dir) { set_row(r, *r.value + dir * r.step, dir, false); }, 64)) {
+            opts = opts_was;
+            std::copy(std::begin(env_was), std::end(env_was), env_overrides);
+            restart_state = restart_was;
+            samplers_changed();
+            menu_refresh = true;
+            bridge_fill(i, out);
+            return -2;
+        }
         // (each Upscaler on the way snapped the Render resolution to its own steps: snapped once, from where it was, as one
         // step there would, and as it was when the Upscaler is. FSR 3.1 to DLSS through Off and the game's own took 58 % to 50 %)
         if (r.value == &opts.dlss) opts.resolution = opts.dlss == upscaler_was ? render : ur::snap_render(upscaler(), render);

@@ -39,6 +39,7 @@ def definition(text, name):
 
 
 FIXTURE = r"""
+#define _CRT_SECURE_NO_WARNINGS   // (the Windows CRT marks getenv and sscanf deprecated: an error under -Werror)
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
