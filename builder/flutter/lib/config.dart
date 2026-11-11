@@ -109,12 +109,24 @@ String repository({String? override, String? root}) {
 /// The Python running make_game.py: the packaged one when present, else the checkout's deps one, else PATH.
 String builderPython() {
   if (Platform.isWindows) {
+    final local = Platform.environment['LOCALAPPDATA'] ?? '';
     for (final path in [
       '${toolsRoot()}/python/python.exe', // (the packaged builder's own Python)
       '${toolsRoot()}/tools/python/python.exe',
+      if (local.isNotEmpty) '$local/Programs/Python/Python313/python.exe',
+      if (local.isNotEmpty) '$local/Programs/Python/Python312/python.exe',
+      if (local.isNotEmpty) '$local/Programs/Python/Python311/python.exe',
+      if (local.isNotEmpty) '$local/Programs/Python/Python310/python.exe',
     ]) {
       if (File(path).existsSync()) return path;
     }
+    // (the launcher may point at the right Python when python.exe is only
+    // Windows' Store alias)
+    try {
+      final py = Process.runSync('py', ['-3', '-c', 'import sys; print(sys.executable)']);
+      final found = (py.stdout as String).trim();
+      if (py.exitCode == 0 && found.isNotEmpty && File(found).existsSync()) return found;
+    } catch (_) {}
     return 'python.exe';
   }
   final packaged = '${toolsRoot()}/usr/python/bin/python3';
