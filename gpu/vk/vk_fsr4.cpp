@@ -354,7 +354,8 @@ void release() {
     s.context.reset();
 }
 
-int prepare(VkCommandBuffer, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh, uint32_t* in_w, uint32_t* in_h, const char** why) {
+int prepare(VkCommandBuffer, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh, bool /*native_aa*/,
+            uint32_t* in_w, uint32_t* in_h, const char** why) {
     State& s = st();
     int made = 1;
     if (!s.context || s.context->width != ow || s.context->height != oh) {
