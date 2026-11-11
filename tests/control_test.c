@@ -160,11 +160,13 @@ static int fake_save_root(char *out, size_t cap) {
     return 1;
 }
 /* (OoT) the map and the teleport: a teleport asked for is taken by the game's thread at its next frame, as the player's
-   update takes it */
+   update takes it, unless teleport_held (not in play: nobody takes it). Link is the child: destination 2 has no child map,
+   so it is refused, as hos_main.c's oot_teleport refuses it */
 static const char *const dest_child[3] = {"KokiriForest_Child", "HyruleField_Child", NULL};
 static const char *const dest_adult[3] = {"KokiriForest_Adult", "HyruleField_Adult", "GerudoFortress_Adult"};
 static char fake_map_now[80];
-static volatile int teleport_asked = -1;
+static volatile int teleport_asked = -1, teleport_held;
+static int tp_ticket, tp_done_ticket, tp_result;   /* (log_lock) */
 static int fake_map(char *out, size_t cap) {
     log_lock();
     const int have = fake_map_now[0] != 0;
@@ -184,13 +186,35 @@ static int fake_state(int *event, int *loading, int *child) {
 }
 static int fake_teleport(int i) {
     if (i < 0 || i >= 3) return 0;
+    log_lock();
+    const int ticket = ++tp_ticket;
     __atomic_store_n(&teleport_asked, i, __ATOMIC_RELAXED);
-    return 1;
+    log_unlock();
+    return ticket;
 }
-static HosControlGame game = {fake_frame, fake_frame_info, fake_shot, fake_setting, fake_setting_set,
-                              fake_mem_region, fake_mem_read, fake_mem_write, fake_save_root, fake_log, fake_quit,
-                              fake_renderer, "test", fake_map, fake_destination, fake_teleport,
-                              fake_state};
+static int fake_teleport_result(int ticket, char *why, size_t why_cap, char *map, size_t map_cap) {
+    log_lock();
+    int r = -2;
+    if (tp_done_ticket == ticket) {
+        r = tp_result;
+        snprintf(why, why_cap, "%s", r < 0 ? "this destination has no map for the child" : "");
+        snprintf(map, map_cap, "%s", r > 0 ? fake_map_now : "");
+    } else if (tp_ticket == ticket && __atomic_load_n(&teleport_asked, __ATOMIC_RELAXED) >= 0) r = 0;
+    log_unlock();
+    return r;
+}
+static void fake_teleport_cancel(int ticket) {
+    log_lock();
+    if (tp_ticket == ticket) __atomic_store_n(&teleport_asked, -1, __ATOMIC_RELAXED);
+    log_unlock();
+}
+static HosControlGame game = {
+    .frame = fake_frame, .frame_info = fake_frame_info, .shot = fake_shot, .setting = fake_setting,
+    .setting_set = fake_setting_set, .mem_region = fake_mem_region, .mem_read = fake_mem_read,
+    .mem_write = fake_mem_write, .save_root = fake_save_root, .log = fake_log, .quit = fake_quit,
+    .renderer = fake_renderer, .version = "test", .map = fake_map, .destination = fake_destination,
+    .teleport = fake_teleport, .teleport_result = fake_teleport_result, .teleport_cancel = fake_teleport_cancel,
+    .oot_state = fake_state};
 
 static void *game_thread(void *unused) {
     (void)unused;
@@ -200,10 +224,13 @@ static void *game_thread(void *unused) {
         uint64_t b = 0;
         int32_t st[4] = {0, 0, 0, 0};
         const int ex = hos_control_input(&b, st);
-        const int t = __atomic_exchange_n(&teleport_asked, -1, __ATOMIC_RELAXED);
-        if (t >= 0) {
+        if (!teleport_held) {
             log_lock();
-            snprintf(fake_map_now, sizeof fake_map_now, "%s", dest_child[t] ? dest_child[t] : dest_adult[t]);
+            const int t = __atomic_exchange_n(&teleport_asked, -1, __ATOMIC_RELAXED);
+            if (t >= 0) {
+                tp_done_ticket = tp_ticket, tp_result = dest_child[t] ? 1 : -1;
+                if (dest_child[t]) snprintf(fake_map_now, sizeof fake_map_now, "%s", dest_child[t]);
+            }
             log_unlock();
         }
         const int64_t f = fake_frame();
@@ -306,6 +333,18 @@ static void ask(Client *c, const char *req, const char *id_text, char *out, size
     for (;;) {
         CHECK(hear(c, out, cap, ms));
         if (!strncmp(out, want, strlen(want))) return;
+    }
+}
+/* the replies with these two ids, whichever comes first (events and other replies skipped) */
+static void hear_two(Client *c, const char *id_a, char *a, const char *id_b, char *b, size_t cap, int ms) {
+    char want_a[64], want_b[64], line[8192];
+    snprintf(want_a, sizeof want_a, "{\"id\":%s,", id_a);
+    snprintf(want_b, sizeof want_b, "{\"id\":%s,", id_b);
+    a[0] = b[0] = 0;
+    while (!a[0] || !b[0]) {
+        CHECK(hear(c, line, sizeof line, ms));
+        if (!strncmp(line, want_a, strlen(want_a))) snprintf(a, cap, "%s", line);
+        if (!strncmp(line, want_b, strlen(want_b))) snprintf(b, cap, "%s", line);
     }
 }
 static long long num_after(const char *s, const char *key) {
@@ -443,6 +482,19 @@ static void mem_case(const char *folder) {
     CHECK(strstr(line, "\"error\":\"out_of_range\""));
     ask(c, "{\"id\":7,\"cmd\":\"mem_read\",\"addr\":65536,\"size\":2000000}\n", "7", line, sizeof line, 2000);
     CHECK(strstr(line, "\"error\":\"bad_request\""));   /* over 1 MB */
+    /* addresses as strings: 0x hex or decimal; no sign, no octal, no fraction, nothing past 64 bits */
+    ask(c, "{\"id\":71,\"cmd\":\"mem_read\",\"addr\":\"0x10000\",\"size\":\"2\"}\n", "71", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"data\":\"030a\""));
+    static const char *const bad_addrs[] = {"\"-1\"", "\"+65536\"", "\" 65536\"", "\"0x\"", "\"0x10000000000000000\"",
+                                            "\"99999999999999999999999\"", "65536.5", "\"65536x\""};
+    for (unsigned i = 0; i < sizeof bad_addrs / sizeof *bad_addrs; i++) {
+        char req[200];
+        snprintf(req, sizeof req, "{\"id\":72,\"cmd\":\"mem_read\",\"addr\":%s,\"size\":2}\n", bad_addrs[i]);
+        ask(c, req, "72", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"error\":\"bad_request\""));
+    }
+    ask(c, "{\"id\":73,\"cmd\":\"mem_read\",\"addr\":\"065536\",\"size\":2}\n", "73", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"data\":\"030a\""));   /* (decimal, not octal) */
     /* many ranges in one snapshot */
     ask(c, "{\"id\":8,\"cmd\":\"mem_read_many\",\"ranges\":[{\"addr\":65536,\"size\":2},{\"addr\":65792,\"size\":2}]}\n",
         "8", line, sizeof line, 2000);
@@ -661,6 +713,55 @@ int main(int argc, char **argv) {
     CHECK(seen_buttons[fake_frame() - 1] == 0);
     puts("PASS: press without waiting, and release");
 
+    {   /* inputs nobody waits for are freed once over: more of them than the queue holds, one after another */
+        for (int i = 0; i < 300; i++) {
+            char req[200], idt[16];
+            snprintf(idt, sizeof idt, "%d", 1000 + i);
+            snprintf(req, sizeof req, "{\"id\":%d,\"cmd\":\"press\",\"buttons\":\"B\",\"frames\":1,\"wait\":false}\n", 1000 + i);
+            ask(c, req, idt, line, sizeof line, 2000);
+            CHECK(strstr(line, "\"queued\":1"));
+            if (i % 50 == 0) wait_frames(2);
+        }
+        wait_frames(10);
+        sleep_ms(20);
+        ask(c, "{\"id\":1400,\"cmd\":\"status\"}\n", "1400", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"queued\":0"));
+        puts("PASS: presses without waiting are freed once over (300 of them; the queue holds 256)");
+    }
+    {   /* release: the caller's own inputs and those of clients gone; everyone's with all */
+        Client *other = dial(), *left = dial();
+        ask(other, "{\"id\":1,\"cmd\":\"press\",\"buttons\":\"X\",\"frames\":100000,\"wait\":false}\n", "1", line, sizeof line, 2000);
+        ask(left, "{\"id\":1,\"cmd\":\"press\",\"buttons\":\"Y\",\"frames\":100000,\"wait\":false}\n", "1", line, sizeof line, 2000);
+        hangup(left);   /* (its input stays: it asked for no wait) */
+        say(other, "{\"id\":2,\"cmd\":\"press\",\"buttons\":\"ZR\",\"frames\":100000}\n");   /* (waited on) */
+        wait_frames(5);
+        ask(c, "{\"id\":1401,\"cmd\":\"release\"}\n", "1401", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"released\":1,\"all\":false"));   /* (the one left behind; not the other client's) */
+        wait_frames(3);
+        CHECK(seen_buttons[fake_frame() - 2] == ((1u << 2) | (1u << 9)));   /* (X and ZR still held, Y let go) */
+        ask(c, "{\"id\":1402,\"cmd\":\"release\",\"all\":true}\n", "1402", line, sizeof line, 2000);
+        CHECK(strstr(line, "\"released\":2,\"all\":true"));
+        CHECK(hear(other, line, sizeof line, 2000) && strstr(line, "\"id\":2") && strstr(line, "\"error\":\"cancelled\""));
+        wait_frames(3);
+        CHECK(seen_buttons[fake_frame() - 2] == 0);
+        hangup(other);
+        puts("PASS: release: the caller's and abandoned inputs only; all: everyone's, a waited press told cancelled");
+    }
+#ifndef _WIN32
+    {   /* a client that shuts its sending side after a request still gets the reply (printf ... | socat) */
+        Client *half = dial();
+        say(half, "{\"id\":1,\"cmd\":\"wait\",\"event\":\"present\",\"frames\":20}\n");
+        CHECK(shutdown(half->fd, SHUT_WR) == 0);
+        CHECK(hear(half, line, sizeof line, 3000) && strstr(line, "\"id\":1,\"ok\":true"));
+        char rest[16];
+        CHECK(wait_readable(half, 2000) > 0 && read_some(half, rest, sizeof rest) == 0);   /* (then closed) */
+        hangup(half);
+        puts("PASS: a half-closed client gets its reply, then the bridge closes it");
+    }
+#endif
+    ask(c, "{\"id\":1403,\"cmd\":\"subscribe\",\"every\":1e18}\n", "1403", line, sizeof line, 2000);
+    CHECK(strstr(line, "\"error\":\"bad_request\""));
+
     /* waits */
     ask(c, "{\"id\":11,\"cmd\":\"wait\",\"event\":\"present\",\"frames\":20}\n", "11", line, sizeof line, 3000);
     CHECK(strstr(line, "\"ok\":true") && num_after(line, "\"waited\":") >= 20);
@@ -815,18 +916,38 @@ int main(int argc, char **argv) {
         Client *sub = dial();
         ask(sub, "{\"id\":\"m\",\"cmd\":\"subscribe\",\"events\":[\"map\"]}\n", "\"m\"", line, sizeof line, 2000);
         CHECK(strstr(line, "\"events\":[\"map\"]"));
-        say(c, "{\"id\":74,\"cmd\":\"wait\",\"event\":\"map\",\"map\":\"HyruleField_Child\",\"timeout\":5}\n");
-        ask(c, "{\"id\":75,\"cmd\":\"teleport\",\"to\":\"hyrulefield_adult\"}\n", "75", line, sizeof line, 2000);
-        CHECK(strstr(line, "\"teleport\":1") && strstr(line, "\"child\":\"HyruleField_Child\""));
-        CHECK(hear(c, line, sizeof line, 5000) && strstr(line, "\"id\":74,\"ok\":true") &&
-              strstr(line, "\"map\":\"HyruleField_Child\""));
+        /* (wait map's name in any case, as teleport takes it) */
+        say(c, "{\"id\":74,\"cmd\":\"wait\",\"event\":\"map\",\"map\":\"hyrulefield_child\",\"timeout\":5}\n");
+        say(c, "{\"id\":75,\"cmd\":\"teleport\",\"to\":\"hyrulefield_adult\"}\n");
+        static char r74[8192], r75[8192];
+        hear_two(c, "74", r74, "75", r75, sizeof r74, 5000);
+        CHECK(strstr(r75, "\"ok\":true") && strstr(r75, "\"teleport\":1") && strstr(r75, "\"child\":\"HyruleField_Child\"") &&
+              strstr(r75, "\"sent\":true,\"map\":\"HyruleField_Child\""));
+        CHECK(strstr(r74, "\"ok\":true") && strstr(r74, "\"map\":\"HyruleField_Child\""));
         CHECK(hear(sub, line, sizeof line, 2000) && strstr(line, "\"event\":\"map\"") &&
               strstr(line, "\"map\":\"HyruleField_Child\",\"from\":null"));
         say(c, "{\"id\":76,\"cmd\":\"wait\",\"event\":\"map\",\"timeout\":5}\n");   /* (any other map) */
-        ask(c, "{\"id\":77,\"cmd\":\"teleport\",\"to\":0}\n", "77", line, sizeof line, 2000);
-        CHECK(hear(c, line, sizeof line, 5000) && strstr(line, "\"id\":76,\"ok\":true") &&
-              strstr(line, "\"map\":\"KokiriForest_Child\""));
+        say(c, "{\"id\":77,\"cmd\":\"teleport\",\"to\":0}\n");
+        hear_two(c, "76", r74, "77", r75, sizeof r74, 5000);
+        CHECK(strstr(r74, "\"ok\":true") && strstr(r74, "\"map\":\"KokiriForest_Child\""));
+        CHECK(strstr(r75, "\"sent\":true"));
         CHECK(hear(sub, line, sizeof line, 2000) && strstr(line, "\"from\":\"HyruleField_Child\""));
+        /* refused by the game (no child map there): said, with the game's reason, not left to a wait map's timeout */
+        ask(c, "{\"id\":771,\"cmd\":\"teleport\",\"to\":2}\n", "771", line, sizeof line, 3000);
+        CHECK(strstr(line, "\"error\":\"refused\"") && strstr(line, "no map for the child"));
+        /* not taken (not in play): a timeout that says so, and the ask is withdrawn */
+        teleport_held = 1;
+        ask(c, "{\"id\":772,\"cmd\":\"teleport\",\"to\":1,\"timeout\":0.2}\n", "772", line, sizeof line, 3000);
+        CHECK(strstr(line, "\"error\":\"timeout\"") && strstr(line, "in play"));
+        CHECK(__atomic_load_n(&teleport_asked, __ATOMIC_RELAXED) == -1);
+        /* a later teleport replaces one not taken yet; without waiting, the reply is at once */
+        say(c, "{\"id\":773,\"cmd\":\"teleport\",\"to\":1}\n");
+        sleep_ms(30);
+        ask(c, "{\"id\":774,\"cmd\":\"teleport\",\"to\":0,\"wait\":false}\n", "774", line, sizeof line, 3000);
+        CHECK(strstr(line, "\"ok\":true") && strstr(line, "\"sent\":null"));
+        CHECK(hear(c, line, sizeof line, 3000) && strstr(line, "\"id\":773") && strstr(line, "\"error\":\"cancelled\""));
+        teleport_held = 0;
+        wait_frames(5);
         ask(c, "{\"id\":78,\"cmd\":\"status\"}\n", "78", line, sizeof line, 2000);
         CHECK(strstr(line, "\"map\":\"KokiriForest_Child\"") &&
               strstr(line, "\"game\":{\"event\":false,\"loading\":true,\"age\":\"child\"}"));

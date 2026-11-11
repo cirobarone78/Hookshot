@@ -300,6 +300,7 @@ typedef struct Conn {
     int discarding;   /* (the rest of a line that was too long) */
     Buf out;
     int closing;
+    int eof;   /* (the client shut its sending side: no more requests; the connection lasts until its replies are out) */
     /* subscribe */
     int sub_on, sub_present, sub_state, sub_log, sub_map;
     int64_t sub_every, sub_next;
@@ -307,7 +308,7 @@ typedef struct Conn {
     unsigned log_seen;   /* (the log ring's count it has seen) */
 } Conn;
 
-enum { P_INPUT = 1, P_WAIT, P_SHOT, P_MEM };
+enum { P_INPUT = 1, P_WAIT, P_SHOT, P_MEM, P_TELEPORT };
 enum { W_FRAME = 1, W_STATE, W_LOADING_START, W_LOADING_END, W_CHANGE, W_MAP };
 typedef struct {
     int used, conn, gen, kind;
@@ -315,12 +316,14 @@ typedef struct {
     int64_t deadline, issued_frame;
     int group;       /* P_INPUT: its inputs */
     int wait, from_changes; int64_t target; char state[16], map[80];
-    int token, done, ok; int64_t present; char path[1100];   /* P_SHOT */
+    int token; char path[1100];   /* P_SHOT (its result: G.shots), P_MEM */
     int mem_slot;   /* P_MEM */
+    int dest;       /* P_TELEPORT: the destination (token: the game's ticket) */
 } Pending;
 
 typedef struct {
     int used, group, exclusive, stick_set;
+    int conn, conn_gen, waited;  /* the client that sent it; waited: a request waits for its end (else it is freed then) */
     int64_t at, frames, start;   /* start: -1 until the first controller read after the request */
     uint64_t buttons;
     int32_t stick[4];
@@ -341,8 +344,9 @@ static struct {
     int mem_level;   /* 0 off, 1 ro, 2 rw (HOS_CONTROL_MEM) */
     MemReq mems[CTL_MEM];
     char path[1024], base_dir[1040], shots_dir[1060];   /* base_dir: relative shot paths and shots/ (with its separator) */
-    ctl_mutex mu;     /* inputs, shot results: the controller's read and the shot writer take it */
+    ctl_mutex mu;     /* inputs, memory requests, shot results: the controller's read and the shot writer take it */
     Input inputs[CTL_INPUTS];
+    struct { int token, done, ok; int64_t present; } shots[CTL_PENDING];   /* (by the shot's pending slot; G.mu) */
     int next_group, next_token, shot_count;
     Conn conns[CTL_CONNS];
     int conn_gen;
@@ -476,7 +480,7 @@ static void stats_tick(int64_t now) {
     if (G.game->map && G.game->map(map, sizeof map) && strcmp(map, G.map)) {
         for (int i = 0; i < CTL_CONNS; i++) {   /* subscribers: the new map */
             Conn *c = &G.conns[i];
-            if (!c->used || !c->sub_on || !c->sub_map) continue;
+            if (!c->used || c->closing || !c->sub_on || !c->sub_map) continue;
             buf_printf(&c->out, "{\"event\":\"map\",\"sub\":%s,\"frame\":%lld,\"map\":", c->sub_id, (long long)frame);
             buf_str(&c->out, map);
             buf_puts(&c->out, ",\"from\":");
@@ -525,7 +529,7 @@ static void stats_tick(int64_t now) {
         /* subscribers: the change */
         for (int i = 0; i < CTL_CONNS; i++) {
             Conn *c = &G.conns[i];
-            if (!c->used || !c->sub_on || !c->sub_state) continue;
+            if (!c->used || c->closing || !c->sub_on || !c->sub_state) continue;
             buf_printf(&c->out, "{\"event\":\"state\",\"sub\":%s,\"frame\":%lld,\"state\":\"%s\",\"from\":\"%s\",\"draws\":%.1f}\n",
                        c->sub_id, (long long)frame, STATES[next], STATES[from], G.draws);
         }
@@ -777,6 +781,7 @@ static void cmd_input(int ci, const JDoc *d, int req, const char *id, const char
             if (G.inputs[i].used) continue;
             G.inputs[i] = steps[k++];
             G.inputs[i].used = 1, G.inputs[i].group = group, G.inputs[i].exclusive = exclusive, G.inputs[i].start = -1;
+            G.inputs[i].conn = ci, G.inputs[i].conn_gen = c->gen, G.inputs[i].waited = p != NULL;
         }
     ctl_unlock(&G.mu);
     if (free_slots < n) {
@@ -820,20 +825,44 @@ static int input_done(Pending *p, Conn *c, int64_t now) {
     return 1;
 }
 
-static void cmd_release(int ci, const char *id) {
+/* (the bridge's thread, every tick) inputs nobody waits for (sent with "wait": false) freed once over: they would
+   otherwise fill the queue */
+static void inputs_tick(void) {
     ctl_lock(&G.mu);
-    int n = 0;
-    for (int i = 0; i < CTL_INPUTS; i++) n += G.inputs[i].used, G.inputs[i].used = 0;
+    for (int i = 0; i < CTL_INPUTS; i++) {
+        Input *in = &G.inputs[i];
+        if (in->used && !in->waited && in->start >= 0 && G.frame >= in->start + in->frames) in->used = 0;
+    }
+    ctl_unlock(&G.mu);
+}
+/* release: the caller's inputs, and those left by clients that have gone (sent without waiting); with all, everyone's.
+   The presses waited on reply cancelled */
+static void cmd_release(int ci, const JDoc *d, int req, const char *id) {
+    const int all = bool_arg(d, req, "all", 0);
+    static int groups[CTL_INPUTS];
+    int n = 0, ngroups = 0;
+    ctl_lock(&G.mu);
+    for (int i = 0; i < CTL_INPUTS; i++) {
+        Input *in = &G.inputs[i];
+        if (!in->used) continue;
+        const int mine = in->conn == ci && in->conn_gen == G.conns[ci].gen;
+        if (!all && !mine && conn_of(in->conn, in->conn_gen)) continue;   /* (another client's, still there) */
+        if (in->waited && (!ngroups || groups[ngroups - 1] != in->group)) groups[ngroups++] = in->group;
+        in->used = 0, n++;
+    }
     ctl_unlock(&G.mu);
     for (int i = 0; i < CTL_PENDING; i++) {   /* (the presses waited for end now) */
         Pending *p = &G.pending[i];
         if (!p->used || p->kind != P_INPUT) continue;
+        int hit = 0;
+        for (int k = 0; k < ngroups && !hit; k++) hit = groups[k] == p->group;
+        if (!hit) continue;
         reply_error(conn_of(p->conn, p->gen), p->id, "cancelled", "released");
         p->used = 0;
     }
     Buf b = {0};
     reply_start(&b, id, 1);
-    buf_printf(&b, ",\"released\":%d", n);
+    buf_printf(&b, ",\"released\":%d,\"all\":%s", n, all ? "true" : "false");
     reply_end(&G.conns[ci], &b);
 }
 
@@ -883,6 +912,7 @@ static void cmd_status(int ci, const char *id) {
 }
 
 /* ---- wait ---- */
+static void name_norm(char *out, size_t cap, const char *in);
 static int state_of(const char *s) {
     for (int i = 0; i < (int)(sizeof STATES / sizeof *STATES); i++)
         if (!strcmp(s, STATES[i])) return i;
@@ -925,7 +955,7 @@ static void cmd_wait(int ci, const JDoc *d, int req, const char *id) {
     p->from_changes = kind == W_LOADING_START ? G.loading_starts : kind == W_LOADING_END ? G.loading_ends
                     : kind == W_MAP ? G.map_changes : G.state_changes;
     if (state >= 0) snprintf(p->state, sizeof p->state, "%s", STATES[state]);
-    if (kind == W_MAP) snprintf(p->map, sizeof p->map, "%s", str_arg(d, req, "map") ? str_arg(d, req, "map") : "");
+    if (kind == W_MAP) name_norm(p->map, sizeof p->map, str_arg(d, req, "map") ? str_arg(d, req, "map") : "");
 }
 static int wait_done(Pending *p, Conn *c, int64_t now) {
     int met = 0;
@@ -935,7 +965,12 @@ static int wait_done(Pending *p, Conn *c, int64_t now) {
     case W_LOADING_START: met = G.loading_starts != p->from_changes; break;
     case W_LOADING_END: met = G.loading_ends != p->from_changes; break;
     case W_CHANGE: met = G.state_changes != p->from_changes; break;
-    case W_MAP: met = p->map[0] ? !strcmp(G.map, p->map) : G.map_changes != p->from_changes; break;   /* (that map, or another) */
+    case W_MAP: {   /* (that map, in any case as teleport takes it; or without one, another) */
+        char now_map[sizeof G.map];
+        name_norm(now_map, sizeof now_map, G.map);
+        met = p->map[0] ? !strcmp(now_map, p->map) : G.map_changes != p->from_changes;
+        break;
+    }
     }
     if (!met && now < p->deadline) return 0;
     if (!met) {
@@ -954,13 +989,13 @@ static int wait_done(Pending *p, Conn *c, int64_t now) {
 }
 
 /* ---- shot ---- */
-static void shot_done(void *ctx, int64_t present, int ok) {   /* (the renderer's writer thread) */
+/* (the renderer's writer thread) a shot written or not: kept by its token in G.shots, which only G.mu guards (the pending
+   requests are the bridge thread's own). A shot whose request timed out finds no token and is dropped */
+static void shot_done(void *ctx, int64_t present, int ok) {
     const int token = (int)(intptr_t)ctx;
     ctl_lock(&G.mu);
-    for (int i = 0; i < CTL_PENDING; i++) {
-        Pending *p = &G.pending[i];
-        if (p->used && p->kind == P_SHOT && p->token == token) p->done = 1, p->ok = ok, p->present = present;
-    }
+    for (int i = 0; i < CTL_PENDING; i++)
+        if (G.shots[i].token == token) G.shots[i].done = 1, G.shots[i].ok = ok, G.shots[i].present = present;
     ctl_unlock(&G.mu);
 }
 #ifdef _WIN32
@@ -1011,20 +1046,27 @@ static void cmd_shot(int ci, const JDoc *d, int req, const char *id) {
     if (!G.game->shot) return reply_error(c, id, "unavailable", "no renderer that takes shots");
     Pending *p = pending_new(ci, id, P_SHOT);
     if (!p) return reply_error(c, id, "busy", "too many requests waiting");
+    const int slot = (int)(p - G.pending);
     ctl_lock(&G.mu);
     p->token = ++G.next_token;
+    G.shots[slot].token = p->token, G.shots[slot].done = 0;
     ctl_unlock(&G.mu);
     p->deadline = deadline;
     snprintf(p->path, sizeof p->path, "%s", full);
     if (!G.game->shot(full, after, shot_done, (void *)(intptr_t)p->token)) {
+        ctl_lock(&G.mu);
+        G.shots[slot].token = 0;
+        ctl_unlock(&G.mu);
         p->used = 0;
         return reply_error(c, id, "unavailable", "the renderer takes no shot now (not started, no Vulkan, or too many waiting)");
     }
 }
 static int shot_finished(Pending *p, Conn *c, int64_t now) {
+    const int slot = (int)(p - G.pending);
     ctl_lock(&G.mu);
-    const int done = p->done, ok = p->ok;
-    const int64_t present = p->present;
+    const int done = G.shots[slot].token == p->token && G.shots[slot].done, ok = G.shots[slot].ok;
+    const int64_t present = G.shots[slot].present;
+    if (done || now >= p->deadline) G.shots[slot].token = 0;   /* (answered: a late writer finds nothing) */
     ctl_unlock(&G.mu);
     if (!done && now < p->deadline) return 0;
     if (!done) reply_error(c, p->id, "timeout", "no present came in time");
@@ -1124,6 +1166,12 @@ static void cmd_option_set(int ci, const JDoc *d, int req, const char *id) {
 }
 
 /* ---- subscribe ---- */
+static void log_wanted_update(void) {   /* (log lines are copied only while some client subscribed to them) */
+    int any_log = 0;
+    for (int i = 0; i < CTL_CONNS; i++)
+        any_log |= G.conns[i].used && !G.conns[i].closing && G.conns[i].sub_on && G.conns[i].sub_log;
+    G.log_wanted = any_log;
+}
 static void cmd_subscribe(int ci, const JDoc *d, int req, const char *id) {
     Conn *c = &G.conns[ci];
     int present = 1, state = 1, log = 0, map = 0, bad = 0;
@@ -1142,7 +1190,7 @@ static void cmd_subscribe(int ci, const JDoc *d, int req, const char *id) {
     const char *filter = str_arg(d, req, "log");
     if (filter) log = 1;
     const int64_t every = whole(num_arg(d, req, "every", 60, &bad));
-    if (bad || every < 1) return reply_error(c, id, "bad_request", "every: frames, at least 1");
+    if (bad || every < 1 || every > 216000) return reply_error(c, id, "bad_request", "every: 1 to 216000 frames");
     c->sub_on = 1, c->sub_present = present, c->sub_state = state, c->sub_log = log, c->sub_map = map, c->sub_every = every;
     c->sub_next = G.frame + every;
     snprintf(c->sub_id, sizeof c->sub_id, "%s", id);
@@ -1150,9 +1198,7 @@ static void cmd_subscribe(int ci, const JDoc *d, int req, const char *id) {
     ctl_lock(&G.log_mu);
     c->log_seen = G.log_count;
     ctl_unlock(&G.log_mu);
-    int any_log = 0;
-    for (int i = 0; i < CTL_CONNS; i++) any_log |= G.conns[i].used && G.conns[i].sub_on && G.conns[i].sub_log;
-    G.log_wanted = any_log;
+    log_wanted_update();
     Buf b = {0};
     reply_start(&b, id, 1);
     buf_puts(&b, ",\"events\":[");
@@ -1194,9 +1240,17 @@ static void subs_tick(void) {
     }
 }
 
-/* ---- (OoT) the debug teleport by destination: what the Cheats page's Teleport list and the live input file's
-   "!cheat 1000+<index>" ask for; the game takes it at the player's next update, in play, and logs what it did
-   ("cheats: teleport ...") ---- */
+/* ---- (OoT) the debug teleport by destination: the Cheats page's Teleport list's. The game takes it at the player's next
+   update, in play: the reply says whether it was sent (and to which map) or refused (and why), unless "wait": false.
+   wait map then tells when it arrived ---- */
+static void destination_json(Buf *b, int index, const char *child, const char *adult) {
+    buf_printf(b, ",\"teleport\":%d,\"child\":", index);
+    if (child) buf_str(b, child);
+    else buf_puts(b, "null");
+    buf_puts(b, ",\"adult\":");
+    if (adult) buf_str(b, adult);
+    else buf_puts(b, "null");
+}
 static void cmd_teleport(int ci, const JDoc *d, int req, const char *id) {
     Conn *c = &G.conns[ci];
     if (!G.game->destination || !G.game->teleport) return reply_error(c, id, "unavailable", "this game has no teleport");
@@ -1231,16 +1285,50 @@ static void cmd_teleport(int ci, const JDoc *d, int req, const char *id) {
     }
     if (index < 0 || !G.game->destination(index, &child, &adult))
         return reply_error(c, id, "not_found", "to: a destination's index or map (teleport with no to lists them)");
-    G.game->teleport(index);
+    int bad = 0;
+    const int wait = bool_arg(d, req, "wait", 1) && G.game->teleport_result;
+    const int64_t deadline = deadline_arg(d, req, 10, &bad);
+    if (bad) return reply_error(c, id, "bad_request", "timeout: seconds");
+    Pending *p = wait ? pending_new(ci, id, P_TELEPORT) : NULL;
+    if (wait && !p) return reply_error(c, id, "busy", "too many requests waiting");
+    const int ticket = G.game->teleport(index);
+    if (ticket <= 0) {
+        if (p) p->used = 0;
+        return reply_error(c, id, "not_found", "no destination %d", index);
+    }
     ctl_log("control: teleport to destination %d asked for", index);
+    if (p) {
+        p->token = ticket, p->dest = index, p->deadline = deadline;
+        return;
+    }
     reply_start(&b, id, 1);
-    buf_printf(&b, ",\"teleport\":%d,\"child\":", index);
-    if (child) buf_str(&b, child);
-    else buf_puts(&b, "null");
-    buf_puts(&b, ",\"adult\":");
-    if (adult) buf_str(&b, adult);
-    else buf_puts(&b, "null");
+    destination_json(&b, index, child, adult);
+    buf_puts(&b, ",\"sent\":null");
     reply_end(c, &b);
+}
+/* (pending_tick) what came of a teleport: sent, refused, replaced, or not taken in time (then cancelled) */
+static int teleport_done(Pending *p, Conn *c, int64_t now) {
+    char why[128] = "", map[80] = "";
+    const int r = G.game->teleport_result(p->token, why, sizeof why, map, sizeof map);
+    if (r == 0 && now < p->deadline) return 0;
+    if (r == 0) {
+        if (G.game->teleport_cancel) G.game->teleport_cancel(p->token);
+        reply_error(c, p->id, "timeout", "the game did not take the teleport: it is taken at Link's next update, in play "
+                    "(not on the title, the file select, a pause menu or a load)");
+    } else if (r == -1) reply_error(c, p->id, "refused", "the game refused the teleport: %s", why[0] ? why : "no reason given");
+    else if (r == -2) reply_error(c, p->id, "cancelled", "a later teleport replaced it before the game took it");
+    else {
+        const char *child = NULL, *adult = NULL;
+        G.game->destination(p->dest, &child, &adult);
+        Buf b = {0};
+        reply_start(&b, p->id, 1);
+        destination_json(&b, p->dest, child, adult);
+        buf_puts(&b, ",\"sent\":true,\"map\":");
+        if (map[0]) buf_str(&b, map);
+        else buf_puts(&b, "null");
+        reply_end(c, &b);
+    }
+    return 1;
 }
 
 static void conn_flush_now(Conn *c);
@@ -1315,33 +1403,55 @@ static int64_t decode_base64(const char *s, uint8_t *out, uint64_t cap) {
     return (int64_t)n;
 }
 
-static MemReq *mem_new(const char *id, int ci, int write, int base64) {
-    for (int i = 0; i < CTL_MEM; i++) {
-        MemReq *m = &G.mems[i];
-        if (m->used) continue;
-        memset(m, 0, sizeof *m);
-        m->used = 1, m->write = write, m->base64 = base64;
-        (void)id, (void)ci;
-        return m;
-    }
-    return NULL;
+/* A memory request, made whole on the bridge's thread, then handed to the game's (mem_service) under G.mu: the game thread
+   takes a slot only once it is complete. Its slot, or -1 when all are in use (req's buffer is then still the caller's) */
+static int mem_publish(const MemReq *req) {
+    int slot = -1;
+    ctl_lock(&G.mu);
+    for (int i = 0; i < CTL_MEM && slot < 0; i++)
+        if (!G.mems[i].used) {
+            G.mems[i] = *req;
+            G.mems[i].used = 1, G.mems[i].done = 0, G.mems[i].token = ++G.next_token;
+            slot = i;
+        }
+    ctl_unlock(&G.mu);
+    return slot;
 }
+/* an address or a size: a whole JSON number, or a string of decimal digits or 0x and hex digits (a number past 2^53
+   loses bits as a double: give it as a string) */
 static uint64_t mem_u64(const JDoc *d, int obj, const char *key, int *bad) {
     const JNode *n = j_get(d, obj, key);
     if (!n) return *bad = 1, 0;
     if (n->type == J_NUM) {
-        if (n->num < 0 || n->num > 9.2e18) return *bad = 1, 0;
+        if (n->num < 0 || n->num > 9.2e18 || n->num != floor(n->num)) return *bad = 1, 0;
         return (uint64_t)n->num;
     }
-    if (n->type == J_STR) {   /* a hex address as a string: 0x... (numbers past 2^53 lose bits as doubles) */
-        char *e;
-        const uint64_t v = strtoull(n->s, &e, 0);
-        if (e == n->s || *e) *bad = 1;
-        return v;
+    if (n->type == J_STR) {
+        const char *q = n->s;
+        const int hex = q[0] == '0' && (q[1] == 'x' || q[1] == 'X');
+        if (hex) q += 2;
+        if (!*q || strspn(q, hex ? "0123456789abcdefABCDEF" : "0123456789") != strlen(q) || strlen(q) > (hex ? 16u : 20u))
+            return *bad = 1, 0;   /* (no sign, no octal, no spaces, no overflow past 64 bits) */
+        errno = 0;
+        const unsigned long long v = strtoull(q, NULL, hex ? 16 : 10);
+        if (errno) return *bad = 1, 0;
+        return (uint64_t)v;
     }
     return *bad = 1, 0;
 }
 
+/* a request made whole (its buffer malloc'd) to the game thread, and a pending reply for it; the buffer freed when it is
+   not taken */
+static void mem_submit(Conn *c, int ci, const char *id, MemReq *req, int64_t deadline) {
+    Pending *p = pending_new(ci, id, P_MEM);
+    if (!p) return free(req->buf), reply_error(c, id, "busy", "too many requests waiting");
+    const int slot = mem_publish(req);
+    if (slot < 0) return p->used = 0, free(req->buf), reply_error(c, id, "busy", "too many memory requests");
+    ctl_lock(&G.mu);
+    p->token = G.mems[slot].token;
+    ctl_unlock(&G.mu);
+    p->mem_slot = slot, p->deadline = deadline;
+}
 static int mem_off(const char *cmd) { return !strcmp(cmd, "mem_read") || !strcmp(cmd, "mem_read_many") || !strcmp(cmd, "mem_write"); }
 
 static void cmd_mem(int ci, const JDoc *d, int req, const char *id, const char *cmd) {
@@ -1372,16 +1482,13 @@ static void cmd_mem(int ci, const JDoc *d, int req, const char *id, const char *
         const int64_t n = hex ? decode_hex(hex, bytes, sizeof bytes) : decode_base64(b64, bytes, sizeof bytes);
         if (n < 0) return reply_error(c, id, "bad_request", "the bytes are not %s, or over %u", hex ? "hex" : "base64", CTL_MEM_CAP);
         if (n == 0) return reply_error(c, id, "bad_request", "no bytes to write");
-        MemReq *m = mem_new(id, ci, 1, 0);
-        if (!m) return reply_error(c, id, "busy", "too many memory requests");
-        m->nranges = 1, m->addr[0] = addr, m->size[0] = (uint64_t)n, m->total = (uint64_t)n;
-        m->buf = (uint8_t *)malloc((size_t)n);
-        if (!m->buf) return m->used = 0, reply_error(c, id, "failed", "out of memory");
-        memcpy(m->buf, bytes, (size_t)n);
-        Pending *p = pending_new(ci, id, P_MEM);
-        if (!p) return free(m->buf), m->used = 0, reply_error(c, id, "busy", "too many requests waiting");
-        p->mem_slot = (int)(m - G.mems), p->token = ++G.next_token, m->token = p->token, p->deadline = deadline;
-        return;
+        static MemReq w;
+        memset(&w, 0, sizeof w);
+        w.write = 1, w.nranges = 1, w.addr[0] = addr, w.size[0] = (uint64_t)n, w.total = (uint64_t)n;
+        w.buf = (uint8_t *)malloc((size_t)n);
+        if (!w.buf) return reply_error(c, id, "failed", "out of memory");
+        memcpy(w.buf, bytes, (size_t)n);
+        return mem_submit(c, ci, id, &w, deadline);
     }
 
     /* a read: one range (mem_read), or a list (mem_read_many, one snapshot) */
@@ -1409,16 +1516,14 @@ static void cmd_mem(int ci, const JDoc *d, int req, const char *id, const char *
     }
     if (total == 0) return reply_error(c, id, "bad_request", "size: at least one byte");
     if (total > CTL_MEM_CAP) return reply_error(c, id, "bad_request", "at most %u bytes a request", CTL_MEM_CAP);
-    MemReq *m = mem_new(id, ci, 0, base64);
-    if (!m) return reply_error(c, id, "busy", "too many memory requests");
-    m->nranges = nr, m->total = total;
-    memcpy(m->addr, addrs, sizeof addrs[0] * nr);
-    memcpy(m->size, sizes, sizeof sizes[0] * nr);
-    m->buf = (uint8_t *)malloc((size_t)total);
-    if (!m->buf) return m->used = 0, reply_error(c, id, "failed", "out of memory");
-    Pending *p = pending_new(ci, id, P_MEM);
-    if (!p) return free(m->buf), m->used = 0, reply_error(c, id, "busy", "too many requests waiting");
-    p->mem_slot = (int)(m - G.mems), p->token = ++G.next_token, m->token = p->token, p->deadline = deadline;
+    static MemReq r;
+    memset(&r, 0, sizeof r);
+    r.base64 = base64, r.nranges = nr, r.total = total;
+    memcpy(r.addr, addrs, sizeof addrs[0] * nr);
+    memcpy(r.size, sizes, sizeof sizes[0] * nr);
+    r.buf = (uint8_t *)malloc((size_t)total);
+    if (!r.buf) return reply_error(c, id, "failed", "out of memory");
+    mem_submit(c, ci, id, &r, deadline);
 }
 /* (pending_tick) the memory op is done on the game thread, or its time ran out */
 static int mem_finished(Pending *p, Conn *c, int64_t now) {
@@ -1619,7 +1724,7 @@ static void request(int ci, const char *line, size_t len) {
     if (!cmd) return reply_error(c, id, "bad_request", "no cmd");
     if (!strcmp(cmd, "status")) cmd_status(ci, id);
     else if (!strcmp(cmd, "press") || !strcmp(cmd, "stick") || !strcmp(cmd, "sequence")) cmd_input(ci, &d, req, id, cmd);
-    else if (!strcmp(cmd, "release")) cmd_release(ci, id);
+    else if (!strcmp(cmd, "release")) cmd_release(ci, &d, req, id);
     else if (!strcmp(cmd, "saves")) cmd_saves(ci, id);
     else if (!strcmp(cmd, "teleport")) cmd_teleport(ci, &d, req, id);
     else if (!strcmp(cmd, "shot")) cmd_shot(ci, &d, req, id);
@@ -1629,9 +1734,7 @@ static void request(int ci, const char *line, size_t len) {
     else if (!strcmp(cmd, "subscribe")) cmd_subscribe(ci, &d, req, id);
     else if (!strcmp(cmd, "unsubscribe")) {
         c->sub_on = 0;
-        int any_log = 0;
-        for (int i = 0; i < CTL_CONNS; i++) any_log |= G.conns[i].used && G.conns[i].sub_on && G.conns[i].sub_log;
-        G.log_wanted = any_log;
+        log_wanted_update();
         reply_ok(c, id);
     } else if (!strcmp(cmd, "quit")) cmd_quit(ci, id);
     else if (!strncmp(cmd, "mem_", 4) || !strcmp(cmd, "symbols")) cmd_mem(ci, &d, req, id, cmd);
@@ -1672,27 +1775,29 @@ static void conn_reset(Conn *c) {
     memset(c, 0, sizeof *c);
     c->gen = gen;
 }
+/* a request whose client went: its inputs let go, its memory request's buffer freed, its teleport not taken any more */
+static void pending_drop(Pending *p) {
+    if (p->kind == P_INPUT) {
+        ctl_lock(&G.mu);
+        inputs_drop(p->group);
+        ctl_unlock(&G.mu);
+    } else if (p->kind == P_MEM) {
+        ctl_lock(&G.mu);
+        MemReq *m = &G.mems[p->mem_slot];
+        if (m->used && m->token == p->token) free(m->buf), m->used = 0;
+        ctl_unlock(&G.mu);
+    } else if (p->kind == P_TELEPORT && G.game->teleport_cancel) G.game->teleport_cancel(p->token);
+    p->used = 0;
+}
 /* a client gone: what it waited for is dropped, its inputs let go */
 static void conn_gone(int ci) {
     Conn *c = &G.conns[ci];
     for (int i = 0; i < CTL_PENDING; i++) {
         Pending *p = &G.pending[i];
-        if (!p->used || p->conn != ci || p->gen != c->gen) continue;
-        if (p->kind == P_INPUT) {
-            ctl_lock(&G.mu);
-            inputs_drop(p->group);
-            ctl_unlock(&G.mu);
-        } else if (p->kind == P_MEM) {
-            ctl_lock(&G.mu);
-            MemReq *m = &G.mems[p->mem_slot];
-            if (m->used && m->token == p->token) free(m->buf), m->used = 0;
-            ctl_unlock(&G.mu);
-        }
-        p->used = 0;
+        if (p->used && p->conn == ci && p->gen == c->gen) pending_drop(p);
     }
-    int any_log = 0;
-    for (int i = 0; i < CTL_CONNS; i++) any_log |= i != ci && G.conns[i].used && G.conns[i].sub_on && G.conns[i].sub_log;
-    G.log_wanted = any_log;
+    c->sub_on = 0;
+    log_wanted_update();
 }
 
 static void pending_tick(int64_t now) {
@@ -1700,25 +1805,30 @@ static void pending_tick(int64_t now) {
         Pending *p = &G.pending[i];
         if (!p->used) continue;
         Conn *c = conn_of(p->conn, p->gen);
-        if (!c) {   /* (its client is going: what it pressed is let go, its memory buffer freed) */
-            if (p->kind == P_INPUT) {
-                ctl_lock(&G.mu);
-                inputs_drop(p->group);
-                ctl_unlock(&G.mu);
-            } else if (p->kind == P_MEM) {
-                ctl_lock(&G.mu);
-                MemReq *m = &G.mems[p->mem_slot];
-                if (m->used && m->token == p->token) free(m->buf), m->used = 0;
-                ctl_unlock(&G.mu);
-            }
-            p->used = 0;
+        if (!c) {   /* (its client is going) */
+            pending_drop(p);
             continue;
         }
         const int done = p->kind == P_INPUT ? input_done(p, c, now) : p->kind == P_WAIT ? wait_done(p, c, now)
-                       : p->kind == P_MEM ? mem_finished(p, c, now) : shot_finished(p, c, now);
+                       : p->kind == P_MEM ? mem_finished(p, c, now) : p->kind == P_TELEPORT ? teleport_done(p, c, now)
+                       : shot_finished(p, c, now);
         if (done) p->used = 0;
     }
 }
+
+#ifndef _WIN32   /* (a pipe's client cannot shut one side: it closes, or not) */
+/* a client that shut its sending side (a pipe from a shell: printf ... | socat): no more requests, and no events; it is
+   closed once what it waits for is answered and sent */
+static void conn_eof(Conn *c) {
+    c->eof = 1, c->sub_on = 0;
+    log_wanted_update();
+}
+static int conn_waiting(int ci) {
+    for (int i = 0; i < CTL_PENDING; i++)
+        if (G.pending[i].used && G.pending[i].conn == ci && G.pending[i].gen == G.conns[ci].gen) return 1;
+    return 0;
+}
+#endif
 
 /* ---- the transport: a Unix domain socket (Linux), a named pipe (Windows) ---- */
 #ifndef _WIN32
@@ -1808,17 +1918,20 @@ static void transport_wait(int ms) {
     for (int i = 0; i < CTL_CONNS; i++) {
         Conn *c = &G.conns[i];
         if (!c->used) continue;
-        fds[n].fd = c->fd, fds[n].events = (short)(POLLIN | (c->out.n ? POLLOUT : 0)), idx[n++] = i;
+        fds[n].fd = c->fd, fds[n].events = (short)((c->eof ? 0 : POLLIN) | (c->out.n ? POLLOUT : 0)), idx[n++] = i;
     }
     if (poll(fds, (nfds_t)n, ms) <= 0) return;
     for (int k = 1; k < n; k++) {
         Conn *c = &G.conns[idx[k]];
         if (fds[k].revents & POLLOUT) conn_write(c);
-        if (fds[k].revents & (POLLIN | POLLHUP | POLLERR)) {
+        if (c->eof) {   /* (only its replies left to send: gone altogether, they cannot be) */
+            if (fds[k].revents & (POLLHUP | POLLERR)) c->closing = 1;
+        } else if (fds[k].revents & (POLLIN | POLLHUP | POLLERR)) {
             char buf[16384];
             const ssize_t r = recv(c->fd, buf, sizeof buf, MSG_DONTWAIT);
             if (r > 0) conn_feed(idx[k], buf, (size_t)r);
-            else if (r == 0 || (errno != EAGAIN && errno != EINTR)) c->closing = 1;
+            else if (r == 0) conn_eof(c);
+            else if (errno != EAGAIN && errno != EINTR) c->closing = 1;
         }
     }
     if (fds[0].revents & POLLIN) {
@@ -1849,6 +1962,7 @@ static void transport_flush(void) {
     for (int i = 0; i < CTL_CONNS; i++) {
         Conn *c = &G.conns[i];
         if (c->used && c->out.n && !c->closing) conn_write(c);
+        if (c->used && c->eof && !c->closing && !c->out.n && !conn_waiting(i)) c->closing = 1;   /* (all answered) */
         if (c->used && c->closing) conn_close(i);
     }
 }
@@ -2035,6 +2149,7 @@ static void *serve_main(void *unused) {
         const int64_t now = ctl_now_ns();
         stats_tick(now);
         pending_tick(now);
+        inputs_tick();
         subs_tick();
         transport_flush();
     }
@@ -2141,11 +2256,16 @@ static const char *game_renderer(void) { return rx_describe(); }
 int hos_oot_current_map(char *out, size_t cap);                              /* (hos_main.c) */
 int hos_oot_destination(int index, const char **child, const char **adult);
 int hos_oot_teleport_ask(int index);
+int hos_oot_teleport_result(int ticket, char *why, size_t why_cap, char *map, size_t map_cap);
+void hos_oot_teleport_cancel(int ticket);
 int hos_oot_state(int *event, int *loading, int *child);
-static HosControlGame game = {game_frame, rx_control_frame_info, rx_control_shot, rx_control_setting, rx_control_setting_set,
-                              game_mem_region, game_mem_read, game_mem_write, game_save_root, game_log, game_quit,
-                              game_renderer, NULL, hos_oot_current_map, hos_oot_destination, hos_oot_teleport_ask,
-                              hos_oot_state};
+static HosControlGame game = {
+    .frame = game_frame, .frame_info = rx_control_frame_info, .shot = rx_control_shot, .setting = rx_control_setting,
+    .setting_set = rx_control_setting_set, .mem_region = game_mem_region, .mem_read = game_mem_read,
+    .mem_write = game_mem_write, .save_root = game_save_root, .log = game_log, .quit = game_quit,
+    .renderer = game_renderer, .map = hos_oot_current_map, .destination = hos_oot_destination,
+    .teleport = hos_oot_teleport_ask, .teleport_result = hos_oot_teleport_result,
+    .teleport_cancel = hos_oot_teleport_cancel, .oot_state = hos_oot_state};
 
 void hos_control_start(const char *version) {
     const char *path = getenv("HOS_CONTROL");

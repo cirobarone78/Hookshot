@@ -2771,8 +2771,13 @@ void bridge_fill(int i, MkwVkSetting* out) {
     out->restart = r.restart, out->fixed = row_fixed(r.value);
     snprintf(out->text, sizeof out->text, "%s", r.text ? r.text(out->value) : "");
 }
+// (the Upscaler row's questions, asked before menu_mu is taken: row_shown and row_fixed ask upscalers_available(), which
+// waits for the start-up probe (NGX's start, ~3 s) while it runs. Under menu_mu that held menu_tick, and the present with
+// it; this way only the bridge's thread waits, and once answered the questions return at once)
+static void bridge_probe_first() { (void)upscalers_available(), (void)dlss_why(); }
 /// The index-th settings row (an enumeration, for listing them; the index is not a name: rows come and go). 0: past the last
 int menu_setting(int index, MkwVkSetting* out) {
+    bridge_probe_first();
     std::lock_guard lk(menu_mu);
     for (int i = 0, n = 0; i < kRows; i++)
         if (bridge_row(i) && n++ == index) return bridge_fill(i, out), 1;
@@ -2783,6 +2788,7 @@ int menu_setting(int index, MkwVkSetting* out) {
 /// through a list of their own (the Upscaler, Render resolution, the output resolution) are stepped towards value until they
 /// reach it or go no further. out: the row as it is now. 1 set, 0 no such row, -1 nothing to choose on this PC (row_fixed)
 int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
+    bridge_probe_first();
     std::lock_guard lk(menu_mu);
     int i = 0;
     while (i < kRows && !(bridge_row(i) && !strcmp(ini_key(rows[i]), key))) i++;
