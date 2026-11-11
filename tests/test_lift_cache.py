@@ -56,7 +56,7 @@ def main():
                 return f
             with mock.patch("builtins.open", edited):
                 check("a change to the translator changes the key", make_game.lift_key(str(exefs), str(work), env) != key)
-            for name in ("nx2/whole_write.py", "nx2/oot_patches.py", "nx2/oot_native_resolution.py",
+            for name in ("nx2/whole_write.py", "nx2/oot_patches.py",
                          "third_party/a64-kit/lift/a64_lift.py", "third_party/a64-kit/lift/a64emit.cpp"):
                 changed = str(ROOT / name)   # (imported by an import, in a function, or compiled when the lift starts)
                 with mock.patch("builtins.open", edited):
@@ -125,7 +125,7 @@ def check_lift_sources():
     sources = {os.path.abspath(f) for f in make_game.lift_sources()}
     missing = sorted(loaded - sources)
     check("every module the lift loads is in its key (missing: %s)" % missing, not missing)
-    check("the lift's later imports too", {str(ROOT / "nx2" / f) for f in ("oot_patches.py", "oot_wide.py", "oot_native_resolution.py")}
+    check("the lift's later imports too", {str(ROOT / "nx2" / f) for f in ("oot_patches.py", "oot_wide.py")}
           <= sources)
     check("the builder's other modules are not", str(ROOT / "nx2" / "build.py") not in sources)
 

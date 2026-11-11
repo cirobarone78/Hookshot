@@ -337,18 +337,15 @@ def split_big(gen_dir, files, budget=None, jobs=None):
 
 
 def _edit_patches(job):
-    """(edit_c, one file, in a process of its own) the game's patches: oot_native_resolution's, then oot_patches'"""
-    import oot_native_resolution
+    """(edit_c, one file, in a process of its own) the game's patches (oot_patches)"""
     import oot_patches
     path, supported = job
     with open(path, encoding="utf-8", newline="") as f:
         s = f.read()
-    name = os.path.basename(path)
-    out, native, native_lines = oot_native_resolution.patch_file(s, name)
-    out, counts, lines = oot_patches.patch_file(out, name, supported)
+    out, counts, lines = oot_patches.patch_file(s, os.path.basename(path), supported)
     if out != s:
         whole_write.write_whole(path, out, newline="")
-    return native, native_lines, counts, lines
+    return counts, lines
 
 
 def _edit_marks(path):
@@ -449,22 +446,15 @@ def edit_c(gen, stats, supported, whole=True, took=None, jobs=None):
     file (jobs: file_jobs(); new processes where there is no fork): the patches; then, after the counts' rules (oot_patches.report: the step
     divides both or neither), the output size and the groups. Five passes over the 1.5 GB of C on one core took a minute. The
     files and the lines printed are the one-process ones, byte for byte (tests/test_mark_groups.py)"""
-    import oot_native_resolution
     import oot_patches
     took = took or (lambda what: None)
     jobs = file_jobs() if jobs is None else jobs
     paths = sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c")))
     done = _each(_edit_patches, [(p, supported) for p in paths], jobs)
-    native = []
-    for made, lines, _, _ in done:
-        native += made
+    for _, lines in done:
         if lines:
             print("\n".join(lines))
-    oot_native_resolution.report(native)
-    for _, _, _, lines in done:
-        if lines:
-            print("\n".join(lines))
-    oot_patches.report(paths, [counts for _, _, counts, _ in done], supported)
+    oot_patches.report(paths, [counts for counts, _ in done], supported)
     took("patches (%d processes)" % jobs)
     found = [0] * len(oot_patches.OUT_EDITS)
     for here, lines, st in _each(_edit_marks, paths, jobs):

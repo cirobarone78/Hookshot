@@ -33,6 +33,7 @@ static unsigned char *memory;
 static char last_log[256];
 volatile int64_t hos_hid_last_read;
 volatile int hos_nvn_sync_log_on;
+int hos_control_input(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return 0; }   /* (host/control.c: off) */
 static void *at(uint64_t address) { CHECK(address <= 512 - 8); return memory + address; }
 #define GP(a) at(a)
 #define G32(a) (*(uint32_t *)at(a))
@@ -42,6 +43,9 @@ static void *at(uint64_t address) { CHECK(address <= 512 - 8); return memory + a
 
 int rx_option(int id, int otherwise) { return id == 4 ? menu_background : id == 1 ? 0 : otherwise; }
 int64_t hos_now_ns(void) { return now_ns; }
+void hos_prompts_live(void) {}   /* (host/prompts.c: the button prompts follow the controls) */
+volatile int hos_prompts_row = -1;   /* (host/prompts.c: "!prompts" in the live input) */
+void hos_bind(int set, int button, int slot, int code) { (void)set, (void)button, (void)slot, (void)code; }   /* ("!bind") */
 void hos_log(const char *format, ...) {
     va_list args; va_start(args, format); vsnprintf(last_log, sizeof last_log, format, args); va_end(args);
 }

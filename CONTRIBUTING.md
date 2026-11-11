@@ -174,8 +174,8 @@ It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, the C++ 
 byte-compile of every tracked Python file, goes on after a failure, and ends with a table (slowest first) and every
 failure's output. Name a check to run only the ones whose path contains it (`python -I -B tests/run_all.py ub_`). A new
 `test_*.py` file is picked up by itself: no workflow to edit. The slowest checks start first, by the times in
-`tests/run_all_times.json`, which also split CI's Windows run into two parts (`--shard 1/2`, `--shard 2/2`); a full run
-with `--write-times` refreshes this OS's times there.
+`tests/run_all_times.json`, which also split CI's Linux and Windows runs into two parts each (`--shard 1/2`,
+`--shard 2/2`); a full run with `--write-times` refreshes this OS's times there.
 
 Some checks compile a small C or C++ fixture and need a compiler (`g++`, `gcc` or `clang++` on PATH), the SPIR-V
 validator (`spirv-val`), the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VULKAN_HEADERS`, or the CPM
@@ -254,13 +254,17 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
 3. Write the title as a Conventional Commit (see [Pull request titles](#pull-request-titles) below). Start the body
    with why the PR is needed, in one or two plain sentences a player could follow: the bug, the missing feature or the
    cost it removes ("The menu's text is cut off at 4K", "First starts spend 20 s waiting on a few shaders"). Then say
-   what changed, how it was tested (GPU, driver, game area, fps before and after), and link the issue it fixes.
-4. Include screenshots when the change shows on screen: graphics, the menu, the start-up screen, an overlay, a
+   what changed and how it was tested (GPU, driver, game area, fps before and after).
+4. Link the issues the PR fixes, if there are any. Write `Fixes #123` in the body (one line per issue) so that merging
+   the PR closes the issue. If the PR only addresses part of an issue, or is related to one, write `Part of #123` or
+   `See #123` instead, so the issue stays open. Search the open issues before you open the PR: a report may already
+   describe the bug you fixed.
+5. Include screenshots when the change shows on screen: graphics, the menu, the start-up screen, an overlay, a
    message. Before and after for a fix, the new screen for a feature, and the sizes or settings it was checked at. A
    screenshot of the game is fine; the rule above is about game files, not pictures of the game.
-5. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
-6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
-7. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
+6. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
+7. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
+8. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
 
 ### Pull request titles
 
