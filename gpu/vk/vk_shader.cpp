@@ -1525,10 +1525,15 @@ void program_cache_load(uint64_t key, std::vector<std::unique_ptr<Program>>& var
     {
         std::lock_guard lk(disk_mu);
         auto it = disk_records.find(key);
-        if (it == disk_records.end()) return;
         if (keep) {   // (borrowed: still on disk for play)
-            recs = it->second;
+            // (and the records read in already: a program the state list loaded for its notes still has variants no note names,
+            // which the prediction lists (program_cache_each walks disk_taken) and borrows. Their pipelines were never built: of
+            // 67,106 predicted, 65,449 made, and nothing said why)
+            if (it != disk_records.end()) recs = it->second;
+            if (const auto t = disk_taken.find(key); t != disk_taken.end()) recs.insert(recs.end(), t->second.begin(), t->second.end());
+            if (recs.empty()) return;
         } else {
+            if (it == disk_records.end()) return;
             recs = std::move(it->second);
             disk_records.erase(it);
             disk_taken[key].insert(disk_taken[key].end(), recs.begin(), recs.end());
@@ -2364,7 +2369,8 @@ std::vector<uint64_t> program_cache_keys(std::vector<Program*>* loaded) {
     return keys;
 }
 
-/// (hookshot, the prediction: vk_predict.cpp) every kept graphics program variant, read without making its modules
+/// (hookshot, the prediction: vk_predict.cpp) every kept graphics program variant, read without making its modules. fn is called on
+/// several threads at once, in no order
 void program_cache_each(const std::function<void(const KeptProgram&)>& fn) {
     disk_init();
     if (!disk_on) return;
@@ -2377,32 +2383,53 @@ void program_cache_each(const std::function<void(const KeptProgram&)>& fn) {
                     if (!(d.kind & 1)) all.push_back({kv.first, d});
     }
     std::sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.second.at < b.second.at; });   // (file order)
-    KeptProgram k;
-    for (const auto& [key, d] : all) {
-        std::vector<uint8_t> data(d.size);
-        {
-            std::lock_guard lk(disk_mu);
-            _fseeki64(disk_in, d.at, SEEK_SET);
-            if (fread(data.data(), 1, d.size, disk_in) != d.size) continue;
+    // (read on several threads, each with a handle of its own and a run of records at a time, as program_cache_load_some: on one,
+    // under disk_mu, every record of the game (5.6 GB) was 7-16 s of the prediction's "deciding", the file in memory already)
+    constexpr size_t kRun = 64;
+    std::atomic<size_t> next{0};
+    const auto worker = [&] {
+        FILE* in = fopen(disk_path.c_str(), "rb");
+        KeptProgram k;
+        std::vector<uint8_t> data;
+        for (;;) {
+            const size_t first = next.fetch_add(kRun);
+            if (first >= all.size()) break;
+            for (size_t i = first; i < std::min(first + kRun, all.size()); i++) {
+                const auto& [key, d] = all[i];
+                data.resize(d.size);
+                if (in) {
+                    if (_fseeki64(in, d.at, SEEK_SET) || fread(data.data(), 1, d.size, in) != d.size) continue;
+                } else {
+                    std::lock_guard lk(disk_mu);
+                    _fseeki64(disk_in, d.at, SEEK_SET);
+                    if (fread(data.data(), 1, d.size, disk_in) != d.size) continue;
+                }
+                Reader r{data.data(), data.data() + data.size()};
+                Program p;
+                p.key = key;
+                get_head(r, p);   // (the whole head: reading past only part of it took the fallback's fields for the stage count)
+                k.key = key, k.variant = answers_hash(p), k.mesh = p.mesh, k.at = d.at;
+                const uint64_t n = r.count(1);
+                k.stages.resize(n <= 8 ? n : 0);
+                for (auto& [stage, spirv] : k.stages) {
+                    r.get<int>();
+                    stage = r.get<VkShaderStageFlagBits>();
+                    r.list(spirv);
+                    std::vector<uint8_t> c1;
+                    r.list(c1);
+                    Shader::Info info;
+                    get_info(r, info);
+                }
+                if (!r.bad && !k.stages.empty()) fn(k);
+            }
         }
-        Reader r{data.data(), data.data() + data.size()};
-        Program p;
-        p.key = key;
-        get_head(r, p);   // (the whole head: reading past only part of it took the fallback's fields for the stage count)
-        k.key = key, k.variant = answers_hash(p), k.mesh = p.mesh;
-        const uint64_t n = r.count(1);
-        k.stages.resize(n <= 8 ? n : 0);
-        for (auto& [stage, spirv] : k.stages) {
-            r.get<int>();
-            stage = r.get<VkShaderStageFlagBits>();
-            r.list(spirv);
-            std::vector<uint8_t> c1;
-            r.list(c1);
-            Shader::Info info;
-            get_info(r, info);
-        }
-        if (!r.bad && !k.stages.empty()) fn(k);
-    }
+        if (in) fclose(in);
+    };
+    const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
+    std::vector<std::thread> threads;
+    for (unsigned i = 1; i < std::min<size_t>({cpus, 16u, (all.size() + kRun - 1) / kRun}); i++) threads.emplace_back(worker);
+    worker();
+    for (std::thread& t : threads) t.join();
 }
 
 // ---- (hookshot) Every shader of the game before it starts, as TotK Recomp's tools/prepare_shaders.py and totk.exe --prepare-shaders: the

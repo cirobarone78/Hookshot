@@ -7901,18 +7901,23 @@ void prepare_guess(size_t out[3]) {
                       std::max<int64_t>(0, computes - 8) / 8);
 }
 
+void note_color_types(const PipeNote& n, uint8_t types[8]) {
+    color_types_of(note_targets(n), types);
+}
+
 void predict_run(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
     if (notes.empty() || getenv("RX_VK_NO_PREDICT")) return;
     size_t programs = 0;
-    const std::vector<std::unique_ptr<PipeNote>> predicted = predict_pipelines(notes, &programs);
+    PredictCounts left_out;
+    const std::vector<std::unique_ptr<PipeNote>> predicted = predict_pipelines(notes, &programs, &left_out);
     const double decide_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     std::unordered_map<uint64_t, std::vector<const PipeNote*>> by_program;
     for (const auto& n : predicted) by_program[n->prog].push_back(n.get());
     std::vector<uint64_t> keys;
     for (const auto& kv : by_program) keys.push_back(kv.first);
-    std::atomic<size_t> next{0}, done{0}, made{0};
+    std::atomic<size_t> next{0}, done{0}, made{0}, same{0};
     // (hookshot) No time budget by default: every predicted pipeline is built here, in the preparation, under its progress bar (the
     // start-up screen's and the builder's), not in play. RX_VK_PREDICT_S=<seconds> sets one: those not built by then are built in
     // play when first drawn. The budget (90 s) came when #1051 let the prediction find its programs again: ~28,000 pipelines, many
@@ -7935,11 +7940,21 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
             const auto& list = by_program[keys[i]];
             program_cache_borrow(keys[i], [&](Program& p) {
                 ensure_layout(p);
+                // (each pipeline once, by the key play looks it up by (pipeline_key): the prediction's vertex classes tell apart the
+                // exact topology and each stream's stride, which a pipeline takes as dynamic state, and a mesh program takes no
+                // vertex layout at all, so several predictions can be the one pipeline)
+                std::unordered_set<uint64_t> built;
                 for (const PipeNote* n : list)
-                    if (n->variant == p.variant)
+                    if (n->variant == p.variant) {
                         // (a mesh fallback program's own topology: its donor's may be an ordinary draw's, pipeline_topology)
-                        if (const VkPipeline pl = build_graphics(p, n->s, note_targets(*n), pipeline_topology(p, (VkPrimitiveTopology)n->topo)))
-                            vkDestroyPipeline(dev.device, pl, nullptr), made++;
+                        const VkPrimitiveTopology topo = pipeline_topology(p, (VkPrimitiveTopology)n->topo);
+                        const Targets at = note_targets(*n);
+                        if (!built.insert(pipeline_key(p, n->s, at, topo)).second) {
+                            same++;
+                            continue;
+                        }
+                        if (const VkPipeline pl = build_graphics(p, n->s, at, topo)) vkDestroyPipeline(dev.device, pl, nullptr), made++;
+                    }
             });
             done += list.size();
         }
@@ -7954,9 +7969,11 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     for (std::thread& t : threads) t.join();
     if (progress) progress(done.load(), predicted.size());
     const double all_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    logf("vk: predicted %zu pipelines from %zu notes for %zu program variants no note names: %zu made in %.1f s (%.1f s deciding them, "
-         "%.1f s building them on %zu threads)%s", predicted.size(), notes.size(), programs, made.load(), all_s, decide_s, all_s - decide_s,
-         threads.size(),
+    logf("vk: predicted %zu pipelines from %zu notes for %zu program variants no note names: %zu made, %zu the same pipeline as "
+         "another, in %.1f s (%.1f s deciding them, %.1f s building them on %zu threads); left out as no draw could ask for them: %zu "
+         "by their vertex input types, %zu by their colour output types (%zu program variants with none left; %zu notes whose own "
+         "types do not fit)%s", predicted.size(), notes.size(), programs, made.load(), same.load(), all_s, decide_s, all_s - decide_s,
+         threads.size(), left_out.vertex_types, left_out.output_types, left_out.variants_unfit, left_out.notes_unfit,
          out_of_time.load() ? " (the time budget, RX_VK_PREDICT_S, ran out: the rest are built in play)"
          : prepare_stopped() ? " (stopped: the window was closed; the driver keeps what was built)" : "");
 }
