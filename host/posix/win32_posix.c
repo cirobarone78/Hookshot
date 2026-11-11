@@ -87,18 +87,22 @@ static struct timespec rel_ms(DWORD ms) {
 }
 void WakeConditionVariable(CONDITION_VARIABLE *cv) {
     __atomic_add_fetch(&cv->seq, 1, __ATOMIC_SEQ_CST);
-    futex(&cv->seq, FUTEX_WAKE_PRIVATE, 1, NULL);
+    if (__atomic_load_n(&cv->waiters, __ATOMIC_SEQ_CST))
+        futex(&cv->seq, FUTEX_WAKE_PRIVATE, 1, NULL);
 }
 void WakeAllConditionVariable(CONDITION_VARIABLE *cv) {
     __atomic_add_fetch(&cv->seq, 1, __ATOMIC_SEQ_CST);
-    futex(&cv->seq, FUTEX_WAKE_PRIVATE, INT_MAX, NULL);
+    if (__atomic_load_n(&cv->waiters, __ATOMIC_SEQ_CST))
+        futex(&cv->seq, FUTEX_WAKE_PRIVATE, INT_MAX, NULL);
 }
 static BOOL cv_wait(CONDITION_VARIABLE *cv, DWORD ms, void (*unlock)(void *), void (*relock)(void *, ULONG), void *l, ULONG flags) {
     const uint32_t seq = __atomic_load_n(&cv->seq, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&cv->waiters, 1, __ATOMIC_SEQ_CST);
     unlock(l);
     struct timespec ts = rel_ms(ms);
     const long r = futex(&cv->seq, FUTEX_WAIT_PRIVATE, seq, ms == INFINITE ? NULL : &ts);
     const int timed_out = r == -1 && errno == ETIMEDOUT;
+    __atomic_sub_fetch(&cv->waiters, 1, __ATOMIC_SEQ_CST);
     relock(l, flags);
     if (timed_out) { last_error = ERROR_TIMEOUT; return FALSE; }
     return TRUE;
@@ -216,10 +220,17 @@ static void thread_finish(DWORD code) {
     self_thread = NULL;
     thread_unref(t);
 }
+static void apply_thread_priority(HThread *t) {
+    const int p = __atomic_load_n(&t->priority, __ATOMIC_SEQ_CST);
+    const int nice = p <= THREAD_PRIORITY_IDLE ? 19 : p <= THREAD_PRIORITY_LOWEST ? 10 : p == THREAD_PRIORITY_BELOW_NORMAL ? 5 : 0;
+    const pid_t tid = __atomic_load_n(&t->tid, __ATOMIC_SEQ_CST);
+    if (nice && tid) setpriority(PRIO_PROCESS, (id_t)tid, nice);
+}
 static void *thread_entry(void *p) {
     HThread *t = (HThread *)p;
     self_thread = t;
-    t->tid = (pid_t)syscall(SYS_gettid);
+    __atomic_store_n(&t->tid, (pid_t)syscall(SYS_gettid), __ATOMIC_SEQ_CST);
+    apply_thread_priority(t);
     thread_finish(t->fn(t->arg));
     return NULL;
 }
@@ -272,9 +283,8 @@ BOOL DuplicateHandle(HANDLE sp, HANDLE src, HANDLE tp, HANDLE *out, DWORD access
 BOOL SetThreadPriority(HANDLE h, int p) {
     HThread *t = thread_of(h);
     if (!t) { last_error = ERROR_INVALID_HANDLE; return FALSE; }
-    t->priority = p;
-    const int nice = p <= THREAD_PRIORITY_IDLE ? 19 : p <= THREAD_PRIORITY_LOWEST ? 10 : p == THREAD_PRIORITY_BELOW_NORMAL ? 5 : 0;
-    if (nice && t->tid) setpriority(PRIO_PROCESS, (id_t)t->tid, nice);
+    __atomic_store_n(&t->priority, p, __ATOMIC_SEQ_CST);
+    apply_thread_priority(t);
     return TRUE;
 }
 int GetThreadPriority(HANDLE h) {
