@@ -35,8 +35,10 @@ struct HosThread {
     /* the kernel side (hos_svc.c): this thread's Horizon handle and the event it blocks on */
     uint32_t kernel_handle;
     HANDLE wake;
-    /* virtual cores (HOS_VCORES): the core held + 1 (0: none), the last one, a better waiter's request, queued */
-    int vc_held, vc_last, vc_queued;
+    /* virtual cores (HOS_VCORES): the core held + 1 (0: none), the last one, a better waiter's request, queued, and
+       whether it has run without one since an escape (vc_acquire; until its next block, hos_vcore_away, or the next
+       hos_vcore_back) */
+    int vc_held, vc_last, vc_queued, vc_escaped;
     volatile int vc_kick;
     int64_t vc_since;
     CONDITION_VARIABLE vc_cv;
@@ -565,6 +567,7 @@ void hos_thread_destroy(HosThread *t) {
         if (threads[i] == t) { threads[i] = threads[--nthreads]; break; }
     ReleaseSRWLockExclusive(&threads_lock);
     if (t->handle) CloseHandle(t->handle);
+    if (t->wake) CloseHandle(t->wake);
     free(t);
 }
 
@@ -829,19 +832,37 @@ int64_t hos_now_ns(void) {
     return (int64_t)((now.QuadPart / freq.QuadPart) * 1000000000LL + (now.QuadPart % freq.QuadPart) * 1000000000LL / freq.QuadPart);
 }
 
-static void sleep_ns(int64_t ns);
-/* (virtual cores: a sleep gives the core up, SleepThread(0) offers it to a waiter as good) */
-void hos_sleep_ns(int64_t ns) {
+static void sleep_ns(int64_t ns, int guest);
+/* How sleeps under a millisecond wait: 0, all yield until their time; 1, the game's own (SleepThread) wait on the timer,
+   which wakes about 0.5 ms late, and the host's (the frame limiter, the audio renderer) yield; 2, all wait on the timer.
+   asked: the value of HOS_SHORT_SLEEP_TIMER, NULL when it is not set; set, it is read by env_on's rule (on: the timer for
+   all, 2; off: yielding for all, 0). threads: the logical processors this process may run on, 0 when not known. Not set:
+   1 with SHORT_SLEEP_TIMER_THREADS of them or fewer, which is no more than the game's six cores, else 0.
+   OoT's idle job workers sleep 20 us and look again, about 7,600 times a second, and a yielding loop keeps a processor
+   busy for each: with so few processors that is time the frame's threads need. Measured with the game held to part of a
+   5700X3D: on 4 threads Hyrule Field went from 47 to 51 fps and lost its long frames (over 250 ms in 2 of 4 runs
+   yielding, in none with the timer), Kokiri's worst frame went from 53-422 ms to 30 ms; on 6 the frame rate stayed and a
+   frame's CPU time fell 9 %. On 8 threads and more yielding stays: with the timer for all sleeps there were no long
+   frames either way and Kokiri lost 0.2 fps under its cap, and the timer made TOTK's 20 us waits for its job workers 25x
+   longer, ~2000 a second on the frame's critical path. */
+enum { SHORT_SLEEP_TIMER_THREADS = 6 };
+static int hos_short_sleep_timer(const char *asked, int threads) {
+    if (asked) return env_value_off(asked) ? 0 : 2;
+    return threads > 0 && threads <= SHORT_SLEEP_TIMER_THREADS ? 1 : 0;
+}
+/* (virtual cores: a sleep gives the core up, SleepThread(0) offers it to a waiter as good) guest: the game's own sleep */
+static void sleep_away(int64_t ns, int guest) {
     if (ns <= 0) {
         hos_vcore_yield();
         SwitchToThread();
         return;
     }
     const int away = hos_vcore_away();
-    sleep_ns(ns);
+    sleep_ns(ns, guest);
     if (away) hos_vcore_back();
 }
-static void sleep_ns(int64_t ns) {
+void hos_sleep_ns(int64_t ns) { sleep_away(ns, 0); }
+static void sleep_ns(int64_t ns, int guest) {
     /* A high-resolution waitable timer (one per thread) sleeps to within ~0.5 ms without spinning; Sleep() rounds to
        the timer resolution, so without one the last millisecond is spun (threads that sleep in short steps, the
        vibration thread for one, used 15% of a core spinning). */
@@ -868,11 +889,28 @@ static void sleep_ns(int64_t ns) {
     while (hos_now_ns() < until) sched_yield();
     return;
 #endif
-    /* Under a millisecond: yielded away until the time (the timer's ~0.5 ms granularity made TOTK's 20 us waits for
-       its job workers 25x longer, ~2000 a second on the frame's critical path). HOS_SHORT_SLEEP_TIMER=1: as before */
+    /* Under a millisecond: yielded away until the time, or the timer for the game's own sleeps where the processors
+       are few (hos_short_sleep_timer). HOS_SHORT_SLEEP_TIMER=1: the timer always, 0: never, not set: by the processors */
     static int short_timer = -1;
-    if (short_timer < 0) short_timer = env_on("HOS_SHORT_SLEEP_TIMER");
-    if (ns < 1000000 && !short_timer) {
+    if (short_timer < 0) {
+        int threads = 0;
+#if defined(_WIN32)   /* (measured on Windows only: elsewhere the timer when asked for) */
+        /* (with more than one processor group the mask is one group's, not the process's: not known then) */
+        DWORD_PTR proc = 0, sys = 0;
+        if (GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys))
+            threads = __builtin_popcountll((uint64_t)proc);
+#endif
+        const int how = hos_short_sleep_timer(getenv("HOS_SHORT_SLEEP_TIMER"), threads);
+        /* (the line says what was chosen, before any thread has made its timer: where the high-resolution timer cannot
+           be made, Windows before 10 1803, a short sleep falls through to the yield loop at the end and nothing changes) */
+        static volatile LONG told;
+        if (how && !InterlockedExchange(&told, 1))
+            hos_log("sleep: %s sleeps under a millisecond wait on the timer where Windows has the high-resolution one "
+                    "(%d logical processors; HOS_SHORT_SLEEP_TIMER=0: all yield)",
+                    how == 2 ? "all" : "the game's", threads);
+        short_timer = how;
+    }
+    if (ns < 1000000 && short_timer < (guest ? 1 : 2)) {
         while (hos_now_ns() < until)
             if (!SwitchToThread()) YieldProcessor();
         return;
@@ -978,9 +1016,9 @@ void hos_sleep_logged(int64_t ns, uint64_t lr) {
     if (poll_cap && ns > poll_cap && ns <= 100000) ns = poll_cap;
     static int on = -1;
     if (on < 0) on = env_on("HOS_SLEEP_LOG");
-    if (!on) { hos_sleep_ns(ns); return; }
+    if (!on) { sleep_away(ns, 1); return; }
     const int64_t t0 = hos_now_ns();
-    hos_sleep_ns(ns);
+    sleep_away(ns, 1);
     const int64_t took = hos_now_ns() - t0;
     static SRWLOCK lk = SRWLOCK_INIT;
     static struct { uint64_t lr; int64_t n, asked, slept; } tab[64];
@@ -1415,6 +1453,7 @@ static void vc_acquire(HosThread *t) {
         const int64_t waited = hos_now_ns() - t0;
         if (waited > (worst ? esc_better : esc_eq)) {
             vc_dequeue(t);
+            t->vc_escaped = 1;
             vc_st.escapes++;
             static int logged;
             if (logged < 40) {
@@ -1464,15 +1503,29 @@ static void vc_yield(HosThread *t, int strict) {
     vc_release(t);
     vc_acquire(t);
 }
+/* 1 when the caller is to take a core again after its block (hos_vcore_back): it gave its core up, or it has run without
+   one since an escape. An escape lasts until the thread's next block, as every other thread waits for a core after one;
+   it took none again before, so an escaped thread ran with no core, and the core number of a core another thread held,
+   for the rest of its life (issue 1929) */
 int hos_vcore_away(void) {
     HosThread *t = cur;
-    if (!hos_vcores_on() || !t || !t->vc_held) return 0;
+    if (!hos_vcores_on() || !t) return 0;
+    if (!t->vc_held) {
+        const int escaped = t->vc_escaped;   /* (only the outermost block of nested ones takes the core again) */
+        t->vc_escaped = 0;
+        return escaped;
+    }
     vc_release(t);
     return 1;
 }
 void hos_vcore_back(void) {
     HosThread *t = cur;
-    if (hos_vcores_on() && t && !t->vc_held) vc_acquire(t);
+    if (!hos_vcores_on() || !t) return;
+    /* after it the thread holds a core or has escaped again (vc_acquire sets the flag again): the escape the flag stood
+       for has ended, also at a back without its away (a thread's start). A flag left up while a core is held would make
+       a later inner block's away answer 1 and take a core in the middle of the outer block */
+    t->vc_escaped = 0;
+    if (!t->vc_held) vc_acquire(t);
 }
 /* Lifted code calls this from its interrupt polls with the loop's guest registers still in host registers (a64_poll_cur,
    mkw_glue.c: the poll hands over no context, so the compiler need not spill them). It, and everything it calls, must never

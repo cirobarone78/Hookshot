@@ -129,7 +129,7 @@ static void test_keyboard() {
 // (menu_tick's Esc block, after the keys are read: what it reaches, stubbed)
 static std::atomic<bool> open_now;
 static int page, ask_sel, listening;
-static bool changed;
+static bool changed, tune_mode;   // (tune_mode: the compact bar, opened by holding its key; not held here)
 static bool restart_ask() { return false; }
 static int detect_pad_layout() { return 0; }
 static void dlss_probe() {}
@@ -147,10 +147,12 @@ static bool tick_key(const Options& o, int key, bool queued, bool open_before, b
     queued_key = queued ? key : 0;
     // KEY_POLL
     open_now = open_before;
-    page = 0, listening = 0, changed = false;
+    page = 0, listening = 0, changed = false, tune_mode = open_before;
+    const bool tune_down = false;
     auto later = [] {};
     // ESC_BLOCK
     CHECK(changed == (open_now.load() != open_before) && page == 0 && listening == 0);
+    CHECK(tune_mode == (open_before && open_now.load()));   // (Esc opens the full menu, not the compact bar)
     (void)ask_sel;
     *back = press[5];
     return open_now.load();
@@ -202,9 +204,9 @@ static int loaded_as(int shortcut, int version) {
     }
     opts = Options{};
     mic_want.clear();
-    bool has_options = false;
+    bool has_options = false, has_vram_budget = false, has_memory_budget = false;
     // LOAD_OPTIONS
-    CHECK(has_options);
+    CHECK(has_options && !has_vram_budget && !has_memory_budget);
     return opts.menu_shortcut;
 }
 
