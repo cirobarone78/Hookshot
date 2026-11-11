@@ -803,11 +803,18 @@ class Builder(tk.Tk):
         note = ttk.Label(box, textvariable=said, style="Small.TLabel", wraplength=wrap or self.px(600), justify="center")
 
         def save():
-            said.set(share_pipeline_list(folder, copy=self.copy_text))
+            button.state(["disabled"])   # (one save at a time)
+            said.set("Saving...")
             note.pack(pady=(self.px(2), 0))
+            self.update_idletasks()
+            try:
+                said.set(share_pipeline_list(folder, copy=self.copy_text))
+            finally:
+                button.state(["!disabled"])
 
-        ttk.Button(box, text="Save my pipeline list (helps remove stutter)", style="Link.TButton", cursor="hand2",
-                   command=save).pack()
+        button = ttk.Button(box, text="Save my pipeline list (helps remove stutter)", style="Link.TButton", cursor="hand2",
+                            command=save)
+        button.pack()
         return box
 
     def copy_text(self, text):

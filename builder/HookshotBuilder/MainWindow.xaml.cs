@@ -351,9 +351,14 @@ public partial class MainWindow : Window
         try
         {
             using var p = Process.Start(si)!;
-            _ = p.StandardError.ReadToEndAsync();   // (drained, so a long complaint cannot stall it)
+            var stderr = p.StandardError.ReadToEndAsync();   // (drained, so a long complaint cannot stall it)
             var line = p.StandardOutput.ReadToEnd().Trim().Split('\n').LastOrDefault() ?? "";
             p.WaitForExit();
+            if (!line.StartsWith("{"))   // (the script stopped before its answer: what it said last)
+            {
+                var last = stderr.Result.Trim().Split('\n').LastOrDefault()?.Trim();
+                return (null, null, 0, "The pipeline list could not be saved" + (string.IsNullOrEmpty(last) ? "." : ": " + last));
+            }
             using var doc = System.Text.Json.JsonDocument.Parse(line);
             var r = doc.RootElement;
             if (r.GetProperty("ok").GetBoolean())

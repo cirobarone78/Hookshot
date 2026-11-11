@@ -41,7 +41,7 @@ inline long long check_list(const std::string& bytes, bool present, std::string*
     const size_t over = (bytes.size() - 12) % size;
     if (over)
         return no(std::string(kListName) + " cannot be shared: cut short (" + std::to_string(over) +
-                  " bytes over the last whole record).");
+                  " bytes over the last whole record). Delete it, play again, then save it again.");
     const long long n = (long long)((bytes.size() - 12) / size);
     if (!n) return no(std::string(kListName) + " holds no pipelines yet. Play a while, then save it again.");
     return n;

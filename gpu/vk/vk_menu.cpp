@@ -1454,6 +1454,9 @@ void prompts_at_once(const Row& r) {
 namespace ps = pipeline_share;
 std::string share_said;    // (the help box's line after a save: where the zip went and what to do, or why there is none)
 std::string share_value;   // (the row's value after a save: Saved, or Not saved)
+constexpr const char* kShareSaidLongest = "Saved hookshot-pipelines-2026-12-31.zip (123456 pipelines) in Downloads. The report "
+    "is in the zip. Open github.com/NotRexed/Hookshot/issues/2034 and attach the zip to a comment, then paste the report and say "
+    "where you played.";   // (measure_help: the help box's room)
 std::string share_saved;   // (the first sentence: the zip's name, its pipelines and its folder)
 std::atomic<bool> share_busy{false};   // (the worker is copying and opening: presses wait for it)
 std::atomic<int> share_result{-1};     // (the worker's answer: 1 copied, 2 the issue opened; -1 none waiting)
@@ -1499,13 +1502,16 @@ void share_find_mods(const std::string& dir, const std::string& name, int depth,
 }
 std::string share_os() {
 #ifdef _WIN32
-    using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
-    OSVERSIONINFOW v{sizeof v};
+    using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOEXW*);
+    OSVERSIONINFOEXW v{};
+    v.dwOSVersionInfoSize = sizeof v;
     const auto get = (RtlGetVersionFn)(void*)GetProcAddress(GetModuleHandleA("ntdll.dll"), "RtlGetVersion");
     if (!get || get(&v) != 0) return "Windows";
-    char b[64];
-    snprintf(b, sizeof b, "Windows %s (%lu.%lu.%lu)", v.dwMajorVersion == 10 && v.dwBuildNumber >= 22000 ? "11" : v.dwMajorVersion == 10 ? "10" : "",
-             v.dwMajorVersion, v.dwMinorVersion, v.dwBuildNumber);
+    // (Windows 11 is still 10.0, from build 22000; a server says so instead: wProductType VER_NT_WORKSTATION is 1)
+    const char* name = v.wProductType != 1 ? "Windows Server" : v.dwMajorVersion == 10 && v.dwBuildNumber >= 22000 ? "Windows 11"
+                       : v.dwMajorVersion == 10 ? "Windows 10" : "Windows";
+    char b[80];
+    snprintf(b, sizeof b, "%s (%lu.%lu.%lu)", name, v.dwMajorVersion, v.dwMinorVersion, v.dwBuildNumber);
     return b;
 #else
     std::string pretty;
@@ -1616,7 +1622,9 @@ bool share_spawn(std::vector<std::string> argv, const std::string* input = nullp
 bool share_clipboard(const std::string& text) {
 #ifdef _WIN32
     const int n = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-    if (n <= 0 || !OpenClipboard(nullptr)) return false;
+    bool open = false;   // (another program can hold the clipboard a moment: a few tries)
+    for (int i = 0; n > 0 && !open && i < 5; i++) open = OpenClipboard(app_window()) || (Sleep(20), false);
+    if (!open) return false;
     EmptyClipboard();
     bool ok = false;
     if (HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, (size_t)n * sizeof(wchar_t))) {
@@ -1652,6 +1660,45 @@ bool share_open(const std::string& what, bool select = false) {
     return share_spawn({"xdg-open", what});
 #endif
 }
+/// The zip at path, through <path>.new made fresh (never one that was there, nor a link's target) and moved over what was there
+bool share_write(const std::string& path, const std::string& data) {
+    const std::string part = path + ".new";
+#ifdef _WIN32
+    auto wide = [](const std::string& u) {
+        std::wstring w(MultiByteToWideChar(CP_UTF8, 0, u.c_str(), -1, nullptr, 0), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, u.c_str(), -1, w.data(), (int)w.size());
+        w.resize(wcslen(w.c_str()));
+        return w;
+    };
+    const std::wstring wpart = wide(part), wpath = wide(path);
+    DeleteFileW(wpart.c_str());   // (a run that stopped halfway)
+    HANDLE h = CreateFileW(wpart.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD done = 0;
+    bool ok = WriteFile(h, data.data(), (DWORD)data.size(), &done, nullptr) && done == data.size();
+    ok = CloseHandle(h) && ok;
+    ok = ok && MoveFileExW(wpart.c_str(), wpath.c_str(), MOVEFILE_REPLACE_EXISTING);
+#else
+    unlink(part.c_str());   // (a run that stopped halfway; a link is removed, not followed)
+    const int fd = open(part.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+    if (fd < 0) return false;
+    bool ok = true;
+    for (size_t at = 0; ok && at < data.size();) {
+        const ssize_t n = write(fd, data.data() + at, data.size() - at);
+        ok = n > 0, at += ok ? (size_t)n : 0;
+    }
+    ok = close(fd) == 0 && ok;
+    ok = ok && rename(part.c_str(), path.c_str()) == 0;
+#endif
+    if (!ok) {
+#ifdef _WIN32
+        DeleteFileW(wpart.c_str());
+#else
+        unlink(part.c_str());
+#endif
+    }
+    return ok;
+}
 /// The template's values from this run: the version, the OS, the GPU and its driver, the output, the upscaler and the 3D's size,
 /// frame generation and HDR as the menu has them now, and the mods
 std::vector<std::string> share_values(long long pipelines, bool v2) {
@@ -1665,7 +1712,10 @@ std::vector<std::string> share_values(long long pipelines, bool v2) {
     std::vector<std::string> mods;
     const char* env = getenv("HOS_MODS");
     share_find_mods(env && *env ? std::string(env) : game_folder() + "mods", "", 0, mods);
-    std::sort(mods.begin(), mods.end());
+    std::sort(mods.begin(), mods.end(), [](const std::string& a, const std::string& b) {   // (case-insensitive, as the builders sort)
+        return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
+                                            [](char x, char y) { return tolower((unsigned char)x) < tolower((unsigned char)y); });
+    });
     v[5] = ps::mods_text(mods);
     v[7] = ps::pipelines_text(pipelines, v2);
     return v;
@@ -1699,14 +1749,7 @@ void share_pipeline_list() {
     const char* sep = "/";
 #endif
     const std::string path = dir + (dir.back() == '/' || dir.back() == '\\' ? "" : sep) + name;
-    bool written = false;
-    if (FILE* f = fopen((path + ".new").c_str(), "wb")) {
-        written = fwrite(zip.data(), 1, zip.size(), f) == zip.size();
-        written = fclose(f) == 0 && written;
-        remove(path.c_str());
-        written = written && rename((path + ".new").c_str(), path.c_str()) == 0;
-        if (!written) remove((path + ".new").c_str());
-    }
+    const bool written = share_write(path, zip);
     std::string folder = dir;   // (its name alone: no user name on screen)
     while (folder.size() > 1 && (folder.back() == '/' || folder.back() == '\\')) folder.pop_back();
     folder = folder.substr(folder.find_last_of("\\/") + 1);
@@ -1978,6 +2021,8 @@ float measure_help(ui::Ctx& c, float width) {
         for (int v = r.lo; r.value && r.hint && v <= r.hi; v++)
             for (int k = 0; const char* t = r.hint(v, k); k++)
                 hint = std::max(hint, ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, t, width - 18 * c.s, false));
+        if (is_share_row(r))   // (Save my pipeline list's line after a save, at its longest: the narrow layout keeps room for it)
+            hint = ui::para(c, c.f.body, 16 * c.s, ImVec2(), 0, kShareSaidLongest, width - 18 * c.s, false);
         if (r.help) most = std::max(most, ui::para(c, c.f.body, 18 * c.s, ImVec2(), 0, r.help, width, false) + (hint ? 14 * c.s + hint : 0));
     }
     return most;

@@ -159,7 +159,7 @@ def check_python(tmp):
     # refused: missing, not a list, cut short, empty; no zip each time
     bad = {"missing": None, "not a list": b"PK\x03\x04" + bytes(600), "cut short": v2_list(2)[:-5],
            "empty": share.pipeline_states.MAGIC2 + struct.pack("<I", share.pipeline_states.SIZE2)}
-    words = {"missing": "No pipeline list yet", "not a list": "not a pipeline state list", "cut short": "cut short",
+    words = {"missing": "No pipeline list yet", "not a list": "not a pipeline state list", "cut short": "Delete it, play again",
              "empty": "holds no pipelines"}
     for name, content in bad.items():
         if content is None:
@@ -227,6 +227,8 @@ def check_cxx(cxx, tmp):
             py = -1
         assert int(n) == py, "%s: the C++ counts %s, the Python %d" % (name, n, py)
         assert (int(n) < 0) == bool(why), (name, n, why)
+        if name == "cut short":
+            assert "Delete it, play again" in why, why
     n, why = run("check", "-").stdout.splitlines()[:2]
     assert n == "-1" and "No pipeline list yet" in why, (n, why)
     # its zip: exactly the two files, readable, the list's bytes as they were
@@ -299,6 +301,7 @@ def check_sources():
     assert body.find("std::thread([") > body.find('env_on("HOS_HEADLESS")'), "the opens are not on the worker"
     for call in ("share_clipboard(", "share_open(ps::kIssueUrl)", '"CoInitializeEx"', "co_uninit()", "share_result.store("):
         assert call in worker, "the worker lacks " + call
+    assert "kShareSaidLongest" in menu[menu.find("float measure_help("):][:900], "the help box has no room kept for the line after a save"
     assert "share_finish();" in menu[menu.find("void menu_tick() {"):][:400], "menu_tick never collects the worker's answer"
     spawn = menu[menu.find("bool share_spawn("):]
     spawn = spawn[:spawn.index("\n}\n")]

@@ -75,6 +75,8 @@ def read_list(path):
         why = str(e).replace(path + ": ", "")
         if why.startswith("not a pipeline state list"):   # (its advice is the developers': make it again with this build)
             why = "it is not a pipeline state list this build reads"
+        if why.startswith("cut short"):   # (a game that ended while it wrote: the file cannot be trusted past there)
+            why += ". Delete it, play again, then save it again"
         raise ShareError("%s cannot be shared: %s." % (LIST, why.rstrip(".")))
     if not recs:
         raise ShareError("%s holds no pipelines yet. Play a while, then save it again." % LIST)
@@ -244,7 +246,10 @@ def os_text():
             build = int(version.split(".")[2])
         except (IndexError, ValueError):
             build = 0
-        return "Windows %s (%s)" % ("11" if build >= 22000 else release or "", version) if version else "Windows"
+        edition = getattr(platform, "win32_edition", lambda: "")() or ""
+        name = "Windows Server" if "server" in edition.lower() else "Windows 11" if build >= 22000 else \
+            ("Windows %s" % release if release else "Windows")
+        return "%s (%s)" % (name, version) if version else name
     pretty = ""
     for path in ("/etc/os-release", "/usr/lib/os-release"):
         try:
