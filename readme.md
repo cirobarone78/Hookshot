@@ -371,10 +371,10 @@ HDR peak brightness show only while HDR is on.
   stretched across the 32:9 output, sharp but wide. For a size the menu does not offer (3440x1440, 2560x1080, ...), set
   `output_res=<width>x<height>` in `hookshot_options.ini`: each side a multiple of 8, at least 640x360, at most 5120x2880's
   pixels, and between 5:4 and 48:9 in shape; anything else uses the game's 2048x1152. The menu then offers it as its own
-  choice. With **Ultrawide** on, a picture wider than 16:9 is kept to 3840x2160's pixels, so above that a wide size is not a
+  choice. With **Ultrawide** on, a picture wider than 16:9 is kept to 5120x2160's pixels, so above that a wide size is not a
   native frame. A custom output wider than 32:9 also sets the camera shape, even when the OS reports a single
   16:9 primary monitor. For three 16:9 monitors, use `5760x1080` or `7680x1440` and a window or logical display
-  that spans all three. The 7680x1440 output uses a smaller 48:9 internal picture to stay within the pixel budget.
+  that spans all three. Both render at full size: 7680x1440 has 5120x2160's pixels, the most a wide picture takes.
   For one run, set `HOS_OUTPUT_RES` to a size, such as `HOS_OUTPUT_RES=3840x2160`.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest
   picture, set the Output resolution to your screen's, and the row shows "Not needed (window = output)". It and
@@ -389,9 +389,12 @@ HDR peak brightness show only while HDR is on.
   there is no ghosting, but no anti-aliasing either: edges are jagged, and below 100% the picture is soft. The Render
   resolution then sets the 3D's size alone (Auto, 100%, 75%, 67%, 50%, 33%): lower is faster. RX_VK_DLSS, RX_VK_FSR4 and
   RX_VK_FSR set for a run go over it, as over the row's other choices.
-- **Texture detail with DLSS, FSR 3.1 or FSR 4:** below 75% Render resolution, the world's textures are sampled one finer
-  mip step for each halving of the 3D (the game already does so for its own 75%), so the upscaled picture keeps their
-  detail. `RX_VK_UPSCALE_LOD_BIAS=0` turns it off.
+- **Texture detail with DLSS, FSR 3.1 or FSR 4:** DLSS and DLAA sample the world's textures as NVIDIA's DLSS guide asks:
+  at the output's size and one mip step finer (the game's own bias + log2(3D / output) - 1), which DLSS resolves over its
+  frames, so they keep the detail of the full-size picture instead of the 3D's smaller size. FSR 3.1 and FSR 4 sample them
+  one finer mip step for each halving of the 3D below 75% (the game already does so for its own 75%).
+  `RX_VK_UPSCALE_LOD_BIAS=0` turns it off; `RX_VK_DLSS_LOD_OFFSET=<steps>` sets DLSS's extra step for a run (-1 by default,
+  0 for none, down to -3).
 - **NVIDIA Reflex** Off is the game as without it. `RX_VK_REFLEX_LOG=1` logs the driver's latency timings every 300
   frames while it is on.
 - **AMD Anti-Lag 2** Off is the game as without it. Like Reflex, it is not used while Frame generation is on.
