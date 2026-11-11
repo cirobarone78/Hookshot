@@ -750,7 +750,7 @@ Row rows[] = {
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
      "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex},
     {TAB_GRAPHICS, "AMD Anti-Lag 2", &opts.antilag, 0, 1, 1, tx_antilag,
-     "AMD GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_antilag},
+     "AMD GPUs: each frame starts as late as it can, for less input delay. With frame generation too.", hn_antilag},
     // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, then the window)
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res,
      "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",

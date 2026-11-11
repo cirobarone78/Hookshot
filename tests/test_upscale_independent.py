@@ -38,7 +38,7 @@ def main():
     assert replay.index("std::lock_guard lk(replay_mu)") < capture < age
     assert capture < replay.index("tex->last_frame = texture_frame_no();") < age
     assert capture < replay.index("tex->last_value = std::max(tex->last_value, value);") < age
-    assert "present_image(src, sw, sh, crop, direct_view);" in replay
+    assert "present_image(src, sw, sh, crop, direct_view, antilag_frame());" in replay
     functions = (block(source, "struct ScaleState") + " scale;\n" + block(source, "struct WideSides") + ";\nstd::atomic<WideSides> wide_now;\n" +
                  block(source, "bool init_scale(") + "\n" +
                  block(source, "bool framegen_wanted(") + "\n" + block(source, "bool framegen_on(") + "\n" +

@@ -3317,7 +3317,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         log_frame_stats();
     }
     if (dev.offscreen || interpolated) return;
-    present_image(src, sw, sh, crop, direct_view);
+    present_image(src, sw, sh, crop, direct_view, antilag_frame());
 }
 
 } // namespace
@@ -3513,9 +3513,9 @@ std::atomic<uint32_t> present_kind{0};   // (vk_framegen.cpp: 1 while a made fra
 // for the submit and the present. Held over vkAcquireNextImageKHR and the fence, it stopped the replay's submits for as long as
 // the swapchain had no image free, twice a frame with frame interpolation.
 std::mutex present_image_mu;
-static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk);   // (present_image's end, below)
+static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk, uint64_t antilag_frame);   // (present_image's end, below)
 thread_local PendingPresent* present_defer_into = nullptr;
-void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view) {
+void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, uint64_t antilag_frame) {
     std::lock_guard lk(present_image_mu);
     static int hdr_was = -1;   // (the Insert menu's HDR as the swapchain was made for it; -1: not yet looked at)
     const bool hdr_changed = hdr_was >= 0 && hdr_was != opts.hdr;   // (turned on or off: the swapchain's format)
@@ -3712,9 +3712,10 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         present_defer_into->index = index;
         present_defer_into->done = f.done;
         present_defer_into->swapchain = dev.swapchain;
+        present_defer_into->antilag_frame = antilag_frame;
         return;
     }
-    present_out(index, qk);
+    present_out(index, qk, antilag_frame);
 }
 
 bool present_commit(const PendingPresent& p) {
@@ -3722,12 +3723,12 @@ bool present_commit(const PendingPresent& p) {
     std::lock_guard lk(present_image_mu);
     std::unique_lock qk(dev.present_mu);
     if (p.swapchain != dev.swapchain) return false;   // (made again since the copy: that image is gone)
-    present_out(p.index, qk);
+    present_out(p.index, qk, p.antilag_frame);
     return true;
 }
 
 // The present of a swapchain image whose copy is submitted, as present_image ended before; qk holds dev.present_mu
-static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
+static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk, uint64_t antilag_frame) {
     VkResult res;
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.pNext = reflex_present_id(nullptr);   // (NVIDIA Reflex: the frame's present id, and its present's markers)
@@ -3736,7 +3737,7 @@ static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
     pi.swapchainCount = 1;
     pi.pSwapchains = &dev.swapchain;
     pi.pImageIndices = &index;
-    antilag_present();   // (AMD Anti-Lag 2: the frame's present stage)
+    antilag_present(antilag_frame);   // (AMD Anti-Lag 2: the present stage of the game frame it shows, if any)
     // (hookshot) vkQueuePresentKHR blocked a quarter of the display thread's time with frame interpolation at 4x (a 14700K and an
     // RTX 5070 Ti), and with the queue's lock held there the game's main thread waited ~9% of its time and the presentation thread
     // ~15% to submit. With a queue of their own (dev.present_queue, a compute family's: vk_main.cpp create_device) the presents go
