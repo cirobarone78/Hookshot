@@ -29,7 +29,7 @@ def main():
 
 using DWORD = unsigned long;
 constexpr int MAX_PATH = 260;
-DWORD hos_game_path_a(char *path, int size) { return snprintf(path, size, "./hookshot.exe"); }
+int hos_data_path(char *out, size_t cap, const char *name) { return snprintf(out, cap, "./%s", name) < (int)cap; }
 void hos_log(const char *, ...) {}
 volatile uint64_t hos_wide_out = 0;   // (host/hos_main.c: the widescreen picture, 0 = none; nn_applet.c reads it)
 struct { int handheld, output_res, ultrawide; } opts;

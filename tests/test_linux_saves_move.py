@@ -1,4 +1,4 @@
-"""The Linux game's move of its saves to $XDG_DATA_HOME/hookshot leaves a linked folder alone (host/hos_main.c, saves_dir).
+"""The Linux game's move of its saves to $XDG_DATA_HOME/hookshot leaves a linked folder alone (host/hos_data.c, move_saves).
 
 A user/ folder beside the game is moved to the new place at the first start. A symbolic link in it, to saves the player
 keeps elsewhere (a synced folder, another drive), was moved as a file: by rename, and one written from where it stood
@@ -6,8 +6,8 @@ keeps elsewhere (a synced folder, another drive), was moved as a file: by rename
 afterwards. That start still found the saves; the next found the link in user/, kept the old place for good and showed
 none. An entry the new place had already kept the old place too, but only after the others had gone.
 
-Linux only. Builds saves_dir and what it calls, from the source as it is, over host/posix/win32_posix.c, and starts it
-twice (the move, then the start after) on folders of its own:
+Linux only. Builds host/hos_data.c (hos_data_init, the game's start) over host/posix/win32_posix.c, puts it in game folders
+of its own beside an image.bin, as the builder makes them, and starts it twice (the move, then the start after):
 
 - a link, written in full or from where it stands, is made again in the new place to the same folder, whose files stay;
 - so is one deeper in (user/save/<user id>); one to an entry that moves too names it in the new place, and one that names
@@ -15,12 +15,13 @@ twice (the move, then the start after) on folders of its own:
 - from another drive too, when this PC has one to try (/dev/shm);
 - a user/ that is a link itself is used as it is;
 - with an entry the new place has already, nothing moves;
-- a user/ without links moves as before, and saves-moved.txt says where to.
+- a user/ without links moves as before, and files-moved.txt says where to.
 
 python -I -B tests/test_linux_saves_move.py [--cc gcc]
 """
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,21 +32,19 @@ USER_ID = "5a3c9e1f0b7d24680000000000000001"
 
 
 def build(cc, tmp):
-    source = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
-    start = source.index("static int is_dir(const char *p) {")
-    end = source.index("#endif", source.index("static const char *saves_dir(const char *beside) {"))
-    program = r'''#include <windows.h>
-#include <stdarg.h>
-#define SEP '/'
-#define SEP_S "/"
-static void hos_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); putchar(10); }
-''' + source[start:end] + r'''
-int main(int argc, char **argv) { if (argc != 2) return 2; printf("uses %s\n", saves_dir(argv[1])); return 0; }
+    program = r'''#include <stdarg.h>
+#include <stdio.h>
+void hos_data_init(int argc, char **argv);
+void hos_data_log_migration(void);
+const char *hos_user_dir;
+void hos_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); putchar(10); }
+int main(int argc, char **argv) { hos_data_init(argc, argv); hos_data_log_migration(); printf("uses %s\n", hos_user_dir); return 0; }
 '''
     src, exe = tmp / "mover.c", tmp / "mover"
     src.write_text(program, encoding="utf-8")
-    subprocess.run([cc, "-std=gnu11", "-D_GNU_SOURCE", "-w", "-I", str(ROOT / "host" / "posix"), str(src),
-                    str(ROOT / "host" / "posix" / "win32_posix.c"), "-o", str(exe), "-lpthread", "-ldl"], check=True)
+    subprocess.run([cc, "-std=gnu11", "-w", "-I", str(ROOT / "host" / "posix"), "-I", str(ROOT / "host"), str(src),
+                    str(ROOT / "host" / "hos_data.c"), str(ROOT / "host" / "posix" / "win32_posix.c"), "-o", str(exe),
+                    "-lpthread", "-ldl"], check=True)
     return exe
 
 
@@ -61,12 +60,14 @@ class Case:
         self.user, self.new = self.game / "user", self.data / "hookshot"
         self.sync = self.game.parent / (self.game.name + "-sync")   # (beside the game: "../../<name>-sync" from user/save)
         (self.user / "temp").mkdir(parents=True)
+        (self.game / "image.bin").write_bytes(b"")   # (a builder's game folder: the game in it, beside its image)
+        shutil.copy2(exe, self.game / "hookshot")
         (self.sync / USER_ID).mkdir(parents=True)
         (self.sync / USER_ID / "account.sav").write_text("my save", encoding="ascii")
 
     def start(self):
         env = dict(os.environ, XDG_DATA_HOME=str(self.data))
-        r = subprocess.run([str(self.exe), str(self.user)], env=env, capture_output=True, text=True, timeout=60)
+        r = subprocess.run([str(self.game / "hookshot")], env=env, capture_output=True, text=True, timeout=60)
         self.check(r.returncode == 0, "the start failed: %s" % r.stderr)
         return Path(r.stdout.strip().splitlines()[-1][len("uses "):])
 
@@ -84,7 +85,7 @@ class Case:
             self.check(self.start() == self.new, "start %d did not use the new place" % n)
         self.check((self.new / save / "account.sav").is_file(), "the save is not read from the new place")
         self.check(not self.user.exists(), "user/ is still there")
-        self.check("%s\n" % self.new in (self.game / "saves-moved.txt").read_text(encoding="utf-8"), "saves-moved.txt")
+        self.check("%s\n" % self.new in (self.game / "files-moved.txt").read_text(encoding="utf-8"), "files-moved.txt")
 
 
 def main():

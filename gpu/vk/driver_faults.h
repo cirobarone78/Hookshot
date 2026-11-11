@@ -13,7 +13,7 @@
 //
 // So a program the driver faulted on is not asked of it again:
 // - in this run (Quarantine::begin answers kFaulted for it);
-// - in later runs on the same driver (hookshot_driver_faults.txt beside the executable, one "<vendor> <driver> <key>" line a
+// - in later runs on the same driver (hookshot_driver_faults.txt in the game folder's cache/, one "<vendor> <driver> <key>" line a
 //   fault, read at the first build; a driver update tries them again).
 // Where the driver needs it, the builds of one program also run one at a time (serial): a second thread waits in
 // Quarantine::begin, outside the driver, and learns of the first one's fault there instead of being caught in the driver behind

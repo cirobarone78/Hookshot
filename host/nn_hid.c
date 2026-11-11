@@ -26,6 +26,7 @@
    pad } = 0x28 bytes. */
 #include "hos.h"
 #include "hos_paths.h"
+#include "hos_data.h"
 #include "control.h"
 #include <math.h>
 #include <stdio.h>
@@ -499,11 +500,11 @@ static void stick_max(int32_t stick[4], const int32_t v[4]) {
 }
 
 /* ---- (hookshot) the controls: the gamepad inputs (by position) and the keys that press each Switch button, from
-   hookshot_options.ini beside the executable when it has them: pad_<button>=<position>[,<position>] (HOS_PAD_*, -1 none) and
-   key_<button>=<key code>,<key code> (Windows key codes, 0 none), <button> one of bind_names. Read once, at the
-   first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left
-   stick's and the camera's directions. A key can be a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts
-   only while the mouse is captured ---- */
+   hookshot_options.ini in the data folder (host/hos_data.c) when it has them: pad_<button>=<position>[,<position>]
+   (HOS_PAD_*, -1 none) and key_<button>=<key code>,<key code> (Windows key codes, 0 none), <button> one of bind_names.
+   Read once, at the first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons
+   (HOS_KEY_*): the left stick's and the camera's directions. A key can be a mouse button (1 2 4 5 6: left, right, middle,
+   4, 5), which counts only while the mouse is captured ---- */
 static const char *const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus",
                                                   "minus", "left", "up", "right", "down", "move_up", "move_down",
                                                   "move_left", "move_right", "cam_up", "cam_down", "cam_left",
@@ -549,13 +550,8 @@ static void binds_load(void) {
     }
     binds_default();
     char path[MAX_PATH];
-    const DWORD len = hos_game_path_a(path, MAX_PATH);
-    char *slash = len ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
     FILE *f = NULL;
-    if (slash) {
-        snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
-        f = fopen(path, "r");
-    }
+    if (hos_data_path(path, sizeof path, "hookshot_options.ini")) f = fopen(path, "r");
     int changed = 0;
     if (f) {
         char line[80];

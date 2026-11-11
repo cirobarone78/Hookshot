@@ -1,11 +1,11 @@
-// The Insert menu (vk_menu.cpp): options that apply while the game runs, kept in hookshot_options.ini beside the executable.
+// The Insert menu (vk_menu.cpp): options that apply while the game runs, kept in hookshot_options.ini in the data folder (host/hos_data.c).
 #pragma once
 
 #include "vk_internal.h"
 
 namespace mkwvk {
 
-// (out of the box every feature is off: what the game does on its own. The ini beside the executable keeps a player's choices)
+// (out of the box every feature is off: what the game does on its own. The ini in the data folder keeps a player's choices)
 struct Options {
     int framegen = 0;     // made frames: 0 off, 1 Auto (to the display's refresh), or 2 to 8 times the game's frames
     int framegen_by = 0;  // (hookshot) who makes them at 2x and up: 0 Auto (NVIDIA DLSS Frame Generation where it runs, else the

@@ -1,7 +1,7 @@
 """Save my pipeline list: the zip a player attaches to the "Submit your pipelines" issue (#2034), so that the pipelines their play
 built go into the list the next release builds before the game (nx2/pipeline_states.py, assets/pipeline_states/README.md).
 
-The zip holds two files and nothing else: the game folder's hookshot_pipeline_states.bin (checked first as
+The zip holds two files and nothing else: the game folder's hookshot_pipeline_states.bin (in its cache/; checked first as
 nx2/pipeline_states.py --check checks a list: whole, of a format this build reads, holding pipelines) and
 hookshot_pipeline_report.txt, the issue's template filled in from the game folder: the version, the OS, the GPU and its driver
 (from the game's last log), the output and render resolution, the upscaler, frame generation and HDR (from
@@ -88,10 +88,29 @@ def check_list(path):
     return read_list(path)[1]
 
 
+def data_dirs(folder):
+    """Where the game keeps hookshot_options.ini for this game folder, as host/hos_data.c chooses it, in the order to look: the
+    game folder's user/ (a portable install, .hookshot_builder_home, or a second game folder whose saves stay there), the game
+    folder itself (a file still loose there is this folder's own: a build from before the data folder, not started since),
+    then the per-user data folder (%LOCALAPPDATA%\\Hookshot, $XDG_DATA_HOME/hookshot or ~/.local/share/hookshot), which
+    other game folders may share. A game started with --user is not seen here"""
+    dirs = [os.path.join(folder, "user"), folder]
+    if os.name == "nt":
+        if os.environ.get("LOCALAPPDATA"):
+            dirs.append(os.path.join(os.environ["LOCALAPPDATA"], "Hookshot"))
+    else:
+        xdg = os.environ.get("XDG_DATA_HOME", "")
+        dirs.append(os.path.join(xdg if xdg.startswith("/") else os.path.join(os.path.expanduser("~"), ".local", "share"),
+                                 "hookshot"))
+    return dirs
+
+
 def read_ini(folder):
     values = {}
+    path = next((p for p in (os.path.join(d, "hookshot_options.ini") for d in data_dirs(folder)) if os.path.isfile(p)),
+                os.path.join(folder, "hookshot_options.ini"))
     try:
-        with open(os.path.join(folder, "hookshot_options.ini"), encoding="utf-8", errors="replace") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 k, eq, v = line.strip().partition("=")
                 if eq and k:
@@ -185,7 +204,7 @@ def mods_text(names):
 
 
 def _log_lines(folder):
-    for d in (folder, os.path.join(folder, "bin")):
+    for d in (os.path.join(folder, "logs"), folder, os.path.join(folder, "bin")):   # (logs/: host/hos_data.c; the others before it)
         try:
             with open(os.path.join(d, "hookshot_log.txt"), encoding="utf-8", errors="replace") as f:
                 return f.read(4 << 20).splitlines()
@@ -302,10 +321,17 @@ def downloads_dir():
     return d if os.path.isdir(d) else home
 
 
+def list_path(folder):
+    """The game folder's pipeline list: in its cache/ (host/hos_data.c, gpu/vk/vk_draw.cpp state_list_path), or loose in the
+    folder from a build before cache/"""
+    cached = os.path.join(folder, "cache", LIST)
+    return cached if os.path.isfile(cached) else os.path.join(folder, LIST)
+
+
 def make_zip(folder, out_dir=None, day=None):
     """The zip for the issue, from the game folder: (its path, the filled template, the number of pipelines). ShareError when the
     list is missing or not one to share (nothing written then)"""
-    path = os.path.join(folder, LIST)
+    path = list_path(folder)
     data, recs = read_list(path)   # (read once: the bytes checked are the bytes zipped)
     text = template(details(folder, recs))
     out_dir = out_dir or downloads_dir()

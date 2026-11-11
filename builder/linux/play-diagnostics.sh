@@ -2,9 +2,13 @@
 # it is available even after the Builder's AppImage mount goes away.
 # Standard error is one end of a socket and standard input the other. The game
 # takes a socket on stderr for nowhere to log, so it writes hookshot_log.txt
-# itself; this keeps what it prints before that log opens, and its exit status.
+# itself; this keeps what it prints before that log opens, and its exit status,
+# in hookshot_startup.log in the game folder's logs folder, beside the game's own
+# log (host/hos_data.c); the game folder itself when that cannot be made.
 umask 077
-temporary=$(mktemp -d .hookshot-startup.XXXXXX) || exec "$1" </dev/null 2>/dev/null
+logs=logs
+mkdir -p -- "$logs" 2>/dev/null || logs=.
+temporary=$(mktemp -d "$logs/.hookshot-startup.XXXXXX") || exec "$1" </dev/null 2>/dev/null
 trap 'rm -f -- "$temporary/stderr" "$temporary/status"; rmdir -- "$temporary"' EXIT
 
 # Drain all of it so a noisy game can continue after the retained prefix is
@@ -23,5 +27,5 @@ exec 2>/dev/null
 wait "$reader"
 if [ -f "$temporary/stderr" ] && [ -f "$temporary/status" ]; then
     cat "$temporary/status" >> "$temporary/stderr" &&
-        mv -fT -- "$temporary/stderr" hookshot_startup.log
+        mv -fT -- "$temporary/stderr" "$logs/hookshot_startup.log"
 fi

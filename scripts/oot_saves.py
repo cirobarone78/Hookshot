@@ -12,8 +12,8 @@ pokedinner, eden, eglantine or nx2navi (to-lichii and to-hookshot still work: th
 lichii). --from/--to name the other side's folder instead of where it is looked for: the save folder itself (the one
 with account.sav and slot_*), or a folder above it (an emulator's data folder, a portable user folder, NX2navi's game
 folder), which is searched for the game's saves. --hookshot DIR does the same for Hookshot's side: its data folder
-(Linux: $XDG_DATA_HOME/hookshot, default ~/.local/share/hookshot) or, on Windows, its game folder (the one with
-image.bin and user\\), which has to be given there. The side being overwritten is copied first to
+(Linux: $XDG_DATA_HOME/hookshot, default ~/.local/share/hookshot; Windows: %LOCALAPPDATA%\\Hookshot), or the game folder
+of a build from before the data folder (the one with image.bin and user\\). The side being overwritten is copied first to
 <backup>/<import or export>-<name>-<YYYYmmdd-HHMMSS> (Linux: $XDG_DATA_HOME/oot-save-backups, Windows:
 %LOCALAPPDATA%\\Hookshot\\oot-save-backups; --backup-dir changes it). Close every game first: --force skips that check.
 Standard library only; the guide is docs/saves.md.
@@ -53,7 +53,7 @@ EMULATORS = [
                                    "windows": ["{localappdata}/Programs/NX2navi/game", "C:/Games/Ocarina"]},
             ["nx2navi", "ocarina"], []),
 ]
-HOOKSHOT = Program("hookshot", "Hookshot", {"linux": ["{data}/hookshot"], "windows": []}, ["hookshot"], [])
+HOOKSHOT = Program("hookshot", "Hookshot", {"linux": ["{data}/hookshot"], "windows": ["{localappdata}/Hookshot"]}, ["hookshot"], [])
 FOLDER = Program("folder", "the folder", {"linux": [], "windows": []}, [], [])
 
 # Where the save folders sit under a data folder. "<id>" is one folder per user profile (its name is the id shown).
@@ -62,7 +62,7 @@ LAYOUTS = (
     ("nand", "user", "save", "account", "<id>", TITLE, "0"),   # Eden's newer layout: used first when it exists
     ("nand", "user", "save", NO_ACCOUNT, "<id>", TITLE),        # Eden and its forks (Lichii, Eglantine, ...)
     ("profile", "save", "<id>"),                                 # NX2navi's game folder
-    ("user", "save", "<id>"),                                    # Hookshot's game folder on Windows
+    ("user", "save", "<id>"),                                    # a Hookshot game folder from before its data folder
     ("save", "<id>"),                                            # Hookshot's data folder
 )
 
@@ -161,9 +161,6 @@ def locate(program, override, flag):
         found = find_saves(d) if os.path.isdir(d) else {}
         if found:
             return d, found
-    if program is HOOKSHOT and not tried:
-        raise Fail("Hookshot's saves are in the user folder of your game folder on Windows: pass the game folder with "
-                   "--hookshot (for example --hookshot C:\\Games\\Hookshot)")
     raise Fail("no %s save found (looked in %s): start the game in %s once and save, or pass %s <folder>"
                % (program.display, ", ".join(tried) or "no default folder", program.display, flag))
 
@@ -383,7 +380,7 @@ def main(argv=None):
     p.add_argument("--from", dest="from_dir", metavar="DIR", help="import from this folder (a save, or one to search)")
     p.add_argument("--to", dest="to_dir", metavar="DIR", help="export to this folder (a save, or one to search)")
     p.add_argument("--lichii", metavar="DIR", help=argparse.SUPPRESS)   # (the old name of --from/--to)
-    p.add_argument("--hookshot", metavar="DIR", help="Hookshot's data folder (Windows: the game folder)")
+    p.add_argument("--hookshot", metavar="DIR", help="Hookshot's data folder (or an older build's game folder)")
     p.add_argument("--profile", metavar="ID", help="the emulator's profile, when several have saves")
     p.add_argument("--backup-dir", metavar="DIR", help="where the backup of the overwritten side goes")
     p.add_argument("--keep-settings", action="store_true", help="leave the target's option.sav (the game's settings) alone")

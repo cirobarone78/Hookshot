@@ -13,6 +13,7 @@
 #include "../gpu/vk/compat/hookshot_env.h"
 #endif
 #include "hos_paths.h"
+#include "hos_data.h"   /* (the data folder: saves, settings, the log, the caches) */
 #include "hos_wide_size.h"   /* (the widescreen picture's size, shared with the Insert menu) */
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/oot_cheat_items.h"
@@ -255,164 +256,8 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
 }
 
 void hos_update_check(void);   /* (host/hos_update.c) */
-#ifndef _WIN32
-/* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
-   A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
-   cannot be moved keeps the old place. --user still wins.
-   A symbolic link in it, to saves the player keeps elsewhere (a synced folder, another drive), is made again in the
-   new place, to the same folder, and never entered. It was moved as it stood, and one written from where it stood
-   ("../../saves") then named nothing; from another drive it was copied as the folder it names and delete_tree emptied
-   that folder, which is not Hookshot's: the next start found the link still here, kept the old place, and showed no
-   saves. A user/ that is a link itself is the player's choice of place, and is used as it is. */
-static int is_dir(const char *p) {
-    const DWORD a = GetFileAttributesA(p);
-    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
-}
-static int is_link(const char *p) {
-    struct stat st;
-    return lstat(p, &st) == 0 && S_ISLNK(st.st_mode);
-}
-static const char *move_old, *move_new;   /* (the user folder on the move, as realpath names it, and the new place) */
-static int copy_link(const char *from, const char *to) {   /* (to what it names, in full; one that names nothing: as written) */
-    char target[MAX_PATH], there[MAX_PATH];
-    const size_t old = move_old ? strlen(move_old) : 0;
-    if (!realpath(from, target)) {
-        const ssize_t n = readlink(from, target, sizeof target - 1);
-        if (n < 0) return 0;
-        target[n] = 0;
-    } else if (old && !strncmp(target, move_old, old) && target[old] == SEP) {   /* (to an entry that moves too: where it will be) */
-        snprintf(there, sizeof there, "%s%s", move_new, target + old);
-        snprintf(target, sizeof target, "%s", there);
-    }
-    return symlink(target, to) == 0;
-}
-static int has_link(const char *p) {
-    if (is_link(p)) return 1;
-    if (!is_dir(p)) return 0;
-    char pattern[MAX_PATH];
-    snprintf(pattern, sizeof pattern, "%s" SEP_S "*", p);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    int found = 0;
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-            char a[MAX_PATH];
-            snprintf(a, sizeof a, "%s" SEP_S "%s", p, fd.cFileName);
-            found = has_link(a);
-        } while (!found && FindNextFileA(h, &fd));
-        FindClose(h);
-    }
-    return found;
-}
-static int copy_tree(const char *from, const char *to) {
-    if (is_link(from)) return copy_link(from, to);
-    if (!is_dir(from)) {
-        FILE *in = fopen(from, "rb"), *out = in ? fopen(to, "wb") : NULL;
-        int ok = in && out;
-        char buf[1 << 16];
-        for (size_t n; ok && (n = fread(buf, 1, sizeof buf, in)) > 0;) ok = fwrite(buf, 1, n, out) == n;
-        ok = ok && in && !ferror(in);
-        if (in) fclose(in);
-        if (out && fclose(out)) ok = 0;
-        return ok;
-    }
-    if (!CreateDirectoryA(to, NULL) && !is_dir(to)) return 0;
-    char pattern[MAX_PATH];
-    snprintf(pattern, sizeof pattern, "%s" SEP_S "*", from);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    int ok = 1;
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-            char a[MAX_PATH], b[MAX_PATH];
-            snprintf(a, sizeof a, "%s" SEP_S "%s", from, fd.cFileName);
-            snprintf(b, sizeof b, "%s" SEP_S "%s", to, fd.cFileName);
-            ok = copy_tree(a, b);
-        } while (ok && FindNextFileA(h, &fd));
-        FindClose(h);
-    }
-    return ok;
-}
-static void delete_tree(const char *p) {
-    if (!is_dir(p) || is_link(p)) {   /* (a link goes; what it names stays) */
-        DeleteFileA(p);
-        return;
-    }
-    char pattern[MAX_PATH];
-    snprintf(pattern, sizeof pattern, "%s" SEP_S "*", p);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-            char a[MAX_PATH];
-            snprintf(a, sizeof a, "%s" SEP_S "%s", p, fd.cFileName);
-            delete_tree(a);
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
-    }
-    RemoveDirectoryA(p);
-}
-static const char *saves_dir(const char *beside) {
-    static char dir[MAX_PATH];
-    const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
-    if (is_link(beside)) return beside;
-    if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s", xdg);
-    else if (home && home[0] == '/') {
-        snprintf(dir, sizeof dir, "%s/.local", home);
-        CreateDirectoryA(dir, NULL);
-        snprintf(dir, sizeof dir, "%s/.local/share", home);
-    } else return beside;
-    CreateDirectoryA(dir, NULL);
-    snprintf(dir + strlen(dir), sizeof dir - strlen(dir), "/hookshot");
-    CreateDirectoryA(dir, NULL);
-    if (GetFileAttributesA(dir) == INVALID_FILE_ATTRIBUTES) return beside;
-    char pattern[MAX_PATH];
-    snprintf(pattern, sizeof pattern, "%s" SEP_S "*", beside);
-    int moved = 0, kept = 0;
-    char real[MAX_PATH];
-    move_old = realpath(beside, real), move_new = dir;
-    /* (looked at first, then moved: with an entry the new place has already, the old place is kept, and it keeps them all.
-       The others used to go all the same, and the game then ran here without them) */
-    for (int move = 0; move < 2 && !kept; move++) {
-        WIN32_FIND_DATAA fd;
-        HANDLE h = FindFirstFileA(pattern, &fd);
-        if (h == INVALID_HANDLE_VALUE) return dir;
-        do {
-            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-            char from[MAX_PATH], to[MAX_PATH];
-            snprintf(from, sizeof from, "%s" SEP_S "%s", beside, fd.cFileName);
-            snprintf(to, sizeof to, "%s" SEP_S "%s", dir, fd.cFileName);
-            if (!move) kept += GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES;
-            else if (!has_link(from) && MoveFileExA(from, to, 0)) moved++;
-            else if (copy_tree(from, to)) delete_tree(from), moved++;
-            else delete_tree(to), kept++;
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
-    }
-    if (kept) {
-        hos_log("saves: %d of %s's entries could not go to %s: the saves stay in %s", kept, beside, dir, beside);
-        return beside;
-    }
-    RemoveDirectoryA(beside);
-    if (moved) {
-        char note[MAX_PATH];
-        const char *sep = strrchr(beside, SEP);
-        snprintf(note, sizeof note, "%.*s" SEP_S "saves-moved.txt", sep ? (int)(sep - beside) : 0, beside);
-        FILE *f = fopen(note, "w");
-        if (f) {
-            fprintf(f, "Hookshot's saves are now in\n%s\n\nThey moved there from the user folder that was here.\n", dir);
-            fclose(f);
-        }
-        hos_log("saves: moved from %s to %s", beside, dir);
-    }
-    return dir;
-}
-#endif
 
-/* hookshot_env.txt beside the game: NAME=VALUE lines set as environment variables before anything reads them, for the
+/* hookshot_env.txt in the data folder (host/hos_data.c; else beside the game): NAME=VALUE lines set as environment variables before anything reads them, for the
    switches players are asked to test (RX_VK_NOOPT and the rest). Lines starting with # are notes. On Linux this runs
    before the window, so HOS_HEADLESS and HOS_WINDOW_SIZE are already set when the window is made.
    HOS_ENV_FILE=<path> reads that file instead: a scripted or A/B test run brings its own switches and leaves the
@@ -458,10 +303,9 @@ static void load_hookshot_env(void) {
     const char *other = getenv("HOS_ENV_FILE");
     if (other && *other) {
         snprintf(path, sizeof path, "%s", other);
-    } else {
-        DWORD n = hos_game_path_a(path, MAX_PATH);
-        while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
-        memcpy(path + n, "hookshot_env.txt", 17);
+    } else {   /* (the data folder's, else one beside the game: a development folder keeps its own) */
+        if (!hos_data_path(path, sizeof path, "hookshot_env.txt") || GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
+            hos_game_file(path, sizeof path, "hookshot_env.txt");
     }
     FILE *f = fopen(path, "r");
     if (!f) return;
@@ -1597,6 +1441,7 @@ static int game_main(int argc, char **argv) {
 #endif
 #ifdef _WIN32
     if (!narrow_paths_ok(argc, argv)) return 1;
+    hos_data_init(argc, argv);   /* (before anything reads a setting or writes a file: host/hos_data.c) */
     {
         void hos_relaunch_keep_env(void);   /* (host/hos_relaunch.c: the environment before the file's lines, for a restart) */
         hos_relaunch_keep_env();
@@ -1616,7 +1461,7 @@ static int game_main(int argc, char **argv) {
         if (set && !env_on("HOS_DPI_UNAWARE")) set((void *)(intptr_t)-4);
     }
 #endif
-    {   // (started from its icon the game has nowhere to log to: hookshot_log.txt beside it, last run only, for players to send in)
+    {   // (started from its icon the game has nowhere to log to: hookshot_log.txt in the game folder's logs/ (host/hos_data.c), for players to send in)
 #ifdef _WIN32
         {   /* (started again by the Insert menu's Restart now (host/hos_relaunch.c): the run before still has its log open until
                it exits, so wait for it (up to 10 s) before the log moves to .1, or the move fails and its log is overwritten) */
@@ -1632,8 +1477,8 @@ static int game_main(int argc, char **argv) {
         HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
         if (!err || err == INVALID_HANDLE_VALUE || GetFileType(err) == FILE_TYPE_UNKNOWN) {
             char path[MAX_PATH + 32];
-            DWORD n = hos_game_path_a(path, MAX_PATH);
-            while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
+            if (!hos_game_file(path, MAX_PATH, "logs" SEP_S)) snprintf(path, MAX_PATH, "%s" SEP_S, hos_data_dir());
+            const size_t n = strlen(path);
             /* (the four runs before stay as hookshot_log.1.txt (the last) to .4.txt: a player who started the game again after a
                crash sent in the new run's log, and the crash was gone) */
             char from[MAX_PATH + 32], to[MAX_PATH + 32];
@@ -1651,13 +1496,14 @@ static int game_main(int argc, char **argv) {
         }
     }
     hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
+    hos_data_log_migration();
     removed_switch_notes();
     void hos_control_start(const char *version);
     hos_control_start(HOOKSHOT_VERSION);   /* (HOS_CONTROL=<socket>: the control bridge, host/control.c) */
     const char *image = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
-        else if (!strcmp(argv[i], "--user") && i + 1 < argc) hos_user_dir = argv[++i];
+        else if (!strcmp(argv[i], "--user") && i + 1 < argc) i++;   /* (hos_data_init took it) */
         else if (!strcmp(argv[i], "--trace")) hos_trace = 1;
         else if (!strcmp(argv[i], "--prepare-shaders")) {   /* (hookshot) a build's last step: no game */
 #ifdef _WIN32
@@ -1682,7 +1528,7 @@ static int game_main(int argc, char **argv) {
         hos_discord_start();
     }
 #endif
-    static char beside_image[MAX_PATH], beside_romfs[MAX_PATH], beside_user[MAX_PATH];
+    static char beside_image[MAX_PATH], beside_romfs[MAX_PATH];
     if (!image) {   /* (hookshot) started with nothing, as a game is: everything beside the executable (the builder's folder) */
         char dir[MAX_PATH];
         const DWORD len = hos_game_path_a(dir, MAX_PATH);
@@ -1692,17 +1538,11 @@ static int game_main(int argc, char **argv) {
             SetCurrentDirectoryA(dir);
             snprintf(beside_image, MAX_PATH, "%s" SEP_S "image.bin", dir);
             snprintf(beside_romfs, MAX_PATH, "%s" SEP_S "romfs", dir);
-            snprintf(beside_user, MAX_PATH, "%s" SEP_S "user", dir);
             if (GetFileAttributesA(beside_image) != INVALID_FILE_ATTRIBUTES) {
                 image = beside_image;
                 if (!hos_romfs_dir) hos_romfs_dir = beside_romfs;
-#ifndef _WIN32
-                if (!hos_user_dir) hos_user_dir = saves_dir(beside_user);
-#else
-                if (!hos_user_dir) hos_user_dir = beside_user;
-#endif
-                /* (a game folder from the builder: is a newer release out? host/hos_update.c. After the saves' place is known:
-                   on Linux the check keeps its "Skip this version" there) */
+                /* (a game folder from the builder: is a newer release out? host/hos_update.c. The saves' place is known by now
+                   (hos_data_init): on Linux the check keeps its "Skip this version" in the data folder) */
                 hos_update_check();
             }
         }
@@ -1713,6 +1553,7 @@ static int game_main(int argc, char **argv) {
         return 2;
     }
     if (env_on("HOS_TRACE")) hos_trace = 1;
+    hos_data_init(argc, argv);   /* (done in main already; the saves' folder, hos_user_dir, is its choice) */
     if (!hos_user_dir) hos_user_dir = "user";
     CreateDirectoryA(hos_user_dir, NULL);
     if (!reserve_guest()) {
@@ -1761,10 +1602,7 @@ static int game_main(int argc, char **argv) {
         if (!e) {
             int saved = -1, version = 0;   /* (the Aspect ratio's ultrawide= and options_version=, -1 / 0 without them) */
             char path[MAX_PATH];
-            const DWORD len = hos_game_path_a(path, MAX_PATH);
-            char *slash = len ? strrchr(path, SEP) : NULL;
-            if (slash) {
-                snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
+            if (hos_data_path(path, sizeof path, "hookshot_options.ini")) {
                 FILE *o = fopen(path, "r");
                 if (o) {
                     char line[80];
@@ -1863,7 +1701,7 @@ static DWORD WINAPI game_thread(void *p) {
     ExitProcess((UINT)game_main(game_argc, game_argv));
 }
 /* (hookshot, linux) Room in the drivers' own shader caches for what the preparation builds. The pipelines the notes predict (~43,000
-   in OoT, vk_draw.cpp predict_run) are built into the driver's disk cache alone, not into mkw_vk_pipelines.bin, which is read in whole
+   in OoT, vk_draw.cpp predict_run) are built into the driver's disk cache alone, not into hookshot_vk_pipelines.bin, which is read in whole
    at every start. NVIDIA's cache holds 1 GiB by default and cleans itself down to that as it is written: a full preparation filled
    it to the limit (1026 MB) and the pipelines it dropped were compiled again in play. Mesa's (RADV, ANV) has the same 1 GiB default.
    Raised for this process only, before anything loads Vulkan; a value the player set (or hookshot_env.txt) is kept. Windows: the
@@ -1907,6 +1745,7 @@ static void driver_cache_folder(void) {
 int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
+    hos_data_init(argc, argv);   /* (before anything reads a setting or writes a file: host/hos_data.c) */
     load_hookshot_env();
     driver_cache_room();
     driver_cache_folder();

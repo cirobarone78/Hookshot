@@ -1,7 +1,8 @@
 /* (hookshot) The button prompts of the controller in use: the game's button-icon font (Font2/Scalable/External.*.bfotf,
-   every icon in a text: dialogue, the control hints, menus) served from prompts/External.bfotf in the game folder, which
-   nx2/prompt_assets.py draws with every controller face's icons at build time, with each Switch button's icon pointed at
-   the face's icon of the pad input bound to it (host/nn_hid.c's controls, the menu's Layout preset and Controls page). So
+   every icon in a text: dialogue, the control hints, menus) made from prompts/External.bfotf in the game folder, which
+   nx2/prompt_assets.py draws with every controller face's icons at build time, and served from the game folder's
+   cache/prompts/ (made again whenever the face or the controls change, so a cache: host/hos_data.c), with each Switch
+   button's icon pointed at the face's icon of the pad input bound to it (host/nn_hid.c's controls, the menu's Layout preset and Controls page). So
    the icons say which button to press on this pad, custom controls too.
 
    The face: hookshot_options.ini's button_prompts (the menu's Button prompts row): 0 Auto, from the first controller's name
@@ -19,6 +20,7 @@
    our entries merged into it (sizes), so a mod that grows files keeps the icons. */
 #include "hos.h"
 #include "hos_paths.h"
+#include "hos_data.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,6 +55,19 @@ static const unsigned char switch_pad[HOS_SW_N] = {
     HOS_PAD_RIGHT, HOS_PAD_DOWN};
 /* the d-pad icons that follow the face, not the controls (nx2/prompt_assets.py STATIC) */
 static const uint16_t static_code[3] = {0xE049, 0xE064, 0xE065};
+
+/* the game folder's cache/prompts/, made, with its separator: what this player's face and controls make goes there. 0 when it
+   cannot be made: then nothing is written (not into the current folder) and the game keeps its own icons */
+static int made_dir(char *out, size_t cap) {
+    if (!hos_game_file(out, cap, "cache")) return 0;
+    CreateDirectoryA(out, NULL);   /* (made at the start, host/hos_data.c; again here if it was deleted since) */
+    if (!hos_game_file(out, cap, "cache/prompts")) return 0;
+    CreateDirectoryA(out, NULL);
+    const DWORD a = GetFileAttributesA(out);
+    if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) return 0;
+    const size_t n = strlen(out);
+    return n + 1 < cap && (out[n] = '/', out[n + 1] = 0, 1);
+}
 
 static int game_dir(char *out, size_t cap) {   /* the game folder, with its separator */
     char path[MAX_PATH];
@@ -91,11 +106,10 @@ static void current_binds(int *bind) {
 }
 
 /* HOS_PROMPT_* (faces[]) */
-static int choose_face(const char *dir) {
+static int choose_face(void) {
     char path[MAX_PATH], line[80];
     int choice = 0;
-    snprintf(path, sizeof path, "%shookshot_options.ini", dir);
-    FILE *f = fopen(path, "r");
+    FILE *f = hos_data_path(path, sizeof path, "hookshot_options.ini") ? fopen(path, "r") : NULL;
     if (f) {
         while (fgets(line, sizeof line, f))
             if (!strncmp(line, "button_prompts=", 15)) choice = atoi(line + 15);
@@ -316,7 +330,7 @@ static uint8_t *merge_restbl(const uint8_t *a, size_t an, const uint8_t *b, size
 }
 
 /* the size table served for a mod's own (mod: its file): the mod's with ours (prompts/rsizetable.zs) merged in, as raw zstd
-   blocks in prompts/rsizetable.mod.zs (out). 1 with it; 0 when we have none (the faces' fonts fit the game's entry); -1 when
+   blocks in cache/prompts/rsizetable.mod.zs (out). 1 with it; 0 when we have none (the faces' fonts fit the game's entry); -1 when
    the mod's cannot take ours: it is served as it is, and the game's own icons with it. Made once, for the first mod table asked */
 static int sizes(const char *dir, const char *mod, char *out, size_t cap) {
     static volatile LONG state;   /* 0 not made, 1 being made, 2 made, 3 none of ours, 4 failed */
@@ -337,8 +351,10 @@ static int sizes(const char *dir, const char *mod, char *out, size_t cap) {
             uint8_t *ours = read_all(path, NULL, &on), *theirs = read_all(file, NULL, &mn);
             uint8_t *b = ours ? unzstd(ours, (size_t)on, &bn) : NULL, *a = theirs ? unzstd(theirs, (size_t)mn, &an) : NULL;
             uint8_t *t = a && b ? merge_restbl(a, an, b, bn, &n, &raised) : NULL;
-            snprintf(path, sizeof path, "%sprompts/rsizetable.mod.zs", dir);
-            r = t && write_zstd_raw(path, t, n) ? 2 : 4;
+            char made[MAX_PATH];
+            const int have = made_dir(made, sizeof made);
+            snprintf(path, sizeof path, "%srsizetable.mod.zs", made);
+            r = t && have && write_zstd_raw(path, t, n) ? 2 : 4;
             if (r == 2)
                 hos_log("prompts: %s: the button prompts' sizes merged into the mod's resource size table (%d entries raised or added)",
                         mod, raised);
@@ -346,7 +362,7 @@ static int sizes(const char *dir, const char *mod, char *out, size_t cap) {
                 hos_log("prompts: %s: %s: the mod's resource size table as it is", mod,
                         !b ? "prompts/rsizetable.zs could not be read" : !theirs ? "could not be read"
                         : !a ? "not a zstd frame that gives its size" : !t ? "not a resource size table as the game's"
-                        : "prompts/rsizetable.mod.zs could not be written");
+                        : "cache/prompts/rsizetable.mod.zs could not be written");
             free(t), free(a), free(b), free(theirs), free(ours);
         }
         InterlockedExchange(&state, r);
@@ -370,7 +386,7 @@ static int setup(char *dir, size_t cap, int *face) {
             snprintf(path, sizeof path, "%sprompts", d);
             ok = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
         }
-        if (ok) f = choose_face(d);
+        if (ok) f = choose_face();
         InterlockedExchange(&setup_state, ok ? 2 : 3);
     }
     while (setup_state == 1) Sleep(1);
@@ -501,11 +517,12 @@ static int build_textures(char *out, size_t cap) {
     Run *runs = texture_runs(t, tn, bind, &nruns);
     snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
     live_textures_start(path, runs, nruns);   /* (before write_patched sorts them: the ranges only) */
-    snprintf(out, cap, "%sprompts/Common.bntx.zs", dir);
+    char keypath[MAX_PATH], made[MAX_PATH];
+    const int have = made_dir(made, sizeof made);
+    snprintf(out, cap, "%sCommon.bntx.zs", made);
     snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
-    char keypath[MAX_PATH];
-    snprintf(keypath, sizeof keypath, "%sprompts/Common.key", dir);
-    const int ok = write_patched(path, out, keypath, h, runs, nruns);
+    snprintf(keypath, sizeof keypath, "%sCommon.key", made);
+    const int ok = have && write_patched(path, out, keypath, h, runs, nruns);
     hos_log("prompts: %s textures, %zu runs for this pad's controls%s", faces[face], nruns,
             ok ? "" : ": could not be written");
     if (ok) part_served(PART_TEXTURES, face, bind);
@@ -1094,16 +1111,17 @@ static int build_layouts(char *out, size_t cap) {
     current_binds(bind);
     Layout o;
     if (!layout_runs(dir, face, bind, &o)) return 0;
-    char keypath[MAX_PATH];
-    snprintf(out, cap, "%sprompts/Common.blarc.zs", dir);
+    char keypath[MAX_PATH], made[MAX_PATH];
+    const int have = made_dir(made, sizeof made);
+    snprintf(out, cap, "%sCommon.blarc.zs", made);
     snprintf(path, sizeof path, "%sprompts/Common.blarc", dir);
-    snprintf(keypath, sizeof keypath, "%sprompts/Common.blarc.key", dir);
+    snprintf(keypath, sizeof keypath, "%sCommon.blarc.key", made);
     FILE *f = fopen(path, "rb");
     long n = 0;
     const int headed = f && fread(lay_head, 1, sizeof lay_head, f) == sizeof lay_head && !in_runs(0, sizeof lay_head, o.runs, o.n) &&
                        !fseek(f, 0, SEEK_END) && (n = ftell(f)) > 0;
     if (f) fclose(f);
-    const int ok = write_patched(path, out, keypath, o.h, o.runs, o.n);
+    const int ok = have && write_patched(path, out, keypath, o.h, o.runs, o.n);
     hos_log("prompts: the Talk ring's A B X Y at places %d %d %d %d, the ocarina hint %s%s", o.place[0], o.place[1],
             o.place[2], o.place[3], o.spread ? "spread" : "as is", ok ? "" : ": could not be written");
     if (ok) part_served(PART_LAYOUTS, face, bind);
@@ -1182,7 +1200,7 @@ static int layout_runs(const char *dir, int face, const int *bind, Layout *o) {
     return 1;
 }
 
-/* builds prompts/External.bfotf.zs for this run; 1 when there is one */
+/* builds cache/prompts/External.bfotf.zs for this run; 1 when there is one */
 static int build(char *out, size_t cap) {
     char dir[MAX_PATH], path[MAX_PATH];
     int face;
@@ -1201,8 +1219,10 @@ static int build(char *out, size_t cap) {
     if (!b) return 0;
     if (n >= 8 + 64) memcpy(font.head, b + 8, sizeof font.head);
     for (long i = 8; i < n; i += 4) wr32le(b + i, rd32le(b + i) ^ key);
-    snprintf(out, cap, "%sprompts/External.bfotf.zs", dir);
-    const int ok = write_zstd_raw(out, b, (size_t)n);
+    char made[MAX_PATH];
+    const int have = made_dir(made, sizeof made);
+    snprintf(out, cap, "%sExternal.bfotf.zs", made);
+    const int ok = have && write_zstd_raw(out, b, (size_t)n);
     if (ok) {
         int bind[HOS_SW_N];
         current_binds(bind);

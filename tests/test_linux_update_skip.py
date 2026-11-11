@@ -7,13 +7,14 @@ $XDG_DATA_HOME/hookshot, and the same start then moved that user/ folder there a
 the file was in both places, which the move reads as saves it cannot move: the game ran on the empty user/ beside it
 from then on, and showed no saves.
 
-Linux only. Builds the game's start as hos_main.c has it (the part of main that finds the game folder, asks about an
-update and picks the saves' place, with saves_dir) with hos_update.c and host/posix/win32_posix.c, puts it in a game
+Linux only. Builds the game's start as hos_main.c has it (hos_data_init, which picks the saves' place and moves an older
+user/ folder there, then the part of main that finds the game folder and asks about an update) with host/hos_data.c,
+hos_update.c and host/posix/win32_posix.c, puts it in a game
 folder of its own as bin/hookshot, and starts it with a curl that names a release and a zenity that answers "Skip this
 version" and notes that it was asked:
 
 - with saves in the data folder: asked once, never again for that release, and every start uses the data folder; no
-  user/ and no saves-moved.txt appear beside the game; a newer release is asked about again;
+  user/ and no files-moved.txt appear beside the game; a newer release is asked about again;
 - with a user/ from an earlier build that holds saves and a skip of this release: moved once, and not asked.
 
 python -I -B tests/test_linux_update_skip.py [--cc gcc]
@@ -42,20 +43,19 @@ def block(text, marker):
 
 def build(cc, tmp):
     main = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
-    start = main.index("static int is_dir(const char *p) {")
-    saves = main[start:main.index("#endif", main.index("static const char *saves_dir(const char *beside) {"))]
     program = r'''#include <windows.h>
 #include <stdarg.h>
 #include "hos_paths.h"
+#include "hos_data.h"
 #define SEP '/'
 #define SEP_S "/"
-static void hos_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); putchar(10); }
+void hos_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); putchar(10); }
 const char *hos_romfs_dir, *hos_user_dir;
 void hos_update_check(void);
-''' + saves + r'''
-int main(void) {
+int main(int argc, char **argv) {
+    hos_data_init(argc, argv);   /* (as hos_main.c's main, first) */
     const char *image = NULL;
-    static char beside_image[MAX_PATH], beside_romfs[MAX_PATH], beside_user[MAX_PATH];
+    static char beside_image[MAX_PATH], beside_romfs[MAX_PATH];
 ''' + block(main, "    if (!image) {   /* (hookshot) started with nothing") + r'''
     printf("uses %s\n", hos_user_dir ? hos_user_dir : "");
     return image ? 0 : 2;
@@ -64,7 +64,7 @@ int main(void) {
     src, exe = tmp / "start.c", tmp / "start"
     src.write_text(program, encoding="utf-8")
     subprocess.run([cc, "-std=gnu11", "-D_GNU_SOURCE", "-w", "-I", str(ROOT / "host" / "posix"), "-I", str(ROOT / "host"), str(src),
-                    str(ROOT / "host" / "hos_update.c"), str(ROOT / "host" / "posix" / "win32_posix.c"), "-o", str(exe),
+                    str(ROOT / "host" / "hos_data.c"), str(ROOT / "host" / "hos_update.c"), str(ROOT / "host" / "posix" / "win32_posix.c"), "-o", str(exe),
                     "-lpthread", "-ldl"], check=True)
     return exe
 
@@ -126,7 +126,7 @@ def main():
         g.start("v9.9.9", asked=1)
         g.start("v9.9.9", asked=1)
         g.start("v9.9.9", asked=1)
-        g.check(not (g.game / "user").exists() and not (g.game / "saves-moved.txt").exists(), "the skip was taken for saves to move")
+        g.check(not (g.game / "user").exists() and not (g.game / "files-moved.txt").exists(), "the skip was taken for saves to move")
         g.check((g.new / "hookshot_update_skip.txt").read_text(encoding="ascii") == "skip=v9.9.9\n", "the skip is not with the saves")
         g.start("v9.9.10", asked=2)   # (a newer release: asked about again, and that one skipped)
         g.start("v9.9.10", asked=2)
@@ -136,7 +136,7 @@ def main():
         (g.game / "user" / "hookshot_update_skip.txt").write_text("skip=v9.9.9\n", encoding="ascii")
         g.start("v9.9.9", asked=0)
         g.start("v9.9.9", asked=0)
-        g.check(not (g.game / "user").exists() and (g.game / "saves-moved.txt").is_file(), "the old user folder did not move")
+        g.check(not (g.game / "user").exists() and (g.game / "files-moved.txt").is_file(), "the old user folder did not move")
 
     print("PASS: a skipped release is asked about once, its note kept with the saves; the game keeps its saves' place")
 

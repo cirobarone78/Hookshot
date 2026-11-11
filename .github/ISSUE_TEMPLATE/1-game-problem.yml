@@ -91,7 +91,7 @@ body:
     id: log
     attributes:
       label: hookshot_log.txt
-      description: Drag the file here. It is beside hookshot.exe and holds the last run; the four runs before are `hookshot_log.1.txt` (the one before) to `.4.txt`. If you started the game again after the problem, attach `hookshot_log.1.txt` too. It has no game files in it.
+      description: Drag the file here. It is in the `logs` folder of your game folder and holds the last run; the four runs before are `hookshot_log.1.txt` (the one before) to `.4.txt`. If you started the game again after the problem, attach `hookshot_log.1.txt` too. It has no game files in it.
     validations:
       required: true
   - type: textarea

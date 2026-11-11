@@ -40,6 +40,12 @@ Run everything with `python -I` from this folder.
 
 The dump can also come from `OOT_DUMP` (its folder) or `OOT_EXEFS`; `OOT_WORK` moves the work folder.
 
+The game keeps what belongs to the player (saves, settings) in its data folder, chosen once at the start by
+`host/hos_data.c` (`hos_data_dir`, `hos_data_path`; the renderer gets it as `MkwVkHost.data_dir`, `gpu/vk/vk_paths.h`
+`data_path`). The shader and pipeline caches go in the game folder's `cache/` (`cache_path`; it can be deleted) and the logs
+and traces in its `logs/` (`log_path`; `hos_game_file(..., "logs/...")` on the host side). A development run's game folder is
+the executable's (`work/sa/build`).
+
 The built game's own arguments (`image.bin`, `--romfs`, `--user`, `--trace`, `--prepare-shaders`) are in the README's
 [Running the game from the command line](../readme.md#running-the-game-from-the-command-line).
 
@@ -56,12 +62,13 @@ is not a focus override.
 
 ## Switches for testing and debugging
 
-The running game reads its switches from the environment or from `hookshot_env.txt` beside `image.bin` (one
-`NAME=VALUE` a line, `#` for notes; `HOS_ENV_FILE=<path>` reads that file instead). The environment goes first: a name
-already set when the game starts keeps its value and the file's line for it is left out (the log says so). A switch
-that stands in for a menu row lasts for its run; the options file keeps the player's value (`env_override` in
-`gpu/vk/vk_menu.cpp`). Switches the shader translation reads are part of the program cache's stamp
-(`disk_stamp` in `gpu/vk/vk_shader.cpp`; `tests/test_program_stamp_knobs.py` checks the translator's). The build reads its own from the
+The running game reads its switches from the environment or from `hookshot_env.txt` in its data folder (`host/hos_data.c`:
+`--user`'s, `user` in the current folder for a run given its `image.bin`, else `%LOCALAPPDATA%\Hookshot` or
+`~/.local/share/hookshot`), else the one beside the game (one `NAME=VALUE` a line, `#` for notes; `HOS_ENV_FILE=<path>`
+reads that file instead). The environment goes first: a name already set when the game starts keeps its value and the
+file's line for it is left out (the log says so). A switch that stands in for a menu row lasts for its run; the options
+file keeps the player's value (`env_override` in `gpu/vk/vk_menu.cpp`). Switches the shader translation reads are part
+of the program cache's stamp (`disk_stamp` in `gpu/vk/vk_shader.cpp`; `tests/test_program_stamp_knobs.py` checks the translator's). The build reads its own from the
 environment. The README has the ones players are asked to try (`RX_VK_ASTC_RGBA8`, `RX_VK_LOW_SPEC`,
 `RX_VK_MOVIE_UPSCALE`, `RX_VK_SKIP_CODE`, `HOS_OOT_CHEATS`). There are several hundred more, most of them one-off
 experiments: `grep -rnE '(getenv|env_on)\("' host gpu/vk` lists them, and the comment where each is read says what it
@@ -159,7 +166,7 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_PIPE_SKIP=0`, `1` or `2` | Default/`1`: wait for shader translation; a pending pipeline can be skipped only for attachment-only draws whose targets hold an earlier frame. `0`: wait for every pipeline too. `2`: restore the old skip for untranslated draws with persistent targets; this can omit writes before the shader is known. Translated memory-writing draws still wait |
 | `RX_VK_PRECOMPILE=0` or `1` | The shader preparation before the title off or on (on in builds made with `RX_RELEASE=1`, as the builders' are) |
 | `RX_VK_TASK_MESH_FALLBACK=0` or `1` | Task + mesh draws through the compute fallback (1) or the driver's mesh shaders (0). By default the fallback is on for AMD's Navi 21 and Navi 22 on Windows (RX 6800, 6800 XT, 6900 XT, 6950 XT, 6700 XT), where the native path timed out the driver (issue 996) |
-| `RX_VK_DRIVER_FAULTS=0` or `2` | 0: programs the driver's compiler faulted on are asked of it again. By default they are left out for the rest of the run and, through `hookshot_driver_faults.txt` beside the executable, on later runs with the same driver, and on AMD one program's builds go to the driver one at a time (issue 996). 2: one at a time on every driver |
+| `RX_VK_DRIVER_FAULTS=0` or `2` | 0: programs the driver's compiler faulted on are asked of it again. By default they are left out for the rest of the run and, through `hookshot_driver_faults.txt` in the game folder's `cache`, on later runs with the same driver, and on AMD one program's builds go to the driver one at a time (issue 996). 2: one at a time on every driver |
 | `RX_VK_GM_LOOP=0` or `1` | The storage buffer tables of a global memory access searched in a loop (1) or written out entry by entry (0). On by default on Intel, whose compiler did not finish the culling programs with the entries written out |
 | `RX_VK_NO_PROGRAM_CACHE` (set) | Neither reads nor writes `hookshot_programs.bin` and the pipeline notes |
 | `RX_VK_FETCH_BOUNDS=0` or `1`, `RX_VK_NAN_BITS=0` or `1`, `RX_VK_GATHER_OFFSET=0` or `1` | The translation's vendor and driver workarounds (`gpu/vk/vk_vendor.h`) off or on for one run, whatever the GPU; the log's `vk: vendor fixes` line says which are on. By default: out-of-bounds texel fetches answered with 0 on every GPU but NVIDIA's; NaN tests on a value's bits on AMD's older Windows shader compiler (RX 5000 and RX 6000); gathers nudged by 1/512 of a texel on AMD's and Intel's drivers. They change the shaders' translation (one preparation of the shaders) |
@@ -303,9 +310,9 @@ record it again, and make a new tour list. The folder's layout stays the same.
 
 ## The options file
 
-`hookshot_options.ini`, in the game folder, holds the Insert menu's rows as `<key>=<number>`: the row's name in lower
-case with `_` for spaces (`frame_generation=2`, `invert_camera_x=1`), except Output resolution, which is `output_res`.
-`gpu/vk/vk_menu.cpp` writes the whole file at every change (`save`), with `options_version=5`,
+`hookshot_options.ini`, in the data folder (`host/hos_data.c`), holds the Insert menu's rows as `<key>=<number>`: the
+row's name in lower case with `_` for spaces (`frame_generation=2`, `invert_camera_x=1`), except Output resolution,
+which is `output_res`. `gpu/vk/vk_menu.cpp` writes the whole file at every change (`save`), with `options_version=5`,
 `microphone_device=<name>` when a microphone is chosen by name, and the controls (`pad_<button>` and `key_<button>`:
 the README's [Controls](../readme.md#controls)). A value outside a row's range is clamped when it is read. Where the
 number is not the obvious one:

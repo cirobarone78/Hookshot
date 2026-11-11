@@ -96,6 +96,7 @@ static int newest_tag(const char *body, char *tag, size_t cap) {
 
 #ifdef _WIN32
 #include "hos_paths.h"
+#include "hos_data.h"
 #include <windows.h>
 #include <winhttp.h>
 #include <shellapi.h>
@@ -197,7 +198,7 @@ void hos_update_check(void) {
     char have[128], builder[MAX_PATH * 3], skipped[128] = "", tag[128];
     _snwprintf(file, MAX_PATH + 64, L"%ls\\hookshot_version.txt", dir);
     if (!read_value(file, "version", have, sizeof have) || !safe_tag(have)) return;
-    _snwprintf(file, MAX_PATH + 64, L"%ls\\user\\hookshot_update_skip.txt", dir);
+    _snwprintf(file, MAX_PATH + 64, L"%ls\\hookshot_update_skip.txt", hos_data_dir_w());   /* (the data folder: host/hos_data.c) */
     read_value(file, "skip", skipped, sizeof skipped);
     if (!latest_tag(have, tag, sizeof tag)) {
         fprintf(stderr, "update: the latest release could not be asked for (offline?)\n");
@@ -234,10 +235,7 @@ void hos_update_check(void) {
                    wtag, whave);
     const int answer = MessageBoxW(NULL, text, L"Hookshot update", MB_YESNOCANCEL | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
     if (answer == IDCANCEL) {
-        wchar_t user[MAX_PATH + 16];
-        _snwprintf(user, MAX_PATH + 16, L"%ls\\user", dir);
-        CreateDirectoryW(user, NULL);
-        _snwprintf(file, MAX_PATH + 64, L"%ls\\user\\hookshot_update_skip.txt", dir);
+        _snwprintf(file, MAX_PATH + 64, L"%ls\\hookshot_update_skip.txt", hos_data_dir_w());
         FILE *f = _wfopen(file, L"wb");
         if (f) fprintf(f, "skip=%s\n", tag), fclose(f);
         return;
@@ -269,6 +267,7 @@ void hos_update_check(void) {
 }
 #elif defined(__linux__)
 #include "hos_paths.h"
+#include "hos_data.h"
 #include <ctype.h>
 #include <sys/stat.h>
 #include <stdio.h>
@@ -279,12 +278,9 @@ void hos_update_check(void) {
 /* (the same offer as Windows, when the player started bin/hookshot itself. The launcher sets HOOKSHOT_NO_UPDATE_CHECK
    and asks in its own window. curl and zenity do the network and the question; without either, the game just starts) */
 
-/* "Skip this version" is kept with the saves, where they are (hos_main.c sets it first: $XDG_DATA_HOME/hookshot, or
-   --user's folder). It was written to user/ beside the game, as on Windows, where Linux keeps no saves any more: the
-   start's move of an old user/ folder (saves_dir) took the file for one, moved it to the saves' place and wrote
-   saves-moved.txt, so the next start asked again. Skipped again, the file was in both places, which the move reads as
-   saves it cannot move: the game then ran on the empty user/ beside it and showed no saves. */
-extern const char *hos_user_dir;
+/* "Skip this version" is kept in the data folder (host/hos_data.c, chosen first: $XDG_DATA_HOME/hookshot, or --user's
+   folder), never in a user/ folder beside the game: the start's move of such a folder would take the file for a save
+   (moved, or found in both places and the saves kept beside the game) */
 
 static int read_value(const char *path, const char *name, char *out, size_t cap) {
     FILE *f = fopen(path, "rb");
@@ -378,9 +374,8 @@ void hos_update_check(void) {
     dir[n] = 0;
     snprintf(path, sizeof path, "%shookshot_version.txt", dir);
     if (!read_value(path, "version", have, sizeof have) || !safe_tag(have)) return;
-    char skip[MAX_PATH + 64];
-    snprintf(skip, sizeof skip, "%s/hookshot_update_skip.txt", hos_user_dir);
-    read_value(skip, "skip", skipped, sizeof skipped);
+    hos_data_path(path, sizeof path, "hookshot_update_skip.txt");   /* (the data folder: host/hos_data.c) */
+    read_value(path, "skip", skipped, sizeof skipped);
     if (!latest_tag(have, tag, sizeof tag)) {
         fprintf(stderr, "update: the latest release could not be asked for (offline?)\n");
         return;
@@ -406,8 +401,8 @@ void hos_update_check(void) {
     if (!fgets(answer, sizeof answer, pick)) answer[0] = 0;
     pclose(pick);
     if (!strncmp(answer, "Skip", 4)) {
-        mkdir(hos_user_dir, 0755);
-        FILE *f = fopen(skip, "wb");
+        hos_data_path(path, sizeof path, "hookshot_update_skip.txt");
+        FILE *f = fopen(path, "wb");
         if (f) fprintf(f, "skip=%s\n", tag), fclose(f);
         return;
     }

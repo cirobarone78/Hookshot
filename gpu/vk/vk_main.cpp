@@ -257,10 +257,7 @@ bool create_device() {
     // mesh shaders not used where they are, so the no-mesh fallback the GTX 10xx and RX 5000 cards run (issue 640) can be tried
     // on any GPU)
     static const int mesh_mode = [] {
-        char exe[MAX_PATH];
-        const DWORD len = game_module_path(exe, MAX_PATH);   // (the game folder, not bin beside the launcher: vk_paths.h)
-        std::string ini(exe, len);
-        ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
+        const std::string ini = data_path("hookshot_options.ini");   // (the data folder's: vk_paths.h)
         int v = 0;
         if (FILE* fl = fopen(ini.c_str(), "r")) {
             char line[80];
@@ -443,10 +440,7 @@ bool create_device() {
     // over it. Off is null descriptors only: some NVIDIA cards ran slower with it on, issues 394, 418, 419)
     static const bool robust = []() -> bool {
         if (const char* e = getenv("RX_VK_ROBUST")) return atoi(e) != 0;
-        char exe[MAX_PATH];
-        const DWORD n = game_module_path(exe, MAX_PATH);   // (the game folder, not bin beside the launcher: vk_paths.h)
-        std::string ini(exe, n);
-        ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
+        const std::string ini = data_path("hookshot_options.ini");   // (the data folder's: vk_paths.h)
         int v = 0;   // (Auto)
         if (FILE* f = fopen(ini.c_str(), "r")) {
             char line[80];
@@ -881,15 +875,10 @@ namespace {
 
 HWND main_window = nullptr;
 // (hookshot) hookshot --prepare-shaders (a builder, after a build): the same work with no game, its progress as
-// "@@progress" lines on stdout. A skip there leaves hookshot_prepare_skipped beside the game: its own starts then
+// "@@progress" lines on stdout. A skip there leaves hookshot_prepare_skipped in the game folder's cache/: the game's starts then
 // leave the work out too (what was not prepared is built when first drawn), until a --prepare-shaders run ends it
 bool prepare_only() { return env_on("HOOKSHOT_PREPARE_ONLY"); }
-std::string skipped_path() {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string path(exe, n);
-    return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepare_skipped";
-}
+std::string skipped_path() { return cache_path("hookshot_prepare_skipped"); }
 // (hookshot) The --prepare-shaders run's watchdog, for any GPU and any part of it.
 // - What it waits on, in the log the builder shows: every 30 s that nothing has moved, the part, its count, and whether the
 //   GPU driver faulted; a driver fault as soon as it is caught. (The pipeline steps log their own progress every 10 s,

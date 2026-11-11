@@ -87,7 +87,9 @@ def main():
     exec(compile(ast.Module(body=[play], type_ignores=[]), str(path), "exec"), namespace)
 
     with tempfile.TemporaryDirectory(prefix="hookshot-play-") as directory:
-        folder = Path(directory)
+        folder = Path(directory) / "game"
+        folder.mkdir()
+        data_dir = folder / "logs"   # (the game folder's logs folder: the log goes there, beside the game's own)
         game = folder / "hookshot"
         game.write_text(
             '#!/bin/sh\n'
@@ -101,11 +103,12 @@ def main():
             namespace["play"](str(folder))
         for process in processes:
             assert process.wait(timeout=10) == 0
-        log = folder / "hookshot_startup.log"
+        log = data_dir / "hookshot_startup.log"
+        assert not (folder / "hookshot_startup.log").exists()
         data = log.read_bytes()
         assert data == b"stderr sentinel\n" + bytes(65536 - len(b"stderr sentinel\n")) + b"\nHookshot exited with status 73\n"
         assert (folder / "completed").is_file() and log.stat().st_mode & 0o777 == 0o600
-        assert not list(folder.glob(".hookshot-startup.*"))
+        assert not list(data_dir.glob(".hookshot-startup.*"))
 
         # A non-writable destination must not prevent the game from running.
         log.unlink()
@@ -114,7 +117,7 @@ def main():
         namespace["play"](str(folder))
         processes[-1].wait(timeout=10)
         assert (folder / "completed").is_file() and not list(log.iterdir())
-        assert not list(folder.glob(".hookshot-startup.*"))
+        assert not list(folder.glob(".hookshot-startup.*")) and not list(data_dir.glob(".hookshot-startup.*"))
 
     # The game's own log: a pipe on stderr is a reader to the game (FILE_TYPE_PIPE), and it then writes no hookshot_log.txt.
     with tempfile.TemporaryDirectory(prefix="hookshot-play-log-") as directory:
@@ -126,8 +129,8 @@ def main():
             "Play gave the game a stderr it takes for a reader (GetFileType not FILE_TYPE_UNKNOWN): no hookshot_log.txt"
         lines = (folder / "hookshot_log.txt").read_text(encoding="utf-8").splitlines()
         assert lines == ["log line %d" % i for i in range(16384)], "hookshot_log.txt is not the game's whole log"
-        assert (folder / "hookshot_startup.log").read_bytes() == b"before the log\n\nHookshot exited with status 73\n"
-        assert not list(folder.glob(".hookshot-startup.*"))
+        assert (folder / "logs" / "hookshot_startup.log").read_bytes() == b"before the log\n\nHookshot exited with status 73\n"
+        assert not list(folder.glob(".hookshot-startup.*")) and not list((folder / "logs").glob(".hookshot-startup.*"))
     print("PASS: detached Play, bounded stderr, exit status, concurrent launches, publication failure, and the game's own "
           "log beside the startup lines")
 

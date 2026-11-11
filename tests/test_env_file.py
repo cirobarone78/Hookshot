@@ -1,9 +1,9 @@
-"""HOS_ENV_FILE names the switches file a run reads instead of hookshot_env.txt beside the game.
+"""HOS_ENV_FILE names the switches file a run reads instead of the player's hookshot_env.txt.
 
 A scripted or A/B test run brings its own switches this way, and the player's hookshot_env.txt is neither read nor
-changed. Unset or empty, the game reads hookshot_env.txt as before. A named file that does not exist sets nothing: the
-run does not fall back to the player's switches. A switch already in the environment the game was started with goes over
-the file's line for it.
+changed. Unset or empty, the game reads hookshot_env.txt: the data folder's (host/hos_data.c), else the one beside the
+game. A named file that does not exist sets nothing: the run does not fall back to the player's switches. A switch
+already in the environment the game was started with goes over the file's line for it.
 
 python -I -B tests/test_env_file.py [--cc gcc]
 """
@@ -36,6 +36,8 @@ def main():
         tmp = Path(tmp)
         game = tmp / "game"
         game.mkdir()
+        data = tmp / "data"   # (the data folder: empty at first, so the file beside the game is read)
+        data.mkdir()
         # (the player's file sets the game's switches only: not the system's variables, HOS_ENV_FILE or paths)
         (game / "hookshot_env.txt").write_text(
             "HOS_T_BESIDE=1\nHOS_T_SHARED=beside\nVK_ADD_LAYER_PATH=/x\nLD_PRELOAD=/x.so\nPATH=C:\\x\nSDL_DYNAMIC_API=/x.so\n"
@@ -49,7 +51,8 @@ def main():
                                           "VK_T_LAYER=/y\n", encoding="utf-8")
         (tmp / "precedence.txt").write_text("HOS_T_LAUNCH=file\nHOS_T_TWICE=first\nHOS_T_FRESH=1\nHOS_T_TWICE=second\n",
                                             encoding="utf-8")
-        exe = str(game / "hookshot").replace("\\", "\\\\")
+        game_dir = str(game).replace("\\", "\\\\")
+        data_dir = str(data).replace("\\", "\\\\")
         fixture = r'''#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,9 +68,19 @@ static int unsetenv(const char *name) { return setenv(name, "", 1); }
 #define MAX_PATH 260
 typedef unsigned long DWORD;
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
-static DWORD hos_game_path_a(char *out, DWORD size) {   /* (host/hos_paths.h: the game folder's path) */
-    snprintf(out, size, "%s", "''' + exe + r'''");
-    return (DWORD)strlen(out);
+#define INVALID_FILE_ATTRIBUTES ((DWORD)-1)
+static DWORD GetFileAttributesA(const char *p) {
+    FILE *f = fopen(p, "r");
+    if (!f) return INVALID_FILE_ATTRIBUTES;
+    fclose(f);
+    return 0;
+}
+/* (host/hos_data.c: the data folder's file and the game folder's) */
+static int hos_data_path(char *out, size_t cap, const char *name) {
+    return snprintf(out, cap, "%s/%s", "''' + data_dir + r'''", name) < (int)cap;
+}
+static int hos_game_file(char *out, size_t cap, const char *name) {
+    return snprintf(out, cap, "%s/%s", "''' + game_dir + r'''", name) < (int)cap;
 }
 ''' + fn + r'''
 static int is(const char *name, const char *want) {
@@ -77,7 +90,7 @@ static int is(const char *name, const char *want) {
 static void clear(void) { unsetenv("HOS_T_BESIDE"); unsetenv("HOS_T_OTHER"); unsetenv("HOS_T_SHARED"); unsetenv("VK_T_LAYER"); }
 int main(int argc, char **argv) {
     (void)argc;
-    unsetenv("HOS_ENV_FILE");                      /* out of the box: the file beside the game */
+    unsetenv("HOS_ENV_FILE");                      /* out of the box, no file in the data folder: the one beside the game */
     load_hookshot_env();
     CHECK(is("HOS_T_BESIDE", "1") && is("HOS_T_SHARED", "beside") && is("HOS_T_OTHER", NULL));
     CHECK(is("VK_ADD_LAYER_PATH", NULL) && is("SDL_DYNAMIC_API", NULL) && is("HOS_ENV_FILE", NULL));
@@ -115,7 +128,18 @@ int main(int argc, char **argv) {
     CHECK(is("HOS_T_LAUNCH", "launch") && is("HOS_T_TWICE", "second") && is("HOS_T_FRESH", "1"));
     load_hookshot_env();                           /* (read again in the same run: the same) */
     CHECK(is("HOS_T_LAUNCH", "launch") && is("HOS_T_TWICE", "second") && is("HOS_T_FRESH", "1"));
-    printf("PASS: HOS_ENV_FILE replaces hookshot_env.txt; unset or empty reads it as before; the player's file sets only the game's switches; the environment goes over the file\n");
+
+    clear();
+    unsetenv("HOS_ENV_FILE");                      /* the data folder's file, when there is one, over the one beside the game */
+    char mine[MAX_PATH];
+    CHECK(hos_data_path(mine, sizeof mine, "hookshot_env.txt"));
+    FILE *f = fopen(mine, "w");
+    CHECK(f != NULL);
+    fputs("HOS_T_SHARED=data\n", f);
+    fclose(f);
+    load_hookshot_env();
+    CHECK(is("HOS_T_SHARED", "data") && is("HOS_T_BESIDE", NULL));
+    printf("PASS: HOS_ENV_FILE replaces hookshot_env.txt; unset or empty reads the data folder's, else the one beside the game; the player's file sets only the game's switches; the environment goes over the file\n");
     return 0;
 }
 '''

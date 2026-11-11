@@ -15,7 +15,7 @@ from unittest import mock
 # (Linux only)
 RUN_ALL_SKIP = {
     "windows": "the save script's folder discovery is the Linux one"
-               " (on Windows Hookshot's saves are in the game folder: --hookshot)",
+               " (its Windows folders are checked on Linux, test_every_entry_on_windows)",
 }
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,10 +102,13 @@ class Discovery(Case):
         with mock.patch.object(oot, "WINDOWS", True):
             for program in oot.EMULATORS:
                 self.assertEqual(list(oot.locate(program, None, "--from")[1].values()), [str(expect[program.name])])
-            with self.assertRaises(oot.Fail) as e:
+            with self.assertRaises(oot.Fail) as e:   # (no save yet in the data folder)
                 oot.locate(oot.HOOKSHOT, None, "--hookshot")
             self.assertIn("--hookshot", str(e.exception))
-            game = self.tmp / "Hookshot"
+            make_save(self.localappdata / "Hookshot" / "save" / UID, b"W")   # (the data folder, host/hos_data.c)
+            self.assertEqual(oot.locate(oot.HOOKSHOT, None, "--hookshot")[1],
+                             {UID: str(self.localappdata / "Hookshot" / "save" / UID)})
+            game = self.tmp / "Hookshot"   # (a game folder from before the data folder: given with --hookshot)
             make_save(game / "user" / "save" / UID, b"W")
             self.assertEqual(oot.locate(oot.HOOKSHOT, str(game), "--hookshot")[1], {UID: str(game / "user" / "save" / UID)})
 

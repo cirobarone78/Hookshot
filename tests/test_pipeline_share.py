@@ -392,6 +392,38 @@ def check_drawn_only():
     assert "fwrite(&r, sizeof r, 1, state_file)" in draw[spans[0][0]:spans[0][1]]
 
 
+def check_data_folder_layout(tmp):
+    """A game folder in host/hos_data.c's layout: the list in cache/, the log in logs/, the options in the data folder (the
+    per-user one, or the game folder's user/ for a portable install or a second game folder): all found, none from elsewhere"""
+    t = Path(tmp)
+    data = v2_list(2)
+    g = game_folder(t, data)
+    (g / "cache").mkdir()
+    (g / share.LIST).rename(g / "cache" / share.LIST)
+    (g / "logs").mkdir()
+    (g / "hookshot_log.txt").rename(g / "logs" / "hookshot_log.txt")
+    xdg = t / "xdg"
+    (xdg / "hookshot").mkdir(parents=True)
+    (g / "hookshot_options.ini").rename(xdg / "hookshot" / "hookshot_options.ini")
+    old = os.environ.get("XDG_DATA_HOME")
+    os.environ["XDG_DATA_HOME"] = str(xdg)
+    try:
+        assert share.list_path(str(g)) == str(g / "cache" / share.LIST)
+        path, text, n = share.make_zip(str(g), str(t / "out"), day=share.datetime.date(2026, 11, 11))
+        assert n == 2 and "Output resolution: 2560x1440" in text and "v2.2.0-rc.1-5-gabcdef1" in text, text
+        with zipfile.ZipFile(path) as z:
+            assert z.read(share.LIST) == data
+        if os.name != "nt":   # (the per-user folder is XDG's on Linux; the game folder's user/ goes first everywhere)
+            (g / "user" / "hookshot_options.ini").write_text("output_res=1920x1080\n", encoding="utf-8")
+            text = share.template(share.details(str(g), share.read_list(share.list_path(str(g)))[1]))
+            assert "Output resolution: 1920x1080" in text, text
+    finally:
+        if old is None:
+            os.environ.pop("XDG_DATA_HOME", None)
+        else:
+            os.environ["XDG_DATA_HOME"] = old
+
+
 def check_linux_builder(tmp):
     """The Linux builder's action, without a display: the zip, then the clipboard, the folder and the issue through what it is
     given; a refusal opens nothing"""
@@ -426,6 +458,8 @@ def main():
     check_drawn_only()
     with tempfile.TemporaryDirectory() as tmp:
         check_python(tmp)
+    with tempfile.TemporaryDirectory() as tmp:
+        check_data_folder_layout(tmp)
     with tempfile.TemporaryDirectory() as tmp:
         check_cxx(a.cxx, tmp)
     with tempfile.TemporaryDirectory() as tmp:

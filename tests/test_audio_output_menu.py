@@ -27,7 +27,7 @@ FIXTURE = r"""
 
 using DWORD = unsigned long;
 constexpr int MAX_PATH = 260;
-static DWORD hos_game_path_a(char *path, DWORD size) { return snprintf(path, size, "./hookshot.exe"); }
+static int hos_data_path(char *out, size_t cap, const char *name) { return snprintf(out, cap, "./%s", name) < (int)cap; }
 static char logged[256];
 static void hos_log(const char *format, ...) {
     va_list args;

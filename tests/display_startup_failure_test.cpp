@@ -98,6 +98,7 @@ static void WaitForSingleObject(HANDLE h, unsigned timeout) {
     require(h == &game_token && timeout == INFINITE, "changed game-thread wait");
     ++waited;
 }
+static void hos_data_init(int, char**) {}   // (host/hos_data.c: the data folder chosen, before the switches file is read)
 static void load_hookshot_env() {}
 static void driver_cache_room() {}   // (host/hos_main.c: the drivers' shader caches' size, #2033)
 static void driver_cache_folder() {}   // (host/hos_main.c: the folder __GL_SHADER_DISK_CACHE_PATH names, made)
