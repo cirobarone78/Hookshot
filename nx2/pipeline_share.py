@@ -8,7 +8,7 @@ hookshot_pipeline_report.txt, the issue's template filled in from the game folde
 hookshot_options.ini) and the mods found in its mods folder. Where the player played is left for them to fill in. Nothing is
 uploaded: the player attaches the zip to the issue and pastes the template themselves.
 
-The game's Insert menu does the same in C++ (Gameplay tab, Save my pipeline list: gpu/vk/pipeline_share.h, vk_menu.cpp), and
+The game's Insert menu does the same in C++ (Debug tab, Save my pipeline list: gpu/vk/pipeline_share.h, vk_menu.cpp), and
 both builders through this file: the Linux one imports it (builder/linux/hookshot_builder.py), the Windows one runs it
 (builder/HookshotBuilder/MainWindow.xaml.cs, --json).
 

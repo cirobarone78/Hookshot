@@ -453,7 +453,7 @@ HDR peak brightness show only while HDR is on.
   creeps. `HOS_MOTION_DEBUG=1` (in `hookshot_env.txt`) logs what the game gets twice a second.
 - **Layout preset:** Nintendo has A on the right face button, Xbox / PC and Swap Face put A on the bottom one. Changing
   a button yourself sets it to Custom.
-- **Save my pipeline list** (Gameplay tab): see [Send your pipeline list](#send-your-pipeline-list).
+- **Save my pipeline list** (Debug tab, under Developer): see [Send your pipeline list](#send-your-pipeline-list).
 
 ### Controls
 
@@ -825,7 +825,7 @@ game than anyone has yet.
 The first time the game meets a pipeline it builds it on the spot, which stutters. Releases build a list of known
 pipelines before the title, and every player's play adds to it. To send yours:
 
-1. In the game, open the menu (Insert or F1), go to the **Gameplay** tab and choose **Save my pipeline list**. Or, in
+1. In the game, open the menu (Insert or F1), go to the **Debug** tab and choose **Save my pipeline list** (under Developer). Or, in
    Hookshot Builder's launcher page for the game folder, press **Save my pipeline list**.
 2. It saves `hookshot-pipelines-<date>.zip` in your Downloads folder, copies a filled-in report to the clipboard and
    opens the [Submit your pipelines](https://github.com/NotRexed/Hookshot/issues/2034) issue in your browser.

@@ -8,7 +8,7 @@
     loads (host/mods.c's rule), "where you played" left empty, and no path of the player's;
   - a list that is missing, not a list, cut short or empty is refused with the reason, and no zip is written;
   - the C++ and the Python agree: the same fields, the same checks; the Python's names for the options are the menu's;
-  - the menu's row saves on Enter (not the Controls page's catch-all), opens nothing in a run without a window, and the builders
+  - the menu's row (Debug tab, under Developer) saves on Enter (not the Controls page's catch-all), opens nothing in a run without a window, and the builders
     (Linux: hookshot_builder.py; Windows: MainWindow.xaml.cs, through nx2/pipeline_share.py --json) offer the same.
 
 python -I -B tests/test_pipeline_share.py [--cxx g++]
@@ -199,7 +199,7 @@ def check_cxx(cxx, tmp):
     t = Path(tmp)
     src, exe = t / "fixture.cpp", t / ("fixture.exe" if os.name == "nt" else "fixture")
     src.write_text(FIXTURE, encoding="utf-8")
-    r = subprocess.run([cxx, "-std=c++20", "-O1", "-Wall", "-Werror", "-I", str(ROOT / "gpu" / "vk"), str(src), "-o", str(exe)],
+    r = subprocess.run([cxx, "-std=c++20", "-O1", "-Wall", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-I", str(ROOT / "gpu" / "vk"), str(src), "-o", str(exe)],
                        capture_output=True, text=True)
     if r.returncode:
         raise SystemExit("pipeline_share.h does not compile:\n" + r.stderr[-3000:])
@@ -261,10 +261,15 @@ def check_sources():
     assert m and tuple(int(x) for x in m.group(1).split(",")) == share.PERCENT, "the Render resolution's shares differ"
     m = re.search(r"constexpr Out kOutputs\[\] = \{(.*?)\};", menu)
     assert m and tuple((int(a), int(b)) for a, b in re.findall(r"\{(\d+), (\d+)\}", m.group(1))) == share.OUTPUTS
-    # the row, on the Gameplay tab before Restart and Quit, saving on Enter before the catch-all that opens the Controls page
-    assert re.search(r'\{TAB_GAMEPLAY, "Save my pipeline list", nullptr,', menu), "the menu has no Save my pipeline list row"
-    at_row, at_restart = menu.find('"Save my pipeline list", nullptr'), menu.find('{TAB_GAMEPLAY, "Restart", nullptr')
-    assert 0 < at_row < at_restart
+    # the row, on the Debug tab under the Developer heading (the tab lists only the rows after it), saving on Enter before the
+    # catch-all that opens the Controls page, and drawn by the tab's own layout
+    assert re.search(r'\{TAB_DEBUG, "Save my pipeline list", nullptr,', menu), "the menu has no Save my pipeline list row on the Debug tab"
+    at_row, at_head = menu.find('"Save my pipeline list", nullptr'), menu.find('{TAB_DEBUG, "Developer", nullptr')
+    assert 0 < at_head < at_row, "the row is not under the Debug tab's Developer heading"
+    debug = menu[menu.find("void draw_debug_rows("):]
+    debug = debug[:debug.index("\n}\n")]
+    assert debug.count("is_share_row(r)") >= 2, "the Debug tab's layout neither sizes nor draws the row (cheat_value(-1))"
+    assert "is_share_row(const Row& r) { return !r.value && r.tab == TAB_DEBUG" in menu
     tick = menu[menu.find("void menu_tick() {"):]
     save, catch_all = tick.find("is_share_row(r)) share_pipeline_list()"), tick.find("!r.value && can_bind()) page = 1")
     assert 0 < save < catch_all, "Enter on the row would open the Controls page"

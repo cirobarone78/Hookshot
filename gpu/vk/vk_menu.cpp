@@ -50,11 +50,7 @@
 #include "hookshot_env.h"
 #endif
 #include "pipeline_share.h"   // (Save my pipeline list: the zip for issue 2034)
-#include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
-#ifdef _WIN32
-#include <shellapi.h>   // (Save my pipeline list: the browser, the folder)
-#include <shlobj.h>     // (and the Downloads folder)
-#else
+#ifndef _WIN32   // (Save my pipeline list: the desktop's programs. On Windows, shell32 and ole32 are loaded when it is used)
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/utsname.h>
@@ -62,6 +58,7 @@
 #include <unistd.h>
 extern char** environ;
 #endif
+#include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
 #endif
@@ -870,11 +867,6 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
-    // (hookshot) the zip for the "Submit your pipelines" issue: share_pipeline_list, pipeline_share.h
-    {TAB_GAMEPLAY, "Save my pipeline list", nullptr, 0, 0, 0, nullptr,
-     "Helps remove first-load stutter for everyone: saves the pipelines your play built (shader hashes and draw state, no game "
-     "data) with a filled-in report as a zip in Downloads, copies the report and opens the \"Submit your pipelines\" issue. "
-     "Attach the zip there and paste the report. Nothing is uploaded for you."},
 
     // Controls (12 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
@@ -963,6 +955,11 @@ Row rows[] = {
     {TAB_DEBUG, "Movement speed", nullptr, 0, 0, 0, nullptr,
      "How fast Link walks, runs and swims, as a multiple of his own speed. Choose with Left or Right.", nullptr, false, true, 11},
     {TAB_DEBUG, "Developer", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    // (hookshot, first under the heading: debug_rows lists only those) the zip for the "Submit your pipelines" issue: share_pipeline_list, pipeline_share.h
+    {TAB_DEBUG, "Save my pipeline list", nullptr, 0, 0, 0, nullptr,
+     "Helps remove first-load stutter for everyone: saves the pipelines your play built (shader hashes and draw state, no game "
+     "data) with a filled-in report as a zip in Downloads, copies the report and opens the \"Submit your pipelines\" issue. "
+     "Attach the zip there and paste the report. Nothing is uploaded for you."},
     {TAB_DEBUG, "Descriptor reuse", &opts.descriptor_reuse, 0, 1, 1, tx_onoff,
      "A draw keeps its descriptors while the texture slots it samples are unchanged, so streaming elsewhere in the game no longer "
      "rebuilds every set each frame. Applies after restart.", nullptr, true, true},
@@ -1450,14 +1447,14 @@ void prompts_at_once(const Row& r) {
 }
 
 
-// ---- (hookshot) Save my pipeline list (the Gameplay tab): hookshot_pipeline_states.bin and the "Submit your pipelines" issue's
+// ---- (hookshot) Save my pipeline list (the Debug tab, under Developer): hookshot_pipeline_states.bin and the "Submit your pipelines" issue's
 // template, filled in from this run, zipped into the Downloads folder (pipeline_share.h; the builders do the same with
 // nx2/pipeline_share.py). Then the report on the clipboard, the folder shown and the issue opened in the browser, where the platform
 // has them; never with HOS_HEADLESS (no screen to show them on). Nothing is uploaded: the player attaches the zip ----
 namespace ps = pipeline_share;
 std::string share_said;    // (the help box's line after a save: where the zip went and what to do, or why there is none)
 std::string share_value;   // (the row's value after a save: Saved, or Not saved)
-bool is_share_row(const Row& r) { return !r.value && r.tab == TAB_GAMEPLAY && !strcmp(r.name, "Save my pipeline list"); }
+bool is_share_row(const Row& r) { return !r.value && r.tab == TAB_DEBUG && !strcmp(r.name, "Save my pipeline list"); }
 std::string game_folder() {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
@@ -1517,17 +1514,29 @@ std::string share_os() {
     return std::string(u.sysname) + " (" + (pretty.empty() ? "" : pretty + ", ") + "kernel " + u.release + ")";
 #endif
 }
+#ifdef _WIN32
+/// A function of shell32 or ole32, loaded at its first use: hookshot_vk.dll imports only kernel32, user32, gdi32, advapi32 and the
+/// UCRT (the DLSS workflow's import check), and these two are needed only here
+FARPROC share_proc(const wchar_t* dll, const char* name) {
+    HMODULE m = LoadLibraryExW(dll, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    return m ? GetProcAddress(m, name) : nullptr;
+}
+#endif
 /// The Downloads folder (where a browser's file picker opens), else the home folder, else the game folder
 std::string share_downloads() {
 #ifdef _WIN32
-    PWSTR w = nullptr;
+    using KnownFolderFn = HRESULT(WINAPI*)(const GUID&, DWORD, HANDLE, wchar_t**);
+    using FreeFn = void(WINAPI*)(void*);
+    static const auto known = (KnownFolderFn)(void*)share_proc(L"shell32.dll", "SHGetKnownFolderPath");
+    static const auto free_mem = (FreeFn)(void*)share_proc(L"ole32.dll", "CoTaskMemFree");
+    wchar_t* w = nullptr;
     std::string out;
     static const GUID downloads = {0x374DE290, 0x123F, 0x4565, {0x91, 0x64, 0x39, 0xC4, 0x92, 0x5E, 0x46, 0x7B}};   // (FOLDERID_Downloads)
-    if (SUCCEEDED(SHGetKnownFolderPath(downloads, 0, nullptr, &w)) && w) {
+    if (known && SUCCEEDED(known(downloads, 0, nullptr, &w)) && w) {
         char b[MAX_PATH * 4];
         if (WideCharToMultiByte(CP_UTF8, 0, w, -1, b, sizeof b, nullptr, nullptr) > 0) out = b;
     }
-    CoTaskMemFree(w);
+    if (w && free_mem) free_mem(w);
     if (!out.empty() && is_dir(out)) return out;
     if (const char* home = getenv("USERPROFILE"); home && is_dir(home)) return home;
 #else
@@ -1618,9 +1627,12 @@ bool share_open(const std::string& what, bool select = false) {
     std::wstring w(MultiByteToWideChar(CP_UTF8, 0, what.c_str(), -1, nullptr, 0), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, what.c_str(), -1, w.data(), (int)w.size());
     w.resize(wcslen(w.c_str()));
+    using ShellExecuteFn = HINSTANCE(WINAPI*)(HWND, const wchar_t*, const wchar_t*, const wchar_t*, const wchar_t*, INT);
+    static const auto shell_execute = (ShellExecuteFn)(void*)share_proc(L"shell32.dll", "ShellExecuteW");
+    if (!shell_execute) return false;
     if (select)   // (the folder, the zip chosen in it)
-        return (INT_PTR)ShellExecuteW(nullptr, L"open", L"explorer.exe", (L"/select,\"" + w + L"\"").c_str(), nullptr, SW_SHOWNORMAL) > 32;
-    return (INT_PTR)ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL) > 32;
+        return (INT_PTR)shell_execute(nullptr, L"open", L"explorer.exe", (L"/select,\"" + w + L"\"").c_str(), nullptr, SW_SHOWNORMAL) > 32;
+    return (INT_PTR)shell_execute(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL) > 32;
 #else
     (void)select;
     return share_spawn({"xdg-open", what});
@@ -2198,6 +2210,7 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
             return w + (tight ? 56 : 68) * s;
         }
         if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7 || r.value) return halves_w + pad;
+        if (is_share_row(r)) return ui::size_of(c.f.strong, px, "Not saved").x + (tight ? 56 : 60) * s;   // (Save, Saved, Not saved)
         const std::string v = r.cheat == 11 ? "1.25x" : cheat_value(r.cheat);   // (Movement speed: its widest, the cell kept still)
         const char* const says[kCheatRows] = {"", "", "Mark", "Return", "", "", "", "", "Choose map", "Switch", "Edit items", ""};
         return ui::size_of(c.f.strong, px, v.empty() ? says[r.cheat] : v.c_str()).x + (cheat_chooses(r.cheat) ? 68 : tight ? 56 : 60) * s;   // (choice_cell keeps 48 for arrows either way)
@@ -2269,6 +2282,8 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
         } else if (r.value) {   // (Debug tools and the Developer rows: values of the options, Off and On)
             halves_cell(c, va, vb, std::string(r.text(r.lo)).c_str(), std::string(r.text(r.hi)).c_str(), *r.value == r.hi, selected,
                         row_fixed(r.value));
+        } else if (is_share_row(r)) {   // (Save my pipeline list: what the last press did)
+            choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value, selected, false, false);
         } else if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7) {
             halves_cell(c, va, vb, "Off", "On", cheat_value(r.cheat) == "On", selected, false);
         } else if (age_shown(r.cheat)) {   // (Link's age now: the other half switches)
