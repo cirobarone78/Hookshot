@@ -51,6 +51,8 @@ static int sink_mix = -1;
 static void source_frame(Voice *v, const WB *w, int64_t s, float *out) { (void)v; (void)w; (void)s; out[0] = 0; }
 static void adpcm_seek(Voice *v, const WB *w) { (void)v; (void)w; }
 static int16_t adpcm_sample(Voice *v, const WB *w, int64_t s) { (void)v; (void)w; (void)s; return 0; }
+/* (hookshot: no item wheel here, so no voice is its hushed tick) */
+static int wheel_hushes(const Voice *v) { (void)v; return 0; }
 """]
     actual.extend(helper.block(source, marker) for marker in (
         "static void put_handle(", "static int get_handle(", "static int voice_index(", "static Voice *voice_of(",
