@@ -720,13 +720,18 @@ void hos_prompts_pool_gone(uint64_t mem) {
 }
 
 /* the pool's textures as this face and these controls choose them; 0 when they could not be */
-static int live_textures(const char *dir, int face, const int *bind) {
+/* the face's textures.bin, read once (before tex_lock: a finalize waits for the writes alone); 0 none */
+static int texture_bin(const char *dir, int face) {
     if (!tex.bins[face]) {
         char path[MAX_PATH];
         snprintf(path, sizeof path, "%sprompts/%s/textures.bin", dir, faces[face]);
         tex.bins[face] = read_all(path, "HPTX", &tex.nbins[face]);
-        if (!tex.bins[face]) return 0;
     }
+    return tex.bins[face] != NULL;
+}
+
+static int live_textures(const char *dir, int face, const int *bind) {
+    if (!texture_bin(dir, face)) return 0;
     size_t nruns, written, put_back;
     if (!__atomic_load_n(&tex.l.base, __ATOMIC_ACQUIRE)) return 0;   /* (finalized since: hos_prompts_pool_gone; tex_lock held) */
     Run *runs = texture_runs(tex.bins[face], tex.nbins[face], bind, &nruns);
@@ -1005,6 +1010,9 @@ void hos_prompts_live(void) {
         const int found[PARTS] = {0, lay.base != 0, font.at != 0};   /* (the textures: looked at under tex_lock) */
         char dir[MAX_PATH];
         int start, ready = -1;
+        if (tex.l.base && (part_face[PART_TEXTURES] != face || memcmp(part_bind[PART_TEXTURES], bind, sizeof bind)) &&
+            (ready = setup(dir, sizeof dir, &start)))
+            texture_bin(dir, face);   /* (read before tex_lock) */
         for (int p = 0; p < PARTS; p++) {
             if (p == PART_TEXTURES) AcquireSRWLockExclusive(&tex_lock);   /* (the pool kept, or let go, till its writes end) */
             const int here = p == PART_TEXTURES ? tex.l.base != 0 : found[p];
