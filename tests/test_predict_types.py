@@ -155,7 +155,7 @@ def main():
 
     decide = body(predict, "std::vector<std::unique_ptr<PipeNote>> predict_pipelines(")
     for need in ("types_fit(f.vs_in, f.vs_locs", "types_fit(f.fs_out, f.fs_locs", "vertex_fits(f, *vdonor.at(v))",
-                 "output_fits(f, *odonor.at(o))", "counts.notes_unfit +=", "candidates(vx, vs, vfit)", "candidates(fx, fs, ofit)",
+                 "output_fits(f, *odonor.at(o))", "counts.notes_unfit +=", "candidates(vx, vs, vfit)", "candidates(fx, fs, ofit)", "(vc0.size() - std::min(vc0.size(), vc.size())) * oc0.size()",
                  "attribute_type_of(", "note_color_types("):
         if need not in decide:
             raise SystemExit("FAIL: predict_pipelines does not filter its candidates by their types (%s)" % need)

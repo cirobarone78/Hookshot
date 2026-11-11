@@ -204,12 +204,13 @@ std::vector<std::unique_ptr<PipeNote>> predict_pipelines(const std::vector<std::
         std::vector<Class> vc = candidates(vx, vs, vfit), oc = candidates(fx, fs, ofit);
         counts.refit += (vc != vc0 && !vc.empty() && !(vx && !vx->order.empty())) ||
                         (oc != oc0 && !oc.empty() && !(fx && !fx->order.empty()));
-        const size_t all = vc.size() * oc.size();
         // (an exact module's classes are filtered here; a signature's pick already fits, and this leaves it as it is)
         vc.erase(std::remove_if(vc.begin(), vc.end(), [&](const Class& v) { return !vfit(v); }), vc.end());
-        const size_t vertex_kept = vc.size() * oc.size();
         oc.erase(std::remove_if(oc.begin(), oc.end(), [&](const Class& o) { return !ofit(o); }), oc.end());
-        counts.vertex_types += all - vertex_kept, counts.output_types += vertex_kept - vc.size() * oc.size();
+        // (counted against what the candidates were before the fit was asked, as main built them: a signature with no class that
+        // fits gives none above, and its pick's pipelines are the ones left out)
+        counts.vertex_types += (vc0.size() - std::min(vc0.size(), vc.size())) * oc0.size();
+        counts.output_types += std::min(vc0.size(), vc.size()) * (oc0.size() - std::min(oc0.size(), oc.size()));
         if (vc.empty() || oc.empty()) {   // (no class of its module or signature fits the types it was made for)
             counts.variants_unfit++;
             continue;
