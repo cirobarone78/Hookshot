@@ -27,6 +27,15 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 
+def _with_cache(path):
+    """vk_shader.cpp with the program cache it held before (vk_progcache.cpp and .h beside it, outside the translator stamp): definitions first"""
+    parts = [path.read_text(encoding="utf-8")]
+    for name in ("vk_progcache.cpp", "vk_progcache.h"):
+        if (path.parent / name).exists():
+            parts.append((path.parent / name).read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
 
 def body(text, marker):
     if text.count(marker) != 1:
@@ -115,7 +124,7 @@ def main():
     a = p.parse_args()
     predict = (ROOT / "gpu/vk/vk_predict.cpp").read_text(encoding="utf-8")
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
-    shader = (ROOT / "gpu/vk/vk_shader.cpp").read_text(encoding="utf-8")
+    shader = _with_cache(ROOT / "gpu/vk/vk_shader.cpp")
     pieces = [body(predict, "struct Locations {"), body(predict, "Locations spirv_locations("), body(predict, "bool types_fit(")]
 
     decide = body(predict, "std::vector<std::unique_ptr<PipeNote>> predict_pipelines(")
@@ -129,7 +138,7 @@ def main():
         raise SystemExit("FAIL: predict_run builds predictions that are the same pipeline (pipeline_key) again")
     if "void note_color_types(const PipeNote& n, uint8_t types[8])" not in draw or "color_types_of(note_targets(n), types)" not in draw:
         raise SystemExit("FAIL: note_color_types is not the draw's color_types_of")
-    load = body(shader, "void program_cache_load(uint64_t key,")
+    load = body(shader, "void program_cache_load(uint64_t key, std::vector<std::unique_ptr<Program>>& variants, bool keep) {")
     keep = load[load.index("if (keep)"):]
     if "disk_taken.find(key)" not in keep[:keep.index("} else {")]:
         raise SystemExit("FAIL: a borrowed program leaves out the records read in already: their predictions are never built")
