@@ -349,6 +349,8 @@ NV(nvnMemoryPoolFinalize) {
         ReleaseSRWLockExclusive(&vmap_lock);
     } else if (o->mem) {
         hos_gpu_track(o->gpu, o->size, 0);
+        void hos_prompts_pool_gone(uint64_t mem);   /* (hookshot, prompts.c: the prompts' textures no longer written there) */
+        hos_prompts_pool_gone(o->mem);
     }
     o->magic = 0;
 }

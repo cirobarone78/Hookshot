@@ -615,8 +615,10 @@ static struct {
 enum { PART_TEXTURES, PART_LAYOUTS, PART_FONT, PARTS };
 static int live_face_now = -1, live_bind_now[HOS_SW_N];
 static int part_face[PARTS], part_bind[PARTS][HOS_SW_N];
+static int start_face, start_bind[HOS_SW_N];   /* (the files served: what a part the game loads again shows) */
 static void live_start(int face, const int *bind) {   /* (the first file served: the start's) */
     if (live_face_now >= 0) return;
+    start_face = face, memcpy(start_bind, bind, sizeof start_bind);
     memcpy(live_bind_now, bind, sizeof live_bind_now);
     for (int p = 0; p < PARTS; p++) part_face[p] = face, memcpy(part_bind[p], bind, sizeof part_bind[p]);
     live_face_now = face;
@@ -666,9 +668,20 @@ void hos_prompts_pool(uint64_t mem, uint64_t size) {
         if (!q || memcmp(q, tex.want[s], SAMPLE_LEN)) return;
     }
     tex.l.lo = mem, tex.l.hi = mem + size;
+    part_face[PART_TEXTURES] = start_face;   /* (the file as served: a change since is written at the next look) */
+    memcpy(part_bind[PART_TEXTURES], start_bind, sizeof start_bind);
     __atomic_store_n(&tex.l.base, base, __ATOMIC_RELEASE);   /* (lo and hi first: the input thread reads them once base is set) */
     hos_log("prompts: the textures' pool at %#llx (+%#llx): a new face or new controls show at once", (unsigned long long)mem,
             (unsigned long long)size);
+}
+
+/* nvn_native.c: the game finalized a memory pool (its storage): the textures' one? Then nothing is written there any more
+   (the memory may hold something else), until the game makes it again (hos_prompts_pool) */
+void hos_prompts_pool_gone(uint64_t mem) {
+    if (!__atomic_load_n(&tex.l.base, __ATOMIC_ACQUIRE) || mem != tex.l.lo) return;
+    __atomic_store_n(&tex.l.base, 0, __ATOMIC_RELEASE);
+    hos_log("prompts: the textures' pool at %#llx was finalized: not written until the game makes it again",
+            (unsigned long long)mem);
 }
 
 /* the pool's textures as this face and these controls choose them; 0 when they could not be */
@@ -680,6 +693,7 @@ static int live_textures(const char *dir, int face, const int *bind) {
         if (!tex.bins[face]) return 0;
     }
     size_t nruns, written, put_back;
+    if (!__atomic_load_n(&tex.l.base, __ATOMIC_ACQUIRE)) return 0;   /* (finalized since: hos_prompts_pool_gone) */
     Run *runs = texture_runs(tex.bins[face], tex.nbins[face], bind, &nruns);
     const size_t outside = put_runs(&tex.l, runs, nruns, &written, &put_back);
     free(runs);
@@ -940,11 +954,18 @@ void hos_prompts_live(void) {
     InterlockedExchange(&busy, 0);
 }
 
+/* hos_prompts_romfs: the font, the textures, the layouts: 0 not built, 1 being built, 2 built, 3 none (a build without
+   them, a mod's size table that cannot take ours: the game's own, whatever the face) */
+static volatile LONG romfs_state[3];
+
 /* what the Insert menu's Button prompts row can change at once (vk_api.h HOS_PROMPTS_LIVE_*): the parts the game has loaded
-   from files served here, found */
+   from files served here, found, and the ones none was served for (a restart changes them no more); 0 with none found */
 int hos_prompts_live_parts(void) {
-    return (tex.l.base ? HOS_PROMPTS_LIVE_TEXTURES : 0) | (lay.base ? HOS_PROMPTS_LIVE_LAYOUTS : 0) |
-           (font.at ? HOS_PROMPTS_LIVE_TEXTS : 0);
+    const int found = (tex.l.base ? HOS_PROMPTS_LIVE_TEXTURES : 0) | (lay.base ? HOS_PROMPTS_LIVE_LAYOUTS : 0) |
+                      (font.at ? HOS_PROMPTS_LIVE_TEXTS : 0);
+    if (!found) return 0;
+    return found | (romfs_state[1] == 3 ? HOS_PROMPTS_LIVE_TEXTURES : 0) | (romfs_state[2] == 3 ? HOS_PROMPTS_LIVE_LAYOUTS : 0) |
+           (romfs_state[0] == 3 ? HOS_PROMPTS_LIVE_TEXTS : 0);
 }
 
 /* the face the game shows (faces[]), -1 none: the Insert menu names the pad inputs as that controller does. -1 too
@@ -1115,7 +1136,7 @@ static int build(char *out, size_t cap) {
 /* mods.c: the file for a RomFS path the prompts replace (key: lower case, '/'), 1 with one. mod: a mod's file for it, or NULL.
    A mod's own wins, but for the size table: that gets our entries merged in (sizes) */
 int hos_prompts_romfs(const char *key, const char *mod, char *out, size_t cap) {
-    static volatile LONG state[3];   /* the font, the textures, the layouts: 0 not built, 1 being built, 2 built, 3 none */
+    volatile LONG *const state = romfs_state;
     static char path[3][MAX_PATH];
     const size_t kn = strlen(key);
     if (!strncmp(key, SIZES_PATH, sizeof SIZES_PATH - 1) && kn > 14 && !strcmp(key + kn - 14, ".rsizetable.zs")) {

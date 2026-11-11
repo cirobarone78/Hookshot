@@ -3,6 +3,8 @@ file in a guest window: the game's own bytes come back where the runs before wer
 (a later one over an earlier), a run past the range found is left alone and counted, and every write is marked
 (HOS_WRITTEN: the renderer uploads it again). Guarded (the layouts, whose offsets the game makes pointers where they lie):
 a run over bytes the game changed is left alone, the rest written, and only those written are put back at the next change.
+The textures' pool finalized (nvn_native.c's nvnMemoryPoolFinalize: hos_prompts_pool_gone): not written any more, and
+another pool's finalize leaves it be.
 
 python -I -B tests/test_prompts_live.py [--cc gcc]
 """
@@ -104,6 +106,32 @@ int main(int argc, char **argv) {
 }
 '''
 
+GONE = r'''
+#include <stdint.h>
+static void hos_log(const char *fmt, ...) { (void)fmt; }
+static struct { struct { volatile uint64_t base; uint64_t lo, hi; } l; } tex;
+%(gone)s
+int main(void) {
+    tex.l.lo = 0x5000, tex.l.hi = 0x9000, tex.l.base = 0x4f00;
+    hos_prompts_pool_gone(0x6000);   /* (another pool) */
+    if (tex.l.base != 0x4f00) return 1;
+    hos_prompts_pool_gone(0x5000);
+    return tex.l.base != 0 ? 2 : 0;
+}
+'''
+
+
+def pool_gone(cc, src, tmp):
+    nvn = (ROOT / "host" / "nvn_native.c").read_text(encoding="utf-8")
+    check("hos_prompts_pool_gone(o->mem);" in block(nvn, "NV(nvnMemoryPoolFinalize)"),
+          "nvnMemoryPoolFinalize does not tell the prompts a pool is gone")
+    c, exe = Path(tmp) / "gone.c", Path(tmp) / "gone"
+    c.write_text(GONE % {"gone": block(src, "void hos_prompts_pool_gone(")}, encoding="utf-8")
+    subprocess.run([cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
+    r = subprocess.run([str(exe)]).returncode
+    check(r == 0, "hos_prompts_pool_gone: %s" % ("another pool's finalize dropped the textures' pool" if r == 1 else
+                                                    "the textures' pool finalized is still written"))
+
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
@@ -123,9 +151,10 @@ def main():
         subprocess.run([a.cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", str(c), "-o", str(exe)],
                        check=True)
         out = subprocess.run([str(exe), str(Path(tmp) / "game.bin")], capture_output=True, text=True)
+        pool_gone(a.cc, src, tmp)
     check(out.returncode == 0 and out.stdout.strip() == "ok", "exit %d: %s%s" % (out.returncode, out.stdout, out.stderr))
     print("ok: put_runs puts the game's bytes back, writes the runs in order, leaves one past the range; guarded, never over "
-          "bytes the game changed")
+          "bytes the game changed; the textures' pool finalized is not written")
 
 
 if __name__ == "__main__":
