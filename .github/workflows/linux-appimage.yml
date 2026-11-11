@@ -9,7 +9,13 @@ on:
   push:
     branches: [main]
     tags: ['*']
+  # (not for a pull request that changes only documentation or the release manifest: nothing of them is compiled or
+  # packaged but readme.md, which is only copied in. A push to main builds every time)
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.release-please-manifest.json'
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -171,7 +177,8 @@ jobs:
             k=$(basename "$f" .o)
             grep -qxF "$k" "$RUNNER_TEMP/used.txt" || rm -f "$f"
           done
-          echo "objcache: $(ls "$W/objcache" | wc -l) objects, $(du -sh "$W/objcache" | cut -f1)"
+          left=("$W"/objcache/*.o)
+          echo "objcache: ${#left[@]} objects, $(du -sh "$W/objcache" | cut -f1)"
       - if: env.RELEASE_TAG == ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -243,6 +250,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RELEASE_SUMS_OUT: dist/SHA256SUMS
+      # (called by the Release workflow: its draft is there already, and no release is made here)
+      RELEASE_FROM_WORKFLOW: ${{ inputs.tag && 'true' || 'false' }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -97,9 +97,9 @@ int main(int argc, char **argv) {
     hos_step_probe = strcmp(mode, "no hook") ? 0x2000 : 0;   /* (the lifted code sets it when the hook is in the build) */
     realtime_step(now);
     if (!strcmp(mode, "cap 120")) {
-        CHECK(near(frames(10, 1.0 / 120), 1.0 / 120) && *rate == 60 && *limit == 120);   /* (the rate stays the engine's) */
+        CHECK(near(frames(72000, 1.0 / 120), 1.0 / 120) && *rate == 60 && *limit == 120);   /* (the rate stays the engine's) */
         CHECK(near(lifted_step(60.0f, (float)*rate), 0.5) && near(lifted_step(30.0f, (float)*rate), 0.25));   /* (half a 60th a frame) */
-        CHECK(near(frames(10, 1.0 / 40), 1.0 / 40) && near(lifted_step(60.0f, (float)*rate), 1.5));
+        CHECK(near(frames(10, 1.0 / 40), 1.0 / 40) && *rate == 40 && near(lifted_step(60.0f, (float)*rate), 1.5));
         CHECK(near(frames(10, 1.0 / 1000), 1.0 / 240));   /* (the shortest step) */
         CHECK(near(frames(10, 0.2), 4.0 / 60));           /* (the longest, as the rate's 15) */
     } else if (!strcmp(mode, "uncapped")) {   /* (frame_rate_cap=6, or HOS_FPS_MAX=1000: the frames' own time down to 1 ms) */
@@ -110,8 +110,14 @@ int main(int argc, char **argv) {
     } else if (!strcmp(mode, "unknown index")) {   /* (frame_rate_cap= a later build's value: 60, as on the console) */
         CHECK(frames(10, 1.0 / 120) == 0.0f && *limit == 60);
     } else if (!strcmp(mode, "cap 60")) {
-        CHECK(frames(10, 1.0 / 120) == 0.0f && *rate == 60 && *limit == 60);
-        CHECK(frames(10, 1.0 / 40) == 0.0f && *rate == 40 && lifted_step(60.0f, (float)*rate) == 1.5f);   /* (the game's own divide) */
+        CHECK(frames(72000, 1.0 / 120) == 0.0f && *rate == 60 && *limit == 60);
+        /* A long unpaced stretch must repay only bounded debt, including the five-frame smoothing transition. */
+        int recovered = 0;
+        for (int i = 0; i < 24; i++) {
+            CHECK(frames(1, 1.0 / 40) == 0.0f && *rate >= 15 && *rate <= 60);
+            if (*rate == 40) { recovered = 1; break; }
+        }
+        CHECK(recovered && lifted_step(60.0f, (float)*rate) == 1.5f);
     } else {   /* (HOS_FPS_STEP=0, or a lift without the hook: the rate up to the cap, as before) */
         CHECK(frames(10, 1.0 / 120) == 0.0f && *rate == 120 && *limit == 120);
         CHECK(lifted_step(60.0f, 60.0f) == 1.0f);
@@ -179,7 +185,7 @@ def main():
     check("V-Sync" in row and "real time" in row, "the row's help does not say Uncapped keeps real time and V-Sync limits it")
 
     vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
-    host = "\n".join(block(vi, m) for m in ("static float text_scale(", "static int fps_max(void) {", "static void realtime_step("))
+    host = "\n".join(block(vi, m) for m in ("static float text_scale(", "static int fps_max(void) {", "static int realtime_rate(", "static void realtime_step("))
     fixture = FIXTURE.replace("@HOST@", host).replace("@HOOK@", "\n".join(oot_patches.STEP_HOOK.split("\n")[:2]))
     with tempfile.TemporaryDirectory(prefix="cap-step-") as tmp:
         c = Path(tmp) / "fixture.c"
