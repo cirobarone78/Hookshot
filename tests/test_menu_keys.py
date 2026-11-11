@@ -129,7 +129,8 @@ static void test_keyboard() {
 // (menu_tick's Esc block, after the keys are read: what it reaches, stubbed)
 static std::atomic<bool> open_now;
 static int page, ask_sel, listening;
-static bool changed, tune_mode;   // (tune_mode: the compact bar, opened by holding its key; not held here)
+static bool changed, tune_mode;   // (tune_mode: the compact bar, open; it opens when its key is held as the menu opens)
+static bool compact_key_held;     // (menu_tick's tune_down: Right Shift, or Right Ctrl, held)
 static bool restart_ask() { return false; }
 static int detect_pad_layout() { return 0; }
 static void dlss_probe() {}
@@ -147,12 +148,13 @@ static bool tick_key(const Options& o, int key, bool queued, bool open_before, b
     queued_key = queued ? key : 0;
     // KEY_POLL
     open_now = open_before;
-    page = 0, listening = 0, changed = false, tune_mode = open_before;
-    const bool tune_down = false;
+    page = 0, listening = 0, changed = false, tune_mode = false;
+    const bool tune_down = compact_key_held;
     auto later = [] {};
     // ESC_BLOCK
     CHECK(changed == (open_now.load() != open_before) && page == 0 && listening == 0);
-    CHECK(tune_mode == (open_before && open_now.load()));   // (Esc opens the full menu, not the compact bar)
+    // (a menu Esc opens is the full menu, or the compact bar with its key held, as with Insert and F1)
+    CHECK(tune_mode == (open_now.load() && !open_before && compact_key_held));
     (void)ask_sel;
     *back = press[5];
     return open_now.load();
@@ -178,6 +180,9 @@ static void test_esc() {
             CHECK(esc(saved, queued, false, &back) == (mode == 2) && back == (mode != 2));
             CHECK(esc(saved, queued, true, &back) && back);
         }
+        compact_key_held = true;   // (the compact menu key held: Esc opens the compact bar, tick_key checks tune_mode)
+        CHECK(esc(fresh, queued, false, &back) && !back);
+        compact_key_held = false;
     }
     std::puts("PASS: out of the box, Esc opens the closed menu (Insert, F1 or Esc); Insert or F1 and F1 only leave it closed");
 }
@@ -211,9 +216,10 @@ static int loaded_as(int shortcut, int version) {
 }
 
 static void test_saved() {
-    // (from before options_version 5 (none: before 2): Insert or F1 was the default, written whether chosen or not, and
-    // moves to Insert, F1 or Esc; F1 only was chosen and stays; no line: the default)
-    for (int old : {-1, 2, 3, 4}) {
+    // (from before the version save() writes now (-1, no line: before 2): Insert or F1 was the default, written whether
+    // chosen or not, and moves to Insert, F1 or Esc; F1 only was chosen and stays; no line: the default. Every older
+    // version: a later bump of save()'s version must move menu_init's threshold with it)
+    for (int old = -1; old < SAVED_VERSION; old++) {
         CHECK(loaded_as(0, old) == 2);
         CHECK(loaded_as(1, old) == 1);
         CHECK(loaded_as(2, old) == 2);

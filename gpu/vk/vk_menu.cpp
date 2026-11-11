@@ -3581,8 +3581,9 @@ void menu_tick() {
         restart_state.choose_later(now);
         open_now = false, page = 0, tune_mode = false, changed = true;
     };
-    // (Menu shortcut "Insert, F1 or Esc", the default: Esc on a closed menu opens it, the keyboard's alone (the
-    // gamepad's back is Esc only while it is open, above). The press that opened it does not go back a page below. No
+    // (Menu shortcut "Insert, F1 or Esc", the default: Esc on a closed menu opens it, the keyboard's and RX_VK_MENU_SCRIPT's
+    // ESC alone (the gamepad's back is Esc only while it is open, above). The press that opened it does not go back a page
+    // below; with the compact menu key held it opens the compact bar, as Insert and F1 do (tune_mode). No
     // control can be bound to Esc, so nothing in play changes; the window gives the captured mouse back on the close)
     const bool esc_opens = opts.menu_shortcut == 2 && press[5] && !open_now.load();
     if (esc_opens) press[5] = false;
