@@ -22,6 +22,7 @@
 #include "vk_draw.h"      // (descriptors_disturbed)
 #include "vk_gprof.h"     // (RX_VK_PASS_TIMING: a span per pass, so the report names them)
 #include "vk_menu.h"
+#include "vk_reactive.h"
 #include "vk_temporal.h"   // (temporal_env_chosen: RX_VK_DLSS / RX_VK_FSR4 over the row's FSR 3.1)
 #include "vk_texture.h"
 #include "upscaler_rows.h"
@@ -675,7 +676,8 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
         spd_x, spd_y);
     run(P_SHADING_CHANGE, {tex(g.spd_mips), tex(g.shading_change), cb_fsr}, groups(rw / 2, 8), groups(rh / 2, 8));
     run(P_PREPARE_REACTIVITY,
-        {tex(g.previous_nearest_depth), tex(g.dilated_motion_vectors), tex(g.dilated_depth), tex(g.default_reactive),
+        {tex(g.previous_nearest_depth), tex(g.dilated_motion_vectors), tex(g.dilated_depth),
+         in.reactive ? Resource{in.reactive} : tex(g.default_reactive),
          tex(g.default_reactive), tex(g.accumulation[p]), tex(g.shading_change), current_luma, exposure,
          tex(g.dilated_reactive_masks), tex(g.new_locks), tex(g.accumulation[q]), cb_fsr},
         groups(rw, 8), groups(rh, 8));
@@ -835,6 +837,10 @@ bool chain_evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
                            : 16.667f;
     c.last = now;
     ai.reset = f.reset;
+    // (what the scene's transparent draws changed, when RX_VK_REACTIVE asks for it and there were any: vk_reactive.h. The
+    // same mask DLSS gets on this chain, as large as the chain's inputs; without one FSR's default reactivity, as before)
+    if (reactive::Mask m; reactive::mask(cmd, f.render_w, f.render_h, f.color.width, f.color.height, f.color.view, m))
+        ai.reactive = m.view;
     if (!fsr3::upscale(cmd, ai)) return false;
     const VkImage picture = fsr3::output_image();
     if (!picture) return false;
@@ -893,6 +899,8 @@ bool fsr3_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     ai.camera = f.camera;
     ai.frame_time_ms = f.frame_ms;
     ai.reset = f.reset;
+    // (what the scene's transparent draws changed, when RX_VK_REACTIVE asks for it and there were any: vk_reactive.h)
+    if (reactive::Mask m; reactive::mask(cmd, f.width, f.height, f.width, f.height, f.color, m)) ai.reactive = m.view;
     if (!fsr3::upscale(cmd, ai)) return fail("its passes could not be recorded");
     {
         const int32_t pc[2] = {(int32_t)ow, (int32_t)oh};
