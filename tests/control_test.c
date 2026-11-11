@@ -8,7 +8,7 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-#include "../host/control.h"
+#include "control.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -179,10 +179,14 @@ static int fake_destination(int i, const char **child, const char **adult) {
     *child = dest_child[i], *adult = dest_adult[i];
     return 1;
 }
-static int fake_state(int *event, int *loading, int *child) {
-    if (!fake_map(NULL, 0)) return 0;
-    *event = 0, *loading = 1, *child = 1;
-    return 1;
+static int fake_state(char *out, size_t cap) {
+    char map[80];
+    if (!fake_map(map, sizeof map)) return 0;
+    const int n = snprintf(out, cap,
+        "{\"t\":5.0,\"frame\":%lld,\"map\":\"%s\",\"pos\":[-20.1,0,6.8],\"facing\":108.6,\"camera\":45.0,"
+        "\"event\":false,\"loading\":true,\"age\":\"child\",\"life\":12,\"max_life\":16,\"rupees\":7,"
+        "\"prompt\":\"Open\",\"music\":\"TestMusic\"}", (long long)fake_frame(), map);
+    return n >= 0 && (size_t)n < cap;
 }
 static int fake_teleport(int i) {
     if (i < 0 || i >= 3) return 0;
@@ -955,7 +959,10 @@ int main(int argc, char **argv) {
         wait_frames(5);
         ask(c, "{\"id\":78,\"cmd\":\"status\"}\n", "78", line, sizeof line, 2000);
         CHECK(strstr(line, "\"map\":\"KokiriForest_Child\"") &&
-              strstr(line, "\"game\":{\"event\":false,\"loading\":true,\"age\":\"child\"}"));
+              strstr(line, "\"game\":{\"t\":5.0,\"frame\":") &&
+              strstr(line, "\"pos\":[-20.1,0,6.8],\"facing\":108.6,\"camera\":45.0") &&
+              strstr(line, "\"event\":false,\"loading\":true,\"age\":\"child\"") &&
+              strstr(line, "\"life\":12,\"max_life\":16,\"rupees\":7,\"prompt\":\"Open\",\"music\":\"TestMusic\"}"));
         hangup(sub);
         puts("PASS: (OoT) the map in status, events and waits; the teleport by index or map, and its list");
     }
