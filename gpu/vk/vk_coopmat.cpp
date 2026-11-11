@@ -358,6 +358,8 @@ void coopmat_init() {
     if (Shader::Backend::SPIRV::position_invariant) logf("vk: positions invariant (not an NVIDIA card)");
     // (hookshot) the translation's vendor fixes (vk_vendor.h, dev.fixes): out-of-bounds texel fetches answer 0, NaN tests on bits
     Shader::Backend::SPIRV::fetch_bounds = dev.fixes.fetch_bounds;
+    // (dev.features.robustBufferAccess: on exactly when robustBufferAccess2 is, vk_main.cpp create_device)
+    Shader::Backend::SPIRV::fetch_bounds_buffers = dev.fixes.fetch_bounds && !dev.features.robustBufferAccess;
     Shader::Backend::SPIRV::nan_bits = dev.fixes.nan_bits;
     // (hookshot) RX_VK_MMA_SOFTWARE=1: HMMA_nx2 in a shader function on subgroup shuffles, no cooperative matrices
     // (emit_spirv_warp.cpp, from Lichii): the lowering still gives HMMA_nx2 (dev.native_mma)

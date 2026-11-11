@@ -43,7 +43,7 @@ FIXTURE = r"""
 #include <sirit/sirit.h>
 using u32 = std::uint32_t;
 using Sirit::Id;
-bool nan_bits = false, fetch_bounds = false, gather_offset = false;
+bool nan_bits = false, fetch_bounds = false, fetch_bounds_buffers = false, gather_offset = false;
 enum class TextureType { Color1D, ColorArray1D, Color2D, ColorArray2D, Color3D, ColorCube, ColorArrayCube, Buffer, Color2DRect };
 namespace IR { struct TextureInstInfo { TextureType type; }; }
 struct EmitContext : Sirit::Module {
@@ -59,7 +59,8 @@ struct EmitContext : Sirit::Module {
 struct Case { TextureType type; spv::Dim dim; bool arrayed, ms, lod; u32 dims; };
 int main(int argc, char** argv) {
     if (argc < 3) return 2;
-    nan_bits = fetch_bounds = gather_offset = argv[1][0] == '1';
+    nan_bits = fetch_bounds = gather_offset = argv[1][0] != '0';
+    fetch_bounds_buffers = argv[1][0] == '2';   // (robustBufferAccess2 off: texel buffers checked too)
     EmitContext ctx{0x00010600};
     ctx.AddCapability(spv::Capability::Shader);
     ctx.AddCapability(spv::Capability::ImageQuery);
@@ -233,19 +234,22 @@ def main():
             print(r.stdout + r.stderr)
             raise SystemExit("the fixture did not build")
         ops = {}
-        for on in ("0", "1"):
+        for on in ("0", "1", "2"):
             spv = tmp / ("fixes%s.spv" % on)
             r = subprocess.run([str(exe), on, str(spv)], capture_output=True, text=True, timeout=30)
             if r.returncode:
                 raise SystemExit("FAIL: the fixture stopped (%d): %s" % (r.returncode, r.stdout + r.stderr))
             v = subprocess.run([args.spirv_val, "--target-env", "vulkan1.3", str(spv)], capture_output=True, text=True, timeout=60)
             if v.returncode:
-                raise SystemExit("FAIL: spirv-val, fixes %s:\n%s" % ("on" if on == "1" else "off", v.stdout + v.stderr))
+                raise SystemExit("FAIL: spirv-val, fixes %s:\n%s" % (["off", "on", "on, texel buffers too"][int(on)], v.stdout + v.stderr))
             ops[on] = opcodes(spv)
             if args.keep:
                 args.keep.mkdir(parents=True, exist_ok=True)
                 (args.keep / spv.name).write_bytes(spv.read_bytes())
-        off, on = ops["0"], ops["1"]
+        off, on, buffers = ops["0"], ops["1"], ops["2"]
+        # (robustBufferAccess2 off: the texel buffer's fetch checked too, by its size: one more size query than with it on)
+        if buffers.count(OP_QUERY_SIZE) != on.count(OP_QUERY_SIZE) + 1:
+            raise SystemExit("FAIL: with robustBufferAccess2 off the texel buffer's fetch is not checked")
         if off.count(OP_IS_NAN) != 3 or OP_U_GREATER_THAN in off or OP_QUERY_LEVELS in off or OP_QUERY_SIZE_LOD in off:
             raise SystemExit("FAIL: with the fixes off the shader is not what it was (OpIsNan alone, no bounds)")
         if on.count(OP_IS_NAN) or on.count(OP_U_GREATER_THAN) < 3:

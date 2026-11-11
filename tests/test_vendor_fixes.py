@@ -31,6 +31,8 @@ DEVICES = [
      "25.9.1 (AMD proprietary shader compiler)", "111"),
     ("RX 9070 XT, AMD's Windows driver (LLPC)", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "26.10.1 (LLPC)", "101"),
     ("RX 7600, AMD's Windows driver, no driverInfo", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "", "101"),
+    ("AMD's driver naming another shader compiler", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "26.10.1 (LLPC shader compiler)",
+     "101"),
     ("RX 580, RADV", 0x1002, "MESA_RADV", "DISCRETE_GPU", "Mesa 26.2.5", "101"),
     ("Steam Deck, RADV", 0x1002, "MESA_RADV", "INTEGRATED_GPU", "Mesa 25.1.0", "101"),
     ("RX 6800, AMDVLK", 0x1002, "AMD_OPEN_SOURCE", "DISCRETE_GPU", "2025.Q2.1 (LLPC)", "101"),
@@ -109,14 +111,16 @@ def check_source():
         if "facts." + field not in main:
             raise SystemExit("FAIL: vk_main.cpp does not fill facts.%s" % field)
     coop = (VK / "vk_coopmat.cpp").read_text(encoding="utf-8")
-    for text in ("Shader::Backend::SPIRV::fetch_bounds = dev.fixes.fetch_bounds;", "Shader::Backend::SPIRV::nan_bits = dev.fixes.nan_bits;"):
+    for text in ("Shader::Backend::SPIRV::fetch_bounds = dev.fixes.fetch_bounds;", "Shader::Backend::SPIRV::nan_bits = dev.fixes.nan_bits;",
+                 "Shader::Backend::SPIRV::fetch_bounds_buffers = dev.fixes.fetch_bounds && !dev.features.robustBufferAccess;"):
         if text not in cut(coop, "void coopmat_init() {"):
             raise SystemExit("FAIL: coopmat_init does not set %s" % text)
     shader = (VK / "vk_shader.cpp").read_text(encoding="utf-8")
     if "p.need_gather_subpixel_offset = dev.fixes.gather_offset;" not in cut(shader, "Shader::Profile make_profile() {"):
         raise SystemExit("FAIL: make_profile does not set the gather offset")
     stamp = cut(shader, "uint64_t translator_stamp() {")
-    for text in ("fetch_bounds ? 8u : 0u", "nan_bits ? 16u : 0u", "profile().need_gather_subpixel_offset ? 32u : 0u"):
+    for text in ("fetch_bounds ? 8u : 0u", "nan_bits ? 16u : 0u", "profile().need_gather_subpixel_offset ? 32u : 0u",
+                 "fetch_bounds_buffers ? 64u : 0u"):
         if text not in stamp:
             raise SystemExit("FAIL: the program cache's stamp lacks %s" % text)
 

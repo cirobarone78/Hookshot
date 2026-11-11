@@ -497,11 +497,17 @@ void AddOffsetToCoordinates(EmitContext& ctx, const IR::TextureInstInfo& info, I
 // level and the last sample; the alpha of a format without one is 1 there, as in range, and 0 here: the translation does not
 // know the format). Vulkan leaves such a fetch undefined without robustImageAccess, and on AMD the ground fog's depth reads at
 // points projected off screen took the other branch: a pale box at the screen's edges (found by Ocarina of Lain's author on
-// an RX 9070). Id{}: a type left as it was: a texel buffer, whose out-of-bounds reads robustBufferAccess2 already answers with
-// zero (on by default: the Robust buffers row), and the cube types, which no fetch reads
+// an RX 9070). Id{}: a type left as it was: a texel buffer while robustBufferAccess2 is on (on by default: the Robust buffers
+// row), which answers its out-of-bounds reads with zero already (fetch_bounds_buffers), and the cube types, which no fetch reads
 Id FetchInBounds(EmitContext& ctx, const IR::TextureInstInfo& info, Id image, Id& coords, Id& lod, Id& sample) {
     u32 dims{};
     switch (info.type) {
+    case TextureType::Buffer:
+        if (!fetch_bounds_buffers) {
+            return Id{};
+        }
+        dims = 1;
+        break;
     case TextureType::Color1D:
         dims = 1;
         break;

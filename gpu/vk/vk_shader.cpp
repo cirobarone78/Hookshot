@@ -1175,7 +1175,8 @@ uint64_t translator_stamp() {
         using namespace Shader::Backend::SPIRV;
         // (and the vendor fixes of the translation, vk_vendor.h: out-of-bounds fetches, NaN tests, the gather offset)
         const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (mma_software ? 4u : 0u) |
-                               (fetch_bounds ? 8u : 0u) | (nan_bits ? 16u : 0u) | (profile().need_gather_subpixel_offset ? 32u : 0u);
+                               (fetch_bounds ? 8u : 0u) | (nan_bits ? 16u : 0u) | (profile().need_gather_subpixel_offset ? 32u : 0u) |
+                               (fetch_bounds_buffers ? 64u : 0u);
         add(&flags, sizeof flags);
         add(mma_order_a.data(), sizeof(uint32_t) * mma_order_a.size());
         add(mma_order_b.data(), sizeof(uint32_t) * mma_order_b.size());
