@@ -1659,10 +1659,7 @@ std::vector<std::string> share_values(long long pipelines, bool v2) {
     v[0] = HOOKSHOT_VERSION;
     v[1] = share_os() + "; " + dev.props.deviceName + ", driver " + driver_text();
     const Out o = shown_output();
-    char b[96];
-    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h,
-             opts.handheld ? " (Handheld profile)" : output_choice(opts.output_res) == 0 ? " (the game's own)" : "");
-    v[2] = b;
+    v[2] = ps::output_text(o.w, o.h, opts.handheld != 0, output_choice(opts.output_res) == 0, opts.ultrawide != 0);
     v[3] = std::string(tx_upscaler(opts.dlss)) + ", " + tx_resolution(opts.resolution);
     v[4] = std::string(tx_framegen(std::clamp(opts.framegen, 0, 8))) + " / " + tx_hdr(opts.hdr);
     std::vector<std::string> mods;

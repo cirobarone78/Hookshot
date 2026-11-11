@@ -37,6 +37,7 @@ spec.loader.exec_module(share)
 FIXTURE = r'''
 #include "pipeline_share.h"
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 using namespace mkwvk::pipeline_share;
@@ -50,7 +51,7 @@ int main(int argc, char** argv) {
     }
     std::string bytes;
     bool present = false;
-    if (argc > 2 && std::string(argv[2]) != "-") {
+    if (argc > 2 && mode != "output" && std::string(argv[2]) != "-") {
         std::ifstream f(argv[2], std::ios::binary);
         present = (bool)f;
         bytes.assign(std::istreambuf_iterator<char>(f), {});
@@ -58,6 +59,7 @@ int main(int argc, char** argv) {
     std::string why;
     const long long n = check_list(bytes, present, &why);
     if (mode == "check") return printf("%lld\n%s\n", n, why.c_str()), 0;
+    if (mode == "output") return printf("%s\n", output_text(atoi(argv[2]), atoi(argv[3]), argv[4][0] == '1', argv[5][0] == '1', argv[6][0] == '1').c_str()), 0;
     if (mode == "xdg") return printf("[%s]\n", xdg_download_dir(bytes, "/home/someone").c_str()), 0;
     if (n < 0) return 1;
     std::vector<std::string> v(kFieldCount, "x");
@@ -244,6 +246,14 @@ def check_cxx(cxx, tmp):
     assert share.ISSUE_URL in report
     # a list that is not one: no zip
     assert run("zip", t / "list-cut-short", t / "bad.zip").returncode != 0 and not (t / "bad.zip").exists()
+    # the Output resolution line combined the same way (the Handheld profile, the game's own size, Ultrawide)
+    for ini in ({"output_res": "2560x1440"}, {"output_res": "2560x1440", "ultrawide": "1"}, {"ultrawide": "1"}, {},
+                {"handheld_profile": "1", "ultrawide": "1"}, {"output_res": "3840x2160", "handheld_profile": "1"}):
+        w, h, _ = share.output_size(ini)
+        flags = ["1" if share._int(ini, "handheld_profile") else "0", "1" if (w, h) == share.OUTPUTS[0] else "0",
+                 "1" if share._int(ini, "ultrawide") else "0"]
+        got = run("output", w, h, *flags).stdout.strip()
+        assert got == share.output_text(ini), "Output resolution for %s: the C++ says %r, the Python %r" % (ini, got, share.output_text(ini))
     # user-dirs.dirs
     for text, want in (('XDG_DOWNLOAD_DIR="$HOME/Downloads"\n', "/home/someone/Downloads"), ('# x\nXDG_DOWNLOAD_DIR="/data/dl/"\n',
                        "/data/dl"), ('XDG_DOWNLOAD_DIR="$HOME/"\n', ""), ('XDG_MUSIC_DIR="$HOME/Music"\n', "")):

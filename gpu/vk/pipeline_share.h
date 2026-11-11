@@ -69,6 +69,13 @@ inline std::string mods_text(const std::vector<std::string>& names) {
     for (const std::string& n : names) out += (out.empty() ? "" : ", ") + n;
     return out.empty() ? "none" : out;
 }
+/// The Output resolution line: the size, then in brackets the Handheld profile or the game's own size, and Ultrawide (docked only),
+/// as nx2/pipeline_share.py output_text combines them
+inline std::string output_text(unsigned w, unsigned h, bool handheld, bool game_own, bool ultrawide) {
+    std::string extra = handheld ? "Handheld profile" : game_own ? "the game's own" : "";
+    if (ultrawide && !handheld) extra += std::string(extra.empty() ? "" : ", ") + "Ultrawide on";
+    return std::to_string(w) + "x" + std::to_string(h) + (extra.empty() ? "" : " (" + extra + ")");
+}
 /// hookshot-pipelines-<date>.zip
 inline std::string zip_name(int year, int month, int day) {
     char b[48];
