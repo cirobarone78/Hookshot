@@ -5,6 +5,8 @@ The HDR contrast row's grading, the shader's own grade() and shoulder() run in P
 from 50% to 200% the light rises with the picture's, black stays black and its top lands on the peak, eased into it rather
 than cut flat. Native is graded under the peak the game is told, moves on smoothly from 100%, and the game's light above that
 peak is not cut flat (no peak limit for it). And its push constants are the ones framegen_hdr pushes.
+Also what the HDR paths around it need, from the sources: Native HDR is told by the format the game presents alone, its
+picture never blitted from its image, and at 100% contrast (exposure 1) the pass writes the game's PQ codes as they are.
 
     python -I -B tests/test_hdr_encode.py [--glslang glslangValidator]
 """
@@ -88,6 +90,11 @@ def check_grading():
             [n.strip() for n in pushed.group(1).split(",")] != shader[1:] or "{S, I}, 48)" not in hdr:
         sys.exit("FAIL: hdr_encode.comp's push constants %s are not the 48 bytes framegen_hdr pushes" % shader)
     main = text[text.index("void main()"):]
+    # (Native at 100% contrast and exposure 1: the game's PQ codes written as they are, before any decode or encode)
+    through = main.index("if (pc.mode >= 0.5 && pc.contrast == 1.0 && pc.exposure == 1.0) {")
+    if "imageStore(dst, at, vec4(c, 1.0));\n        return;" not in main[through:through + 200] or \
+            through > main.index("pq_decode(c)"):
+        sys.exit("FAIL: hdr_encode.comp does not pass Native's PQ codes through as they are at 100% contrast")
     for line in ("if (y > 1e-6 && (pc.contrast != 1.0 || pc.exposure != 1.0)) {",
                  "const float top = pc.peak / pc.white;",
                  "nits *= shoulder(grade(y), grade(top), top) / y;", "if (pc.mode < 0.5 && yn > pc.peak) nits *= pc.peak / yn;"):
@@ -142,6 +149,26 @@ def check_grading():
                                       white, peak))
 
 
+def check_paths():
+    # (Native told by the format the game presents, the view's, alone: the cached image's format is not the picture's when the
+    # two share an image by format class, either way round)
+    replay = (VK / "vk_replay.cpp").read_text(encoding="utf-8")
+    present = function(replay, "void do_present(")
+    native = present[present.index("present_native_pq.store("):]
+    native = native[:native.index(";")]
+    if "const VkFormat shown_format = t ? vk_format(t->d.format).format" not in present or \
+            "shown_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32" not in native or "tex->format" in native:
+        sys.exit("FAIL: do_present does not tell Native HDR by the format the game presents alone")
+    # (Native: never the game's image blitted in its image's format; the shot's scale pass told it is PQ as well)
+    image = function(replay, "void present_image(")
+    if "} else if (src && !native_pq) {" not in image or \
+            "framegen_scale(f.cmd, view, src, sw, sh, crop, rect.w, rect.h, native_pq)" not in image:
+        sys.exit("FAIL: present_image can blit Native HDR's picture from its image, or scales it as SDR")
+    shot = present[present.index("const VkImage fx_img ="):]
+    if "kShotW, kShotH,\n" not in shot[:shot.index(";")] or "present_native_pq.load(" not in shot[:shot.index(";")]:
+        sys.exit("FAIL: the RX_VK_SHOT_FX shot scales Native HDR's picture as SDR")
+
+
 a = argparse.ArgumentParser()
 a.add_argument("--glslang")
 args = a.parse_args()
@@ -153,6 +180,7 @@ if hashlib.sha256(src).hexdigest() not in first:
 assert abs(pq(100) - 0.5081) < 0.001 and abs(pq(1000) - 0.7518) < 0.001 and pq(0) < 1e-6, "PQ curve"
 assert abs(nits(1.0, 200, 1000) - 1000) < 1e-6 and abs(nits(0.5, 200, 1000) - 100) < 1e-6 and nits(0, 200, 1000) == 0
 assert all(nits(a / 100, 200, 1000) <= nits((a + 1) / 100, 200, 1000) for a in range(100)), "monotonic"
+check_paths()
 check_grading()
 if args.glslang:
     with tempfile.TemporaryDirectory() as d:
@@ -161,4 +189,5 @@ if args.glslang:
                         str(SHADERS / "hdr_encode.comp")], check=True, capture_output=True)
         if out.read_text() != "\n".join(header.splitlines(True)[1:]) and out.read_text() != "".join(header.splitlines(True)[1:]):
             sys.exit("FAIL: hdr_encode_comp_spv.h differs from the shader compiled now")
-print("PASS: the HDR10 pass's header is its shader, PQ, the highlight expansion and the contrast grading as intended")
+print("PASS: the HDR10 pass's header is its shader, PQ, the highlight expansion and the contrast grading as intended, "
+      "and the HDR paths around it")

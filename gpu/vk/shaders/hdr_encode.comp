@@ -4,7 +4,9 @@
 //  mode 0 (Expanded): the game's finished picture, SDR and sRGB-encoded. White in it is shown at the paper white (nits); its
 //         highlights are expanded towards the peak brightness, the brightest part of the picture reaching the peak, the rest at
 //         the paper white as the game made it.
-//  mode 1 (Native): the game's own HDR10 picture (PQ, Rec. 2020), decoded to light.
+//  mode 1 (Native): the game's own HDR10 picture (PQ, Rec. 2020), decoded to light. At contrast and exposure 1 its PQ codes are
+//         written as they are, with no decode and encode in between (the pass still runs, as it reads the picture through the
+//         view in the game's format: vk_replay.cpp present_image).
 // Then, for both, the contrast (and an exposure factor) as the RenoDX HDR mods grade it: on the luminance relative to the paper
 // white, around mid grey 0.18 of it, the hue kept. A contrast above 1 lifts the picture's top, the peak, far past it (150%: an
 // 800-nit top to about 3500 nits), and a plain limit there cut every highlight flat, so above a knee the graded light eases
@@ -60,6 +62,10 @@ void main() {
     if (at.x >= size.x || at.y >= size.y) return;
     const vec2 t = (vec2(at) + 0.5) / vec2(size);
     const vec3 c = textureLod(src, mix(pc.uv.xy, pc.uv.zw, t), 0.0).rgb;
+    if (pc.mode >= 0.5 && pc.contrast == 1.0 && pc.exposure == 1.0) {   // (Native, ungraded: the game's codes as they are)
+        imageStore(dst, at, vec4(c, 1.0));
+        return;
+    }
     vec3 nits;
     if (pc.mode < 0.5) {
         const vec3 lin = srgb_to_linear(clamp(c, 0.0, 1.0));

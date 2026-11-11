@@ -44,7 +44,7 @@ VkImageView framegen_scaled_view() { return 19; }
 VkImage framegen_hdr(int, VkImageView, uint32_t, uint32_t, const int*, uint32_t, uint32_t, bool) {
     ++hdr_calls; return encoded ? 29 : VK_NULL_HANDLE;
 }
-VkImage framegen_scale(int, VkImageView, VkImage, uint32_t, uint32_t, const int*, uint32_t, uint32_t) { return scaled ? 9 : 0; }
+VkImage framegen_scale(int, VkImageView, VkImage, uint32_t, uint32_t, const int*, uint32_t, uint32_t, bool) { return scaled ? 9 : 0; }
 void blit_crop_to_rect(int, VkImage, uint32_t, uint32_t, const int*, VkImage, int, PresentRect rect) { ++blits; drawn = rect; }
 void present(VkImage src = 1, uint32_t sw = 3440, uint32_t sh = 1440, const int* crop = nullptr, VkImageView view = 2) {
     struct { int cmd = 1; } f; VkImage dst = 3;
@@ -101,12 +101,13 @@ int main(int argc, char** argv) {
     if (enabled) CHECK(messages.back().find("route=scaled") != std::string::npos);
     encoded = true; present_native_pq = true;
     const int before_native_pq = hdr_calls;
-    present(1, 4096, 2160, crop); CHECK(hdr_calls == before_native_pq);
-    opts.hdr_contrast = 150; present(1, 4096, 2160, crop); CHECK(hdr_calls == before_native_pq + 1);   // (graded)
+    present(1, 4096, 2160, crop); CHECK(hdr_calls == before_native_pq + 1);   // (Native: the HDR pass, at 100% too)
     if (enabled) CHECK(messages.back().find("route=hdr") != std::string::npos);
-    opts.hdr_contrast = 100; present(1, 4096, 2160, crop);   // (at 100% shown as it is again)
-    if (enabled) CHECK(messages.back().find("route=scaled") != std::string::npos);
+    opts.hdr_contrast = 150; present(1, 4096, 2160, crop); CHECK(hdr_calls == before_native_pq + 2);   // (graded)
+    opts.hdr_contrast = 100;
     dev.hdr = false; present_native_pq = false; encoded = false;
+    present(1, 4096, 2160, crop);   // (SDR again: the game's route back to scaled)
+    if (enabled) CHECK(messages.back().find("route=scaled") != std::string::npos);
     opts.framegen = 2; present_kind = 1; present(1, 2560, 1440);
     if (enabled) CHECK(messages.back().find("kind=made") != std::string::npos && messages.back().find("framegen-request=2") != std::string::npos);
     const size_t n = messages.size();
