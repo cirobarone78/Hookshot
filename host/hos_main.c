@@ -792,6 +792,12 @@ static int oot_event_arg(Ctx *c, uint64_t arg, const char *name, uint32_t type, 
     return 1;
 }
 
+/* (the Main sequence's "Event" test: an event is playing) */
+static int oot_event_playing(Ctx *c) {
+    const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
+    return events && recomp_load64(c, events + 104);
+}
+
 static struct {
     int64_t requested_at, check_at;
     unsigned destination;
@@ -998,12 +1004,30 @@ static void oot_player_speed(Ctx *c, uint64_t components) {
     logged = percent;
 }
 
+/* Whether the game moved Link since the flight last placed him: he is more than 2 units (the flight moves him 4 a second)
+   from where it holds him. A respawn after a fall or a warp keeps his actor, so the flight took him straight back to
+   where it had him, over the same drop: he fell, respawned and fell again until the flight was switched off. It starts
+   again from where the game put him instead. */
+static int oot_flight_moved_away(Ctx *c, uint64_t actor, const float held[3]) {
+    float apart = 0;
+    for (unsigned i = 0; i < 3; i++) {
+        const float d = oot_load_float(c, actor + 796 + i * 4) - held[i];
+        apart += d * d;
+    }
+    return apart > 2.0f * 2.0f;
+}
+
 static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {
     int rx_option(int id, int otherwise);
     static uint64_t flying_actor, marked_actor, marked_controller;
     static int64_t last_tick, last_player_tick;
     static float target[3], velocity[3], mark[3], yaw;
-    const int flying = rx_option(HOS_OPT_CHEAT_FLIGHT, 0) > 0;
+    int flying = rx_option(HOS_OPT_CHEAT_FLIGHT, 0) > 0;
+    /* An event that takes Link (a map change he flew into, the age toggle's, a cutscene) waits for him to stand, and the
+       flight holds him in the air: the screen the event had faded stayed black until the flight was switched off, and a
+       second request met "waits until the current event ends". While an event plays he is let go and lands; the flight
+       takes him again, from where he then stands, when it has ended. */
+    if (flying && oot_event_playing(c)) flying = 0;
     if (!flying) flying_actor = 0;
     const int64_t now = hos_now_ns();
     __atomic_store_n(&flight_player_seen, now, __ATOMIC_RELAXED);
@@ -1052,7 +1076,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
         memcpy(target, mark, sizeof target);
         memset(velocity, 0, sizeof velocity);
         flying_actor = flying ? actor : 0;
-    } else if (flying_actor != actor || elapsed < 0 || elapsed > 250000000) {
+    } else if (flying_actor != actor || elapsed < 0 || elapsed > 250000000 || oot_flight_moved_away(c, actor, target)) {
         for (unsigned i = 0; i < 3; i++) target[i] = oot_load_float(c, actor + 796 + i * 4);
         memset(velocity, 0, sizeof velocity);
         flying_actor = actor;
@@ -1501,7 +1525,8 @@ static int game_main(int argc, char **argv) {
     hos_mem_init(hos_image_end);
     {   /* (hookshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
            Ultrawide (off unless it says 1) takes the main monitor's shape. The game's picture takes that shape at its own height (the
-           world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio. Wider
+           world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio.
+           A custom output wider than 32:9 takes precedence over both HOS_ASPECT and Ultrawide, matching the menu's picture. Wider
            than 16:9 the HUD, menus and movies keep the middle 16:9; narrower they fill the picture's width. Until now the one 16:9
            constant in the game's data was changed and the 16:9 picture stretched to the window. */
         const char *e = getenv("HOS_ASPECT");
@@ -1527,17 +1552,20 @@ static int game_main(int argc, char **argv) {
         }
         extern volatile uint64_t hos_wide_out, hos_wide_scene;
         extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
+        uint32_t hos_output_size(int height);
+        const uint32_t output_w = hos_output_size(0), output_h = hos_output_size(1);
+        /* A custom surround output explicitly requests that shape, even if the OS reports one monitor. */
+        if (hos_output_is_surround(output_w, output_h)) want = (float)output_w / (float)output_h;
         const double game = 16.0 / 9.0;
         /* (a screen narrower than 16:9 too, 16:10 to 5:4: the picture keeps the game's height and is narrower, the
            cameras take its ratio, and the HUD fills its width instead of a middle 16:9 wider than the screen. A 4:3 CRT
            at the 1440 output: picture 1920 x 1440, scene 1440 x 1080, HUD 100%) */
         if (want > game * 1.01 || (want > 1.0f && want < game * 0.99)) {
             const double r = hos_wide_clamp(want);
-            uint32_t hos_output_size(int height);   /* (host/nn_applet.c: the Output resolution's height, 1440 as shipped) */
             /* (the height kept, the width at the screen's ratio, at most 3840 x 2160's pixels with the shape kept:
                host/hos_wide_size.h, which the Insert menu's Output and Render resolution rows share; issue 1031) */
             unsigned ow, oh;
-            hos_wide_size(hos_output_size(1), r, hos_wide_max_px(), &ow, &oh);
+            hos_wide_size(output_h, r, hos_wide_max_px(), &ow, &oh);
             const unsigned sh = oh * 3 / 4, sw = (unsigned)(ow * 0.75 / 8 + 0.5) * 8;   /* (the scene, 3/4 of the picture as shipped) */
             hos_wide_out = (uint64_t)oh << 32 | ow;
             hos_wide_scene = (uint64_t)sh << 32 | sw;

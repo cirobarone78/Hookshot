@@ -44,6 +44,7 @@ FIXTURE = r"""
 #include <cstring>
 #include <iterator>
 #include <string>
+#include "hos_wide_size.h"   // (host/: the output sizes the menu accepts, hos_output_size_valid)
 #ifdef _WIN32
 static int setenv(const char* name, const char* value, int) { return _putenv_s(name, value); }
 #endif
@@ -180,10 +181,10 @@ def main():
         exe = Path(tmp) / ("menu_env.exe" if os.name == "nt" else "menu_env")
         src.write_text(fixture(args.source), encoding="utf-8")
         if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
-            command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/D_CRT_SECURE_NO_WARNINGS", str(src),
+            command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/D_CRT_SECURE_NO_WARNINGS", "/I" + str(args.source / "host"), str(src),
                        "/Fo" + str(Path(tmp) / "menu_env.obj"), "/Fe" + str(exe)]
         else:
-            command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(src), "-o", str(exe)]
+            command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I", str(args.source / "host"), str(src), "-o", str(exe)]
         subprocess.run(command, cwd=tmp, check=True)
         subprocess.run([str(exe), str(Path(tmp) / "hookshot_options.ini")], check=True)
 
