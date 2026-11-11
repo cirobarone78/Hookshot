@@ -378,6 +378,45 @@ def _each(fn, items, jobs):
     return out
 
 
+def _side_run(fn, conn):
+    try:
+        conn.send((True, fn()))
+    except BaseException as e:   # (said in the lift's own process: end_side does it again there)
+        conn.send((False, repr(e)))
+    finally:
+        conn.close()
+
+
+def start_side(fn):
+    """fn() started in a forked process, beside what the lift does next; None where there is no fork or one process is asked for
+    (HOOKSHOT_LIFT_JOBS=1). end_side(side, fn) waits for it and gives its result"""
+    if emit_jobs() <= 1:
+        return None
+    ctx = multiprocessing.get_context("fork")
+    mine, theirs = ctx.Pipe(duplex=False)
+    p = ctx.Process(target=_side_run, args=(fn, theirs))
+    p.start()
+    theirs.close()
+    return p, mine
+
+
+def end_side(side, fn):
+    """start_side's result; fn() here when it was not started, or its process failed or died (the files are written whole again)"""
+    if side is None:
+        return fn()
+    p, conn = side
+    try:
+        ok, out = conn.recv()
+    except EOFError:
+        ok, out = False, "the process stopped"
+    p.join()
+    conn.close()
+    if ok and p.exitcode == 0:
+        return out
+    print("side process failed (%s): done here" % out, flush=True)
+    return fn()
+
+
 def edit_c(gen, stats, supported, whole=True, took=None, jobs=None):
     """(nx2/lift.py, after the lift writes its C; here, beside the writing, so it imports without the lift's tools) The edits of the
     written C, in this order: the game's patches (nx2/oot_patches.py, which find the lift's exact text; the supported build's whole

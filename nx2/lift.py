@@ -193,16 +193,22 @@ def main():
                              counters=[] if a.no_polls else [poll.stats], took=took)
         import oot_patches
         main_build = next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), "")
+        def tables():   # (the runtime tables and the standalone files: they read the image, not the lifted C)
+            lines = []
+            a64_rtgen.write(gen)
+            if a.standalone:
+                start, exit_ = standalone.write_image_c(gen, img, meta, a.exefs)
+                lines.append("standalone: hos_image.c (thread hooks %#x, %#x), %d import stubs" % (
+                    start, exit_, standalone.gen_stubs(gen, meta)))
+                nvn = standalone.nvn_exports(nso.load_exefs(a.exefs))
+                standalone.write_nvn_exports(gen, nvn)
+                lines.append("standalone: nvn2_exports.c (%d sdk NVN functions routed to host/nvn2.c)" % len(nvn))
+            return lines
+        # (made in a process of their own while the C is edited: 4-8 s that waited for the edits. Where there is no fork, after them)
+        side = chunks.start_side(tables)
         chunks.edit_c(gen, L.stats, a.standalone and main_build == oot_patches.LIFE_BUILD_ID, whole=not a.max_func, took=took)
-        a64_rtgen.write(gen)
-        if a.standalone:
-            start, exit_ = standalone.write_image_c(gen, img, meta, a.exefs)
-            print("standalone: hos_image.c (thread hooks %#x, %#x), %d import stubs" % (
-                start, exit_, standalone.gen_stubs(gen, meta)))
-            nvn = standalone.nvn_exports(nso.load_exefs(a.exefs))
-            standalone.write_nvn_exports(gen, nvn)
-            print("standalone: nvn2_exports.c (%d sdk NVN functions routed to host/nvn2.c)" % len(nvn))
-        took("runtime tables and standalone files")
+        print("\n".join(chunks.end_side(side, tables)), flush=True)
+        took("runtime tables and standalone files (beside the edits)" if side else "runtime tables and standalone files")
         L.report()
         print("interrupt polls: %d loop headers in %d functions" % (poll.stats["polls"], poll.stats["functions"]))
         print("wrote %d code files to %s (%.0fs)" % (len(files), gen, time.time() - t0))
