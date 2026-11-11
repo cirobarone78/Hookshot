@@ -417,6 +417,23 @@ void program_cache_save(const Program& p, const std::vector<std::vector<uint32_t
     if (disk_listing) disk_records[p.key].push_back({at + (int64_t)head_size, (size_t)stored, kind});
 }
 
+bool program_cache_payload(const uint8_t* stored, size_t stored_size, uint32_t kind, std::vector<uint8_t>& plain,
+                           const uint8_t** payload, size_t* payload_size) {
+    *payload = stored;
+    *payload_size = stored_size;
+    if (!(kind & kCompressedKind)) return true;
+    if (stored_size < 8) return false;
+    uint64_t usize;
+    std::memcpy(&usize, stored, 8);
+    if (usize < 4 || usize > (1ull << 31)) return false;
+    plain.resize((size_t)usize);
+    const size_t n = ZSTD_decompress(plain.data(), plain.size(), stored + 8, stored_size - 8);
+    if (ZSTD_isError(n) || n != plain.size()) return false;
+    *payload = plain.data();
+    *payload_size = plain.size();
+    return true;
+}
+
 /// The kept variants of key read from the file (in: a handle on it, used under mu when given) and made ready, to variants
 void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vector<DiskRecord>& recs,
                         std::vector<std::unique_ptr<Program>>& variants) {
@@ -441,24 +458,14 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
             continue;
         }
         std::vector<uint8_t> plain;
-        const uint8_t* payload = data.data() + head_size;
-        size_t payload_size = d.size;
-        if (d.kind & kCompressedKind) {
-            if (d.size < 8) continue;
-            uint64_t usize;
-            std::memcpy(&usize, data.data() + head_size, 8);
-            if (usize < 4 || usize > (1ull << 31)) continue;
-            plain.resize((size_t)usize);
-            const size_t n = ZSTD_decompress(plain.data(), plain.size(), data.data() + head_size + 8, (size_t)d.size - 8);
-            if (ZSTD_isError(n) || n != plain.size()) {
-                static std::atomic<int> logged{0};
-                if (logged++ < 20)
-                    logf("vk: program cache: the compressed record of program %016llx at %lld did not unpack: translated again",
-                         (unsigned long long)key, (long long)d.at);
-                continue;
-            }
-            payload = plain.data();
-            payload_size = plain.size();
+        const uint8_t* payload = nullptr;
+        size_t payload_size = 0;
+        if (!program_cache_payload(data.data() + head_size, d.size, d.kind, plain, &payload, &payload_size)) {
+            static std::atomic<int> logged{0};
+            if (logged++ < 20)
+                logf("vk: program cache: the compressed record of program %016llx at %lld did not unpack: translated again",
+                     (unsigned long long)key, (long long)d.at);
+            continue;
         }
         Reader r{payload, payload + payload_size};
         auto p = std::make_unique<Program>();
@@ -656,19 +663,9 @@ void program_cache_each(const std::function<void(const KeptProgram&)>& fn) {
                     if (fread(data.data(), 1, d.size, disk_in) != d.size) continue;
                 }
                 std::vector<uint8_t> plain;
-                const uint8_t* payload = data.data();
-                size_t payload_size = data.size();
-                if (d.kind & kCompressedKind) {
-                    if (d.size < 8) continue;
-                    uint64_t usize;
-                    std::memcpy(&usize, data.data(), 8);
-                    if (usize < 4 || usize > (1ull << 31)) continue;
-                    plain.resize((size_t)usize);
-                    const size_t n = ZSTD_decompress(plain.data(), plain.size(), data.data() + 8, (size_t)d.size - 8);
-                    if (ZSTD_isError(n) || n != plain.size()) continue;
-                    payload = plain.data();
-                    payload_size = plain.size();
-                }
+                const uint8_t* payload = nullptr;
+                size_t payload_size = 0;
+                if (!program_cache_payload(data.data(), data.size(), d.kind, plain, &payload, &payload_size)) continue;
                 Reader r{payload, payload + payload_size};
                 Program p;
                 p.key = key;
