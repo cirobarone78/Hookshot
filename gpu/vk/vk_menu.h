@@ -100,6 +100,7 @@ void menu_first_start_for_gpu(const VkPhysicalDeviceProperties& props, const VkP
 /// (for the run only: the row keeps the player's choice). 0 Auto, 1 On, 2 Off
 int menu_vsync();
 void menu_set_gpu_count(int count);
+std::string driver_text();   // (vk_main.cpp: the driver as it names itself, for the log and Save my pipeline list)
 void menu_tick();             // (each frame shown: the keys, while the game's window has the focus)
 bool menu_is_open();
 bool resolution_auto();       // (the game's dynamic resolution: Resolution Auto)

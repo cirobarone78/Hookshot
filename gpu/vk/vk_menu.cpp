@@ -49,7 +49,19 @@
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
+#include "pipeline_share.h"   // (Save my pipeline list: the zip for issue 2034)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
+#ifdef _WIN32
+#include <shellapi.h>   // (Save my pipeline list: the browser, the folder)
+#include <shlobj.h>     // (and the Downloads folder)
+#else
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/utsname.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char** environ;
+#endif
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
 #endif
@@ -858,6 +870,11 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
+    // (hookshot) the zip for the "Submit your pipelines" issue: share_pipeline_list, pipeline_share.h
+    {TAB_GAMEPLAY, "Save my pipeline list", nullptr, 0, 0, 0, nullptr,
+     "Helps remove first-load stutter for everyone: saves the pipelines your play built (shader hashes and draw state, no game "
+     "data) with a filled-in report as a zip in Downloads, copies the report and opens the \"Submit your pipelines\" issue. "
+     "Attach the zip there and paste the report. Nothing is uploaded for you."},
 
     // Controls (12 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
@@ -1430,6 +1447,265 @@ void prompts_at_once(const Row& r) {
     if (r.value == &opts.prompts && host && host->prompts_live &&
         (host->prompts_live() & HOS_PROMPTS_LIVE_ALL) == HOS_PROMPTS_LIVE_ALL)
         restart_state.restart_value(restart_slot_of(r), *r.value);
+}
+
+
+// ---- (hookshot) Save my pipeline list (the Gameplay tab): hookshot_pipeline_states.bin and the "Submit your pipelines" issue's
+// template, filled in from this run, zipped into the Downloads folder (pipeline_share.h; the builders do the same with
+// nx2/pipeline_share.py). Then the report on the clipboard, the folder shown and the issue opened in the browser, where the platform
+// has them; never with HOS_HEADLESS (no screen to show them on). Nothing is uploaded: the player attaches the zip ----
+namespace ps = pipeline_share;
+std::string share_said;    // (the help box's line after a save: where the zip went and what to do, or why there is none)
+std::string share_value;   // (the row's value after a save: Saved, or Not saved)
+bool is_share_row(const Row& r) { return !r.value && r.tab == TAB_GAMEPLAY && !strcmp(r.name, "Save my pipeline list"); }
+std::string game_folder() {
+    char exe[MAX_PATH];
+    const DWORD n = game_module_path(exe, MAX_PATH);
+    std::string dir(exe, n);
+    return dir.substr(0, dir.find_last_of("\\/") + 1);
+}
+bool is_dir(const std::string& p) {
+    const DWORD a = GetFileAttributesA(p.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+/// The mods the game loaded, by host/mods.c's rule: under the game folder's mods (or HOS_MODS), a folder holding romfs or exefs,
+/// up to four folders deep; names starting with '-' or '_' are off
+void share_find_mods(const std::string& dir, const std::string& name, int depth, std::vector<std::string>& out) {
+    if (depth > 0 && (is_dir(dir + "/romfs") || is_dir(dir + "/exefs"))) {
+        out.push_back(name);
+        return;
+    }
+    if (depth >= 4) return;
+    WIN32_FIND_DATAA fd;
+    HANDLE f = FindFirstFileA((dir + "/*").c_str(), &fd);
+    if (f == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == '.' || fd.cFileName[0] == '-' ||
+            fd.cFileName[0] == '_')
+            continue;
+        share_find_mods(dir + "/" + fd.cFileName, name.empty() ? fd.cFileName : name + "/" + fd.cFileName, depth + 1, out);
+    } while (FindNextFileA(f, &fd));
+    FindClose(f);
+}
+std::string share_os() {
+#ifdef _WIN32
+    using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
+    OSVERSIONINFOW v{sizeof v};
+    const auto get = (RtlGetVersionFn)(void*)GetProcAddress(GetModuleHandleA("ntdll.dll"), "RtlGetVersion");
+    if (!get || get(&v) != 0) return "Windows";
+    char b[64];
+    snprintf(b, sizeof b, "Windows %s (%lu.%lu.%lu)", v.dwMajorVersion == 10 && v.dwBuildNumber >= 22000 ? "11" : v.dwMajorVersion == 10 ? "10" : "",
+             v.dwMajorVersion, v.dwMinorVersion, v.dwBuildNumber);
+    return b;
+#else
+    std::string pretty;
+    for (const char* path : {"/etc/os-release", "/usr/lib/os-release"}) {
+        FILE* f = fopen(path, "r");
+        if (!f) continue;
+        char line[256];
+        while (fgets(line, sizeof line, f))
+            if (!strncmp(line, "PRETTY_NAME=", 12)) {
+                pretty = line + 12;
+                while (!pretty.empty() && (pretty.back() == '\n' || pretty.back() == '"' || pretty.back() == '\r')) pretty.pop_back();
+                if (!pretty.empty() && pretty[0] == '"') pretty.erase(0, 1);
+            }
+        fclose(f);
+        break;
+    }
+    utsname u{};
+    uname(&u);
+    return std::string(u.sysname) + " (" + (pretty.empty() ? "" : pretty + ", ") + "kernel " + u.release + ")";
+#endif
+}
+/// The Downloads folder (where a browser's file picker opens), else the home folder, else the game folder
+std::string share_downloads() {
+#ifdef _WIN32
+    PWSTR w = nullptr;
+    std::string out;
+    static const GUID downloads = {0x374DE290, 0x123F, 0x4565, {0x91, 0x64, 0x39, 0xC4, 0x92, 0x5E, 0x46, 0x7B}};   // (FOLDERID_Downloads)
+    if (SUCCEEDED(SHGetKnownFolderPath(downloads, 0, nullptr, &w)) && w) {
+        char b[MAX_PATH * 4];
+        if (WideCharToMultiByte(CP_UTF8, 0, w, -1, b, sizeof b, nullptr, nullptr) > 0) out = b;
+    }
+    CoTaskMemFree(w);
+    if (!out.empty() && is_dir(out)) return out;
+    if (const char* home = getenv("USERPROFILE"); home && is_dir(home)) return home;
+#else
+    const char* home = getenv("HOME");
+    if (home && *home) {
+        const char* conf = getenv("XDG_CONFIG_HOME");
+        const std::string path = (conf && *conf ? std::string(conf) : std::string(home) + "/.config") + "/user-dirs.dirs";
+        std::string text;
+        if (FILE* f = fopen(path.c_str(), "r")) {
+            char b[4096];
+            text.assign(b, fread(b, 1, sizeof b, f));
+            fclose(f);
+        }
+        const std::string d = ps::xdg_download_dir(text, home);
+        if (!d.empty() && is_dir(d)) return d;
+        if (is_dir(std::string(home) + "/Downloads")) return std::string(home) + "/Downloads";
+        if (is_dir(home)) return home;
+    }
+#endif
+    return game_folder();
+}
+#ifndef _WIN32
+/// A program of the desktop's (xdg-open, wl-copy, ...), not waited for: false when it cannot start. input: its standard input
+bool share_spawn(std::vector<std::string> argv, const std::string* input = nullptr) {
+    int fds[2] = {-1, -1};
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (input) {
+        if (pipe(fds)) return posix_spawn_file_actions_destroy(&fa), false;
+        posix_spawn_file_actions_adddup2(&fa, fds[0], 0);
+        posix_spawn_file_actions_addclose(&fa, fds[1]);
+    } else {
+        posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    }
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    std::vector<char*> args;
+    for (std::string& a : argv) args.push_back(a.data());
+    args.push_back(nullptr);
+    pid_t pid = 0;
+    const int err = posix_spawnp(&pid, args[0], &fa, nullptr, args.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    if (input) close(fds[0]);
+    if (err) {
+        if (input) close(fds[1]);
+        return false;
+    }
+    std::thread([pid, fd = fds[1], text = input ? *input : std::string()] {   // (its input, then reaped)
+        if (fd >= 0) {
+            for (size_t at = 0; at < text.size();) {
+                const ssize_t n = write(fd, text.data() + at, text.size() - at);
+                if (n <= 0) break;
+                at += (size_t)n;
+            }
+            close(fd);
+        }
+        int status = 0;
+        waitpid(pid, &status, 0);
+    }).detach();
+    return true;
+}
+#endif
+bool share_clipboard(const std::string& text) {
+#ifdef _WIN32
+    const int n = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    if (n <= 0 || !OpenClipboard(nullptr)) return false;
+    EmptyClipboard();
+    bool ok = false;
+    if (HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, (size_t)n * sizeof(wchar_t))) {
+        if (auto* w = (wchar_t*)GlobalLock(g)) {
+            MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, w, n);
+            GlobalUnlock(g);
+            ok = SetClipboardData(CF_UNICODETEXT, g) != nullptr;
+        }
+        if (!ok) GlobalFree(g);
+    }
+    CloseClipboard();
+    return ok;
+#else
+    const char* wl = getenv("WAYLAND_DISPLAY");
+    const char* x = getenv("DISPLAY");
+    if (wl && *wl && share_spawn({"wl-copy"}, &text)) return true;
+    return x && *x && (share_spawn({"xclip", "-selection", "clipboard"}, &text) || share_spawn({"xsel", "-ib"}, &text));
+#endif
+}
+bool share_open(const std::string& what, bool select = false) {
+#ifdef _WIN32
+    std::wstring w(MultiByteToWideChar(CP_UTF8, 0, what.c_str(), -1, nullptr, 0), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, what.c_str(), -1, w.data(), (int)w.size());
+    w.resize(wcslen(w.c_str()));
+    if (select)   // (the folder, the zip chosen in it)
+        return (INT_PTR)ShellExecuteW(nullptr, L"open", L"explorer.exe", (L"/select,\"" + w + L"\"").c_str(), nullptr, SW_SHOWNORMAL) > 32;
+    return (INT_PTR)ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL) > 32;
+#else
+    (void)select;
+    return share_spawn({"xdg-open", what});
+#endif
+}
+/// The template's values from this run: the version, the OS, the GPU and its driver, the output, the upscaler and the 3D's size,
+/// frame generation and HDR as the menu has them now, and the mods
+std::vector<std::string> share_values(long long pipelines, bool v2) {
+    std::vector<std::string> v(ps::kFieldCount);
+    v[0] = HOOKSHOT_VERSION;
+    v[1] = share_os() + "; " + dev.props.deviceName + ", driver " + driver_text();
+    const Out o = shown_output();
+    char b[96];
+    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h,
+             opts.handheld ? " (Handheld profile)" : output_choice(opts.output_res) == 0 ? " (the game's own)" : "");
+    v[2] = b;
+    v[3] = std::string(tx_upscaler(opts.dlss)) + ", " + tx_resolution(opts.resolution);
+    v[4] = std::string(tx_framegen(std::clamp(opts.framegen, 0, 8))) + " / " + tx_hdr(opts.hdr);
+    std::vector<std::string> mods;
+    const char* env = getenv("HOS_MODS");
+    share_find_mods(env && *env ? std::string(env) : game_folder() + "mods", "", 0, mods);
+    std::sort(mods.begin(), mods.end());
+    v[5] = ps::mods_text(mods);
+    v[7] = ps::pipelines_text(pipelines, v2);
+    return v;
+}
+/// Save my pipeline list: the zip, then the clipboard, the folder and the issue (share_said says what happened)
+void share_pipeline_list() {
+    bool present = false;
+    const std::string list = state_list_snapshot(&present);
+    std::string why;
+    const long long n = ps::check_list(list, present, &why);
+    if (n < 0) {
+        share_said = why, share_value = "Not saved";
+        logf("menu: Save my pipeline list: %s", why.c_str());
+        return;
+    }
+    const std::string lines = ps::template_lines(share_values(n, !list.compare(0, 8, "HKSTATE2")));
+    const time_t now = time(nullptr);
+    tm t{};
+#ifdef _WIN32
+    localtime_s(&t, &now);
+#else
+    localtime_r(&now, &t);
+#endif
+    const std::string zip = ps::share_zip(list, lines, (uint16_t)((t.tm_year - 80) << 9 | (t.tm_mon + 1) << 5 | t.tm_mday),
+                                          (uint16_t)(t.tm_hour << 11 | t.tm_min << 5 | t.tm_sec / 2));
+    const std::string dir = share_downloads(), name = ps::zip_name(t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
+#ifdef _WIN32
+    const char* sep = "\\";   // (Explorer's /select takes back slashes only)
+#else
+    const char* sep = "/";
+#endif
+    const std::string path = dir + (dir.back() == '/' || dir.back() == '\\' ? "" : sep) + name;
+    bool written = false;
+    if (FILE* f = fopen((path + ".new").c_str(), "wb")) {
+        written = fwrite(zip.data(), 1, zip.size(), f) == zip.size();
+        written = fclose(f) == 0 && written;
+        remove(path.c_str());
+        written = written && rename((path + ".new").c_str(), path.c_str()) == 0;
+        if (!written) remove((path + ".new").c_str());
+    }
+    std::string folder = dir;   // (its name alone: no user name on screen)
+    while (folder.size() > 1 && (folder.back() == '/' || folder.back() == '\\')) folder.pop_back();
+    folder = folder.substr(folder.find_last_of("\\/") + 1);
+    if (!written) {
+        share_said = "The zip could not be written in " + folder + ".", share_value = "Not saved";
+        logf("menu: Save my pipeline list: %s could not be written", name.c_str());
+        return;
+    }
+    const bool show = !env_on("HOS_HEADLESS");   // (a run without a window: nothing to show the browser or the folder on)
+    const bool copied = show && share_clipboard(lines);
+#ifdef _WIN32
+    if (show) share_open(path, true);
+#else
+    if (show) share_open(dir);
+#endif
+    const bool opened = show && share_open(ps::kIssueUrl);
+    share_value = "Saved";
+    share_said = "Saved " + name + " (" + std::to_string(n) + " pipelines) in " + folder + ". " +
+                 (copied ? "The report is copied. " : "The report is in the zip. ") +
+                 (opened ? "Issue 2034 is open in your browser: attach" : "Open github.com/NotRexed/Hookshot/issues/2034 and attach") +
+                 " the zip to a comment, then paste the report and say where you played.";
+    logf("menu: Save my pipeline list: %s, %lld pipelines, in %s%s%s", name.c_str(), n, folder.c_str(), copied ? ", copied" : "",
+         opened ? ", the issue opened" : "");
 }
 
 /// A row's new value v, as the arrows set it (dir: 1 up, -1 down, for the rows that skip or wrap), saved unless !keep
@@ -2057,6 +2333,7 @@ void draw_options(ui::Ctx& c) {
     const int count = tab_row_count(cur_tab), sel = tab_selected[cur_tab];
     const Row& selr = rows[tab_row_to_global(cur_tab, sel)];
     const char* hint = selr.value && selr.hint ? selr.hint(*selr.value, -1) : nullptr;
+    if (is_share_row(selr) && !share_said.empty()) hint = share_said.c_str();   // (what the last save did)
     const std::string pending_line = (cur_tab == TAB_GRAPHICS || cur_tab == TAB_DEBUG) && restart_pending() ? restart_line(c, 16 * s, hx1 - hx0 - 66 * s) : "";
     static float help_tall = 0, help_tall_w = 0;
     if (help_tall_w != hx1 - hx0) help_tall_w = hx1 - hx0, help_tall = measure_help(c, hx1 - hx0 - 48 * s);
@@ -2064,7 +2341,7 @@ void draw_options(ui::Ctx& c) {
     const bool confirms = &selr == &rows[kRestartRow] || &selr == &rows[kQuitRow];
     ui::Prompt prompt_list[5] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kTabs, "Tabs"}, {ui::kBack, "Close"}};
     int prompts_n = cur_tab == TAB_MOTION ? 3 : 4;
-    if (!selr.value) prompt_list[1] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : "Open"};
+    if (!selr.value) prompt_list[1] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : is_share_row(selr) ? "Save" : "Open"};
     if (cur_tab == TAB_MOTION) prompt_list[2] = {ui::kBack, "Back"};   // (Esc: to Controls)
     if (selr.cheat >= 0) {   // (a debug tool: Change when Left and Right do something, then what confirm does)
         prompts_n = 1;
@@ -2120,6 +2397,7 @@ void draw_options(ui::Ctx& c) {
             choice_cell(c, va, vb, tool, selected, cheat_chooses(r.cheat), cheat_chooses(r.cheat));
         } else if (!r.value) {   // (a page, or Restart and Quit: Confirm until the second press)
             if (pending == &r) choice_cell(c, va, vb, "Press again to confirm", selected, false, false);
+            else if (is_share_row(r) && !share_value.empty()) choice_cell(c, va, vb, share_value, selected, false, false);
             else {
                 choice_cell(c, va, vb, "", selected, false, false);
                 ui::triangle(c, ImVec2(vb.x - 15 * s, y + rh * 0.5f), 10 * s, 1, selected ? ui::kGoldInk : ui::kInk);
@@ -3718,6 +3996,7 @@ void menu_tick() {
             }
         } else if (r.cheat >= 0) cheat_press(r.cheat, press, changed);   // (a debug tool: on the Debug tab itself)
         else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
+        else if (press[7] && is_share_row(r)) share_pipeline_list(), press[7] = false, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
             if (press[7]) press[4] = true;
