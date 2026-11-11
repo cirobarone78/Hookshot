@@ -3553,8 +3553,10 @@ void menu_init() {
         // (the Aspect ratio from options_version 6: a file from before wrote ultrawide=0, the 16:9 default then, whether
         // chosen or not. On a screen narrower than 16:9 host/hos_main.c starts the game at the monitor's shape for it
         // (host/hos_wide_size.h hos_aspect_on), and the row follows what the host started with: a picture narrower than
-        // 16:9 there. On Linux too, where the menu has no screen size of its own)
-        if (version < 6 && opts.ultrawide == 0 && host && host->aspect_ratio) {
+        // 16:9 there. On Linux too, where the menu has no screen size of its own. Not with HOS_ASPECT, a debugging switch
+        // the host takes instead of the file: the shape it started with is then the switch's, not a move, and the next save
+        // would keep a choice the player never made)
+        if (version < 6 && opts.ultrawide == 0 && !getenv("HOS_ASPECT") && host && host->aspect_ratio) {
             const float started = host->aspect_ratio();
             if (started > 1.0f && started < 16.0f / 9.0f * 0.99f) opts.ultrawide = 1;
         }
