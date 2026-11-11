@@ -900,16 +900,20 @@ static void sleep_ns(int64_t ns, int guest) {
     return;
 #endif
     /* Under a millisecond: yielded away until the time, or the timer for the game's own sleeps where the processors
-       are few (hos_short_sleep_timer). HOS_SHORT_SLEEP_TIMER=1: the timer always, 0: never, not set: by the processors */
+       are few (hos_short_sleep_timer). HOS_SHORT_SLEEP_TIMER=1: the timer always, 0: never, not set: by the processors
+       on Windows, the timer always elsewhere. Linux's timer (clock_nanosleep, win32_posix.c) wakes within its slack,
+       ~50 us, and the yields burned the CPU instead: OoT's job wait (f_800998a0, a 20 us SleepThread between looks) ran
+       35,000 times a second there on the Steam Deck, its workers each in the kernel 0.4-0.6 s a second (sched_yield,
+       ~20,000 switches a second each), and the APU's 15 W went to the CPU (11.8 W) with the GPU held at ~220 MHz: Kokiri
+       6.6 fps. Slept, 7.9 (the GPU ~300 MHz). HOS_SHORT_SLEEP_TIMER=0 on Linux: yielded, as before */
     static int short_timer = -1;
     if (short_timer < 0) {
+#if defined(_WIN32)
         int threads = 0;
-#if defined(_WIN32)   /* (measured on Windows only: elsewhere the timer when asked for) */
         /* (with more than one processor group the mask is one group's, not the process's: not known then) */
         DWORD_PTR proc = 0, sys = 0;
         if (GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys))
             threads = __builtin_popcountll((uint64_t)proc);
-#endif
         const int how = hos_short_sleep_timer(getenv("HOS_SHORT_SLEEP_TIMER"), threads);
         /* (the line says what was chosen, before any thread has made its timer: where the high-resolution timer cannot
            be made, Windows before 10 1803, a short sleep falls through to the yield loop at the end and nothing changes) */
@@ -918,6 +922,10 @@ static void sleep_ns(int64_t ns, int guest) {
             hos_log("sleep: %s sleeps under a millisecond wait on the timer where Windows has the high-resolution one "
                     "(%d logical processors; HOS_SHORT_SLEEP_TIMER=0: all yield)",
                     how == 2 ? "all" : "the game's", threads);
+#else
+        const char *asked = getenv("HOS_SHORT_SLEEP_TIMER");
+        const int how = asked ? hos_short_sleep_timer(asked, 0) : 2;
+#endif
         short_timer = how;
     }
     if (ns < 1000000 && short_timer < (guest ? 1 : 2)) {
