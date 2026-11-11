@@ -127,6 +127,7 @@ struct Code {
     bool header_only = false;       // a graphics header and no code (NVN2's per-primitive output map of a mesh program)
     uint8_t sph[sizeof(Shader::ProgramHeader)]{};
     bool ok = false;
+    std::string why;   // (hookshot) not ok: why, for the log ("1 failed" alone said nothing of which program, or why)
 };
 
 /// Whether this is a control section, and how much code it says there is
@@ -194,7 +195,13 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
         Instruction& insn = native.emplace_back();
         std::memcpy(&insn, area.data() + hdr + i * sizeof(Instruction), sizeof insn);
         const auto r = capture.Observe(insn, i);
-        if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) return c;
+        if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
+            char why[96];
+            snprintf(why, sizeof why, "the branch at instruction %u (+%#x) goes outside the program", i,
+                     (unsigned)(i * sizeof(Instruction)));
+            c.why = why;
+            return c;
+        }
         if (r == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
     {   // (hookshot, for bisecting a bad translation) RX_VK_REJECT_STAGES=<n,...> (NVN stages) and RX_VK_REJECT_KEYS=
@@ -217,7 +224,7 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
             reject = !t.empty() && !strncmp(hex, t.c_str(), t.size());
             at = e == std::string::npos ? keys.size() : e + 1;
         }
-        if (reject) return c;
+        if (reject) return c.why = "left out by RX_VK_REJECT_STAGES or RX_VK_REJECT_KEYS", c;
     }
     // (compute only: the host's cooperative matrices are, vk_coopmat.cpp)
     // (hookshot) and only for the programs in RX_VK_NATIVE_MMA_KEYS (key prefixes, default the gameplay TAAU network,
@@ -283,6 +290,9 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
                 }
             }
         }
+        char why[160];
+        snprintf(why, sizeof why, "does not lower at +%#x: %s", lowered.error_offset, std::string(lowered.error).c_str());
+        c.why = why;
         return c;
     }
     c.texture_bound = lowered.required_texture_buffer;
@@ -2459,6 +2469,13 @@ Code stage_of_seed(const SeedStage& st) {
     return parse_code(seed.blob.data() + st.control, std::vector<uint8_t>(seed.blob.begin() + (ptrdiff_t)st.code,
                                                                           seed.blob.begin() + (ptrdiff_t)st.code + st.end));
 }
+/// (hookshot) A seed stage that does not parse fails its program: which one, and why (the prepare's "1 failed" named nothing)
+void seed_stage_failed(const Code& c, uint64_t program) {
+    static std::atomic<int> logged{0};
+    if (logged++ < 30)
+        logf("vk: program %016llx not translated: its NVN stage %d (code %016llx) %s", (unsigned long long)program, c.stage,
+             (unsigned long long)c.key, c.why.empty() ? "does not parse" : c.why.c_str());
+}
 } // namespace
 
 std::string seed_path() { return beside_exe("hookshot_shaders.bin"); }
@@ -2598,7 +2615,7 @@ std::unique_ptr<Program> seed_translate(const SeedStage* const by_stage[8], cons
     for (int k = 0; k < 8; k++)
         if (by_stage[k]) {
             code[k] = stage_of_seed(*by_stage[k]);
-            if (!code[k].ok) return st_failed++, nullptr;
+            if (!code[k].ok) return seed_stage_failed(code[k], key), st_failed++, nullptr;
         }
     auto blank = std::make_unique<NvnState>();
     blank->nvattr = 16;
@@ -2659,7 +2676,7 @@ SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program
     loaded_variants(cs->key, &variants);
     const size_t had = variants.size();
     const Code code = stage_of_seed(*cs);
-    if (!code.ok) return st_failed++, r.failed = true, r;
+    if (!code.ok) return seed_stage_failed(code, cs->key), st_failed++, r.failed = true, r;
     auto blank = std::make_unique<NvnState>();
     blank->nvattr = 16;
     seed_cs_control = seed.blob.data() + cs->control;
