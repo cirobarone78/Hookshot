@@ -426,9 +426,11 @@ HDR peak brightness show only while HDR is on.
   once. A chosen microphone that is unplugged stays chosen (shown as not connected): Default stands in until it is
   back. On Linux (SDL2) two microphones with the same name cannot be told apart: the first is used. Windows must allow desktop apps to use the microphone
   (Settings, Privacy & security, Microphone). `HOS_MIC_LOG=1` logs what the game reads, a line a second.
-- **Game language** is the game's own text, `language.txt` in the game folder: the row writes it, and the game reads it at
-  its next start. **Menu language** is this menu's: Auto follows the game's language (English (UK) and French (Canada)
-  take English and French). The translations are machine-made and want checking by speakers of each language: each is
+- **Game language** is the game's own text, `language.txt` in the game folder: the row writes it once you leave the row,
+  and the game reads it at its next start (`HOS_LANGUAGE`, when set, wins over the file, as for the game). Where the
+  folder cannot be written the row goes back to the file's language. **Menu language** is this menu's: Auto follows the
+  language the game runs in until the restart (English (UK) and French (Canada) take English and French). The
+  translations are machine-made and want checking by speakers of each language: each is
   one line in `gpu/vk/menu_i18n.h`. Place and item names stay English for now. Japanese, Chinese and Korean letters come
   from the game's own fonts for them, with Windows' (Yu Gothic, Microsoft YaHei, Microsoft JhengHei, Malgun Gothic) or
   Linux's Noto CJK where a game font lacks one.

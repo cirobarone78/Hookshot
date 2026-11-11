@@ -53,6 +53,15 @@ class MenuI18nTests(unittest.TestCase):
             for en, _ in pairs:
                 self.assertIn(en, self.menu, "%s: %r is no text of vk_menu.cpp (renamed? then translate it again)" % (table, en))
 
+    def test_plural_forms(self):
+        # (i18n::plural: Russian and Polish ask for a third form, " settings (many)", for 5 and up; the menu shows it
+        # nowhere else, so only their tables have it)
+        cpp = (VK / "vk_menu_i18n.cpp").read_text(encoding="utf-8")
+        for table, code in (("kru", "ru"), ("kpl", "pl")):
+            self.assertIn('code == "%s"' % code, cpp)
+            self.assertIn(" settings (many)", dict(self.tables[table]), table)
+            self.assertIn(" settings", dict(self.tables[table]), table)
+
     def test_conversions_and_spaces(self):
         for table, pairs in self.tables.items():
             keys = [en for en, _ in pairs]

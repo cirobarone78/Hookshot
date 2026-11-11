@@ -104,28 +104,25 @@ void load_fonts() {
 struct ScriptFonts {
     const char* lang;            // (vk_menu_i18n.h lang_code)
     const char* game[2];         // (the game's fonts by name: vk_game_font.h read_script)
-    const char* system[4];       // (the system's, by path: Windows' own folder, then Linux's usual places)
+    const char* system[6];       // (the system's, by path: Windows' own folder, then Linux's usual places: Debian and
+                                 // Ubuntu, Arch, Fedora's two package layouts)
 };
+#define CJK_LINUX "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", \
+                  "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",                                       \
+                  "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc"
 constexpr ScriptFonts kScriptFonts[] = {
     // (Japanese: the system's alone. The game's UDShinGo is a subset of the kanji its own text uses: the menu's others came from
     // the system's font, of another design and size, beside them in one word)
-    {"ja", {nullptr, nullptr},
-     {"%WINDIR%\\Fonts\\YuGothM.ttc", "%WINDIR%\\Fonts\\meiryo.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-      "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"}},
-    {"zh-Hans", {"FZLTHB", nullptr},
-     {"%WINDIR%\\Fonts\\msyh.ttc", nullptr, "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-      "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"}},
-    {"zh-Hant", {"DFPT_C8", nullptr},
-     {"%WINDIR%\\Fonts\\msjh.ttc", nullptr, "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-      "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"}},
-    {"ko", {"AsiaKKRST-L", nullptr},
-     {"%WINDIR%\\Fonts\\malgun.ttf", nullptr, "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-      "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"}},
+    {"ja", {nullptr, nullptr}, {"%WINDIR%\\Fonts\\YuGothM.ttc", "%WINDIR%\\Fonts\\meiryo.ttc", CJK_LINUX}},
+    {"zh-Hans", {"FZLTHB", nullptr}, {"%WINDIR%\\Fonts\\msyh.ttc", nullptr, CJK_LINUX}},
+    {"zh-Hant", {"DFPT_C8", nullptr}, {"%WINDIR%\\Fonts\\msjh.ttc", nullptr, CJK_LINUX}},
+    {"ko", {"AsiaKKRST-L", nullptr}, {"%WINDIR%\\Fonts\\malgun.ttf", nullptr, CJK_LINUX}},
     // (every other language: Latin letters with their accents and Cyrillic, which the game's Latin fonts may not all have)
     {"*", {nullptr, nullptr},
      {"%WINDIR%\\Fonts\\segoeui.ttf", nullptr, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-      "/usr/share/fonts/TTF/DejaVuSans.ttf"}},
+      "/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf"}},
 };
+#undef CJK_LINUX
 std::string expand(const char* path) {
     std::string p(path);
     if (p.rfind("%WINDIR%", 0) == 0) {

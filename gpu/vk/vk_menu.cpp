@@ -267,7 +267,8 @@ const char* hn_dlss_model(int v, int variant) {
     if (variant == 2) return env;
     return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
 }
-/// The Game language row (opts.game_lang): language.txt's language, written when it changes; the game reads it at its start
+/// The Game language row (opts.game_lang): language.txt's language, written once the row is left (game_lang_tick); the game
+/// reads it at its start
 const char* tx_game_lang(int v) { return i18n::game_lang_name(v); }
 /// The Menu language row (opts.menu_lang): Auto, then each language by its own name (vk_menu_i18n.h)
 const char* tx_menu_lang(int v) {
@@ -1369,8 +1370,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
         apply_preset(*r.value);
     } else {
-        *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
-        if (r.value == &opts.game_lang) i18n::set_game_language(*r.value);   // (language.txt: the game's next start)
+        *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;   // (Game language: written when the row is left, game_lang_tick)
         // (another Upscaler: the Render resolution moves to the nearest of its steps, DLSS's modes or the game's)
         if (r.value == &opts.dlss) opts.resolution = ur::snap_render(upscaler(), opts.resolution);   // (a slider stop kept)
         if (!r.preset_exempt) {   // (the controls, the window and the counter are not the preset's)
@@ -1759,9 +1759,11 @@ std::string restart_line(ui::Ctx& c, float px, float width) {
         const char* names[mr::kMax];
         for (int i = 0; i < restart_state.n; i++) names[i] = i18n::tr(restart_names[i]);
         line = i18n::tr("Restart needed: ") + mr::names(names, restart_state.n, shown);
-        if (more)
+        if (more) {   // (" settings (many)": the form Russian and Polish take for 5 and up, i18n::plural; never asked in English)
+            const int form = i18n::plural(more);
             line += std::string(named ? i18n::tr(" and ") : "") + std::to_string(more) +
-                    i18n::tr(named ? " more" : more > 1 ? " settings" : " setting");
+                    i18n::tr(named ? " more" : form == 0 ? " setting" : form == 1 ? " settings" : " settings (many)");
+        }
         if (ui::size_of(c.f.strong, px, line.c_str()).x <= width) break;
     }
     return line;
@@ -3164,8 +3166,29 @@ void cheat_press(int i, const bool* press, bool& changed) {
     }
 }
 
+/// (hookshot) The Game language row's choice written to language.txt once the player leaves the row (another row, page or
+/// tab, or the menu closed), not at each step on the way to it. When it cannot be written (a read-only folder) the row goes
+/// back to what language.txt says, so it never shows a language that was not saved
+void game_lang_tick() {
+    static const int row = [] {
+        for (int i = 0; i < kRows; i++)
+            if (rows[i].value == &opts.game_lang) return i;
+        return -1;
+    }();
+    if (row < 0 || opts.game_lang == i18n::game_lang_index()) return;
+    const bool on_row = open_now.load() && page == 0 && cur_tab == rows[row].tab &&
+                        tab_row_to_global(cur_tab, tab_selected[cur_tab]) == row;
+    if (on_row) return;
+    if (!i18n::set_game_language(opts.game_lang)) {
+        logf("menu: language.txt could not be written: the game language stays %s", i18n::game_lang_code(i18n::game_lang_index()));
+        opts.game_lang = i18n::game_lang_index();
+        menu_refresh = true;
+    }
+}
+
 void menu_tick() {
     fullscreen_tick();
+    game_lang_tick();
     enum { K_N = 17 };
     static bool held[K_N];
     static const int keys[K_N] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1,   // (F1: for keyboards without Insert)

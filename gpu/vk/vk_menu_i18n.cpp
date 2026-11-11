@@ -9,10 +9,13 @@
 #include "vk_menu_i18n.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -101,14 +104,14 @@ std::string fill_format(const char* fmt, const std::vector<std::string>& args) {
 }
 
 struct Table {
-    std::unordered_map<std::string, const char*> exact;
+    std::unordered_map<std::string_view, const char*> exact;   // (keys: the table's own texts, which live for the process)
     std::vector<const menu_i18n::Entry*> formats;   // (the entries with printf conversions)
 };
+/// A language's table, made at its first use. A lookup after that takes no lock and makes no string (call_once's check only)
 const Table& table(int lang) {
     static std::unique_ptr<Table> t[menu_i18n::kLangCount];
-    static std::mutex mu;
-    std::lock_guard lk(mu);
-    if (!t[lang]) {
+    static std::once_flag made[menu_i18n::kLangCount];
+    std::call_once(made[lang], [lang] {
         t[lang] = std::make_unique<Table>();
         const menu_i18n::Lang& l = menu_i18n::kLangs[lang];
         for (int i = 0; i < l.count; i++) {
@@ -122,7 +125,7 @@ const Table& table(int lang) {
                 }
             }
         }
-    }
+    });
     return *t[lang];
 }
 
@@ -139,43 +142,72 @@ constexpr GameLang kGameLangs[] = {
     {"pt-BR", "Português (Brasil)"}, {"nl", "Nederlands"}, {"pl", "Polski"}, {"ru", "Русский"}, {"ja", "日本語"},
     {"ko", "한국어"}, {"zh-Hans", "简体中文"}, {"zh-Hant", "繁體中文"}};
 constexpr int kGameLangCount = sizeof kGameLangs / sizeof kGameLangs[0];
+bool same_code(const std::string& a, const char* b) {   // (as host/nn_applet.c: pt-br is pt-BR)
+    const size_t n = strlen(b);
+    if (a.size() != n) return false;
+    for (size_t i = 0; i < n; i++)
+        if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) return false;
+    return true;
+}
+/// The game's own spelling of a code the game has, any case; "" for one it has not
+std::string known_code(const std::string& code) {
+    for (const GameLang& g : kGameLangs)
+        if (same_code(code, g.code)) return g.code;
+    return "";
+}
 std::string language_txt() {
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string path(exe, n);
     return path.substr(0, path.find_last_of("\\/") + 1) + "language.txt";
 }
-std::string& game_language_now() {
-    static std::string lang = [] {
-        const std::string path = language_txt();
-        std::string found;
-        if (FILE* f = fopen(path.c_str(), "r")) {
-            char line[128];
-            while (found.empty() && fgets(line, sizeof line, f)) {
-                std::string l(line);
-                while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' ')) l.pop_back();
-                const size_t a = l.find_first_not_of(" \t");
-                if (a == std::string::npos || l[a] == '#') continue;
-                found = l.substr(a);
-            }
-            fclose(f);
+/// language.txt's language, as host/nn_applet.c reads it: its first line that is not blank or a comment and holds a code the
+/// game has (a stray line is passed over); "" when none does
+std::string read_language_txt() {
+    std::string found;
+    if (FILE* f = fopen(language_txt().c_str(), "r")) {
+        char line[128];
+        while (found.empty() && fgets(line, sizeof line, f)) {
+            std::string l(line);
+            if (l.compare(0, 3, "\xEF\xBB\xBF") == 0) l.erase(0, 3);   // (a BOM: Notepad's UTF-8)
+            const size_t a = l.find_first_not_of(" \t");
+            if (a == std::string::npos || l[a] == '#' || l[a] == '\r' || l[a] == '\n') continue;
+            found = known_code(l.substr(a, l.find_first_of(" \t\r\n", a) - a));
         }
-        return found;
+        fclose(f);
+    }
+    return found;
+}
+/// The language the game runs in, read once (host/nn_applet.c's rule): HOS_LANGUAGE over language.txt, any case, English (US)
+/// when neither names one the game has. It changes only with a restart, so the menu's Auto stays on it
+const std::string& game_language_started() {
+    static const std::string lang = [] {
+        const char* env = getenv("HOS_LANGUAGE");
+        const std::string want = env ? known_code(env) : read_language_txt();
+        return want.empty() ? std::string("en-US") : want;
+    }();
+    return lang;
+}
+/// language.txt's language as the Game language row last wrote it: the game's next start (the one it started in until then)
+std::string& game_language_saved() {
+    static std::string lang = [] {
+        const std::string txt = read_language_txt();
+        return txt.empty() ? game_language_started() : txt;
     }();
     return lang;
 }
 }  // namespace
 
-const std::string& game_language() { return game_language_now(); }
+const std::string& game_language() { return game_language_started(); }
 int game_lang_count() { return kGameLangCount; }
 const char* game_lang_code(int index) { return kGameLangs[std::clamp(index, 0, kGameLangCount - 1)].code; }
 const char* game_lang_name(int index) { return kGameLangs[std::clamp(index, 0, kGameLangCount - 1)].name; }
 int game_lang_index() {
     for (int i = 0; i < kGameLangCount; i++)
-        if (game_language_now() == kGameLangs[i].code) return i;
+        if (same_code(game_language_saved(), kGameLangs[i].code)) return i;
     return 0;
 }
-void set_game_language(int index) {
+bool set_game_language(int index) {
     const char* code = game_lang_code(index);
     std::vector<std::string> lines;
     if (FILE* f = fopen(language_txt().c_str(), "r")) {
@@ -190,25 +222,40 @@ void set_game_language(int index) {
         l = std::string(code) + "\n", set = true;
     }
     if (!set) lines.push_back(std::string(code) + "\n");
-    if (FILE* f = fopen(language_txt().c_str(), "w")) {
-        for (const auto& l : lines) fputs(l.c_str(), f);
-        fclose(f);
-    }
-    game_language_now() = code;
+    // (written whole or not at all: a folder that cannot be written keeps language.txt, and the row goes back to it)
+    FILE* f = fopen(language_txt().c_str(), "w");
+    if (!f) return false;
+    bool ok = true;
+    for (const auto& l : lines) ok = fputs(l.c_str(), f) >= 0 && ok;
+    ok = fclose(f) == 0 && ok;
+    if (ok) game_language_saved() = code;
+    return ok;
 }
 
 int lang_now() {
     if (opts.menu_lang > 0) return std::clamp(opts.menu_lang - 1, 0, menu_i18n::kLangCount - 1);
-    // (Auto: the game language's code, else its first part (fr-CA: fr, en-GB: en), else English)
-    const std::string& code = game_language();
-    for (int i = 0; i < menu_i18n::kLangCount; i++)
-        if (code == menu_i18n::kLangs[i].code) return i;
-    const std::string first = code.substr(0, code.find('-'));
-    for (int i = 0; i < menu_i18n::kLangCount; i++)
-        if (first == menu_i18n::kLangs[i].code) return i;
-    return 0;
+    // (Auto: the language the game runs in (not the Game language row's next one), its code, else its first part (fr-CA: fr,
+    // en-GB: en), else English)
+    static const int started = [] {
+        const std::string& code = game_language();
+        for (int i = 0; i < menu_i18n::kLangCount; i++)
+            if (same_code(code, menu_i18n::kLangs[i].code)) return i;
+        const std::string first = code.substr(0, code.find('-'));
+        for (int i = 0; i < menu_i18n::kLangCount; i++)
+            if (same_code(first, menu_i18n::kLangs[i].code)) return i;
+        return 0;
+    }();
+    return started;
 }
 const char* lang_code() { return menu_i18n::kLangs[lang_now()].code; }
+int plural(int n) {
+    const std::string code = lang_code();
+    const int ten = n % 10, hundred = n % 100;
+    const bool few = ten >= 2 && ten <= 4 && !(hundred >= 12 && hundred <= 14);
+    if (code == "ru") return ten == 1 && hundred != 11 ? 0 : few ? 1 : 2;   // (1, 21: параметр; 2-4: параметра; 5, 11: параметров)
+    if (code == "pl") return n == 1 ? 0 : few ? 1 : 2;                      // (1: ustawienie; 2-4, 22: ustawienia; 5, 12: ustawień)
+    return n == 1 ? 0 : 1;
+}
 int lang_count() { return menu_i18n::kLangCount; }
 const char* lang_name(int index) { return menu_i18n::kLangs[std::clamp(index, 0, menu_i18n::kLangCount - 1)].name; }
 
