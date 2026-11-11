@@ -94,6 +94,21 @@ scripts/linux/deps.sh       # LLVM, Python packages, FFmpeg with dav1d, SDL2, Vu
 scripts/linux/appimage.sh   # the AppImage, in build-linux/
 ```
 
+The scripts expect Ubuntu 22.04, the system CI builds the AppImage in: the AppImage carries that system's C library, so
+the game it builds runs on glibc 2.35 and newer. On another distribution, build it in a container with the same system
+(Docker or Podman, `DOCKER=podman`):
+
+```sh
+scripts/linux/docker.sh             # deps.sh, then appimage.sh, in scripts/linux/Dockerfile's Ubuntu 22.04
+scripts/linux/docker.sh shell       # a shell in that environment, with the checkout at /src
+```
+
+The AppImage lands in `build-linux/` as above. The container keeps its own `build-linux/docker-deps` and
+`build-linux/docker-vk-work`: parts built on the host link against its newer glibc and would not load on older systems.
+The Dockerfile's packages are the workflow's (`tests/test_linux_docker_packages.py` checks that they stay the same).
+Where SELinux is enforcing (Fedora, RHEL), the script runs the container with `--security-opt label=disable`: the
+checkout is not labelled for containers, and relabelling it with `:z` would change it on the host.
+
 The AppImage needs glibc 2.35 or newer and a Vulkan 1.3 driver with mesh shaders. `HOOKSHOT_JOBS` sets how many files
 compile at once. The README's [Linux section](readme.md#on-linux) has the details and the runtime paths.
 
