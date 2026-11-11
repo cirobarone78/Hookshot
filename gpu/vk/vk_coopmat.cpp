@@ -343,6 +343,11 @@ void software_multiplies(const char* why) {
     dev.native_mma = true;
     logf("vk: matrix multiplies in software (%s)", why);
 }
+/// (hookshot, mma_layout.h global_table_loop) Intel's only for now; env is RX_VK_GM_LOOP, 0 or 1 over the default. A table indexed
+/// by the loop's counter needs dynamic indexing of storage buffer arrays (tests/test_global_table_loop.py)
+bool table_loop_wanted(uint32_t vendor, bool dynamic_indexing, const char* env) {
+    return (env ? std::atoi(env) != 0 : vendor == 0x8086) && dynamic_indexing;
+}
 } // namespace
 
 void coopmat_init() {
@@ -356,6 +361,9 @@ void coopmat_init() {
     if (Shader::Backend::SPIRV::frag_nan_guard) logf("vk: colour outputs NaN-guarded");
     Shader::Backend::SPIRV::position_invariant = dev.props.vendorID != 0x10DE && !env_on("RX_VK_NO_INVARIANT");
     if (Shader::Backend::SPIRV::position_invariant) logf("vk: positions invariant (not an NVIDIA card)");
+    Shader::Backend::SPIRV::global_table_loop = table_loop_wanted(dev.props.vendorID, dev.features.shaderStorageBufferArrayDynamicIndexing,
+                                                                  std::getenv("RX_VK_GM_LOOP"));
+    if (Shader::Backend::SPIRV::global_table_loop) logf("vk: storage buffer tables searched in loops (RX_VK_GM_LOOP=0: written out)");
     // (hookshot) RX_VK_MMA_SOFTWARE=1: HMMA_nx2 in a shader function on subgroup shuffles, no cooperative matrices
     // (emit_spirv_warp.cpp, from Lichii): the lowering still gives HMMA_nx2 (dev.native_mma)
     if (const char* sw = std::getenv("RX_VK_MMA_SOFTWARE"); sw && std::atoi(sw)) {
