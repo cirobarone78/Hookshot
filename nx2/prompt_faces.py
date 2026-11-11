@@ -91,7 +91,7 @@ FACES = {
             ("face", .970, .180, .036, "east"), ("small", .125, .075, .024, "back"), ("small", .875, .075, .024, "start"),
             ("small", .150, .755, .030, "guide"), ("small", .850, .755, .030, None)]),
         parts=_parts(1159, ((242, 230, 27), (917, 230, 27)), (157, 222, 25, 9), ((1009, 180), (974, 215), (1043, 215), (1009, 249), 16),
-                     (209, 174, 9), (234, 437, 12), ((154, 144), (229, 142)), screen=(294, 159, 866, 491),
+                     (209, 174, 9), (234, 437, 12), ((115, 153), (165, 144)), screen=(294, 159, 866, 491),
                      ltrackpad=(169, 290, 279, 394), rtrackpad=(880, 290, 990, 394), more=(908, 420, 942, 454)),
         icons=dict(_DPAD, south="button_a", east="button_b", west="button_x", north="button_y", back="button_view",
                    start="button_options", lshoulder="button_l1", rshoulder="button_r1", ltrigger="button_l2",
