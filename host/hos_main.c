@@ -419,7 +419,8 @@ static void load_hookshot_env(void) {
        shell, a script's RX_VK_PACE=1) beats the same name saved in the file. The file's own later lines still replace its
        earlier ones: the names it set are kept here (for the whole run: a second read sets them again), so they are not taken
        for the environment's */
-    static char from_file[64][96];
+    static char from_file[256][128];   /* (names of up to 127 characters; a file with more names than this has its later
+                                          lines for the names past it taken as the environment's, logged as left out) */
     static int from_file_n;
     char line[512];
     while (fgets(line, sizeof line, f)) {
@@ -442,7 +443,8 @@ static void load_hookshot_env(void) {
                     other && *other ? "HOS_ENV_FILE" : "hookshot_env.txt", s);
             continue;
         }
-        if (!ours && from_file_n < 64 && strlen(s) < sizeof from_file[0]) strcpy(from_file[from_file_n++], s);
+        if (!ours && from_file_n < (int)(sizeof from_file / sizeof *from_file) && strlen(s) < sizeof from_file[0])
+            strcpy(from_file[from_file_n++], s);
 #ifdef _WIN32
         *eq = '=';
         _putenv(s);
@@ -451,6 +453,30 @@ static void load_hookshot_env(void) {
 #endif
     }
     fclose(f);
+}
+
+/* Switches this build no longer reads, still set (in the environment or hookshot_env.txt, as older issues told players):
+   one log line each, naming what took its place, so a bug report shows the switch did nothing */
+static void removed_switch_notes(void) {
+    static const char *const gone[][2] = {
+        {"RX_VK_NO_DESC_REUSE", "RX_VK_DESC_REUSE=never"},
+        {"RX_VK_DESC_SLOTGEN", "RX_VK_DESC_REUSE (the same 0 and 1) or the Descriptor reuse row"},
+        {"RX_VK_DESC_REUSE_DGEN", NULL},
+        {"RX_VK_NO_NAN_GUARD", "RX_VK_NAN_GUARD=0"},
+        {"RX_VK_FOLLOW_MESH", NULL},
+        {"RX_VK_OOT", NULL},
+        {"RX_VK_OOT_EXPOSURE", NULL},
+        {"RX_VK_OOT_FOG", NULL},
+        {"RX_VK_OOT_VISUAL", NULL},
+        {"HOS_FIX_RES", NULL},
+        {"HOS_SCENE_NATIVE", NULL},
+        {"TOTK_MINIMAL_LAYOUT", NULL},
+    };
+    for (size_t i = 0; i < sizeof gone / sizeof *gone; i++)
+        if (getenv(gone[i][0])) {
+            if (gone[i][1]) hos_log("env: %s is no longer read: use %s", gone[i][0], gone[i][1]);
+            else hos_log("env: %s is no longer read: it does nothing", gone[i][0]);
+        }
 }
 
 int hos_oot_protect_hearts;
@@ -1396,6 +1422,10 @@ static int game_main(int argc, char **argv) {
 #endif
 #ifdef _WIN32
     if (!narrow_paths_ok(argc, argv)) return 1;
+    {
+        void hos_relaunch_keep_env(void);   /* (host/hos_relaunch.c: the environment before the file's lines, for a restart) */
+        hos_relaunch_keep_env();
+    }
     load_hookshot_env();
 #endif
     occlusion_switch();
@@ -1446,6 +1476,7 @@ static int game_main(int argc, char **argv) {
         }
     }
     hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
+    removed_switch_notes();
     const char *image = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
