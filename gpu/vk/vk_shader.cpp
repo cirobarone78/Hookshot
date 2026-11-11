@@ -1118,7 +1118,10 @@ uint64_t translator_stamp() {
     // the pinned graphics profile even if the base profile already has the requested width)
     const uint32_t lanes[] = {profile().warp_size_potentially_larger_than_guest ? 1u : 0u, profile().max_subgroup_size,
                               profile().has_broken_spirv_fragment_shuffle ? 1u : 0u, (uint32_t)dev.sg32_stages,
-                              getenv("RX_VK_WARP64") ? 1u : 0u};
+                              getenv("RX_VK_WARP64") ? 1u : 0u,
+                              // (and where the translation starts a storage binding: offsets are counted from there, so a cache
+                              // made on a 16-aligned GPU is no use on a 64-aligned one in the same folder, a laptop's two GPUs)
+                              (uint32_t)storage_binding_align()};
     add(lanes, sizeof lanes);
     // (the records keep Shader::Info as it lies in memory: a cache written by another C++ library (the MSVC build's, then the
     // llvm-mingw one's libc++) has other layouts, and reading it crashed at start. The library and the sizes, so it starts again)

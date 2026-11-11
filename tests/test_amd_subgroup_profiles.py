@@ -107,9 +107,11 @@ def main():
 void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
     bool added = false;
     const auto add = [&](const uint32_t* values, size_t bytes) {
-        assert(bytes == 5 * sizeof(uint32_t));
+        assert(bytes == 6 * sizeof(uint32_t));
         assert(values[0] == uint32_t(size > 32) && values[1] == size);
         assert(values[2] == uint32_t(workaround) && values[3] == pinned && values[4] == uint32_t(forced));
+        // (the storage binding alignment the translation is built with: a cache of a 16-aligned GPU is no use on a 64-aligned one)
+        assert(values[5] == uint32_t(storage_binding_align()));
         added = true;
     };
 ''' + stamp + r'''
