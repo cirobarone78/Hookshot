@@ -7951,18 +7951,21 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     }
     // (the marker counts the starts that began it: two that did not get through it (a driver that hangs or ends the process on one
     // of these pipelines) and it is let go, the rest left to play, as precompile_run does with its notes)
+    // A start closed in it (prepare_stopped) writes its count back unchanged: only one that crashed or hung there counts
     int began = 0;
+    bool resumed = false;
     if (FILE* f = fopen(predict_pending_path().c_str(), "rb")) {
         if (fscanf(f, "%d", &began) != 1) began = 1;
         fclose(f);
+        resumed = true;
     }
     if (began >= 2) {
         remove(predict_pending_path().c_str());
         logf("vk: the last two starts did not get through the predicted pipelines: the rest are built in play");
         return;
     }
-    if (began) logf("vk: the last start did not finish building the predicted pipelines: they are built again (what the driver "
-                    "kept comes from its cache)");
+    if (resumed) logf("vk: the last start did not finish building the predicted pipelines (%s): they are built again (what the "
+                      "driver kept comes from its cache)", began ? "it ended in them" : "closed");
     if (FILE* f = fopen(predict_pending_path().c_str(), "wb")) fprintf(f, "%d\n", began + 1), fclose(f);
     size_t programs = 0;
     PredictCounts left_out;
@@ -8037,6 +8040,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
          : prepare_stopped() ? " (stopped: the window was closed; the driver keeps what was built)" : "");
     if (!prepare_stopped() && !out_of_time.load()) predicted_sample_write(predicted);
     if (!prepare_stopped()) remove(predict_pending_path().c_str());
+    else if (FILE* f = fopen(predict_pending_path().c_str(), "wb")) fprintf(f, "%d\n", began), fclose(f);   // (closed: not counted)
     driver_cache_log("after the prediction");
 }
 
