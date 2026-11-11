@@ -5,13 +5,16 @@ Windows and Linux (and NVK on the same cards), AMD's Windows driver in its two b
 shader compiler"; RDNA 3/4: LLPC), RADV, AMDVLK, Intel's Windows driver on an integrated GPU and on an Arc card, ANV,
 llvmpipe. Each fix must be on for the GPUs it is for and off for every other, and NVIDIA's driver must get none: that is
 what keeps the renderer and the translated shaders on NVIDIA as they were. The RX_VK_ switches force each one either way.
-Then the source: the device's fixes are made from its properties at device creation, and the translator is told
-fetch_bounds, nan_bits and the gather offset (and the program cache's stamp tells the three apart).
+Then the source: the device's fixes are made from its properties at device creation, dynamic alpha to coverage is
+switched off with static_a2c, the translator is told fetch_bounds, nan_bits and the gather offset (and the program
+cache's stamp tells them apart), every pipeline build that takes a cache holds it for the build, every read of a pipeline
+cache's data after the start (pcache's and the play files') is inside the copy's gate, and that gate never blocks.
 
     python -I -B tests/test_vendor_fixes.py --headers <Vulkan-Headers/include> [--cxx g++]
 """
 import argparse
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -20,29 +23,29 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 ROOT = Path(__file__).resolve().parents[1]
 VK = ROOT / "gpu" / "vk"
 
-# name, vendor, driver id, device type, driverInfo -> fetch_bounds, nan_bits, gather_offset
+# name, vendor, driver id, device type, driverInfo -> pcache_apart, static_a2c, fetch_bounds, nan_bits, gather_offset
 DEVICES = [
-    ("RTX 3090, NVIDIA's Linux driver", 0x10DE, "NVIDIA_PROPRIETARY", "DISCRETE_GPU", "580.105.08", "000"),
-    ("RTX 4070 laptop, NVIDIA's Windows driver", 0x10DE, "NVIDIA_PROPRIETARY", "DISCRETE_GPU", "581.57", "000"),
-    ("GTX 1650, NVK", 0x10DE, "MESA_NVK", "DISCRETE_GPU", "Mesa 26.0.1", "000"),
+    ("RTX 3090, NVIDIA's Linux driver", 0x10DE, "NVIDIA_PROPRIETARY", "DISCRETE_GPU", "580.105.08", "00000"),
+    ("RTX 4070 laptop, NVIDIA's Windows driver", 0x10DE, "NVIDIA_PROPRIETARY", "DISCRETE_GPU", "581.57", "00000"),
+    ("GTX 1650, NVK", 0x10DE, "MESA_NVK", "DISCRETE_GPU", "Mesa 26.0.1", "00000"),
     ("RX 6700 XT, AMD's Windows driver (RDNA 2 branch)", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU",
-     "26.10.1 (AMD proprietary shader compiler)", "111"),
+     "26.10.1 (AMD proprietary shader compiler)", "00111"),
     ("RX 5700, AMD's Windows driver (RDNA 1 branch)", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU",
-     "25.9.1 (AMD proprietary shader compiler)", "111"),
-    ("RX 9070 XT, AMD's Windows driver (LLPC)", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "26.10.1 (LLPC)", "101"),
-    ("RX 7600, AMD's Windows driver, no driverInfo", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "", "101"),
+     "25.9.1 (AMD proprietary shader compiler)", "00111"),
+    ("RX 9070 XT, AMD's Windows driver (LLPC)", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "26.10.1 (LLPC)", "00101"),
+    ("RX 7600, AMD's Windows driver, no driverInfo", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "", "00101"),
     ("AMD's driver naming another shader compiler", 0x1002, "AMD_PROPRIETARY", "DISCRETE_GPU", "26.10.1 (LLPC shader compiler)",
-     "101"),
-    ("RX 580, RADV", 0x1002, "MESA_RADV", "DISCRETE_GPU", "Mesa 26.2.5", "101"),
-    ("Steam Deck, RADV", 0x1002, "MESA_RADV", "INTEGRATED_GPU", "Mesa 25.1.0", "101"),
-    ("RX 6800, AMDVLK", 0x1002, "AMD_OPEN_SOURCE", "DISCRETE_GPU", "2025.Q2.1 (LLPC)", "101"),
-    ("UHD Graphics, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "INTEGRATED_GPU", "101.7088", "101"),
-    ("Iris Xe, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "INTEGRATED_GPU", "101.7092", "101"),
-    ("Arc B580, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "DISCRETE_GPU", "101.8132", "101"),
-    ("Iris Xe, ANV", 0x8086, "INTEL_OPEN_SOURCE_MESA", "INTEGRATED_GPU", "Mesa 26.0.1", "101"),
-    ("llvmpipe", 0x10005, "MESA_LLVMPIPE", "CPU", "Mesa 26.0.1 (LLVM 20.1.8)", "100"),
+     "00101"),
+    ("RX 580, RADV", 0x1002, "MESA_RADV", "DISCRETE_GPU", "Mesa 26.2.5", "00101"),
+    ("Steam Deck, RADV", 0x1002, "MESA_RADV", "INTEGRATED_GPU", "Mesa 25.1.0", "00101"),
+    ("RX 6800, AMDVLK", 0x1002, "AMD_OPEN_SOURCE", "DISCRETE_GPU", "2025.Q2.1 (LLPC)", "00101"),
+    ("UHD Graphics, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "INTEGRATED_GPU", "101.7088", "11101"),
+    ("Iris Xe, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "INTEGRATED_GPU", "101.7092", "11101"),
+    ("Arc B580, Intel's Windows driver", 0x8086, "INTEL_PROPRIETARY_WINDOWS", "DISCRETE_GPU", "101.8132", "10101"),
+    ("Iris Xe, ANV", 0x8086, "INTEL_OPEN_SOURCE_MESA", "INTEGRATED_GPU", "Mesa 26.0.1", "00101"),
+    ("llvmpipe", 0x10005, "MESA_LLVMPIPE", "CPU", "Mesa 26.0.1 (LLVM 20.1.8)", "00100"),
 ]
-FIELDS = ['fetch_bounds', 'nan_bits', 'gather_offset']
+FIELDS = ['pcache_apart', 'static_a2c', 'fetch_bounds', 'nan_bits', 'gather_offset']
 
 FIXTURE = r"""
 #include <cstdio>
@@ -57,7 +60,7 @@ static const char* get(const char* name) {
     return it == env.end() ? nullptr : it->second.c_str();
 }
 static void print(const char* what, const VendorFixes& x) {
-    std::printf("%s %d%d%d\n", what, x.fetch_bounds, x.nan_bits, x.gather_offset);
+    std::printf("%s %d%d%d%d%d\n", what, x.pcache_apart, x.static_a2c, x.fetch_bounds, x.nan_bits, x.gather_offset);
 }
 int main() {
     struct D { const char* name; uint32_t vendor; VkDriverId driver; VkPhysicalDeviceType type; const char* info; };
@@ -71,7 +74,7 @@ int main() {
         print(d.name, x);
         vendor_fixes_env(x, get);   // (no switch set: as it was)
         print(d.name, x);
-        const char* names[] = {"RX_VK_FETCH_BOUNDS", "RX_VK_NAN_BITS", "RX_VK_GATHER_OFFSET"};
+        const char* names[] = {"RX_VK_PCACHE_APART", "RX_VK_DYN_A2C", "RX_VK_FETCH_BOUNDS", "RX_VK_NAN_BITS", "RX_VK_GATHER_OFFSET"};
         for (const char* n : names)
             for (const char* v : {"0", "1", ""}) {
                 env.clear();
@@ -101,7 +104,8 @@ def cut(text, marker):
 def check_source():
     main = (VK / "vk_main.cpp").read_text(encoding="utf-8")
     at = main.index("dev.fixes = vendor_fixes(facts);")
-    for text in ("vendor_fixes_env(dev.fixes,",):
+    for text in ("vendor_fixes_env(dev.fixes,", "if (dev.fixes.static_a2c) eds3.extendedDynamicState3AlphaToCoverageEnable = VK_FALSE;",
+                 "dev.eds3_a2c = dev.dynamic_state3 && eds3.extendedDynamicState3AlphaToCoverageEnable;"):
         if main.find(text, at) < 0:
             raise SystemExit("FAIL: vk_main.cpp: %s not after the fixes are made" % text)
     if main.index("dev.fixes = vendor_fixes(facts);") > main.index("vkCreateDevice(dev.physical, &ci"):
@@ -123,6 +127,58 @@ def check_source():
                  "fetch_bounds_buffers ? 128u : 0u"):
         if text not in stamp:
             raise SystemExit("FAIL: the program cache's stamp lacks %s" % text)
+
+    draw = (VK / "vk_draw.cpp").read_text(encoding="utf-8")
+    # (a build into a cache holds it: guarded_graphics / guarded_compute are called only from apart_graphics / apart_compute)
+    calls = [m.start() for m in re.finditer(r"[^_\w](guarded_graphics|guarded_compute)\(", draw)]
+    apart = [cut(draw, "VkResult apart_graphics("), cut(draw, "VkResult apart_compute(")]
+    defs = 0
+    for at in calls:
+        line = draw[draw.rfind("\n", 0, at) + 1:draw.find("\n", at)]
+        if line.startswith(("VkResult guarded_", "__declspec(noinline) VkResult guarded_")):
+            defs += 1
+            continue
+        if not any(line.strip() in a for a in apart):
+            raise SystemExit("FAIL: a build outside apart_graphics / apart_compute: " + line.strip())
+    if defs != 4:
+        raise SystemExit("FAIL: expected the four definitions of guarded_graphics / guarded_compute, found %d" % defs)
+    for text in ("return create_cached(apart_graphics, ci, pl);", "return create_cached(apart_compute, ci, pl);",
+                 ": apart_graphics(cache, ci, pl);"):
+        if text not in draw:
+            raise SystemExit("FAIL: vk_draw.cpp lacks " + text)
+    if "if (!cache || !dev.fixes.pcache_apart) return false;" not in cut(draw, "bool cache_use_begin("):
+        raise SystemExit("FAIL: a build takes the lock on a driver that does not need it")
+    gate = cut(draw, "bool cache_copy_begin(int wait_ms) {")
+    if "if (!dev.fixes.pcache_apart) return true;" not in gate:
+        raise SystemExit("FAIL: a save takes the lock on a driver that does not need it")
+    # (never a blocking exclusive lock: a build stuck in the driver would hold it back for good, and every build after it)
+    if ".lock()" in gate or "try_lock()" not in gate:
+        raise SystemExit("FAIL: the copy's gate waits on a blocking lock")
+    # (the reads of pcache's data in play: the save's inside its gated block, which ends the gate on the way out; the size the
+    # warm pass compares against between cache_copy_begin and cache_copy_end)
+    save = cut(draw, "void pipeline_cache_save(bool force) {")
+    gated = cut(save, "if (cache_copy_begin(wait_ms)) {")
+    if "struct End { ~End() { cache_copy_end(); } } end;" not in gated or \
+            save.count("vkGetPipelineCacheData(") != 2 or gated.count("vkGetPipelineCacheData(") != 2:
+        raise SystemExit("FAIL: pipeline_cache_save reads the cache's data outside the gate")
+    saved_now = cut(draw, "bool pcache_saved_now() {")
+    begin, read, end = (saved_now.index(t) for t in ("cache_copy_begin(kCopyWaitForced)", "vkGetPipelineCacheData(", "cache_copy_end();"))
+    if not begin < read < end or saved_now.count("vkGetPipelineCacheData(") != 1:
+        raise SystemExit("FAIL: pcache_saved_now reads the cache's data outside the gate")
+    # (the forced wait for the play files at the window's close and with a forced save; one try in play)
+    if "play_cache_save(true)" not in cut(draw, "void pipeline_cache_close() {") or "play_cache_save(force);" not in save:
+        raise SystemExit("FAIL: the play files' copy does not get the forced wait at the window's close or a forced save")
+    if "forced ? kCopyWaitForced : 0" not in cut(draw, "void play_cache_save(bool forced) {"):
+        raise SystemExit("FAIL: a play file's copy in play waits for the gate")
+    # (only a forced copy holds new builds back: a build a draw waits on must not wait for a save in play)
+    if "const bool hold = wait_ms >= kCopyWaitForced;" not in gate or "if (hold) copy_pending++;" not in gate:
+        raise SystemExit("FAIL: a copy that is not forced holds the builds back")
+    # (a play file's copy too: inside the gate's block, which ends it on the way out)
+    play = cut(draw, "size_t play_file_write(")
+    block_at = play.index("struct End { ~End() { cache_copy_end(); } } end;")
+    if play.index("cache_copy_begin(") > block_at or play.count("vkGetPipelineCacheData(") != 2 or \
+            play.index("vkGetPipelineCacheData(") < block_at or play.rindex("vkGetPipelineCacheData(") > play.index("\n    }\n", block_at):
+        raise SystemExit("FAIL: play_file_write reads a cache's data outside the gate")
 
 
 def main():
@@ -153,12 +209,12 @@ def main():
             if line.split()[-1] != want:
                 failures.append("%s: %s, expected %s" % (name, line.split()[-1], want))
         for i, line in enumerate(lines[2:]):
-            switch, value = ["RX_VK_FETCH_BOUNDS", "RX_VK_NAN_BITS", "RX_VK_GATHER_OFFSET"][i // 3], ["0", "1", ""][i % 3]
+            switch, value = ["RX_VK_PCACHE_APART", "RX_VK_DYN_A2C", "RX_VK_FETCH_BOUNDS", "RX_VK_NAN_BITS", "RX_VK_GATHER_OFFSET"][i // 3], ["0", "1", ""][i % 3]
             got = list(line.split()[-1])
             expect = list(want)
             if value:
                 field = i // 3
-                expect[field] = "1" if value == "1" else "0"
+                expect[field] = ("1" if value == "1" else "0") if FIELDS[field] != "static_a2c" else ("0" if value == "1" else "1")
             if got != expect:
                 failures.append("%s with %s=%s: %s, expected %s" % (name, switch, value, "".join(got), "".join(expect)))
     if failures:

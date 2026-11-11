@@ -19,6 +19,7 @@
 #include <deque>
 #include <exception>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -770,12 +771,23 @@ constexpr size_t kPlayFilesKept = 16;
 std::string play_path(uint32_t n) {
     return pcache_dir + "mkw_vk_pipelines_play_" + std::to_string(n) + ".bin";
 }
-/// A cache's data written whole to path, through a .tmp moved over it: its size, 0 when it is not in place
-size_t play_file_write(VkPipelineCache cache, const std::string& path) {
+constexpr int kCopyWaitForced = 30000, kCopyWaitStart = 2000;   // (ms: cache_copy_begin)
+bool cache_copy_begin(int wait_ms);   // (the pipeline cache's copy apart from builds, on the drivers that need it: vk_vendor.h)
+void cache_copy_end();
+/// A cache's data written whole to path, through a .tmp moved over it: its size, 0 when it is not in place (a play file is kept and
+/// tried again at the next save). The copy is held apart from pipeline builds as pcache's is (cache_copy_begin): no build goes into
+/// a generation being written (play_cache_save waits for its users), but Intel's driver is not known to fault only when the
+/// build is into the same cache, so the lock is the same one
+size_t play_file_write(VkPipelineCache cache, const std::string& path, int wait_ms) {
     size_t n = 0;
-    if (vkGetPipelineCacheData(dev.device, cache, &n, nullptr) != VK_SUCCESS || !n) return 0;
-    std::vector<uint8_t> data(n);
-    if (vkGetPipelineCacheData(dev.device, cache, &n, data.data()) != VK_SUCCESS) return 0;
+    std::vector<uint8_t> data;
+    if (!cache_copy_begin(wait_ms)) return 0;
+    {
+        struct End { ~End() { cache_copy_end(); } } end;
+        if (vkGetPipelineCacheData(dev.device, cache, &n, nullptr) != VK_SUCCESS || !n) return 0;
+        data.resize(n);
+        if (vkGetPipelineCacheData(dev.device, cache, &n, data.data()) != VK_SUCCESS) return 0;
+    }
     const std::string tmp = path + ".tmp";
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return 0;
@@ -812,7 +824,7 @@ size_t play_files_merge() {
     }
     if (!merged.empty()) logf("vk: pipeline cache: %zu play files merged (%zu KB)", merged.size(), merged_kb);
     if (merged.size() >= kPlayFilesKept) {   // (into the one file, here at the start, and out of the play files)
-        if (const size_t wrote = play_file_write(pcache, pcache_path)) {
+        if (const size_t wrote = play_file_write(pcache, pcache_path, kCopyWaitStart)) {   // (the start: no builds yet)
             for (const std::string& path : merged) remove(path.c_str());
             logf("vk: pipeline cache: the play files written into it (%zu KB)", wrote >> 10);
         }
@@ -837,23 +849,43 @@ void play_cache_begin() {
         logf("vk: pipeline cache: what play makes goes into play files (RX_VK_PLAY_CACHE=0: into the one cache)");
     }
 }
+int play_drain_ms = 30000;   // (how long a save waits for a generation's builds to end: play_cache_save)
 /// (pipeline_cache_save's thread, or the window's close) play's generation taken away once nothing is being made with it, a new one
 /// in its place, and written alone. One not written is kept and tried again at the next save
-void play_cache_save() {
+void play_cache_save(bool forced) {
     static std::mutex mu;   // (a save's thread and the window's close, pipeline_cache_close)
     std::lock_guard lk(mu);
-    static std::vector<PlayCache*> unsaved;
+    static std::vector<PlayCache*> unsaved, draining;
     if (PlayCache* g = play_cache.load(); g && g->built.load()) {
-        unsaved.reserve(unsaved.size() + 1);   // (before it is taken away: it cannot then be lost to a failed allocation)
+        draining.reserve(draining.size() + 1);   // (before it is taken away: it cannot then be lost to a failed allocation)
+        unsaved.reserve(unsaved.size() + draining.size() + 1);
         if (PlayCache* next = play_cache_make()) {
             play_cache.store(next);
-            while (g->users.load()) Sleep(1);
-            unsaved.push_back(g);
+            draining.push_back(g);
         }
+    }
+    // (a generation taken away is written once nothing is being made with it any more. The wait is bounded: a compile stuck in
+    // the driver keeps its generation's count up for good, and the exit and every later save would wait on it. One still in
+    // use after play_drain_ms (30 s) is left, and tried again at the next save)
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(play_drain_ms);
+    for (auto it = draining.begin(); it != draining.end();) {
+        while ((*it)->users.load() && std::chrono::steady_clock::now() < end) Sleep(1);
+        if ((*it)->users.load()) {
+            static std::atomic<int> told{0};
+            if (told++ < 4)
+                logf("vk: pipeline cache: a play file not saved yet: a pipeline is still being built into it after %d s",
+                     play_drain_ms / 1000);
+            ++it;
+            continue;
+        }
+        unsaved.push_back(*it);
+        it = draining.erase(it);
     }
     for (auto it = unsaved.begin(); it != unsaved.end();) {
         PlayCache* old = *it;
-        if (const size_t wrote = play_file_write(old->cache, play_path(play_seq + 1))) {
+        // (in play one try, as pcache's save: a generation not written is kept and tried again at the next save, and builds are
+        // not held back for it; at the window's close or a forced save, the forced wait)
+        if (const size_t wrote = play_file_write(old->cache, play_path(play_seq + 1), forced ? kCopyWaitForced : 0)) {
             play_seq++;
             logf("vk: pipeline cache: play file %u saved (%zu KB): %lld pipelines, %lld from the driver's cache, %lld compiled; %lld "
                  "more from the start's cache",
@@ -1194,6 +1226,64 @@ VkResult guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInf
 #endif
 VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part = -1,
                           bool* cold = nullptr);
+// (hookshot) Pipeline builds into a pipeline cache kept apart from the copy of pcache's data, on the drivers that need it
+// (dev.fixes.pcache_apart, vk_vendor.h: Intel's Windows driver faults in vkGetPipelineCacheData when pipelines are being built
+// into the cache meanwhile). After totk-pc-recomp b358b8f1f1 (itaskaev2, MIT) and Eglantine db093d7325 (kraibse, GPL): a build
+// holds pcache_use shared, the copy holds it alone. Elsewhere the driver keeps the cache synchronized, as Vulkan says it does, and
+// nothing here takes a lock
+std::shared_mutex pcache_use;
+std::atomic<int> copy_pending{0};   // (copies waiting for the gate: new builds hold back for them a little, cache_use_begin)
+bool cache_use_begin(VkPipelineCache cache) {
+    if (!cache || !dev.fixes.pcache_apart) return false;
+    // (a copy waiting for the gate: builds that overlap without a gap would otherwise keep it out until its deadline. A new build
+    // holds back for it, for 1 s at most: the copy's own wait is bounded, and a build is never held back for good)
+    if (copy_pending.load()) {
+        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (copy_pending.load() && std::chrono::steady_clock::now() < end) Sleep(1);
+    }
+    pcache_use.lock_shared();
+    return true;
+}
+void cache_use_end(bool held) {
+    if (held) pcache_use.unlock_shared();
+}
+/// guarded_graphics and guarded_compute with the cache held for the build (pcache_use): every build into a cache goes through these
+VkResult apart_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
+    const bool held = cache_use_begin(cache);
+    const VkResult r = guarded_graphics(cache, ci, pl);
+    cache_use_end(held);
+    return r;
+}
+VkResult apart_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
+    const bool held = cache_use_begin(cache);
+    const VkResult r = guarded_compute(cache, ci, pl);
+    cache_use_end(held);
+    return r;
+}
+/// (pcache_apart) The copy of a cache's data held apart from the builds, tried for up to wait_ms: kCopyWaitForced for the forced
+/// saves (the exit, the window's close, Restart now, the prepare's end), pcache's and the play files' alike; kCopyWaitStart for a
+/// save of pcache before play and the start's merge; 0, one try, for a save in play, pcache's or a play file's, which is tried
+/// again at the next one. False when the builds kept it. While a forced copy waits, new builds hold back for it for up to 1 s
+/// (copy_pending, cache_use_begin); a shorter one does not hold back the builds a draw may wait on. Never a blocking lock: a waiting exclusive lock holds back new
+/// shared ones (Windows' SRW locks), so every later build would wait behind it, and for good when a worker is stuck in the driver
+/// (prepare_left_workers): the save is then left out, and logged
+bool cache_copy_begin(int wait_ms) {
+    if (!dev.fixes.pcache_apart) return true;
+    if (pcache_use.try_lock()) return true;
+    if (wait_ms <= 0) return false;
+    // (a deadline on the clock, not a count of sleeps: Windows' timer can make Sleep(2) last 15.6 ms)
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
+    // (only a forced copy holds new builds back: in play a build a draw waits on would otherwise wait for a save)
+    const bool hold = wait_ms >= kCopyWaitForced;
+    if (hold) copy_pending++;
+    bool got = false;
+    while (!(got = pcache_use.try_lock()) && std::chrono::steady_clock::now() < end) Sleep(2);
+    if (hold) copy_pending--;
+    return got;
+}
+void cache_copy_end() {
+    if (dev.fixes.pcache_apart) pcache_use.unlock();
+}
 bool gpl_libs_cached() {
     static const bool on = !env_on("RX_VK_GPL_NO_CACHE");
     return on;
@@ -1203,14 +1293,14 @@ thread_local bool driver_cache_only = false;   // (predict_run's: pipelines for 
 thread_local VkPipelineCache driver_ask_cache = VK_NULL_HANDLE;
 /// (with the pipeline cache: from it, or in play into the play generation's, create_cached)
 VkResult cached_graphics(const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
-    return create_cached(guarded_graphics, ci, pl);
+    return create_cached(apart_graphics, ci, pl);
 }
 VkResult cached_compute(const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
-    return create_cached(guarded_compute, ci, pl);
+    return create_cached(apart_compute, ci, pl);
 }
 /// (a graphics pipeline made with the cache chosen for it: pcache through the play caches, another or none as it is)
 VkResult graphics_with(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
-    return cache && cache == pcache ? cached_graphics(ci, pl) : guarded_graphics(cache, ci, pl);
+    return cache && cache == pcache ? cached_graphics(ci, pl) : apart_graphics(cache, ci, pl);
 }
 
 /// A target's write mask: the state's channel mask, nothing for a target the fragment shader leaves unwritten
@@ -7722,7 +7812,10 @@ bool prepare_is_update() {
 /// before the stamp says they are: a start that ended before the save would otherwise find them cold for good)
 bool pcache_saved_now() {
     size_t before = 0;
-    if (!pcache || vkGetPipelineCacheData(dev.device, pcache, &before, nullptr) != VK_SUCCESS) return false;
+    if (!pcache || !cache_copy_begin(kCopyWaitForced)) return false;
+    const VkResult got = vkGetPipelineCacheData(dev.device, pcache, &before, nullptr);   // (apart from builds: cache_copy_begin)
+    cache_copy_end();
+    if (got != VK_SUCCESS) return false;
     pipeline_cache_save(true);
     std::error_code ec;
     const auto size = std::filesystem::file_size(pcache_path, ec);
@@ -7899,7 +7992,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         VkPipeline pl = VK_NULL_HANDLE;
         // (into the app's pipeline cache, saved to mkw_vk_pipelines.bin: without it the next start compiled them again in play
         // where the driver's own cache missed them, AMD's 15 s culling compiles each time)
-        if (guarded_compute(pcache, &ci, &pl) == VK_SUCCESS && pl) {
+        if (apart_compute(pcache, &ci, &pl) == VK_SUCCESS && pl) {
             vkDestroyPipeline(dev.device, pl, nullptr);
             libs++;
             pcache_built_since_save++;
@@ -9020,7 +9113,7 @@ void pipeline_cache_play() {
 }
 void pipeline_cache_close() {
     try {
-        if (play_cache.load()) play_cache_save();
+        if (play_cache.load()) play_cache_save(true);   // (the window's close: the forced wait, as the exit's save has)
     } catch (const std::exception& e) {
         logf("vk: pipeline cache save failed: %s", e.what());
     }
@@ -9030,7 +9123,8 @@ void pipeline_cache_save(bool force) {
     if (!pcache || pcache_no_save || (!force && pcache_built_since_save < 32)) return;
     pcache_built_since_save = 0;
     // (on a thread of its own unless forced, at exit: ~100 MB fetched and written took the replay thread 100+ ms at
-    // each scene change; the cache is internally synchronized, pipelines go on being built meanwhile)
+    // each scene change; the cache is internally synchronized, pipelines go on being built meanwhile, but for the copy itself on
+    // the drivers that need it: cache_copy_begin)
     static std::atomic<bool> busy{false};
     if (busy.exchange(true)) {
         if (!force) return;
@@ -9041,33 +9135,51 @@ void pipeline_cache_save(bool force) {
         struct Done { ~Done() { busy = false; } } done;
         try {
             size_t n = 0;
-            // (the size last read or written: nothing new, not fetched nor written again; see pcache_saved_size)
-            // (in play only once it has grown by a good deal: what play makes is in the play files, and the little pcache still
-            // grows by there (a stage library the driver's own cache answered, copied into it) had it written whole at every
-            // save all the same, 2.4 GB 25 times in a 10-minute first visit for 9 MB more. Past the threshold it is written,
-            // so a folder prepared before the warm pass keeps its libraries through a crash. The window's close does not write it
-            // (pipeline_cache_close saves the generation only); a forced save does: Restart now, the prepare. RX_VK_PLAY_SAVE_START_MB=<n>: the growth it is written at in play (64; 0: any, as before))
-            static const size_t play_grown = (size_t)(getenv("RX_VK_PLAY_SAVE_START_MB") ? std::max<long long>(0, atoll(getenv("RX_VK_PLAY_SAVE_START_MB"))) : 64) << 20;
-            bool write = vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n && n != pcache_saved_size;
-            if (write && !force && play_grown && play_cache_in_use() && n < pcache_saved_size + play_grown) {
-                write = false;
+            std::vector<uint8_t> data;
+            bool copied = false;
+            // (the copy alone held apart from pipeline builds, where the driver needs it: cache_copy_begin, vk_vendor.h. The file
+            // is written after it, with the builds going on. In play a single try: such a save mostly finds too little growth to
+            // write anyway (play_grown below), and it comes again at the next one)
+            const int wait_ms = force ? kCopyWaitForced : play_cache_in_use() ? 0 : kCopyWaitStart;
+            if (cache_copy_begin(wait_ms)) {
+                struct End { ~End() { cache_copy_end(); } } end;
+                // (the size last read or written: nothing new, not fetched nor written again; see pcache_saved_size)
+                // (in play only once it has grown by a good deal: what play makes is in the play files, and the little pcache still
+                // grows by there (a stage library the driver's own cache answered, copied into it) had it written whole at every
+                // save all the same, 2.4 GB 25 times in a 10-minute first visit for 9 MB more. Past the threshold it is written,
+                // so a folder prepared before the warm pass keeps its libraries through a crash. The window's close does not write it
+                // (pipeline_cache_close saves the generation only); a forced save does: Restart now, the prepare. RX_VK_PLAY_SAVE_START_MB=<n>: the growth it is written at in play (64; 0: any, as before))
+                static const size_t play_grown = (size_t)(getenv("RX_VK_PLAY_SAVE_START_MB") ? std::max<long long>(0, atoll(getenv("RX_VK_PLAY_SAVE_START_MB"))) : 64) << 20;
+                bool write = vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n && n != pcache_saved_size;
+                if (write && !force && play_grown && play_cache_in_use() && n < pcache_saved_size + play_grown) {
+                    write = false;
+                    static std::atomic<int> told{0};
+                    if (told++ < 4)
+                        logf("vk: pipeline cache %zu KB larger in play: written once it is %zu MB larger, or by a forced save",
+                             (n - std::min<size_t>(n, pcache_saved_size)) >> 10, play_grown >> 20);
+                }
+                if (write) {
+                    data.resize(n);
+                    copied = vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS;
+                }
+            } else {
+                pcache_built_since_save += 32;   // (not saved: the next save point tries again)
                 static std::atomic<int> told{0};
-                if (told++ < 4)
-                    logf("vk: pipeline cache %zu KB larger in play: written once it is %zu MB larger, or by a forced save",
-                         (n - std::min<size_t>(n, pcache_saved_size)) >> 10, play_grown >> 20);
+                if (force)
+                    logf("vk: pipeline cache not saved: pipelines were still being built after %d s (a compile stuck in the driver?)",
+                         wait_ms / 1000);
+                else if (const int k = told++; k < 4 || k % 100 == 0)
+                    logf("vk: pipeline cache save put off: pipelines were being built (tried again at the next save; %d so far)", k + 1);
             }
-            if (write) {
-                std::vector<uint8_t> data(n);
-                if (vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS) {
-                    const std::string tmp = pcache_path + ".tmp";
-                    if (FILE* f = fopen(tmp.c_str(), "wb")) {
-                        bool ok = fwrite(data.data(), 1, n, f) == n;
-                        ok = fclose(f) == 0 && ok;   // (its last bytes go to the disk at the close)
-                        // (only a file in place counts as saved: a failed write is tried again at the next save)
-                        if (ok && MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-                            pcache_saved_size = n;
-                            logf("vk: pipeline cache saved (%zu KB)", n >> 10);
-                        }
+            if (copied) {
+                const std::string tmp = pcache_path + ".tmp";
+                if (FILE* f = fopen(tmp.c_str(), "wb")) {
+                    bool ok = fwrite(data.data(), 1, n, f) == n;
+                    ok = fclose(f) == 0 && ok;   // (its last bytes go to the disk at the close)
+                    // (only a file in place counts as saved: a failed write is tried again at the next save)
+                    if (ok && MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+                        pcache_saved_size = n;
+                        logf("vk: pipeline cache saved (%zu KB)", n >> 10);
                     }
                 }
             }
@@ -9075,7 +9187,7 @@ void pipeline_cache_save(bool force) {
             logf("vk: pipeline cache save failed: %s", e.what());
         }
         try {
-            play_cache_save();   // (what play made since the last save, alone)
+            play_cache_save(force);   // (what play made since the last save, alone)
         } catch (const std::exception& e) {
             logf("vk: pipeline cache save failed: %s", e.what());
         }

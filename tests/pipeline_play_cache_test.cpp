@@ -167,6 +167,13 @@ VkResult fake_create(VkPipelineCache c, const FakeCI* ci, VkPipeline* pl) {
     return *pl = &the_pipeline, VK_SUCCESS;
 }
 
+// The pipeline cache copy's gate (vk_draw.cpp cache_copy_begin: apart from pipeline builds on Intel's Windows driver, vk_vendor.h
+// pcache_apart). Open here; a play file's copy is made inside it.
+std::atomic<int> copy_gate_held{0};
+std::atomic<int> copy_gate_last_wait{-1};   // (the wait a play file's copy asked for: one try in play, the forced wait at close)
+bool cache_copy_begin(int wait_ms) { return copy_gate_last_wait = wait_ms, ++copy_gate_held, true; }
+void cache_copy_end() { --copy_gate_held; }
+
 #define MoveFileExA move_into_place
 #include "pipeline_play_cache.inc"
 #undef MoveFileExA
@@ -259,19 +266,19 @@ int run(const std::string& name) {
         CHECK(play_cache.load() == g);
     } else if (name == "save") {
         pcache = cache_of({1});
-        play_cache_save();   // (before play: nothing)
+        play_cache_save(false);   // (before play: nothing)
         CHECK(!exists(play_path(1)));
         play_cache_begin();
         PlayCache* g = play_cache.load();
         CHECK(make(10) == VK_SUCCESS && make(11) == VK_SUCCESS);
-        play_cache_save();
+        play_cache_save(false);
         CHECK(file_keys(play_path(1)) == (std::set<uint64_t>{10, 11}) && play_seq == 1);
         CHECK(play_cache.load() != g && keys_of(play_cache.load()->cache).empty() && !g->cache && destroys == 1);
         CHECK(make(1) == VK_SUCCESS);   // (from the start's cache: nothing for a play file)
-        play_cache_save();
+        play_cache_save(false);
         CHECK(!exists(play_path(2)));
         CHECK(make(12) == VK_SUCCESS);
-        play_cache_save();
+        play_cache_save(false);
         CHECK(file_keys(play_path(2)) == std::set<uint64_t>{12} && file_keys(play_path(1)) == (std::set<uint64_t>{10, 11}));
         CHECK(keys_of(pcache) == std::set<uint64_t>{1});
     } else if (name == "retry") {
@@ -279,10 +286,10 @@ int run(const std::string& name) {
         play_cache_begin();
         CHECK(make(20) == VK_SUCCESS);
         fail_moves = 1;
-        play_cache_save();   // (not in place: kept)
+        play_cache_save(false);   // (not in place: kept)
         CHECK(failed_moves == 1 && !exists(play_path(1)) && play_seq == 0 && destroys == 0);
         CHECK(make(21) == VK_SUCCESS);
-        play_cache_save();   // (the one kept first, then this one's)
+        play_cache_save(false);   // (the one kept first, then this one's)
         CHECK(file_keys(play_path(1)) == std::set<uint64_t>{20} && file_keys(play_path(2)) == std::set<uint64_t>{21});
         CHECK(destroys == 2 && play_seq == 2);
     } else if (name == "users") {
@@ -292,11 +299,11 @@ int run(const std::string& name) {
         block_key = 30;
         std::thread maker([] { make(30); });
         CHECK(wait_for([] { return blocked.load(); }));
-        play_cache_save();   // (nothing made in it yet, only one under way: not taken away)
+        play_cache_save(false);   // (nothing made in it yet, only one under way: not taken away)
         CHECK(play_cache.load() == g && !exists(play_path(1)));
         CHECK(make(29) == VK_SUCCESS && g->built == 1);
         std::atomic<bool> saved{false};
-        std::thread saver([&] { play_cache_save(); saved = true; });
+        std::thread saver([&] { play_cache_save(false); saved = true; });
         CHECK(wait_for([&] { return play_cache.load() != g; }));   // (taken away; the save waits for the compile under way)
         CHECK(make(31) == VK_SUCCESS && has(play_cache.load()->cache, 31) && !has(g->cache, 31));
         Sleep(50);
@@ -305,8 +312,36 @@ int run(const std::string& name) {
         maker.join();
         saver.join();
         CHECK(file_keys(play_path(1)) == (std::set<uint64_t>{29, 30}));   // (the compile under way in its generation's file)
-        play_cache_save();
+        play_cache_save(false);
         CHECK(file_keys(play_path(2)) == std::set<uint64_t>{31});
+    } else if (name == "users-stuck") {
+        // A compile stuck in the driver: the save does not wait for its generation for good (the exit would hang on it); the
+        // generation is kept, and written by a later save once the compile has ended.
+        play_drain_ms = 100;
+        pcache = cache_of({});
+        play_cache_begin();
+        PlayCache* g = play_cache.load();
+        block_key = 30;
+        std::thread maker([] { make(30); });
+        CHECK(wait_for([] { return blocked.load(); }));
+        CHECK(make(29) == VK_SUCCESS && g->built == 1);
+        play_cache_save(false);   // (returns after its bound, the generation taken away but not written)
+        CHECK(play_cache.load() != g && !exists(play_path(1)));
+        release = true;
+        maker.join();
+        play_cache_save(false);   // (the compile ended: written now, with the one that was under way)
+        CHECK(file_keys(play_path(1)) == (std::set<uint64_t>{29, 30}));
+    } else if (name == "copy-wait") {
+        // In play a play file's copy tries the gate once (a generation not written is kept and tried again); at the window's
+        // close and a forced save it gets the forced wait.
+        pcache = cache_of({});
+        play_cache_begin();
+        CHECK(make(40) == VK_SUCCESS);
+        play_cache_save(false);
+        CHECK(copy_gate_last_wait == 0 && file_keys(play_path(1)) == std::set<uint64_t>{40});
+        CHECK(make(41) == VK_SUCCESS);
+        play_cache_save(true);   // (the window's close, pipeline_cache_close, and a forced save: tests/test_vendor_fixes.py)
+        CHECK(copy_gate_last_wait == kCopyWaitForced && file_keys(play_path(2)) == std::set<uint64_t>{41});
     } else if (name == "merge") {
         pcache = cache_of({1});
         write_file(at("mkw_vk_pipelines_play_3.bin"), "FAKE", {40});
@@ -327,7 +362,7 @@ int run(const std::string& name) {
         play_cache_begin();
         CHECK(make(40) == VK_SUCCESS && play_cache.load()->from_start == 1);   // (merged: from the start's cache)
         CHECK(make(47) == VK_SUCCESS);
-        play_cache_save();
+        play_cache_save(false);
         CHECK(file_keys(play_path(8)) == std::set<uint64_t>{47});   // (numbered after the highest read)
     } else if (name == "compact") {
         pcache = cache_of({1});
@@ -352,7 +387,7 @@ int run(const std::string& name) {
         play_cache_begin();
         CHECK(!play_cache.load());
         CHECK(make(50) == VK_SUCCESS && has(pcache, 50));   // (into the one cache, as before)
-        play_cache_save();
+        play_cache_save(false);
         CHECK(!exists(play_path(1)));
     } else {
         CHECK(false);

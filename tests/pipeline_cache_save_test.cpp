@@ -68,8 +68,30 @@ void logf(const char* fmt, ...) {
     if (std::strstr(line, "could not start pipeline cache save:")) ++start_errors;
 }
 
+// The copy's gate (vk_draw.cpp cache_copy_begin: the copy held apart from pipeline builds on the drivers that need it, vk_vendor.h
+// pcache_apart). gate_open false: builds kept it for the save's whole try; a forced save waits, so it always gets it.
+// gate_stuck: a build never ends (a compile stuck in the driver): even a forced save gives up, after its bounded wait.
+// The fake decides at once what the real gate decides by its deadline: a forced save (kCopyWaitForced) gets the gate unless a
+// build is stuck; any other save (one try in play, kCopyWaitStart before it) gets it only while gate_open.
+std::atomic<bool> gate_open{true}, gate_held{false}, gate_stuck{false};
+std::atomic<int> gate_tries{0}, gate_waits{0}, gate_ends{0}, gate_last_wait{-1};
+constexpr int kCopyWaitForced = 30000, kCopyWaitStart = 2000;
+bool cache_copy_begin(int wait_ms) {
+    const bool wait = wait_ms == kCopyWaitForced;
+    gate_last_wait = wait_ms;
+    ++(wait ? gate_waits : gate_tries);
+    if (gate_stuck || (!wait && !gate_open)) return false;
+    if (gate_held.exchange(true)) std::abort();   // (two copies at once)
+    return true;
+}
+void cache_copy_end() {
+    if (!gate_held.exchange(false)) std::abort();
+    ++gate_ends;
+}
+
 VkResult vkGetPipelineCacheData(int device, int cache, std::size_t* n, void* data) {
     if (device != dev.device || cache != pcache) std::abort();
+    if (!gate_held) std::abort();   // (every read of the cache's data inside the gate)
     if (!data) {
         ++queries;
         if (fault == QUERY_FAIL) return VK_ERROR_UNKNOWN;
@@ -107,7 +129,8 @@ int save_replace(const char* from, const char* to, unsigned flags) {
 // The play generations' part of a save (gpu/vk/vk_draw.cpp, tests/test_pipeline_play_cache.py): at each save, after the
 // cache's own part, whatever that did.
 std::atomic<int> play_saves{0};
-void play_cache_save() { ++play_saves; }
+std::atomic<int> play_saves_forced{0};   // (of them, the forced saves: the play files' copy gets the forced wait then)
+void play_cache_save(bool forced) { ++play_saves, play_saves_forced += forced; }
 std::atomic<bool> in_play{false};
 bool play_cache_in_use() { return in_play.load(); }
 
@@ -231,6 +254,21 @@ int run(const std::string& name) {
         pipeline_cache_save(true);
         CHECK(copies == 4 && replacements == 3 && new_file());
         CHECK(save_errors == 0 && start_errors == 0 && play_saves == 8);
+    } else if (name == "in-play-try") {
+        // In play a save only tries once (no 2 s wait): it would mostly find too little growth to write anyway.
+        in_play = true;
+        pcache_built_since_save = 32;
+        pipeline_cache_save(false);
+        CHECK(wait_until(play_saves, 1));
+        CHECK(gate_last_wait == 0);
+        in_play = false;
+        pcache_built_since_save = 32;
+        pipeline_cache_save(false);  // Before play: tried for up to 2 s.
+        CHECK(wait_until(play_saves, 2));
+        CHECK(gate_last_wait == kCopyWaitStart);
+        pipeline_cache_save(true);
+        CHECK(gate_last_wait == kCopyWaitForced);
+        CHECK(play_saves == 3 && play_saves_forced == 1);  // (the play files: forced only with the forced save)
     } else if (name == "in-play") {
         // In play the cache is not written at a save for a little growth: what play makes is in the play files.
         pcache_saved_size = 64;
@@ -250,9 +288,34 @@ int run(const std::string& name) {
         pipeline_cache_save(true);
         CHECK(copies == 2 && writes == 2 && replacements == 2 && pcache_saved_size == 96 + (64u << 20));
         CHECK(save_errors == 0 && start_errors == 0);
+    } else if (name == "put-off") {
+        gate_open = false;   // Pipelines were being built into the cache for the whole try.
+        pcache_built_since_save = 32;
+        pipeline_cache_save(false);
+        CHECK(wait_until(play_saves, 1));  // The play part all the same: its generation has no builds.
+        CHECK(gate_tries == 1 && gate_ends == 0 && queries == 0 && copies == 0 && writes == 0 && old_file());
+        CHECK(save_errors == 0 && start_errors == 0);
+        pipeline_cache_save(true);  // At exit: it waits for the builds, then copies.
+        CHECK(gate_waits == 1 && gate_ends == 1 && !gate_held && new_file() && replacements == 1);
+        gate_open = true;
+        cache_size = 96;
+        pcache_built_since_save = 32;
+        pipeline_cache_save(false);
+        CHECK(wait_until(replacements, 2));
+        pipeline_cache_save(true);  // After the worker: nothing new.
+        CHECK(gate_tries == 2 && gate_waits == 2 && gate_ends == 3 && !gate_held && new_file());
+        // A compile stuck in the driver: a forced save gives up after its bounded wait instead of waiting (and stalling every
+        // build behind its lock) for good; nothing is copied or written, and the next save point tries again.
+        gate_stuck = true;
+        cache_size = 112;
+        const int before = replacements;
+        pipeline_cache_save(true);
+        CHECK(gate_waits == 3 && gate_ends == 3 && !gate_held && replacements == before && pcache_built_since_save >= 32);
+        gate_stuck = false;
     } else {
         CHECK(false);
     }
+    CHECK(!gate_held);  // Never left held, whatever failed in between.
     std::printf("PASS: %s\n", name.c_str());
     return 0;
 }
