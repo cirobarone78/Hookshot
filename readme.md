@@ -97,8 +97,9 @@ you start the game from its launcher, which also updates it.
    the **Game language**.
 5. Press **Build the game**. It takes about 10 to 45 minutes, depending on your CPU and memory. You can use your PC in
    the meantime.
-6. When it says **Your game is ready**, press **Play**. The **Desktop shortcut** and **Start menu entry** boxes are
-   ticked: untick them if you don't want them.
+6. When it says **Your game is ready**, press **Play**. The game's launcher opens first: choose the profile and launch
+   options there, then press **Play**. The **Desktop shortcut** and **Start menu entry** boxes are ticked: untick them if
+   you don't want them.
 
 Next time, start the game from the Hookshot shortcut, or `hookshot.exe` in the game folder. That is the launcher: it
 has **Play**, and **Update** when a newer release is out.
@@ -117,11 +118,22 @@ The first start prepares the game's shaders, which takes a while. Later starts a
    checks the version.
 5. Under **Save the game to**, keep `~/Games/Hookshot` or choose another folder. Choose a **Language**.
 6. Press **Build**. It takes about 10 to 45 minutes, depending on your CPU and memory.
-7. When it says "Your game is ready", press **Play**.
+7. When it says "Your game is ready", press **Play**. The game's launcher opens first: choose the profile and launch
+   options there, then press **Play**.
 
 The game is also added to your applications menu as "Hookshot". That entry, and `hookshot` in the game folder, open the
 launcher: **Play**, and **Update** when a newer release is out. Keep the AppImage where it is: the launcher uses it to
 update.
+**Launch the game in gamescope** is a Linux-only choice in the game's launcher: with it ticked, **Play** starts the game
+inside gamescope, as Steam Deck game mode does. **Options…** sets the size, refresh rate, fullscreen, HDR, cursor grab,
+real-time scheduling, the `gamemoderun` wrapper, and any extra arguments (for example
+`-W 3840 -H 2160 -r 164 -f --hdr-enabled --force-grab-cursor --rt`). A game already started from a gamescope session is
+started directly, without a second compositor. It is off by default, and the choice is not shown on Windows. The settings
+are saved in `builder.ini`; `HOOKSHOT_GAMESCOPE=0` or `=1` overrides the on/off choice for one start.
+
+**Close the builder after the game starts** is beside it: untick it to leave the builder window open when the game
+launches, instead of closing it.
+
 
 The same AppImage also builds and starts the game without opening the window, for a machine you reach over SSH or for a
 script: see [Linux, the AppImage from the command line](#build-from-source).
@@ -168,6 +180,28 @@ with `--update <game folder>`.
 
 </details>
 
+### Profiles, and saves from emulators
+
+Hookshot Builder's launcher (the window **Play** opens for a built game folder) has a **Profile** choice above
+**Play**, so that several people can play on one PC, each with saves of their own. **Play** starts the game with the
+chosen profile. **Manage** makes a profile (it starts at an empty file select), renames one, imports a save into it,
+exports its save, opens its save folder, or removes it. Removing a profile does not delete its saves: they are moved to
+`save-backups` in the saves folder.
+
+**Import save** copies a save from an emulator, or from a save folder of your own, into the chosen profile. The
+launcher lists the saves it finds in the emulators' usual folders and asks whose save it is when a folder holds more
+than one user's. Only the save's files are copied, and never while a game or emulator runs. **Export save** copies the
+profile's save into a new folder you choose; it never writes into an emulator and replaces nothing.
+
+The default profile, first on the list and marked "(default)", has the saves from before profiles; it is called
+"Player" until you rename it. The game plays it when it is started without the launcher, so it cannot be removed. A game
+folder built before profiles shows no **Profile** choice: build it again (**Rebuild**, or **Switch version** to
+another release) to get it.
+
+The list is `profiles.txt` in the saves folder (the `user` folder in the game folder on Windows,
+`~/.local/share/hookshot` on Linux), one `<id> <name>` a line; a profile's saves are `save/<id>`. The game itself plays
+the default profile when `HOOKSHOT_PROFILE` names one that is not on the list.
+
 ### Latest development build
 
 Want a fix before it is in a release? The
@@ -204,6 +238,7 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
 | Where is the log? | `hookshot_log.txt` in the game folder holds the last run. The four runs before are `hookshot_log.1.txt` (the last) to `.4.txt`. Started from a terminal, the game prints there instead. Every 600 frames it has a `vk: status:` line: the video memory in use of what the driver allows, and DLSS's details while it draws; `vk: over the driver's video-memory allowance` says when the game passed it |
 | Linux Builder Play closed before the game log appeared | After the game exits, check `hookshot_startup.log` in the game folder for up to 64 KiB of startup stderr and its exit status. |
 | "Hookshot supports build e0f3ccfa" or "This version isn't supported" | Check that you chose the right game with its update installed |
+| `hookshot_damaged_files.txt` is beside the game | The dump had damaged romfs files. The builder used stand-ins where possible; dump the game again and rebuild from a complete `.nup` for the original textures. If any damaged file had no replacement, the build stops before compiling. |
 | The game opens and closes, or the log says "device lost" | Update your graphics driver. On AMD cards there are known crashes ([#708](https://github.com/NotRexed/Hookshot/issues/708), [#614](https://github.com/NotRexed/Hookshot/issues/614)) |
 | Parts of the picture are missing, or a message says your card has no mesh shader support | The card or its driver has no mesh shaders. Update the driver; older cards are not supported ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
 | AMD: blocky textures, solid rectangles in the sky or unusually dark courtyard surfaces | Try the [RGBA8 texture workaround](#amd-texture-workaround). It uses more graphics memory |

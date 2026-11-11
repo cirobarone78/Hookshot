@@ -498,20 +498,31 @@ def extract(nup, t, out, only=None, quiet=False):
                    if expected != bytes(32)}
     interval = 2
     next_report = 0 if quiet else monotonic() + interval
+    parts = [part for part in ("exefs", "romfs") if not only or part == only]
+    total_files = 0 if quiet else sum(1 for part in parts for _ in nup.walk(t[part]))
+    done_files = 0
+    next_progress = 0
 
     def progress(size):
-        nonlocal written, next_report
+        nonlocal written, next_report, next_progress
         written += size
         now = monotonic()
         if now >= next_report:
             print("  %.1f MiB written (%d files completed)" % (written / (1 << 20), n), flush=True)
             next_report = now + interval
+        if not quiet and now >= next_progress:
+            print("@@progress %.3f" % (done_files / total_files if total_files else 1.0), flush=True)
+            next_progress = now + 0.5
 
     for part in ("exefs", "romfs"):
         if only and part != only:
             continue
         damaged = [] if part == "romfs" else None
         for rel, r in nup.walk(t[part]):
+            if n < 20 or n % 500 == 0:
+                print("  reading %s/%s" % (part, rel), flush=True)
+            if not quiet:
+                done_files += 1
             dst = extraction_path(out, part, rel)
             checked = damaged is not None and rel.endswith(".zs")
             expected = digests.get(id(r)) if checked else None

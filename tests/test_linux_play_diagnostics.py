@@ -26,6 +26,7 @@ def main():
     namespace = dict(HERE=str(BUILDER), os=os,
                      linux_update=SimpleNamespace(game_exe=lambda folder: str(Path(folder) / "hookshot")),
                      make_game=SimpleNamespace(game_env=lambda: dict(os.environ)),
+                     gamescope_command=lambda exe: None,
                      subprocess=SimpleNamespace(Popen=launch, DEVNULL=subprocess.DEVNULL))
     exec(compile(ast.Module(body=[play], type_ignores=[]), str(path), "exec"), namespace)
 

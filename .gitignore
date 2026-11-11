@@ -37,3 +37,9 @@ build-linux/
 
 # ---- NVIDIA's DLSS SDK (scripts/ngx_sdk.py): NVIDIA's files, never committed ----
 ngx-sdk/
+
+# Flutter builder (builder/flutter): generated build output and tool state.
+builder/flutter/.dart_tool/
+builder/flutter/build/
+builder/flutter/.flutter-plugins
+builder/flutter/.flutter-plugins-dependencies

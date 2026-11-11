@@ -86,6 +86,8 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=<2..8>`, `RX_VK_PACE=0`, `RX_VK_UPSCALE=<0..2>` | No frame generation whatever the menu says; over the options file: its multiplier, frame pacing, the upscaling filter |
 | `RX_VK_DEVICE=<n>` | The graphics card listed as `vk: device <n>` in the log, over the menu's GPU device |
 | `HOOKSHOT_NO_UPDATE_CHECK=1` | No look for a newer release at the start |
+| `HOOKSHOT_PROFILE=<32 hex digits>` | The profile played: its saves are `save/<those digits>` in the user folder (the Linux launcher sets it). Unset, or a profile not in `profiles.txt` there: the default profile |
+| `HOOKSHOT_GAMESCOPE=0`, `=1` | Overrides the Linux launcher's gamescope choice (`gamescope=…` in `builder.ini`) for one start |
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
 | `RX_BACKEND=<name>` | Unset or `vulkan`: `hookshot_vk.dll`; any other value but `eden`: the WebGPU renderer, when the exe was built with one |
 

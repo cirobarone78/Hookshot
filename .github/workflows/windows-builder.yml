@@ -131,6 +131,7 @@ jobs:
           if [[ -z $RELEASE_TAG ]]; then release=nightly; elif [[ $RELEASE_TAG == *-* ]]; then release=$RELEASE_TAG; fi
           "$LLVM_MINGW/bin/x86_64-w64-mingw32-windres" setup.rc -O coff -o "$RUNNER_TEMP/setup_rc.o"
           "$LLVM_MINGW/bin/x86_64-w64-mingw32-clang" -O2 -mwindows -municode ${release:+"-DHOOKSHOT_SETUP_RELEASE=\"$release\""} \
+            -DHOOKSHOT_REPOSITORY="\"$GITHUB_REPOSITORY\"" \
             setup.c "$RUNNER_TEMP/setup_rc.o" \
             -lwinhttp -lbcrypt -lcomctl32 -lshell32 -lole32 -Wl,--dependent-load-flag=0x800 \
             -o "$RUNNER_TEMP/HookshotBuilder-Setup.exe"
@@ -146,6 +147,7 @@ jobs:
         run: >-
           python -I scripts/release_parts.py package "$RUNNER_TEMP/package"
           --publish "$RUNNER_TEMP/publish" --setup "$RUNNER_TEMP/HookshotBuilder-Setup.exe"
+          --repository "$GITHUB_REPOSITORY"
           ${PREVIOUS:+--list "$PREVIOUS" --python-packages nx2/prompt_requirements.txt}
 
       - name: Setup parts

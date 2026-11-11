@@ -6,6 +6,8 @@ files, so a copy is all it takes.
     python -I scripts/oot_saves.py export <name>  [--profile ID] [--keep-settings] [--dry-run] [--force]
     python -I scripts/oot_saves.py import --from DIR   (a save from any folder into Hookshot)
     python -I scripts/oot_saves.py export --to DIR     (Hookshot's save into any folder)
+    python -I scripts/oot_saves.py saves --from DIR    (the saves in DIR, one per emulator user, as JSON: for --profile)
+    python -I scripts/oot_saves.py saves               (the same for every emulator's usual folder)
 
 import copies into Hookshot, export copies out of it. <name> is one of EMULATORS below: lichii, frizti, orchid,
 pokedinner, eden, eglantine or nx2navi (to-lichii and to-hookshot still work: they are export lichii and import
@@ -13,18 +15,22 @@ lichii). --from/--to name the other side's folder instead of where it is looked 
 with account.sav and slot_*), or a folder above it (an emulator's data folder, a portable user folder, NX2navi's game
 folder), which is searched for the game's saves. --hookshot DIR does the same for Hookshot's side: its data folder
 (Linux: $XDG_DATA_HOME/hookshot, default ~/.local/share/hookshot) or, on Windows, its game folder (the one with
-image.bin and user\\), which has to be given there. The side being overwritten is copied first to
+image.bin and user\\), which has to be given there; or one profile's save folder in it (save/<id>), which an import fills
+even before it holds a save (a new profile of Hookshot's launcher). The side being overwritten is copied first to
 <backup>/<import or export>-<name>-<YYYYmmdd-HHMMSS> (Linux: $XDG_DATA_HOME/oot-save-backups, Windows:
 %LOCALAPPDATA%\\Hookshot\\oot-save-backups; --backup-dir changes it). Close every game first: --force skips that check.
 Standard library only; the guide is docs/saves.md.
 """
 import argparse
 import collections
+import contextlib
 import datetime
+import json
 import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 
@@ -130,6 +136,10 @@ def find_saves(root):
         for start in range(len(layout)):
             if TITLE in layout and TITLE not in layout[start:] and not title_folder:
                 continue   # (below the title id folder, only the title id folder itself is a place to start)
+            # (from a folder of users that is not named as the emulator names it (copied user folders, say), only a folder
+            # named as a user is, 32 hex digits, is one: any folder with a title id folder in it is not, Eden's mods folder
+            # load/<title id> among them)
+            any_user = not (TITLE in layout and start == idpos and os.path.basename(norm).lower() != layout[idpos - 1].lower())
             key = None
             if start > idpos:   # (root is at or below the <id> folder: the id is a folder above it)
                 up = norm
@@ -139,6 +149,8 @@ def find_saves(root):
             for k, path in walk(norm, layout[start:], key):
                 # A folder named by the layout (the title id folder) counts as soon as it is there: the game may not
                 # have saved yet. A profile folder counts only when it holds a save (Eden's profile folders do not).
+                if not any_user and not re.fullmatch("[0-9a-fA-F]{32}", k):
+                    continue
                 if (layout[-1] != "<id>" or is_save_folder(path)) and k not in found and path not in found.values():
                     found[k] = path
     return found
@@ -211,6 +223,9 @@ def running_games():
                 names.add(known[image[:-4]])
         return sorted(names)
     appimage = re.compile(r"^(%s)[-_.].*\.appimage$" % "|".join(map(re.escape, known)))
+    # (the AppImage this runs from, when the Hookshot launcher in it runs this script: its runtime is a process named after
+    # it, the launcher's own, not a game)
+    own = os.path.basename(os.environ.get("APPIMAGE", "")).lower()
     for pid in filter(str.isdigit, os.listdir("/proc")):
         try:
             with open("/proc/%s/cmdline" % pid, "rb") as f:
@@ -218,6 +233,8 @@ def running_games():
             with open("/proc/%s/comm" % pid, encoding="utf-8", errors="replace") as f:
                 comm = f.read().strip()
         except OSError:
+            continue
+        if own and os.path.basename(argv0).lower() == own:
             continue
         for candidate in (comm, os.path.basename(argv0)):
             low = candidate.lower()
@@ -244,7 +261,8 @@ def describe(path):
 def show(title, folder, found):
     print("%s: %s" % (title, folder))
     for k in sorted(found):
-        print("  %s  %s" % (k, found[k]))
+        user = user_name(found[k])
+        print("  %s%s  %s" % (k, " (%s)" % user if user else "", found[k]))
         for line in describe(found[k]) or ["(no slots)"]:
             print("      " + line)
         if pending_commit(found[k]):
@@ -292,6 +310,31 @@ def refuse_links(path):
                 raise Fail("%s is a link: a save holds only files and folders, so nothing was copied" % os.path.join(root, n))
 
 
+def empty_files(path):
+    """the save's files of no bytes: a save cut short (a copy that failed, a full disk) that would replace a good one"""
+    out = []
+    for f in ("account.sav", "option.sav"):
+        if os.path.isfile(os.path.join(path, f)) and os.path.getsize(os.path.join(path, f)) == 0:
+            out.append(os.path.join(path, f))
+    for s in slots(path):
+        for root, _dirs, files in os.walk(os.path.join(path, s)):
+            out += [os.path.join(root, n) for n in files if os.path.getsize(os.path.join(root, n)) == 0]
+    return out
+
+
+def new_profile(path):
+    """{id: path} when path is one profile's save folder of Hookshot's layout (save/<32 hex digits>) holding no save yet,
+    which may not be there yet either: a profile the launcher added (nx2/profiles.py). An import fills it.
+    None otherwise."""
+    norm = os.path.normpath(os.path.abspath(path))
+    name = os.path.basename(norm)
+    if os.path.basename(os.path.dirname(norm)).lower() != "save" or not re.fullmatch("[0-9a-fA-F]{32}", name):
+        return None
+    if os.path.isdir(norm) and find_saves(norm):
+        return None
+    return {name: norm}
+
+
 def copy_saves(src, dst, backup, keep_settings, dry_run):
     target_path = os.path.normcase(os.path.realpath(dst))
     backup_path = os.path.normcase(os.path.realpath(backup))
@@ -309,10 +352,17 @@ def copy_saves(src, dst, backup, keep_settings, dry_run):
     for f in ("account.sav", "option.sav"):
         if os.path.lexists(os.path.join(src, f)):
             refuse_links(os.path.join(src, f))
+    empty = empty_files(src)
+    if empty:
+        raise Fail("%s is empty: the save is not whole, so nothing was copied" % empty[0])
     files = [f for f in ("account.sav", "option.sav") if os.path.isfile(os.path.join(src, f))]
     if keep_settings and "option.sav" in files:
         files.remove("option.sav")
-    print("%s %s -> %s" % ("Would back up" if dry_run else "Backing up", dst, backup))
+    had = os.path.isdir(dst)
+    if had:
+        print("%s %s -> %s" % ("Would back up" if dry_run else "Backing up", dst, backup))
+    else:
+        print("%s holds no save yet: nothing to back up" % dst)
     print("%s %d slot(s) (%s) and %s from %s to %s" % ("Would copy" if dry_run else "Copying", len(names), ", ".join(names),
           ", ".join(files) or "no loose files", src, dst))
     if keep_settings:
@@ -320,15 +370,41 @@ def copy_saves(src, dst, backup, keep_settings, dry_run):
     if dry_run:
         print("Dry run: nothing was changed")
         return
-    os.makedirs(os.path.dirname(backup), exist_ok=True)
-    shutil.copytree(dst, backup)
+    if had:
+        os.makedirs(os.path.dirname(backup), exist_ok=True)
+        shutil.copytree(dst, backup)
+    else:
+        os.makedirs(dst)
+    try:
+        for s in slots(dst):
+            shutil.rmtree(os.path.join(dst, s))
+        for s in names:   # (links were refused above; copied as links, never followed, all the same)
+            shutil.copytree(os.path.join(src, s), os.path.join(dst, s), symlinks=True)
+        for f in files:
+            shutil.copy2(os.path.join(src, f), os.path.join(dst, f), follow_symlinks=False)
+    except OSError as e:
+        # (a copy cut short leaves a save of two halves: the target goes back to what it was, from the backup)
+        restore(dst, backup if had else None)
+        raise Fail("the copy failed (%s): %s is as it was before" % (e, dst))
+    print("Done. Backup of the old %s in %s" % (dst, backup) if had else "Done.")
+
+
+def restore(dst, backup):
+    """puts the target back as the backup has it (None: as it was before, when there was no save: no folder, which the copy
+    made. An empty save folder left behind would read to the game as a save that exists)"""
     for s in slots(dst):
-        shutil.rmtree(os.path.join(dst, s))
-    for s in names:   # (links were refused above; copied as links, never followed, all the same)
-        shutil.copytree(os.path.join(src, s), os.path.join(dst, s), symlinks=True)
-    for f in files:
-        shutil.copy2(os.path.join(src, f), os.path.join(dst, f), follow_symlinks=False)
-    print("Done. Backup of the old %s in %s" % (dst, backup))
+        shutil.rmtree(os.path.join(dst, s), ignore_errors=True)
+    for s in slots(backup) if backup else []:
+        shutil.copytree(os.path.join(backup, s), os.path.join(dst, s), symlinks=True)
+    for f in ("account.sav", "option.sav"):
+        if backup and os.path.isfile(os.path.join(backup, f)):
+            shutil.copy2(os.path.join(backup, f), os.path.join(dst, f), follow_symlinks=False)
+        else:
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(dst, f))
+    if not backup:
+        with contextlib.suppress(OSError):
+            os.rmdir(dst)
 
 
 def program_named(name):
@@ -339,16 +415,90 @@ def program_named(name):
                % (name, ", ".join(p.name for p in EMULATORS)))
 
 
+# Eden's user list (and yuzu's, which it comes from: src/core/hle/service/acc/profile_manager.cpp), under its nand folder:
+# 0x10 bytes, then 8 users of 0xC8 bytes each: the user id (16 bytes, two little-endian 64-bit words), a second id, a
+# 64-bit time, the name (0x20 bytes of UTF-8, zero-padded) and 0x80 bytes more. A save's folder is named by the id's
+# second word, then its first (savedata_factory.cpp), so the names are found by that folder name.
+PROFILES_DAT = ("system", "save", "8000000000000010", "su", "avators", "profiles.dat")
+
+
+def user_names(nand):
+    """{save folder name (upper case): the user's name} from the emulator's user list in nand; {} without one"""
+    try:
+        with open(os.path.join(nand, *PROFILES_DAT), "rb") as f:
+            data = f.read(0x650)
+    except OSError:
+        return {}
+    names = {}
+    for at in range(0x10, len(data) - 0xC7, 0xC8):
+        lo, hi = struct.unpack_from("<QQ", data, at)
+        name = data[at + 40:at + 72].split(b"\0")[0].decode("utf-8", "replace").strip()
+        if (lo or hi) and name:
+            names["%016X%016X" % (hi, lo)] = name
+    return names
+
+
+def user_name(path):
+    """the name the emulator gives the user whose save is in path (an Eden-style nand folder above it), or None"""
+    up = os.path.normpath(os.path.abspath(path))
+    while os.path.basename(up).lower() != "nand":
+        if os.path.dirname(up) == up:
+            return None
+        up = os.path.dirname(up)
+    parts = os.path.relpath(path, up).split(os.sep)
+    ids = [p.upper() for p in parts if re.fullmatch("[0-9a-fA-F]{32}", p)]
+    names = user_names(up)
+    return next((names[i] for i in ids if i in names), None)
+
+
+def describe_save(k, path, folder, emulator=None):
+    """{id, path, folder, user, label}: one user's save, as Hookshot's launcher lists it. label says what the player sees:
+    the user's name (else the id), the slots, when the newest was saved, and the emulator last (the longest, cut first)."""
+    names = slots(path)
+    times = [os.path.getmtime(p) for p in (os.path.join(path, s, "progress.sav") for s in names) if os.path.isfile(p)]
+    when = ", last saved %s" % datetime.datetime.fromtimestamp(max(times)).strftime("%Y-%m-%d %H:%M") if times else ""
+    user = user_name(path)
+    who = "%s (%s…)" % (user, k[:8]) if user else k
+    return {"id": k, "path": path, "folder": folder, "user": user, "emulator": emulator,
+            "label": "%s: %d slot%s%s%s" % (who, len(names), "" if len(names) == 1 else "s", when,
+                                            " · " + emulator if emulator else "")}
+
+
+def saves_in(folder):
+    """[{id, path, folder, user, label}]: the saves in folder, one per user of the emulator, as import --from and export
+    --to find them. What Hookshot's launchers let the player choose from when there are several, to pass as --profile
+    (pick refuses to choose)."""
+    _, found = locate(FOLDER, folder, "--from")
+    return [describe_save(k, found[k], folder) for k in sorted(found)]
+
+
+def emulator_saves():
+    """saves_in for every emulator's usual folders on this PC (the ones that share a folder named together), for
+    Hookshot's launcher to offer without a folder chosen"""
+    groups = collections.OrderedDict()
+    for program in EMULATORS:
+        for d in folders(program):
+            groups.setdefault(os.path.normcase(os.path.realpath(d)), (d, []))[1].append(program.display)
+    out = []
+    for d, displays in groups.values():
+        found = find_saves(d) if os.path.isdir(d) else {}
+        out += [describe_save(k, found[k], d, " / ".join(displays)) for k in sorted(found)]
+    return out
+
+
 def run(args):
     if args.command == "list":
         list_all(args)
+        return
+    if args.command == "saves":
+        print(json.dumps(saves_in(args.folder) if args.folder else emulator_saves(), ensure_ascii=False))
         return
     other = program_named(args.name) if args.name else FOLDER
     if other is FOLDER and not args.folder:
         raise Fail("%s what? Name the emulator (%s) or the folder (%s <folder>)"
                    % (args.command, ", ".join(p.name for p in EMULATORS), "--from" if args.command == "import" else "--to"))
     flag = "--from" if args.command == "import" else "--to"
-    _, hs = locate(HOOKSHOT, args.hookshot, "--hookshot")
+    hs = args.command == "import" and args.hookshot and new_profile(args.hookshot) or locate(HOOKSHOT, args.hookshot, "--hookshot")[1]
     _, em = locate(other, args.folder, flag)
     hs_id, hs_path = pick(hs, "Hookshot", "--hookshot <the user id folder>")
     em_id, em_path = pick(em, other.display, "--profile <id>", args.profile)
@@ -376,8 +526,9 @@ def run(args):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], prog="oot_saves.py")
-    p.add_argument("command", choices=["list", "import", "export", "to-lichii", "to-hookshot"],
-                   help="import: into Hookshot; export: out of Hookshot; to-lichii, to-hookshot: export/import lichii")
+    p.add_argument("command", choices=["list", "saves", "import", "export", "to-lichii", "to-hookshot"],
+                   help="import: into Hookshot; export: out of Hookshot; to-lichii, to-hookshot: export/import lichii; "
+                        "saves: the saves in --from's folder (else in every emulator's usual folder), one per user, as JSON")
     p.add_argument("name", nargs="?", help="the emulator: %s" % ", ".join(e.name for e in EMULATORS))
     p.add_argument("--from", dest="from_dir", metavar="DIR", help="import from this folder (a save, or one to search)")
     p.add_argument("--to", dest="to_dir", metavar="DIR", help="export to this folder (a save, or one to search)")

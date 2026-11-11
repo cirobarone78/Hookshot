@@ -10,21 +10,23 @@ set -eu
 ini_path() {
     if [ -n "${HOOKSHOT_LAUNCH_CONFIG:-}" ]; then
         printf '%s\n' "$HOOKSHOT_LAUNCH_CONFIG"
-    else
-        printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/hookshot/builder.ini"
-    fi
+    elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+        printf '%s\n' "$XDG_CONFIG_HOME/hookshot/builder.ini"
+    elif [ -n "${HOME:-}" ]; then
+        printf '%s\n' "$HOME/.config/hookshot/builder.ini"
+    fi   # (neither: no ini, rather than one under /.config)
 }
 
-# the last out= line, as the builder keeps the last value it wrote
-out_of() {
-    out=
+# the last <name>= line, as the builder keeps the last value it wrote
+value_of() {
+    value=
     while IFS= read -r line || [ -n "$line" ]; do
         case $line in
-            out=*) out=${line#out=} ;;
+            "$2"=*) value=${line#"$2"=} ;;
         esac
     done < "$1"
-    [ -n "$out" ] || return 1
-    printf '%s\n' "$out"
+    [ -n "$value" ] || return 1
+    printf '%s\n' "$value"
 }
 
 ready() {
@@ -32,12 +34,29 @@ ready() {
 }
 
 folder=${1:-}
-if [ -z "$folder" ]; then
-    ini=$(ini_path)
-    if [ -f "$ini" ]; then
-        folder=$(out_of "$ini") || folder=
+ini=$(ini_path)
+profile=
+gamescope=
+if [ -f "$ini" ]; then
+    if [ -z "$folder" ]; then
+        folder=$(value_of "$ini" out) || folder=
     fi
+    # (the profile the launcher's Play chose last: nx2/profiles.py. The game itself plays the default profile
+    # instead when it is not on the list in its user folder: host/nn_applet.c)
+    profile=$(value_of "$ini" profile) || profile=
+    # (the Flutter builder's Play option: start the game inside gamescope unless already there)
+    gamescope=$(value_of "$ini" gamescope) || gamescope=
+    gamescope_width=$(value_of "$ini" gamescope_width) || gamescope_width=
+    gamescope_height=$(value_of "$ini" gamescope_height) || gamescope_height=
+    gamescope_refresh=$(value_of "$ini" gamescope_refresh) || gamescope_refresh=
+    gamescope_fullscreen=$(value_of "$ini" gamescope_fullscreen) || gamescope_fullscreen=
+    gamescope_hdr=$(value_of "$ini" gamescope_hdr) || gamescope_hdr=
+    gamescope_grab=$(value_of "$ini" gamescope_grab_cursor) || gamescope_grab=
+    gamescope_rt=$(value_of "$ini" gamescope_rt) || gamescope_rt=
+    gamescope_gamemoderun=$(value_of "$ini" gamescope_gamemoderun) || gamescope_gamemoderun=
+    gamescope_extra=$(value_of "$ini" gamescope_extra) || gamescope_extra=
 fi
+want_gamescope=${HOOKSHOT_GAMESCOPE:-${gamescope:-0}}
 
 if ! ready "$folder"; then
     echo "Hookshot: no built game to start. Build one with Hookshot Builder, or pass its folder." >&2
@@ -62,6 +81,36 @@ done
 cd "$folder"
 # (--play already chose Play. The game's own update question stays for a bin/hookshot the player started themselves)
 export HOOKSHOT_NO_UPDATE_CHECK=1
+if [ -n "$profile" ]; then
+    export HOOKSHOT_PROFILE="$profile"
+fi
+inside_gamescope=0
+case ${XDG_CURRENT_DESKTOP:-} in
+    *[Gg][Aa][Mm][Ee][Ss][Cc][Oo][Pp][Ee]*) inside_gamescope=1 ;;
+esac
+if [ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" ]; then
+    inside_gamescope=1
+fi
+if [ "$want_gamescope" != 0 ] && [ "$inside_gamescope" = 0 ] && command -v gamescope >/dev/null 2>&1; then
+    if [ -x ./bin/hookshot ]; then
+        target=./bin/hookshot
+    else
+        target=./hookshot
+    fi
+    set -- -- "$target"
+    [ -n "$gamescope_extra" ] && set -- $gamescope_extra "$@"
+    [ "$gamescope_rt" = 1 ] && set -- --rt "$@"
+    [ "$gamescope_grab" = 1 ] && set -- --force-grab-cursor "$@"
+    [ "$gamescope_hdr" = 1 ] && set -- --hdr-enabled "$@"
+    [ "$gamescope_fullscreen" = 1 ] && set -- -f "$@"
+    [ -n "$gamescope_refresh" ] && set -- -r "$gamescope_refresh" "$@"
+    [ -n "$gamescope_height" ] && set -- -H "$gamescope_height" "$@"
+    [ -n "$gamescope_width" ] && set -- -W "$gamescope_width" "$@"
+    if [ "$gamescope_gamemoderun" = 1 ] && command -v gamemoderun >/dev/null 2>&1; then
+        exec gamemoderun gamescope "$@"
+    fi
+    exec gamescope "$@"
+fi
 if [ -x ./bin/hookshot ]; then
     exec ./bin/hookshot
 fi

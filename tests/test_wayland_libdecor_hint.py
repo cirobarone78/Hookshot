@@ -47,6 +47,7 @@ int main(int argc, char** argv) {
     version = mode == "sdl3" ? 3 : 2;
     if (mode == "headless") setenv("HOS_HEADLESS", "1", 1);
     const int r = hos_display_init();
+    (void)sdl_ready;   // (the harness includes only this function: keep -Werror quiet about the file-scope state it sets)
     printf("%s: init %d\n", mode.c_str(), r);
     for (const std::string& h : hints) printf("hint %s\n", h.c_str());
     return 0;

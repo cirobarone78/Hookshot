@@ -110,6 +110,46 @@ def game_ready(folder):
     return linux_update.game_exe(folder) is not None
 
 
+def gamescope_command(exe, environ=None):
+    """[gamescope, options, '--', exe] (behind gamemoderun when asked) when the config's option, or HOOKSHOT_GAMESCOPE,
+    asks for it and this is not already inside a gamescope session; else None. The Flutter builder's Play uses the same
+    keys (lib/gamescope.dart)."""
+    environ = os.environ if environ is None else environ
+    config = load_config()
+    forced = environ.get("HOOKSHOT_GAMESCOPE")
+    wanted = forced if forced is not None else config.get("gamescope") == "1"
+    if not wanted or forced == "0":
+        return None
+    if environ.get("GAMESCOPE_WAYLAND_DISPLAY") or "gamescope" in environ.get("XDG_CURRENT_DESKTOP", "").lower():
+        return None
+    tool = shutil.which("gamescope")
+    if not tool:
+        return None
+    args = []
+    def number(key, low, high):
+        try:
+            value = int(config.get(key, ""))
+        except ValueError:
+            return None
+        return value if low <= value <= high else None
+    width, height = number("gamescope_width", 320, 16384), number("gamescope_height", 200, 16384)
+    refresh = number("gamescope_refresh", 1, 1000)
+    if width: args += ["-W", str(width)]
+    if height: args += ["-H", str(height)]
+    if refresh: args += ["-r", str(refresh)]
+    if config.get("gamescope_fullscreen") == "1": args.append("-f")
+    if config.get("gamescope_hdr") == "1": args.append("--hdr-enabled")
+    if config.get("gamescope_grab_cursor") == "1": args.append("--force-grab-cursor")
+    if config.get("gamescope_rt") == "1": args.append("--rt")
+    args += [word for word in config.get("gamescope_extra", "").split() if word and word != "--"]
+    command = [tool] + args + ["--", exe]
+    if config.get("gamescope_gamemoderun") == "1":
+        runner = shutil.which("gamemoderun")
+        if runner:
+            command.insert(0, runner)
+    return command
+
+
 def play(folder):
     """the game, on its own (it outlives this window), from its folder. The launcher already asked about updates."""
     exe = linux_update.game_exe(folder)
@@ -119,6 +159,10 @@ def play(folder):
     env["HOOKSHOT_NO_UPDATE_CHECK"] = "1"
     exe = os.path.abspath(exe)
     options = dict(cwd=folder, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    wrapped = gamescope_command(exe)
+    if wrapped:
+        subprocess.Popen(wrapped, **options)
+        return
     try:
         with open(os.path.join(HERE, "play-diagnostics.sh"), encoding="utf-8") as script:
             command = ["/bin/sh", "-c", script.read(), "hookshot-play", exe]

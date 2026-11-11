@@ -91,7 +91,8 @@ with tempfile.TemporaryDirectory(prefix='nup-codec-') as temporary:
         with reader.f, redirect_stdout(output), patch.object(nup, 'monotonic', side_effect=ticks, create=True):
             assert nup.extract(reader, reader.titles[0], str(folder), only='exefs', quiet=quiet) == (1, len(logical))
         assert (folder / 'exefs' / 'member.bin').read_bytes() == logical
-        return output.getvalue().splitlines()
+        return [line for line in output.getvalue().splitlines()
+                if not line.startswith(('@@progress ', '  reading '))]
 
     root = Path(temporary)
     raw = b'x' * (24 << 20)

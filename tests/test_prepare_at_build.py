@@ -73,6 +73,15 @@ class PrepareShadersTests(unittest.TestCase):
         self.assertEqual(lines[0], "@@stage shaders Preparing shaders")
         self.assertIn("printed nothing for 1 seconds and was stopped", not_prepared(lines)[0])
 
+    def test_a_quiet_step_that_is_still_using_cpu_is_not_stopped(self):
+        # (issue 2242: an AMD driver compiling pipelines can go quiet for longer than the watchdog while its CPU time grows)
+        code, lines = prepared(
+            stub("import time\nprint('@@stage shaders Preparing shaders', flush=True)\n"
+                 "t = time.process_time()\nwhile time.process_time() - t < 1.6: pass"),
+            silence=0.7)
+        self.assertEqual(code, 0)
+        self.assertEqual(lines, ["@@stage shaders Preparing shaders"])
+
     def test_steady_output_is_not_silence(self):
         code, lines = prepared(stub("import time\nfor i in range(6):\n    print('@@progress %.3f' % (i / 6), flush=True); "
                                     "time.sleep(0.4)"), silence=1)

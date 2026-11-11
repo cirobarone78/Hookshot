@@ -31,6 +31,7 @@ import filecmp
 import hashlib
 import importlib.util
 import json
+import locale
 import ntpath
 import os
 import queue
@@ -300,9 +301,42 @@ class Silent(Exception):
     """a step printed nothing for longer than run()'s silence"""
 
 
-def output_lines(p, silence):
+def process_cpu_seconds(pid):
+    """CPU seconds a live process has used, or None where it cannot be read. A silent shader preparation is still working
+    while this grows (a driver compiling is CPU work): its silence is not a hang, however long the driver goes between
+    progress lines. Never raises: a process that ended, or a platform without /proc, is simply not evidence either way."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            handle = kernel32.OpenProcess(0x1000, False, pid)   # (PROCESS_QUERY_LIMITED_INFORMATION)
+            if not handle:
+                return None
+            try:
+                class FileTime(ctypes.Structure):
+                    _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+                times = [FileTime() for _ in range(4)]
+                if not kernel32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+                    return None
+                ticks = ((times[2].high << 32) | times[2].low) + ((times[3].high << 32) | times[3].low)
+                return ticks / 1e7   # (100 ns units)
+            finally:
+                kernel32.CloseHandle(handle)
+        with open("/proc/%d/stat" % pid, "rb") as f:
+            data = f.read()
+        fields = data[data.rfind(b")") + 2:].split()   # (after the command, which may hold spaces and parentheses)
+        ticks = int(fields[11]) + int(fields[12])        # (utime, stime: process fields 14 and 15)
+        return ticks / os.sysconf("SC_CLK_TCK")
+    except (AttributeError, IndexError, OSError, ValueError, ZeroDivisionError):
+        return None
+
+
+def output_lines(p, silence, heartbeat=None):
     """A step's lines as they come; with silence (seconds), read on a thread so that a step which goes quiet that long (a hung
-    driver, a crash dialog left open) raises Silent instead of waiting for ever"""
+    driver, a crash dialog left open) raises Silent instead of waiting for ever. A quiet step whose CPU time is still growing
+    is working, not hung: its clock starts again, and heartbeat(quiet seconds) says so now and then."""
     if silence is None:
         yield from p.stdout
         return
@@ -320,20 +354,36 @@ def output_lines(p, silence):
             lines.put(None)
 
     threading.Thread(target=read, daemon=True).start()
+    last_active = time.monotonic()
+    last_notice = last_active
+    last_cpu = process_cpu_seconds(p.pid)
+    tick = min(2.0, max(0.05, silence / 4))
     while True:
+        now = time.monotonic()
         try:
-            line = lines.get(timeout=silence)
+            line = lines.get(timeout=max(0.0, min(tick, last_active + silence - now)))
         except queue.Empty:
-            raise Silent() from None
+            now = time.monotonic()
+            cpu = process_cpu_seconds(p.pid)
+            if cpu is not None and last_cpu is not None and cpu > last_cpu + 0.02:
+                last_cpu, last_active = cpu, now
+            if now - last_active >= silence:
+                raise Silent() from None
+            if heartbeat and now - last_notice >= max(30.0, silence / 5):
+                last_notice = now
+                heartbeat(now - last_active)
+            continue
         if line is None:
             return
+        last_active = time.monotonic()
         yield line
 
 
-def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROOT, base=None, silence=None):
+def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROOT, base=None, silence=None, heartbeat=None):
     """A step, its output printed as it comes. show: what of each line is printed (its None: nothing; on_line and a failure's
     reason still get the line itself). base: the environment it starts from (os.environ). silence: seconds without a line after
-    which the step is stopped; it returns None then (with check, the build fails)"""
+    which the step is stopped; it returns None then (with check, the build fails). heartbeat(quiet seconds): a line for a step
+    that is quiet but still using CPU, so that a long shader preparation does not look like a hang."""
     e = dict(os.environ if base is None else base, PYTHONIOENCODING="utf-8")
     e.update(env or {})
     p = subprocess.Popen(cmd, cwd=cwd, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
@@ -341,7 +391,7 @@ def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROO
     no_throttle(getattr(p, "_handle", None))
     lines = []
     try:
-        for line in output_lines(p, silence):
+        for line in output_lines(p, silence, heartbeat):
             line = line.rstrip()
             shown = show(line) if show else line
             if shown is not None:
@@ -410,6 +460,29 @@ def file_progress(verb, clock=time.monotonic):
 
 
 HEADS = ".hookshot_romfs_heads"   # (the extraction's damaged .zs list, under the stamp of the unpack that made it)
+DAMAGED_FILES = "hookshot_damaged_files.txt"  # (the game-folder note from #2254)
+DAMAGED_FILES_LEGACY = "damaged_files.txt"     # (kept for Flutter builds made before the upstream filename was known)
+
+
+def read_stamp(path):
+    """Read a cache stamp as UTF-8, or as the Windows code page used by older builders.
+
+    Decode exactly or not at all: a replaced character could make a different .nup
+    name match and incorrectly reuse its extraction.
+    """
+    with open(path, "rb") as f:
+        raw = f.read()
+    for encoding in ("utf-8", locale.getencoding()):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    return ""
+
+
+def write_stamp(path, stamp):
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(stamp)
 
 
 def keep_heads(out, game, stamp):
@@ -430,18 +503,21 @@ def keep_heads(out, game, stamp):
 def stand_in_damaged_files(out, romfs):
     """An incomplete dump's damaged textures replaced by whole ones of the same kind, and said: without them the game
     leaves out the walls and floors that use them (the Water Temple, #1002). Only in a romfs this builder unpacked (its
-    .hookshot_romfs stamp), and once per unpack: .hookshot_romfs_checked holds the stamp it was checked under"""
+    .hookshot_romfs stamp), and once per unpack: .hookshot_romfs_checked holds the stamp it was checked under. Returns the (damaged, stand-in) pairs this check found, and writes
+    them to a note in the game folder for the Builder warning and issue triage; a clean check removes previous notes."""
     good = os.path.join(out, ".hookshot_romfs")
     checked = os.path.join(out, ".hookshot_romfs_checked")
     if not os.path.isfile(good) or not os.path.isdir(romfs):
-        return
+        return []
     check_cache_paths(out, (good, checked, romfs))
-    with open(good) as f:
-        stamp = f.read()
+    stamp = read_stamp(good)
+    checked_stamp = "resolved-v1\n" + stamp
+    if os.path.isfile(checked) and read_stamp(checked) == checked_stamp:
+        return []
     if os.path.isfile(checked):
-        with open(checked) as f:
-            if f.read() == stamp:
-                return
+        # Old markers also recorded scans with damaged files that had no donor.
+        # Recheck those once instead of trusting them forever.
+        os.remove(checked)
     import nup
     heads = os.path.join(out, HEADS)
     known = None
@@ -458,20 +534,36 @@ def stand_in_damaged_files(out, romfs):
         done = nup.stand_in_damaged(romfs, file_progress("checked"))
     else:   # (found while the .nup was extracted: no file opened again)
         done = nup.stand_in_damaged(romfs, damaged=[os.path.normpath(os.path.join(romfs, rel)) for rel in known])
-    with open(checked, "w") as f:
-        f.write(stamp)
+    if done:
+        print("Your game dump is incomplete: %d game file%s in it %s damaged. Similar files are used where available, "
+              "with different textures in those places. Dump the game again for the original files:" %
+              (len(done), "" if len(done) == 1 else "s", "is" if len(done) == 1 else "are"), flush=True)
+        for path, other in done:
+            print("  %s: %s" % (os.path.relpath(path, romfs),
+                                "in its place " + os.path.basename(other) if other else "nothing similar found, left as it is"),
+                  flush=True)
+        unresolved = sum(other is None for _, other in done)
+        if unresolved:
+            fail("The game dump still has %d damaged file%s with no replacement. The build stopped before compiling. "
+                 "Dump the game again and select the complete dump in Hookshot Builder. The affected files are listed above." %
+                 (unresolved, "" if unresolved == 1 else "s"))
+    write_stamp(checked, checked_stamp)
     with contextlib.suppress(FileNotFoundError):
         os.remove(heads)
     if not done:
-        return
-    print("Your game dump is incomplete: %d game file%s in it %s damaged (a complete dump is about 23.8 GB, an incomplete "
-          "one 23.3 GB). Each is replaced by a similar file so that the places using it are still drawn, with a different "
-          "texture there. Dump the game again for the original look:" % (len(done), "" if len(done) == 1 else "s",
-                                                                          "is" if len(done) == 1 else "are"), flush=True)
+        for name in (DAMAGED_FILES, DAMAGED_FILES_LEGACY):
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(os.path.join(out, name))
+        return []
+    note = ["# The game files damaged in this dump and their stand-ins.\n"]
     for path, other in done:
-        print("  %s: %s" % (os.path.relpath(path, romfs),
-                            "in its place " + os.path.basename(other) if other else "nothing similar found, left as it is"),
-              flush=True)
+        note.append("%s -> %s\n" % (os.path.relpath(path, romfs).replace(os.sep, "/"),
+                                     os.path.basename(other) if other else "(no stand-in found)"))
+    body = "".join(note)
+    for name in (DAMAGED_FILES, DAMAGED_FILES_LEGACY):
+        with open(os.path.join(out, name), "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+    return done
 
 
 def check_cache_paths(out, paths):
@@ -777,48 +869,173 @@ def check_windows_sdk():
     fail("The compiler could not run a test build: %s" % why)
 
 
+def _cleanup_argv(command):
+    """Windows quoted arguments (backslashes escape quotes, not ordinary path characters).
+    Reject unmatched quotes rather than using an ambiguous command as ownership evidence."""
+    args, word, quoted, started = [], [], False, False
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if char in " \t" and not quoted:
+            if started:
+                args.append("".join(word))
+                word, started = [], False
+            i += 1
+            continue
+        started = True
+        if char == "\\":
+            j = i
+            while j < len(command) and command[j] == "\\":
+                j += 1
+            count = j - i
+            if j < len(command) and command[j] == '"':
+                word.extend("\\" * (count // 2))
+                if count % 2:
+                    word.append('"')
+                    i = j + 1
+                    continue
+            else:
+                word.extend("\\" * count)
+                i = j
+                continue
+            i = j
+            char = command[i]
+        if char == '"':
+            if quoted and i + 1 < len(command) and command[i + 1] == '"':
+                word.append('"')
+                i += 2
+                continue
+            quoted = not quoted
+        else:
+            word.append(char)
+        i += 1
+    if quoted:
+        return []
+    if started:
+        args.append("".join(word))
+    return args
+
+
+def _cleanup_path(path):
+    # CIM has no working directory: relative and drive-relative arguments prove nothing.
+    drive, tail = ntpath.splitdrive(path)
+    if not drive or not tail.startswith(("\\", "/")):
+        return None
+    return ntpath.normcase(ntpath.normpath(path))
+
+
+def _cleanup_python(argv):
+    i = 1
+    while i < len(argv) and argv[i].startswith("-"):
+        if argv[i] in ("-I", "-u", "-B", "-E", "-s", "-S", "-O", "-OO"):
+            i += 1
+        elif argv[i] in ("-X", "-W") and i + 1 < len(argv):
+            i += 2
+        else:
+            return None          # -c/-m and unknown invocation forms are not script evidence.
+    return (argv[i], argv[i + 1:]) if i < len(argv) else None
+
+
+def _cleanup_owns(q, work, default_work):
+    argv = _cleanup_argv(q.get("CommandLine") or "")
+    name = (q.get("Name") or "").lower()
+    if not argv or not work:
+        return False
+    if name in ("python.exe", "pythonw.exe", "python3.exe"):
+        invocation = _cleanup_python(argv)
+        if not invocation:
+            return False
+        script, options = invocation
+        entry = ntpath.basename(script).lower()
+        if entry not in ("make_game.py", "lift.py", "build.py"):
+            return False
+        works = []
+        for j, option in enumerate(options):
+            if option == "--work":
+                if j + 1 == len(options):
+                    return False
+                works.append(_cleanup_path(options[j + 1]))
+            elif option.startswith("--work="):
+                works.append(_cleanup_path(option[7:]))
+        if works:
+            # build.py gets OOT_WORK through its environment; it has no --work option.
+            return entry != "build.py" and all(w == work for w in works)
+        # A default only belongs to this installation when the entry point is proven.
+        return (entry == "make_game.py" and _cleanup_path(script) is not None
+                and _cleanup_path(script) == _cleanup_path(__file__)
+                and work == _cleanup_path(default_work))
+    if name not in ("clang.exe", "clang++.exe", "clang-cl.exe", "ld.lld.exe", "lld-link.exe"):
+        return False
+    outputs = []
+    for i, arg in enumerate(argv[1:], 1):
+        if arg == "-o" and i + 1 < len(argv):
+            outputs.append(_cleanup_path(argv[i + 1]))
+        elif name == "lld-link.exe" and arg.lower().startswith("/out:"):
+            outputs.append(_cleanup_path(arg[5:]))
+        elif name == "clang-cl.exe" and arg.startswith("/Fo"):
+            outputs.append(_cleanup_path(arg[3:]))
+    # Input/include/response-file paths do not establish where a compiler writes.
+    return bool(outputs) and all(o and o.startswith(work.rstrip("\\") + "\\") for o in outputs)
+
+
+def _cleanup_build_child(child, parent):
+    """make_game runs this exact child in ROOT with OOT_WORK; an orphan has no such proof."""
+    python_names = ("python.exe", "pythonw.exe", "python3.exe")
+    if child.get("Name", "").lower() not in python_names or parent.get("Name", "").lower() not in python_names:
+        return False
+    c = _cleanup_python(_cleanup_argv(child.get("CommandLine") or ""))
+    p = _cleanup_python(_cleanup_argv(parent.get("CommandLine") or ""))
+    if not c or not p or not _cleanup_path(p[0]) or ntpath.basename(p[0]).lower() != "make_game.py":
+        return False
+    expected = ntpath.join(ntpath.dirname(p[0]), "build.py")
+    script, options = c
+    return ("--standalone" in options and
+            (_cleanup_path(script) == _cleanup_path(expected) or ntpath.normcase(script) == "nx2\\build.py"))
+
+
 def stop_stray_compilers(work, default_work):
-    """(issues 501, 530) A build left running by an earlier one on this work folder (the builder closed, crashed, or replaced by an
-    update mid-build) keeps its files open: the next build stopped at once with 'OSError: [Errno 22]' writing sa/gen/a64_fpx.h, or
-    WinError 1224 on the play profile. Only that build goes: an earlier make_game on this work folder, the build and lift steps
-    whose make_game is gone, and compilers whose command line names this work folder. Never this build or what started it."""
+    """Best-effort cleanup for issues 501/530, restricted to proven target outputs/work.
+    Unknown orphan ownership is preserved. Never terminate an unexamined child tree."""
     if LINUX:
         return
-    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'clang*' -or $_.Name -like 'ld.lld*' -or $_.Name -like 'python*' } "
-          "| Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress")
+    ps = ("Get-CimInstance Win32_Process | "
+          "Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress")
     try:
-        import json
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=90)
+        if r.returncode:
+            return
         procs = json.loads(r.stdout or "[]")
         if isinstance(procs, dict):
             procs = [procs]
         alive = {q["ProcessId"]: q for q in procs}
-        mine, pid = set(), os.getpid()        # (this process and the chain that started it)
+        mine, pid = set(), os.getpid()
         while pid in alive and pid not in mine:
             mine.add(pid)
             pid = alive[pid]["ParentProcessId"]
         mine.add(pid)
-        w = os.path.normcase(os.path.abspath(work))
-        names = lambda c: os.path.normcase((c or "").replace("/", "\\"))
-        doomed = {}
+        w = _cleanup_path(os.fspath(work))
+        doomed = {q["ProcessId"]: q["Name"] for q in procs
+                  if q["ProcessId"] not in mine and _cleanup_owns(q, w, os.fspath(default_work))}
+        # A live, proven make_game parent establishes the build.py child's OOT_WORK contract.
+        # Do not infer this from an absent parent or propagate it to arbitrary descendants.
+        owned = set(doomed)
         for q in procs:
-            c, n = names(q.get("CommandLine")), q["Name"].lower()
-            if q["ProcessId"] in mine:
-                continue
-            if "make_game.py" in c and (w in c or ("--work" not in c and w == os.path.normcase(default_work))):
-                doomed[q["ProcessId"]] = n
-            elif ("build.py" in c or "lift.py" in c) and "--standalone" in c and q["ParentProcessId"] not in alive:
-                doomed[q["ProcessId"]] = n           # (its make_game is gone)
-            elif not n.startswith("python") and w in c:
-                doomed[q["ProcessId"]] = n
-        for k in doomed:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(k)], capture_output=True, timeout=60)
-        if doomed:
+            parent = alive.get(q["ParentProcessId"])
+            if q["ProcessId"] not in mine and q["ParentProcessId"] in owned and parent and _cleanup_build_child(q, parent):
+                doomed[q["ProcessId"]] = q["Name"]
+        stopped = []
+        for k, name in doomed.items():
+            # /T would also kill descendants whose folder was never established.
+            result = subprocess.run(["taskkill", "/F", "/PID", str(k)], capture_output=True, timeout=60)
+            if result.returncode == 0:
+                stopped.append(name)
+        if stopped:
             print("stopped %d process(es) an earlier build left running on this work folder: %s"
-                  % (len(doomed), " ".join(sorted(set(doomed.values())))), flush=True)
+                  % (len(stopped), " ".join(sorted(set(stopped)))), flush=True)
             time.sleep(2)
     except Exception as e:   # (not finding them is no reason to stop)
         print("could not look for an earlier build's processes: %s" % e, flush=True)
+
 
 
 def makefile_words(text):
@@ -1043,8 +1260,8 @@ def ship_state_list(out):
 
 # (the builders read this line's start: the step was skipped or failed, and the shaders' row says so instead of a check mark)
 NOT_PREPARED = "the shaders were not prepared now"
-# (a run that prints nothing this long is stopped. Not its whole length: that is 25 minutes on some AMD GPUs, and the driver's own
-# step near the end can sit at 99% for minutes)
+# (a run that prints nothing this long, with no CPU time growing either, is stopped. Not its whole length: that can be an hour on
+# some AMD GPUs, whose driver goes quiet between pipeline counts while it compiles; output_lines watches the CPU time too, issue 2242)
 PREPARE_SILENCE = 15 * 60
 GAME_ENV_DROP = ("HOOKSHOT_", "PYTHON", "APPDIR", "APPIMAGE", "ARGV0", "OWD")
 
@@ -1084,6 +1301,12 @@ def show_prepared(line):
     return line if line.startswith(("@@stage ", "@@progress ")) or not line.startswith("@@") else line[2:]
 
 
+def still_preparing(quiet):
+    """The builder's own line while the game's preparation is quiet but its CPU time is growing: the driver is compiling
+    (minutes between pipeline counts on slow AMD cards, issue 2242), not hung. Plain text, so the builder's log says it."""
+    print("shader preparation is still working (%s without a new count; the game is using CPU)" % span(quiet), flush=True)
+
+
 def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
     """The shaders prepared now, under the builder's progress bar, not at the game's first start behind a black window (minutes on
     some GPUs, issue 711): hookshot --prepare-shaders (host/hos_main.c, gpu/vk/vk_main.cpp), the same work as that first start, in
@@ -1091,7 +1314,7 @@ def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
     any other failure leaves the work to the first start, as before: never a failed build. Returns its exit code (None: stopped)"""
     try:
         code = run(cmd, check=False, show=show_prepared, cwd=folder or os.path.dirname(cmd[0]) or None,
-                   base=game_env(), silence=silence)
+                   base=game_env(), silence=silence, heartbeat=still_preparing)
     except OSError as e:
         not_prepared(str(e))
         return 1
@@ -1610,8 +1833,7 @@ def main(a=None):
         stamp = "unpacked by this builder: %s %d" % (os.path.basename(a.nup), st.st_size)
         same = False
         if os.path.exists(good) and os.path.isdir(romfs) and os.path.isdir(kept):
-            with open(good) as f:
-                same = f.read().strip() == stamp
+            same = read_stamp(good).strip() == stamp
         if same:
             print("the game was read from this .nup before: reading it again is skipped", flush=True)
             shutil.copytree(kept, exefs)
@@ -1622,6 +1844,7 @@ def main(a=None):
             # Keep the last usable cache until the new package has been read and validated.
             staged_exefs = os.path.join(game, "exefs")
             try:
+                print("reading %s (%.2f GB)" % (os.path.basename(a.nup), st.st_size / 1e9), flush=True)
                 run(PY + ["nx2/nup.py", a.nup, "--extract", game])
                 check_modules(staged_exefs)
                 check_supported_build(staged_exefs)
@@ -1643,8 +1866,7 @@ def main(a=None):
             shutil.rmtree(game, ignore_errors=True)
             shutil.rmtree(kept, ignore_errors=True)
             shutil.copytree(exefs, kept)
-            with open(good, "w") as f:
-                f.write(stamp + chr(10))
+            write_stamp(good, stamp + chr(10))
         check_modules(exefs)
         # (also when the .nup was read before: a folder built from a 23.3 GB dump by an earlier builder gets them too)
         stand_in_damaged_files(out, romfs)
@@ -1676,6 +1898,7 @@ def main(a=None):
     if os.path.exists(os.path.join(work, "hookshot_pieces.prof")) and profile_readable(os.path.join(work, "hookshot_pieces.prof")):
         env["RX_PGO"] = os.path.join(work, "hookshot_pieces.prof")
 
+    print("@@progress 1.000", flush=True)   # (the read stage is over, whether it unpacked or reused the game files)
     say("stage", "lift", "Translating the game to PC code")
     # (the same game, tools and settings as the lift before: its C is what this lift would write, and nothing recompiles from it. A
     # rebuild after a change to host/ alone skips the minutes of the lift)
@@ -1874,8 +2097,12 @@ def main(a=None):
                 tag = f.readline().strip()
             if tag:
                 break
-    if tag:
-        with open(os.path.join(out, "hookshot_version.txt"), "w", encoding="utf-8", newline="\n") as f:
+    # (profiles=1: this game plays the launcher's profile, HOOKSHOT_PROFILE (host/nn_applet.c). The launchers offer profiles only
+    # then: a game built before them plays the default profile's saves whichever is chosen. nx2/profiles.py.
+    # Written by a build from the repository too; it has no version line, so its game never offers an update)
+    with open(os.path.join(out, "hookshot_version.txt"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("profiles=1\n")
+        if tag:
             f.write("version=%s\n" % tag)
             if os.environ.get("HOOKSHOT_BUILDER_EXE"):
                 f.write("builder=%s\n" % os.environ["HOOKSHOT_BUILDER_EXE"])

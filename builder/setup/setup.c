@@ -523,6 +523,11 @@ static int nightly_tag(const char *s) {
 #ifndef HOOKSHOT_SETUP_RELEASE
 #define HOOKSHOT_SETUP_RELEASE ""
 #endif
+#ifndef HOOKSHOT_REPOSITORY
+#define HOOKSHOT_REPOSITORY "NotRexed/Hookshot"
+#endif
+#define HOOKSHOT_WIDEN2(s) L##s
+#define HOOKSHOT_WIDEN(s) HOOKSHOT_WIDEN2(s)
 
 static const char *manifest_url(void) {
     static char u[1024];
@@ -532,8 +537,8 @@ static const char *manifest_url(void) {
     if (!tag[0] && HOOKSHOT_SETUP_RELEASE[0] && strlen(HOOKSHOT_SETUP_RELEASE) < sizeof tag) strcpy(tag, HOOKSHOT_SETUP_RELEASE);
     if (e && *e) snprintf(u, sizeof u, "%s", e);
     else if (tag[0])
-        snprintf(u, sizeof u, "https://github.com/NotRexed/Hookshot/releases/download/%s/hookshot-setup.txt", nightly_tag(tag) ? "nightly" : tag);
-    else snprintf(u, sizeof u, "%s", "https://github.com/NotRexed/Hookshot/releases/latest/download/hookshot-setup.txt");
+        snprintf(u, sizeof u, "https://github.com/" HOOKSHOT_REPOSITORY "/releases/download/%s/hookshot-setup.txt", nightly_tag(tag) ? "nightly" : tag);
+    else snprintf(u, sizeof u, "%s", "https://github.com/" HOOKSHOT_REPOSITORY "/releases/latest/download/hookshot-setup.txt");
     return u;
 }
 
@@ -590,7 +595,7 @@ static DWORD WINAPI work(LPVOID unused) {
     if (!ok)
         fail(g_http_status == 404
                  ? L"The latest Hookshot release has no setup files yet. Download HookshotBuilder.zip from the releases page for now: "
-                   L"https://github.com/NotRexed/Hookshot/releases/latest"
+                   L"https://github.com/" HOOKSHOT_WIDEN(HOOKSHOT_REPOSITORY) L"/releases/latest"
              : g_http_status ? L"GitHub's download servers are failing right now (an error 500 or above, tried 8 times over 3 minutes). "
                                L"This is on GitHub's side: try again in a few minutes, or later today."
                              : L"Could not reach GitHub to get the Hookshot Builder. Check your internet connection and try again.");

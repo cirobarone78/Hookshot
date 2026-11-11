@@ -27,7 +27,8 @@ def game(folder):
         "printf 'LD_LIBRARY_PATH=%s\\n' \"${LD_LIBRARY_PATH-UNSET}\"\n"
         "printf 'HOOKSHOT_TOOLS=%s\\n' \"${HOOKSHOT_TOOLS-UNSET}\"\n"
         "printf 'PYTHONPATH=%s\\n' \"${PYTHONPATH-UNSET}\"\n"
-        "printf 'HOME=%s\\n' \"$HOME\"\n",
+        "printf 'HOME=%s\\n' \"$HOME\"\n"
+        "printf 'HOOKSHOT_PROFILE=%s\\n' \"${HOOKSHOT_PROFILE-UNSET}\"\n",
         encoding="utf-8",
     )
     exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
@@ -73,6 +74,36 @@ class LaunchTests(unittest.TestCase):
         self.assertIn("PYTHONPATH=UNSET", lines)
         self.assertIn("HOME=%s" % os.environ["HOME"], lines)
 
+    def test_the_profile_the_launcher_chose_last_is_played(self):
+        # (passed on as the launcher wrote it: whether it is still on the list is the game's to check, in the user folder it
+        # chooses, host/nn_applet.c, tests/test_account_profile.py)
+        with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
+            root = Path(tmp)
+            folder = root / "game"
+            game(folder)
+            ini = root / "builder.ini"
+            profile = "5a3c9e1f0b7d24680000000000000002"
+            ini.write_text("out=%s\nprofile=%s\n" % (folder, profile), encoding="utf-8")
+            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), HOOKSHOT_PROFILE="stale"),
+                                 text=True, capture_output=True, check=False)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertIn("HOOKSHOT_PROFILE=%s" % profile, ran.stdout.splitlines())
+            ini.write_text("out=%s\n" % folder, encoding="utf-8")
+            ran = subprocess.run([str(LAUNCH)], env=self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), HOOKSHOT_PROFILE="stale"),
+                                 text=True, capture_output=True, check=False)
+            self.assertIn("HOOKSHOT_PROFILE=UNSET", ran.stdout.splitlines())
+
+    def test_a_folder_given_starts_without_home(self):
+        # (a systemd unit or a bare env: no HOME, no XDG_CONFIG_HOME. No ini then, and set -u does not stop the start)
+        with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
+            folder = Path(tmp) / "game"
+            game(folder)
+            env = {k: v for k, v in self.env().items() if k not in ("HOME", "XDG_CONFIG_HOME", "HOOKSHOT_LAUNCH_CONFIG")}
+            ran = subprocess.run(["sh", "-x", str(LAUNCH), str(folder)], env=env, text=True, capture_output=True, check=False)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertIn("HOME=", ran.stdout.splitlines())
+            self.assertNotIn("/.config", ran.stderr)   # (the trace: no ini under the file system's root was looked for)
+
     def test_play_starts_the_game_in_bin_not_the_launcher(self):
         with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
             root = Path(tmp)
@@ -91,6 +122,40 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertEqual(ran.stdout.splitlines()[0], "game")
         self.assertIn("CHECK=1", ran.stdout)
+
+    def test_the_gamescope_option_wraps_play_unless_already_inside_it(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:
+            root = Path(tmp)
+            folder = root / "game"
+            game(folder)
+            nested = folder / "bin"
+            nested.mkdir()
+            exe = nested / "hookshot"
+            exe.write_text("#!/bin/sh\nprintf 'game\\n'\n", encoding="utf-8")
+            exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+            tool = root / "gamescope"
+            marker = root / "gamescope-args"
+            tool.write_text("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %s\n" % marker, encoding="utf-8")
+            tool.chmod(tool.stat().st_mode | stat.S_IEXEC)
+            ini = root / "builder.ini"
+            ini.write_text(
+                "out=%s\ngamescope=1\ngamescope_width=3840\ngamescope_height=2160\ngamescope_refresh=164\n"
+                "gamescope_fullscreen=1\ngamescope_hdr=1\ngamescope_grab_cursor=1\ngamescope_rt=1\n"
+                "gamescope_extra=--adaptive-sync\n" % folder, encoding="utf-8")
+            env = self.env(HOOKSHOT_LAUNCH_CONFIG=str(ini), PATH="%s:%s" % (root, os.environ["PATH"]))
+            ran = subprocess.run([str(LAUNCH)], env=env, text=True, capture_output=True, check=False)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertEqual(marker.read_text().splitlines(), [
+                "-W", "3840", "-H", "2160", "-r", "164", "-f", "--hdr-enabled", "--force-grab-cursor", "--rt",
+                "--adaptive-sync", "--", "./bin/hookshot",
+            ])
+            marker.unlink()
+            # (a game started from Steam Deck game mode is already inside gamescope: no second compositor)
+            ran = subprocess.run([str(LAUNCH)], env=dict(env, GAMESCOPE_WAYLAND_DISPLAY="wayland-1"),
+                                 text=True, capture_output=True, check=False)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertFalse(marker.exists())
+            self.assertIn("game", ran.stdout.splitlines())
 
     def test_a_folder_argument_wins(self):
         with tempfile.TemporaryDirectory(prefix="hookshot-launch-") as tmp:

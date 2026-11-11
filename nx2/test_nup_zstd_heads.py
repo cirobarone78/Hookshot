@@ -77,7 +77,7 @@ class Heads(unittest.TestCase):
             # (the damaged file now holds its stand-in: a whole one of the same kind)
             self.assertEqual(Path(romfs, "Model", "damaged.bntx.zs").read_bytes(), WHOLE)
             self.assertFalse(os.path.exists(os.path.join(out, make_game.HEADS)))
-            self.assertEqual(Path(out, ".hookshot_romfs_checked").read_text(), stamp + "\n")
+            self.assertEqual(Path(out, ".hookshot_romfs_checked").read_text(), "resolved-v1\n" + stamp + "\n")
 
     def test_a_list_from_another_unpack_is_not_taken(self):
         with tempfile.TemporaryDirectory() as d:
@@ -92,6 +92,39 @@ class Heads(unittest.TestCase):
                 make_game.stand_in_damaged_files(out, romfs)
             opened.assert_called_once()
             self.assertEqual(Path(romfs, "Model", "damaged.bntx.zs").read_bytes(), WHOLE)
+
+    def test_a_stamp_keeps_a_name_outside_the_code_page(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch("locale.getencoding", return_value="cp1252"):
+            stamp = "unpacked by this builder: Zelda™⁚ Ocarina.nup 123\n"
+            path = os.path.join(d, ".hookshot_romfs")
+            make_game.write_stamp(path, stamp)
+            self.assertEqual(Path(path).read_bytes(), stamp.encode("utf-8"))
+            self.assertEqual(make_game.read_stamp(path), stamp)
+
+            # Old stamps in the Windows code page still match exactly.
+            old = "unpacked by this builder: Zelda™ Ocarina.nup 123\r\n"
+            Path(path).write_bytes(old.encode("cp1252"))
+            self.assertEqual(make_game.read_stamp(path), old)
+
+            # An undecodable byte must not turn into a replacement character and
+            # accidentally compare equal to a different package name.
+            Path(path).write_bytes(b"unpacked by this builder: authored \x81.nup 22\n")
+            self.assertEqual(make_game.read_stamp(path), "")
+
+    def test_legacy_damage_marker_is_rechecked_and_versioned(self):
+        with tempfile.TemporaryDirectory() as d:
+            out, game = os.path.join(d, "game"), os.path.join(d, "game", ".game")
+            os.makedirs(game)
+            self.extract(game)
+            romfs = os.path.join(out, "romfs")
+            os.replace(os.path.join(game, "romfs"), romfs)
+            stamp = "unpacked by this builder: authored.nup 123"
+            Path(out, ".hookshot_romfs").write_text(stamp + "\n")
+            Path(out, ".hookshot_romfs_checked").write_text(stamp + "\n")
+            with mock.patch.object(nup, "damaged_game_files", wraps=nup.damaged_game_files) as opened:
+                make_game.stand_in_damaged_files(out, romfs)
+            opened.assert_called_once()
+            self.assertEqual(Path(out, ".hookshot_romfs_checked").read_text(), "resolved-v1\n" + stamp + "\n")
 
 
 if __name__ == "__main__":

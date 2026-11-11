@@ -8,6 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef HOOKSHOT_REPOSITORY
+#define HOOKSHOT_REPOSITORY "NotRexed/Hookshot"
+#endif
+
 /* a release tag as it may be shown and passed on to the Builder: letters, digits and . _ + - (from the network, or a
    file of the game folder) */
 static int safe_tag(const char *s) {
@@ -103,9 +107,13 @@ static int newest_tag(const char *body, char *tag, size_t cap) {
 #include <stdlib.h>
 #include <string.h>
 
+#define HOOKSHOT_WIDEN2(s) L##s
+#define HOOKSHOT_WIDEN(s) HOOKSHOT_WIDEN2(s)
 #define UPDATE_HOST L"api.github.com"
-#define UPDATE_PATH L"/repos/NotRexed/Hookshot/releases/latest"
-#define RELEASES_PAGE L"https://github.com/NotRexed/Hookshot/releases/latest"
+#define UPDATE_PATH L"/repos/" HOOKSHOT_WIDEN(HOOKSHOT_REPOSITORY) L"/releases/latest"
+#define UPDATE_RELEASES L"/repos/" HOOKSHOT_WIDEN(HOOKSHOT_REPOSITORY) L"/releases?per_page=20"
+#define UPDATE_NIGHTLY L"/" HOOKSHOT_WIDEN(HOOKSHOT_REPOSITORY) L"/releases/download/nightly/hookshot-setup.txt"
+#define RELEASES_PAGE L"https://github.com/" HOOKSHOT_WIDEN(HOOKSHOT_REPOSITORY) L"/releases/latest"
 
 /* (a line "name=value" of a small text file, in UTF-8: its value, trimmed) */
 static int read_value(const wchar_t *path, const char *name, char *out, size_t cap) {
@@ -163,11 +171,11 @@ static int latest_tag(const char *have, char *tag, size_t cap) {
     int ok = 0;
     char *body;
     if (nightly_version(have)) {
-        if ((body = get_body(L"github.com", L"/NotRexed/Hookshot/releases/download/nightly/hookshot-setup.txt")))
+        if ((body = get_body(L"github.com", UPDATE_NIGHTLY)))
             ok = tag_in(body, tag, cap), free(body);
         return ok;
     }
-    if (strchr(have, '-') && (body = get_body(UPDATE_HOST, L"/repos/NotRexed/Hookshot/releases?per_page=20"))) {
+    if (strchr(have, '-') && (body = get_body(UPDATE_HOST, UPDATE_RELEASES))) {
         ok = newest_tag(body, tag, cap);
         free(body);
         if (ok) return 1;
@@ -187,6 +195,10 @@ void hos_update_check(void) {
     char have[128], builder[MAX_PATH * 3], skipped[128] = "", tag[128];
     _snwprintf(file, MAX_PATH + 64, L"%ls\\hookshot_version.txt", dir);
     if (!read_value(file, "version", have, sizeof have) || !safe_tag(have)) return;
+    char policy[32] = "", pinned[128] = "";
+    _snwprintf(file, MAX_PATH + 64, L"%ls\\user\\hookshot_update_policy.txt", dir);
+    if (read_value(file, "mode", policy, sizeof policy) && !strcmp(policy, "pinned") &&
+        read_value(file, "version", pinned, sizeof pinned) && safe_tag(pinned) && !strcmp(pinned, have)) return;
     _snwprintf(file, MAX_PATH + 64, L"%ls\\user\\hookshot_update_skip.txt", dir);
     read_value(file, "skip", skipped, sizeof skipped);
     if (!latest_tag(have, tag, sizeof tag)) {
@@ -194,7 +206,7 @@ void hos_update_check(void) {
         return;
     }
     fprintf(stderr, "update: this folder is %s, the latest release is %s\n", have, tag);
-    if (!strcmp(tag, have) || !strcmp(tag, skipped)) return;
+        if (!strcmp(tag, have) || !strcmp(tag, skipped)) return;
     if (strchr(have, '-') && !nightly_version(have) && !newer_version(tag, have)) return;   /* (a release candidate: newer only) */
 
     wchar_t wtag[128], whave[128], wbuilder[MAX_PATH], text[2048];
@@ -308,17 +320,17 @@ static int pipe_tag(const char *cmd, char *tag, size_t cap, int newest) {
 static int latest_tag(const char *have, char *tag, size_t cap) {
     if (nightly_version(have))
         return pipe_tag("curl -fsSL --max-time 8 --retry 2 -A Hookshot-update-check "
-                        "https://github.com/NotRexed/Hookshot/releases/download/nightly/hookshot-linux.txt 2>/dev/null", tag, cap, 0);
+                        "https://github.com/" HOOKSHOT_REPOSITORY "/releases/download/nightly/hookshot-linux.txt 2>/dev/null", tag, cap, 0);
     if (strchr(have, '-') && pipe_tag("curl -fsSL --max-time 6 --retry 2 -A Hookshot-update-check "
                                       "-H \"Accept: application/vnd.github+json\" "
-                                      "'https://api.github.com/repos/NotRexed/Hookshot/releases?per_page=20' 2>/dev/null", tag, cap, 1))
+                                      "'https://api.github.com/repos/" HOOKSHOT_REPOSITORY "/releases?per_page=20' 2>/dev/null", tag, cap, 1))
         return 1;
     if (pipe_tag("curl -fsSL --max-time 4 --retry 2 -A Hookshot-update-check "
                  "-H \"Accept: application/vnd.github+json\" "
-                 "https://api.github.com/repos/NotRexed/Hookshot/releases/latest 2>/dev/null", tag, cap, 0))
+                 "https://api.github.com/repos/" HOOKSHOT_REPOSITORY "/releases/latest 2>/dev/null", tag, cap, 0))
         return 1;
     return pipe_tag("curl -fsSL --max-time 8 --retry 2 -A Hookshot-update-check "
-                    "https://github.com/NotRexed/Hookshot/releases/latest/download/hookshot-linux.txt 2>/dev/null", tag, cap, 0);
+                    "https://github.com/" HOOKSHOT_REPOSITORY "/releases/latest/download/hookshot-linux.txt 2>/dev/null", tag, cap, 0);
 }
 
 /* the builder an update installed (builder/linux/linux_update.py): <data>/hookshot/builder/versions/<current>/AppRun. The
@@ -356,6 +368,10 @@ void hos_update_check(void) {
     dir[n] = 0;
     snprintf(path, sizeof path, "%shookshot_version.txt", dir);
     if (!read_value(path, "version", have, sizeof have) || !safe_tag(have)) return;
+    char policy[32] = "", pinned[128] = "";
+    snprintf(path, sizeof path, "%suser/hookshot_update_policy.txt", dir);
+    if (read_value(path, "mode", policy, sizeof policy) && !strcmp(policy, "pinned") &&
+        read_value(path, "version", pinned, sizeof pinned) && safe_tag(pinned) && !strcmp(pinned, have)) return;
     snprintf(path, sizeof path, "%suser/hookshot_update_skip.txt", dir);
     read_value(path, "skip", skipped, sizeof skipped);
     if (!latest_tag(have, tag, sizeof tag)) {
@@ -391,7 +407,7 @@ void hos_update_check(void) {
     if (strncmp(answer, "Update", 6)) return;
     if (!has_builder) {
         if (fork() == 0) {
-            execlp("xdg-open", "xdg-open", "https://github.com/NotRexed/Hookshot/releases/latest", (char *)0);
+            execlp("xdg-open", "xdg-open", "https://github.com/" HOOKSHOT_REPOSITORY "/releases/latest", (char *)0);
             _exit(127);
         }
         return;

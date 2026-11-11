@@ -113,6 +113,11 @@ def coverage(L, img, out_dir):
 
 
 
+def progress(p):
+    """The builder's bar for this step; a plain line would not move it."""
+    print("@@progress %.3f" % p, flush=True)
+
+
 def main():
     kit.wait_for_quiet('the lift')
     p = argparse.ArgumentParser()
@@ -129,6 +134,7 @@ def main():
     p.add_argument("--no-adr-entries", action="store_true",
                    help="no extra entries at the code addresses ADR / ADRP+ADD take (nx2/adr_entries.py)")
     a = p.parse_args()
+    progress(0.01)
     a.exefs = a.exefs or kit.need_exefs()
     t0 = time.time()
     hle = ()
@@ -143,6 +149,7 @@ def main():
     print("image: %s; %d entries, %d trampolines (%d unresolved non-weak imports) (%.0fs)" % (
         ", ".join("%s@%#x+%#x" % (m["name"], m["base"], m["size"]) for m in meta["modules"]),
         len(img.entries), len(img.tramp), len(img.unresolved), time.time() - t0))
+    progress(0.06)
     if img.unresolved:
         print("  unresolved: " + ", ".join(sorted(img.unresolved)[:16]))
     if a.entries:
@@ -167,7 +174,9 @@ def main():
         oot_occlusion.install(L, img)
     L.discover(max_insns=a.max_func)
     print("discovered %d functions (%.0fs)" % (len(L.funcs), time.time() - t0))
+    progress(0.40)
     total = coverage(L, img, img_dir)
+    progress(0.50)
     jt = L.stats
     print("jump tables %d (bounded %d, bounded by function %d, ADR table %d), BR without a table %d, PLT stubs %d" % (
         len(L.jt), jt["jt_bounded"], jt["jt_unbounded"], jt["jt_adr_table"], len(L.jt_missing), len(L.plt)))
@@ -181,8 +190,10 @@ def main():
         if not a.no_polls:
             poll.install()
         gen = os.path.join(out_dir, "gen")
+        progress(0.55)
         files = chunks.write(L, gen, os.path.join(a.work, "image"), a.rechunk and not a.standalone,
                              counters=[] if a.no_polls else [poll.stats])
+        progress(0.95)
         import oot_patches
         main_build = next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), "")
         chunks.edit_c(gen, L.stats, a.standalone and main_build == oot_patches.LIFE_BUILD_ID, whole=not a.max_func)
@@ -197,6 +208,7 @@ def main():
         L.report()
         print("interrupt polls: %d loop headers in %d functions" % (poll.stats["polls"], poll.stats["functions"]))
         print("wrote %d code files to %s (%.0fs)" % (len(files), gen, time.time() - t0))
+    progress(1.0)
     print("done (%.0fs)" % (time.time() - t0))
 
 

@@ -29,6 +29,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -196,6 +197,20 @@ def package(a):
     tools = os.path.join(out, "tools")
     for f in tracked("gpu", "host", "nx2", "scripts", "third_party"):
         copy(os.path.join(ROOT, f), os.path.join(tools, *f.split("/")))
+    repository = (getattr(a, "repository", "") or os.environ.get("HOOKSHOT_REPOSITORY") or
+                  os.environ.get("GITHUB_REPOSITORY") or "").strip()
+    if repository:
+        if not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", repository):
+            raise ValueError("repository must be owner/name")
+        with open(os.path.join(tools, "repository.txt"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(repository + "\n")
+    repository = (getattr(a, "repository", "") or os.environ.get("HOOKSHOT_REPOSITORY") or
+                  os.environ.get("GITHUB_REPOSITORY") or "").strip()
+    if repository:
+        if not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", repository):
+            raise ValueError("repository must be owner/name")
+        with open(os.path.join(tools, "repository.txt"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(repository + "\n")
     if a.list:
         if not profile(argparse.Namespace(list=a.list, work=os.path.join(tools, "work"))) == 0:
             return 1
@@ -284,6 +299,8 @@ def main():
     s.add_argument("--setup", required=True)
     s.add_argument("--list")
     s.add_argument("--python-packages")
+    s.add_argument("--repository", default="", help="owner/name this release is built from")
+    s.add_argument("--repository", default="", help="owner/name this release is built from")
     a = p.parse_args()
     return {"previous": previous, "profile": profile, "llvm-mingw": llvm_mingw, "package": package}[a.cmd](a)
 
