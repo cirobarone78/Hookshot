@@ -73,6 +73,10 @@ struct Pool {
     // (hookshot) the GPU wrote it past what is copied back (memory_note_gpu_write: a bare entry's guessed range, the pointer
     // table's, a wide binding's): that is in its mirror alone, so the mirror is never given back (mirrors_give_back)
     bool gpu_only = false;
+    // (and the GPU wrote it through a binding of its mirror, copied back or not: after a save reload, the mirrors of such pools
+    // given back and made again left cyan in play and over the Start menu (RX 5500M, gone with RX_VK_MIRROR_KEEP=1); kept too)
+    bool gpu_written = false;
+    bool inherit_lost = false;   // (retired, and the pool that took it in made no mirror in time to copy its GPU contents)
     // (EvilOOT) retired with its mirror on: the pool that took it in copies the GPU's contents from it when its own mirror is
     // made (mirror_make), and until then the mirror stays (mirrors_give_back)
     bool inherit_pending = false;
@@ -2040,7 +2044,8 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
         }
         for (uint64_t k : overlapped) {   // (the pools it took in)
             auto o = imported.find(k);
-            if (o != imported.end()) p.gpu_only |= o->second.gpu_only, retire_pool(o);   // (their mirrors' contents come with them)
+            if (o != imported.end())   // (their mirrors' contents come with them)
+                p.gpu_only |= o->second.gpu_only, p.gpu_written |= o->second.gpu_written, retire_pool(o);
         }
         imp = imported.emplace(p.lo, p).first;
         guest_pages_set(p.lo, p.hi, p.address);
@@ -2752,6 +2757,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     }
     if (p->synced_epoch != mirror_epoch || p->sync_seg > texture_segment()) mirror_sync(*p);
     if (written) {
+        p->gpu_written = true;   // (its mirror kept: mirrors_give_back)
         // (hookshot, 11-10) RX_VK_WB_MAX_KB=<KB>: bindings larger than that do not queue a write-back. OoT writes
         // tens of MB of culling lists and per-frame buffers through the GPU that the CPU never reads; copying them
         // back was most of a submit's memory sync (issue 384: 68 MB a frame, 7 ms of the GPU's time, and
@@ -2867,26 +2873,39 @@ void mirror_free(Pool& p) {
 void mirrors_give_back(uint64_t want_bytes) {   // (pools_mu held)
     static const bool keep = getenv("RX_VK_MIRROR_KEEP") != nullptr;   // (A/B: mirrors kept, as before)
     if (keep) return;
+    // (the mirrors still given back, why, and what the GPU did to them: the first 200, to see which went before a picture fault)
+    static int logged_frees = 0;
+    const auto told = [](const Pool& p, const char* why) {
+        if (logged_frees++ < 200)
+            logf("vk: mirror of pool %#llx (%llu MB) given back: %s, %llu submissions since its sync%s%s", (unsigned long long)p.lo,
+                 (unsigned long long)((p.hi - p.lo) >> 20), why, (unsigned long long)(mirror_epoch - p.synced_epoch),
+                 p.gpu_only ? ", GPU-only data" : "", p.gpu_written ? ", GPU-written" : "");
+    };
     for (auto& nh : retired_pools) {
         Pool& p = nh.mapped();
         // (EvilOOT: kept while the pool that took it in has not made its mirror, for 600 submissions at most)
-        if (p.inherit_pending && mirror_epoch - p.retired_epoch > kIdleEpochs) p.inherit_pending = false;
-        if (p.mstate == Pool::MIRROR_ON && p.retired_value <= mem_completed && !p.inherit_pending) mirror_free(p);
+        if (p.inherit_pending && mirror_epoch - p.retired_epoch > kIdleEpochs) p.inherit_pending = false, p.inherit_lost = true;
+        if (p.mstate == Pool::MIRROR_ON && p.retired_value <= mem_completed && !p.inherit_pending) {
+            told(p, p.inherit_lost ? "retired, not inherited in time" : "retired");
+            mirror_free(p);
+        }
     }
-    // (hookshot) not a pool the GPU wrote past what is copied back (gpu_only): made again, its mirror came from guest memory
-    // without that, and the GPU went on from stale data. Paused 1-2 minutes in the background, the idle pools' mirrors all went,
+    // (hookshot) not a pool the GPU wrote past what is copied back (gpu_only), nor one it wrote through a binding (gpu_written): made
+    // again, its mirror came from guest memory without that, and the GPU went on from stale data. Paused 1-2 minutes in the background, the idle pools' mirrors all went,
     // and the game came back with cyan for a few seconds (RX 5500M; gone with RX_VK_MIRROR_KEEP=1). A pool refused a mirror for
     // the budget meanwhile is read in system memory, slower, not wrong
     std::vector<Pool*> idle;
     uint64_t kept_bytes = 0;
     for (auto& [lo, p] : imported)
         if (p.mstate == Pool::MIRROR_ON && mirror_epoch - p.synced_epoch > kIdleEpochs && p.last_value <= mem_completed) {
-            if (p.gpu_only) kept_bytes += p.hi - p.lo;
+            if (p.gpu_only || p.gpu_written) kept_bytes += p.hi - p.lo;
             else idle.push_back(&p);
         }
     std::sort(idle.begin(), idle.end(), [](const Pool* a, const Pool* b) { return a->synced_epoch < b->synced_epoch; });
-    for (Pool* p : idle)
-        if (mirror_epoch - p->synced_epoch > kLongIdle || mirror_bytes + want_bytes > mirror_budget()) mirror_free(*p);
+    for (Pool* p : idle) {
+        const bool long_idle = mirror_epoch - p->synced_epoch > kLongIdle;
+        if (long_idle || mirror_bytes + want_bytes > mirror_budget()) told(*p, long_idle ? "idle" : "idle, for room"), mirror_free(*p);
+    }
     static int64_t logged_at;
     if (st_mirrors_freed / 16 != logged_at) {
         logged_at = st_mirrors_freed / 16;
