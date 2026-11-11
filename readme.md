@@ -819,6 +819,11 @@ memory sync: in Hyrule Field on a 10 GB RTX 3080, about 66 MB and 4.4 ms a submi
 `RX_VK_WB_MAX_KB=1024` still copies the small results the CPU does read (the exposure meter and the like) and took the
 same scene to 59-60 fps. `0` or unset copies every written binding, as before.
 
+`RX_VK_PROGRAM_CACHE_ZSTD=1` keeps the translated shader programs in `hookshot_programs.zst.bin`, each record
+compressed with zstd and unpacked when it is read. The uncompressed cache is about 6.9 GB; in the reference cache
+(46,587 programs) zstd's level 3 made it 1.83 GB (3.75x). It is a file of its own: an existing
+`hookshot_programs.bin` is left alone, and the first run translates the programs into the compressed cache.
+
 </details>
 
 ## How it works
