@@ -3584,10 +3584,13 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     }
     const VkImage scaled = src && view ? framegen_scale(f.cmd, view, src, sw, sh, crop, rect.w, rect.h) : VK_NULL_HANDLE;
-    // (hookshot) the Insert menu's HDR: the picture (scaled, or the game's own with its crop) to HDR10, copied in as the SDR one is
-    const VkImage hdr_image = dev.hdr && src && view && !present_native_pq.load(std::memory_order_relaxed)
-        ? (scaled ? framegen_hdr(f.cmd, framegen_scaled_view(), rect.w, rect.h, nullptr, rect.w, rect.h)
-                  : framegen_hdr(f.cmd, view, sw, sh, crop, rect.w, rect.h))
+    // (hookshot) the Insert menu's HDR: the picture (scaled, or the game's own with its crop) to HDR10, copied in as the SDR one is.
+    // The game's own PQ picture (Native) goes through it too when the HDR contrast row grades it (not 100%); else it is shown as
+    // it is
+    const bool native_pq = present_native_pq.load(std::memory_order_relaxed);
+    const VkImage hdr_image = dev.hdr && src && view && (!native_pq || opts.hdr_contrast != 100)
+        ? (scaled ? framegen_hdr(f.cmd, framegen_scaled_view(), rect.w, rect.h, nullptr, rect.w, rect.h, native_pq)
+                  : framegen_hdr(f.cmd, view, sw, sh, crop, rect.w, rect.h, native_pq))
         : VK_NULL_HANDLE;
     if (hdr_image) {
         trace_route = 3;

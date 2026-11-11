@@ -26,7 +26,7 @@ float ratio = 43.0f / 18.0f;
 int aspect_calls = 0;
 float aspect_callback() { ++aspect_calls; return ratio; }
 Host h{aspect_callback}; Host* host = &h;
-struct { int upscale = 0, sharpness = 0, framegen = 0; } opts;
+struct { int upscale = 0, sharpness = 0, framegen = 0, hdr_contrast = 100; } opts;
 std::atomic<uint32_t> present_kind{0};
 bool scaled = false;
 bool encoded = false;
@@ -41,7 +41,7 @@ void vkCmdClearColorImage(int, VkImage, int, const VkClearColorValue*, int, cons
 void image_barrier(int, VkImage, int, int) {}
 void full_barrier(int) {}
 VkImageView framegen_scaled_view() { return 19; }
-VkImage framegen_hdr(int, VkImageView, uint32_t, uint32_t, const int*, uint32_t, uint32_t) {
+VkImage framegen_hdr(int, VkImageView, uint32_t, uint32_t, const int*, uint32_t, uint32_t, bool) {
     ++hdr_calls; return encoded ? 29 : VK_NULL_HANDLE;
 }
 VkImage framegen_scale(int, VkImageView, VkImage, uint32_t, uint32_t, const int*, uint32_t, uint32_t) { return scaled ? 9 : 0; }
@@ -102,6 +102,10 @@ int main(int argc, char** argv) {
     encoded = true; present_native_pq = true;
     const int before_native_pq = hdr_calls;
     present(1, 4096, 2160, crop); CHECK(hdr_calls == before_native_pq);
+    opts.hdr_contrast = 150; present(1, 4096, 2160, crop); CHECK(hdr_calls == before_native_pq + 1);   // (graded)
+    if (enabled) CHECK(messages.back().find("route=hdr") != std::string::npos);
+    opts.hdr_contrast = 100; present(1, 4096, 2160, crop);   // (at 100% shown as it is again)
+    if (enabled) CHECK(messages.back().find("route=scaled") != std::string::npos);
     dev.hdr = false; present_native_pq = false; encoded = false;
     opts.framegen = 2; present_kind = 1; present(1, 2560, 1440);
     if (enabled) CHECK(messages.back().find("kind=made") != std::string::npos && messages.back().find("framegen-request=2") != std::string::npos);

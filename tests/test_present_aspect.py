@@ -41,6 +41,7 @@ struct VkClearColorValue { float r, g, b, a; };
 struct VkImageSubresourceRange { int aspect, mip, levels, layer, layers; };
 struct { struct { uint32_t width, height; } swap_extent; bool hdr = false; } dev;
 std::atomic<bool> present_native_pq{false};
+struct { int hdr_contrast = 100; } opts;
 struct Host { float (*aspect_ratio)(); };
 Host* host;
 float logical_aspect;
@@ -62,8 +63,8 @@ void vkCmdClearColorImage(int, VkImage, int, const VkClearColorValue* color, int
 void image_barrier(int, VkImage, int, int) { ++barriers; }
 void full_barrier(int) { ++hdr_barriers; }
 VkImageView framegen_scaled_view() { return 117; }
-VkImage framegen_hdr(int, VkImageView view, uint32_t, uint32_t, const int* crop, uint32_t w, uint32_t h) {
-    CHECK(view == (filtered ? 117u : 7u));
+VkImage framegen_hdr(int, VkImageView view, uint32_t, uint32_t, const int* crop, uint32_t w, uint32_t h, bool pq) {
+    CHECK(view == (filtered ? 117u : 7u) && pq == present_native_pq.load());
     if (filtered) CHECK(crop == nullptr);
     ++hdr_calls; hdr_w = w; hdr_h = h;
     return hdr_ready ? 101 : VK_NULL_HANDLE;
@@ -92,7 +93,7 @@ void expect(VkImage src, uint32_t sw, uint32_t sh, const int* crop, uint32_t dw,
     CHECK(scale_w == want.w && scale_h == want.h);
     const bool bars = want.x || want.y || want.w != dw || want.h != dh;
     CHECK(clears == int(bars) && barriers == int(bars));
-    const bool hdr_attempted = dev.hdr && !present_native_pq.load();
+    const bool hdr_attempted = dev.hdr && (!present_native_pq.load() || opts.hdr_contrast != 100);
     const bool hdr_emitted = hdr_attempted && hdr_ready;
     CHECK(hdr_calls == int(hdr_attempted) && hdr_barriers == int(hdr_emitted));
     if (hdr_attempted) CHECK(hdr_w == want.w && hdr_h == want.h);
@@ -121,6 +122,9 @@ int main() {
         expect(3, 4096, 2160, crop, 1280, 720, wide, {0, 92, 1280, 536}, filter);
         hdr_ready = true; present_native_pq = true; // Native PQ bypasses conversion.
         expect(3, 4096, 2160, crop, 1280, 720, wide, {0, 92, 1280, 536}, filter);
+        opts.hdr_contrast = 150; // ... unless the HDR contrast row grades it: then the pass, told it is PQ.
+        expect(3, 4096, 2160, crop, 1280, 720, wide, {0, 92, 1280, 536}, filter);
+        opts.hdr_contrast = 100;
         present_native_pq = false; dev.hdr = false;
     }
     // Startup has no game image: one full clear, then the window-sized overlay.
