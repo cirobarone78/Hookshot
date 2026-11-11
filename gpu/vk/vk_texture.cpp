@@ -445,12 +445,27 @@ Staging staging(uint64_t n, uint64_t align = 256) {
             return {a.buffer, 0, a.mapped, a.allocation};
         }
     }
+    for (Arena& a : arenas) {
+        if (a.value < rec_value) {
+            const uint64_t at = (a.used + align - 1) & ~(align - 1);
+            if (at + n <= a.size) {
+                a.value = rec_value, a.used = at + n;
+                a.used_at = std::chrono::steady_clock::now();
+                return {a.buffer, at, a.mapped + at, a.allocation};
+            }
+        }
+    }
     Arena a;
     void* m = nullptr;
     const auto make = [&](uint64_t size) {
         a.size = size, m = nullptr;
-        if (!create_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, a.buffer,
-                           a.allocation, &m))
+        // (cached host memory by default: staging is written and scanned on the CPU and read once by the GPU, so keeping
+        // arenas in host RAM avoids both 100+ ms ReBAR VRAM allocations on Linux drivers and 128-256 MB of scarce 6 GB VRAM.
+        // RX_VK_STAGING_VRAM=1: VMA_MEMORY_USAGE_AUTO as before)
+        static const bool vram = env_on("RX_VK_STAGING_VRAM");
+        const VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if (!(vram ? create_buffer(size, usage, true, a.buffer, a.allocation, &m)
+                   : create_buffer_cached(size, usage, a.buffer, a.allocation, &m, true)))
             return false;
         if (m) return true;
         destroy_buffer(a.buffer, a.allocation);   // (made but not mapped: of no use here)
@@ -3783,18 +3798,21 @@ void texture_frame(uint64_t completed) {
         // (hookshot: 64 on a card of 6 GB or less. On one with resizable BAR the arenas are VRAM: VMA puts a host-visible buffer the GPU
         // reads (STORAGE: the ASTC decoder) in DEVICE_LOCAL | HOST_VISIBLE. The RTX 4050 Laptop held 4 idle ones, 256 MB of 5.7 GB, through
         // all of Kokiri gameplay, which stages ~nothing. A scene change makes the ones it needs again. RX_VK_STAGING_KEEP_MB=256: as before)
+        static const bool vram = env_on("RX_VK_STAGING_VRAM");
         static const uint64_t keep = []() -> uint64_t {
             if (const char* e = getenv("RX_VK_STAGING_KEEP_MB")) return (uint64_t)atoi(e) << 20;
             uint64_t used = 0, allowed = 0;
-            return (vram_usage(&used, &allowed) && allowed <= (6ull << 30) + (512ull << 20) ? 64ull : 256ull) << 20;
+            if (vram_usage(&used, &allowed) && allowed <= (6ull << 30) + (512ull << 20))
+                return (env_on("RX_VK_STAGING_VRAM") ? 64ull : 128ull) << 20;
+            return 256ull << 20;
         }();
         uint64_t kept = 0;
         for (auto it = arenas.begin(); it != arenas.end();) {
             const bool idle = it->value <= completed && it->value != rec_value;
-            // (and one nothing has staged into for 30 s: Kokiri Forest's gameplay stages next to nothing, and the 64 MB it kept are VRAM
-            // behind the BAR. A load makes one again. RX_VK_STAGING_IDLE_S=<n>: that long, 0: kept)
+            // (and one nothing has staged into for 30 s: Kokiri Forest's gameplay stages next to nothing, and with RX_VK_STAGING_VRAM
+            // the 64 MB it kept are VRAM behind the BAR. In host RAM one arena stays warm so the next upload never stalls. RX_VK_STAGING_IDLE_S=<n>)
             static const int64_t idle_s = getenv("RX_VK_STAGING_IDLE_S") ? atoll(getenv("RX_VK_STAGING_IDLE_S")) : 30;
-            const bool stale = idle_s && std::chrono::steady_clock::now() - it->used_at > std::chrono::seconds(idle_s);
+            const bool stale = idle_s && (vram || kept > 0) && std::chrono::steady_clock::now() - it->used_at > std::chrono::seconds(idle_s);
             if (idle && (it->size > kArena || kept + it->size > keep || stale)) {
                 destroy_buffer(it->buffer, it->allocation);
                 it = arenas.erase(it);
