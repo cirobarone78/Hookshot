@@ -459,7 +459,7 @@ bool hdr() {
     return s.feature && s.feature_hdr;
 }
 
-const TemporalEngine kEngine{"NVIDIA DLSS", "DLSS", start, prepare, evaluate, release, memory, hdr};
+const TemporalEngine kEngine{"NVIDIA DLSS", "DLSS", start, prepare, evaluate, release, memory, hdr, false, true};
 
 }  // namespace
 
