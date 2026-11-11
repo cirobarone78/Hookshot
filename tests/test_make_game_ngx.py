@@ -85,6 +85,27 @@ class NgxRuntimeTests(unittest.TestCase):
         self.sdk_files("linux")
         self.assertEqual(Path(self.place("linux")), self.out / "ngx" / "libnvidia-ngx-dlss.so.310.9.16")
 
+    def test_linux_fsr_runtime_is_copied_with_notices(self):
+        source = self.root / "native" / "amd_fidelityfx_upscaler_vk.so"
+        source.parent.mkdir()
+        source.write_bytes(b"\x7fELFnative-runtime")
+        (source.parent / "licenses").mkdir()
+        (source.parent / "licenses" / "LICENSE.txt").write_text("runtime license")
+        with mock.patch.dict(os.environ, {"HOOKSHOT_FSR_RUNTIME": str(source)}):
+            make_game.place_linux_fsr_runtime(str(self.out))
+        self.assertEqual((self.out / source.name).read_bytes(), source.read_bytes())
+        self.assertEqual((self.out / "licenses/fsr4-vk/LICENSE.txt").read_text(), "runtime license")
+        self.assertFalse((self.out / (source.name + ".new")).exists())
+
+    def test_linux_fsr_rejects_missing_library_and_windows_dll(self):
+        source = self.root / "wrong.so"
+        with mock.patch.dict(os.environ, {"HOOKSHOT_FSR_RUNTIME": str(source)}):
+            with self.assertRaises(SystemExit):
+                make_game.linux_fsr_runtime()
+            source.write_bytes(b"MZwindows")
+            with self.assertRaises(SystemExit):
+                make_game.linux_fsr_runtime()
+
     def test_rebuilding_without_dlss_removes_stale_runtime(self):
         self.sdk_files("linux")
         self.assertTrue((Path(self.place("linux"))).is_file())
@@ -247,6 +268,53 @@ class LinuxBuilderDlssTests(unittest.TestCase):
         self.assertEqual(win.mode, "update-game")
         self.assertEqual(btn.text, "Update")
         self.assertIn("with NVIDIA DLSS", win.status.get())
+
+    def test_fsr_selects_compilation_and_preserves_dlss_choice(self):
+        env = self.builder.make_game_env(False, {"HOOKSHOT_VK_PREBUILT": "/old.so", "HOOKSHOT_NGX_SDK": "/ngx"},
+                                        fsr=True, fsr_runtime="/native.so")
+        self.assertNotIn("HOOKSHOT_VK_PREBUILT", env)
+        self.assertNotIn("HOOKSHOT_NGX_SDK", env)
+        self.assertEqual(env["HOOKSHOT_FSR_RUNTIME"], "/native.so")
+        self.assertEqual(self.builder.fsr_args(True), ["--fsr"])
+        self.assertEqual(self.builder.fsr_args(False), ["--no-fsr"])
+
+    def test_fsr_cancel_does_not_enable_build_option(self):
+        win = SimpleNamespace(fsr=FakeVar(True), fsr_toggled=False, cfg={}, apply_mode=lambda: None)
+        with mock.patch.dict(os.environ, {"HOOKSHOT_FSR_RUNTIME": ""}), \
+                mock.patch.object(self.builder.filedialog, "askopenfilename", return_value="", create=True):
+            self.builder.Builder.on_fsr_changed(win)
+        self.assertFalse(win.fsr.get())
+        self.assertFalse(win.fsr_toggled)
+
+    def test_bundled_fsr_needs_no_picker_and_saves_choice(self):
+        runtime = self.root / "runtime.so"
+        runtime.write_bytes(b"\x7fELF")
+        win = SimpleNamespace(fsr=FakeVar(True), fsr_toggled=False, cfg={"fsr_runtime": "/missing"}, apply_mode=lambda: None)
+        with mock.patch.dict(os.environ, {"HOOKSHOT_FSR_RUNTIME": str(runtime)}), \
+                mock.patch.object(self.builder, "save_config") as save, \
+                mock.patch.object(self.builder.filedialog, "askopenfilename", create=True) as picker:
+            self.builder.Builder.on_fsr_changed(win)
+            self.assertEqual(self.builder.fsr_runtime_path(win.cfg["fsr_runtime"]), str(runtime))
+        picker.assert_not_called()
+        save.assert_called_once()
+        self.assertEqual(win.cfg["fsr"], "1")
+
+    def test_fsr_toggle_offers_rebuild_of_same_version(self):
+        game = self.root / "game"
+        (game / ".hookshot_exefs").mkdir(parents=True)
+        (game / "romfs").mkdir()
+        (game / "hookshot_version.txt").write_text("version=v2.0.12\n")
+        btn = SimpleNamespace(winfo_exists=lambda: True, configure=lambda **kw: None)
+        win = SimpleNamespace(launch_folder=None, build_button=btn, out=FakeVar(str(game)), tools="v2.0.12", latest="v2.0.12",
+                              source_picked=False, fsr_toggled=True, fsr=FakeVar(True), status=FakeVar(""), switching=lambda: False)
+        self.builder.Builder.apply_mode(win)
+        self.assertEqual(win.mode, "update-game")
+        self.assertIn("with AMD FSR", win.status.get())
+        (game / ".hookshot_fsr").write_text("")
+        win.fsr.set(False)
+        self.builder.Builder.apply_mode(win)
+        self.assertEqual(win.mode, "update-game")
+        self.assertIn("without AMD FSR", win.status.get())
 
     def test_build_and_appimage_package_dlss_sources(self):
         build_py = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")

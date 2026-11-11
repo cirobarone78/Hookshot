@@ -15,6 +15,9 @@ export EMSDK="$LIB/emsdk"
 export HOOKSHOT_SYSROOT="$LIB/sysroot"
 export HOOKSHOT_FFMPEG="$LIB/ffmpeg"
 export HOOKSHOT_VK_PREBUILT="$LIB/hookshot_vk.so"
+if [ -f "$LIB/fsr4/amd_fidelityfx_upscaler_vk.so" ]; then
+    export HOOKSHOT_FSR_RUNTIME="$LIB/fsr4/amd_fidelityfx_upscaler_vk.so"
+fi
 export HOOKSHOT_SDL2="$LIB/libSDL2-2.0.so.0"
 # (written into the game folder's hookshot_version.txt, so its launcher finds this builder)
 if [ -n "${APPIMAGE:-}" ]; then

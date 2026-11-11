@@ -17,6 +17,9 @@ What CONTRIBUTING.md does not spell out, and agents trip on:
   `MKWVK_API_VERSION`.
 - **Generated files are generated.** The SPIR-V headers in `gpu/vk/shaders/` (`*_spv.h`) are compiled from the shader
   beside them; regenerate them with glslang rather than editing them (the shaders' tests show the command).
+- **Builder UI changes cover both platforms.** For new options or changed app behavior, review the Windows WPF
+  builder and the Linux Tk/AppImage builder together. Keep build/update arguments, saved choices, runtime packaging,
+  and the game launcher consistent. Test both paths where applicable; document any intentional platform difference.
 - **Two platforms.** Windows builds with llvm-mingw, Linux with clang/gcc. Keep host code portable, and paths UTF-8
   (no `CP_ACP`; `tests/test_utf8_paths.py`).
 - **No game in CI.** Checks must run without a dump. A run in the game is for you to do locally and report.

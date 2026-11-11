@@ -23,7 +23,9 @@ spec.loader.exec_module(make_game)
 builder = next(node for node in ast.parse(SOURCE.read_text(encoding="utf-8")).body
                if isinstance(node, ast.ClassDef) and node.name == "Builder")
 build = next(node for node in builder.body if isinstance(node, ast.FunctionDef) and node.name == "build")
-BUILD = compile(ast.Module(body=[build], type_ignores=[]), str(SOURCE), "exec")
+helpers = [node for node in ast.parse(SOURCE.read_text(encoding="utf-8")).body
+           if isinstance(node, ast.FunctionDef) and node.name in ("fsr_args", "fsr_runtime_path", "make_game_env")]
+BUILD = compile(ast.Module(body=helpers + [build], type_ignores=[]), str(SOURCE), "exec")
 
 
 def value(text):
@@ -89,12 +91,12 @@ class BuilderBuildJobsTests(unittest.TestCase):
             "--out", gui.out.get(), "--language", "en-US"] + ([] if jobs is None else ["--jobs", str(jobs)])
         self.assertEqual(len(harness.processes), 1)
         command, options = harness.processes[0]
-        self.assertEqual(command, expected)
+        self.assertEqual(command, expected + ["--no-fsr"])
         self.assertEqual(options, dict(cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                       encoding="utf-8", errors="replace", start_new_session=True))
+                                       encoding="utf-8", errors="replace", start_new_session=True, env=harness.environ))
         self.assertEqual(harness.events[0][1], dict(previous="kept", kind=gui.kind.get(), nup=gui.nup.get(),
                                                   romfs=gui.romfs.get(), exefs=gui.exefs.get(), out=gui.out.get(), language="en-US",
-                                                  prepare="1"))
+                                                  prepare="1", fsr="0"))
         self.assertEqual(harness.events[3][1], dict(target=gui.read, args=(gui.proc,), daemon=True))
 
     def test_positive_hookshot_jobs_is_passed_on(self):
@@ -108,7 +110,8 @@ class BuilderBuildJobsTests(unittest.TestCase):
         harness.gui.prepare = value(False)
         harness.run()
         command, _ = harness.processes[0]
-        self.assertEqual(command[-1], "--no-prepare-shaders")
+        self.assertIn("--no-prepare-shaders", command)
+        self.assertIn("--no-fsr", command)
         self.assertEqual(harness.events[0][1]["prepare"], "0")
 
     def test_zero_falls_back_to_rx_jobs_for_extracted_folders(self):

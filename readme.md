@@ -700,6 +700,11 @@ in `hookshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to 
 - **Windows, the Hookshot Builder:** tick **AMD FSR 4** before you build. It shows AMD's license first and stays ticked
   only if you accept; the build then fetches AMD's DLLs for you (below), into the builder's `ffx-sdk` folder and the
   game folder.
+- **Linux Builder:** tick **AMD FSR 4**. If no runtime is bundled, select a native
+  `amd_fidelityfx_upscaler_vk.so` (for example, from fsr4-vk); Windows DLLs cannot be used here. The builder remembers
+  the selected path and copies the library into the game folder. Toggling the option on an existing installation
+  offers an update even when the game version has not changed. A command-line build can set
+  `HOOKSHOT_FSR_RUNTIME=/path/to/amd_fidelityfx_upscaler_vk.so` to install it too.
 - **The command line:** `make_game.py --fsr` (or `HOOKSHOT_FSR=1` for `nx2/build.py`). Rebuilding a folder built with
   it (`--update`) keeps it; `--no-fsr` takes it out.
 - **AMD's files:** Hookshot includes only AMD's MIT-licensed API headers (`third_party/fidelityfx`). Put
