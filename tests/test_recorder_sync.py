@@ -17,7 +17,9 @@ python -I -B tests/test_recorder_sync.py --headers <Vulkan-Headers/include> [--c
    no exception out of a vkCmd*, no block lost. Run with RX_VK_RECORDER=defer (mode 2, logged once) and with RX_VK_PARALLEL=4 too
    (refused: off, logged once).
    RX_VK_RECORDER=thread (step 2): the same frame and lifecycle with every vkCmd* run by a recorder thread, the fake driver slowed
-   (1 us a call) so the recorder lags, each fake command buffer flagged in use for each call (two calls at once on one are a
+   (1 us a call) so the recorder lags, and in the ordering scenarios the recorder held (50 ms) at each point the producer must wait
+   for it (a recording's end, a submit while another command buffer records, the replay lock let go, a pool reset), so a missing
+   wait is caught on a loaded runner too, each fake command buffer flagged in use for each call (two calls at once on one are a
    violation), the caller's memory poisoned and each packet poisoned once run; a handoff under the lock; a submit while another
    command buffer's commands are in flight; a pool reset while recording; the lock let go, then the recording ended on another
    thread; an 8 KB ring (backpressure); a packet bigger than its room (made directly, in order); no memory for the ring; teardown with
@@ -37,6 +39,7 @@ python -I -B tests/test_recorder_sync.py --headers <Vulkan-Headers/include> [--c
 --overlap F: the replay thread's time a frame, off vs thread, with a fake driver that takes time and drains every K draws.
 """
 import argparse
+import concurrent.futures
 import os
 from pathlib import Path
 import re
@@ -44,6 +47,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+# (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/hookshot_env.h)
+ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "hookshot_env.h")
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 
@@ -256,7 +262,7 @@ def build(cxx, headers, out, recorder_text, name, extra=(), work_text=None):
     (d / "vk_work.h").write_text(work_text or (VK / "vk_work.h").read_text(encoding="utf-8"), encoding="utf-8")
     (d / "vk_recorder.h").write_text(recorder_text, encoding="utf-8")
     exe = d / "recorder_sync_test.exe"
-    cmd = [cxx, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-missing-field-initializers", "-DVK_NO_PROTOTYPES",
+    cmd = [cxx, "-std=c++20", "-include", ENV_ON_H, "-O2", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-missing-field-initializers", "-DVK_NO_PROTOTYPES",
            "-D_CRT_SECURE_NO_WARNINGS",
            *extra, "-I" + str(d), "-I" + str(headers), str(ROOT / "tests" / "recorder_sync_test.cpp"), "-o", str(exe)]
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -342,7 +348,7 @@ def exit_test(cxx, headers, out, recorder_text, name):
     (d / "vk_work.h").write_text((VK / "vk_work.h").read_text(encoding="utf-8"), encoding="utf-8")
     (d / "vk_recorder.h").write_text(recorder_text, encoding="utf-8")
     src = str(ROOT / "tests" / "recorder_exit_test.cpp")
-    flags = ["-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror", "-DVK_NO_PROTOTYPES", "-D_CRT_SECURE_NO_WARNINGS"]
+    flags = ["-std=c++20", "-include", ENV_ON_H, "-O2", "-Wall", "-Wextra", "-Werror", "-DVK_NO_PROTOTYPES", "-D_CRT_SECURE_NO_WARNINGS"]
     for cmd in ([cxx, *flags, "-shared", "-DRX_EXIT_DLL", "-I" + str(d), "-I" + str(headers), src, "-o", str(d / "rx_exit.dll")],
                 [cxx, *flags, src, "-o", str(d / "rx_exit.exe")]):
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -458,8 +464,12 @@ def main():
          broken(rec, "        if (!parallel_configured()) return e[0] == 'd' ? DEFER : THREAD;", "        return e[0] == 'd' ? DEFER : THREAD;",
                 "parallel"), work_h, ("thread", "4")),
     ]
+    # (built a few at once, while the ones before them run: each is still run and reported in its order)
+    pool = concurrent.futures.ThreadPoolExecutor(min(4, os.cpu_count() or 1))
+    builds = [pool.submit(build, a.cxx, a.headers, out, text, "broken%d" % i, work_text=wtext)
+              for i, (_, text, wtext, _) in enumerate(variants)]
     for i, (what, text, wtext, (env_mode, parallel)) in enumerate(variants):
-        exe_b = build(a.cxx, a.headers, out, text, "broken%d" % i, work_text=wtext)
+        exe_b = builds[i].result()
         if parallel:
             refused = [e for e in ENV_RUNS if e[0] == env_mode and e[1] == "4"][0]
             ok, r = env_run_ok(exe_b, env_mode, parallel, "env mode 0", refused[3], show=False)
@@ -480,6 +490,7 @@ def main():
         print("---- broken: %s -> %s (exit code %s)\n  %s" % (what, "caught" if caught else "NOT CAUGHT", r.returncode, "\n  ".join(lines[:6])))
         if not caught:
             raise SystemExit("FAIL: a broken recorder (%s) passed" % what)
+    pool.shutdown()
     if a.bench or a.overlap:   # (with the renderer's CPU flags, nx2/build.py's CPU: RX_MARCH or x86-64-v3)
         fast = build(a.cxx, a.headers, out, rec, "bench", ["-march=" + os.environ.get("RX_MARCH", "x86-64-v3"), "-ffp-contract=off"])
         if a.bench:

@@ -1,7 +1,7 @@
-/* The Vulkan back end (mkw_vk.dll) and the game executable: what each gives the other.
+/* The Vulkan back end (hookshot_vk.dll, hookshot_vk.so on Linux) and the game executable: what each gives the other.
 
    The executable records the game's NVN command buffers (host/nvn_native.c) and calls a renderer through the rx_*
-   functions (gpu/render/rx_nvn.h). With RX_BACKEND=vulkan host/rx_backend.c loads mkw_vk.dll, hands it the host
+   functions (gpu/render/rx_nvn.h). Unless RX_BACKEND names another, host/rx_backend.c loads it, hands it the host
    functions below and routes the rx_* calls to the table it returns; otherwise they go to the WebGPU renderer in
    the executable. The DLL carries Eden's shader recompiler (gpu/vk/eden, SPIR-V back end) and sirit: their C++
    namespaces are the same as those of the WebGPU renderer's suyu copy, so the two live in different binaries. */
@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 14
+#define MKWVK_API_VERSION 16
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -66,6 +66,14 @@ typedef struct MkwVkPointer {
     int32_t wheel;
 } MkwVkPointer;
 
+/* (hookshot) one of the Insert menu's settings, for the control bridge (MkwVkRenderer setting): key is its line in
+   hookshot_options.ini, name the row's, text how the menu shows the value */
+typedef struct MkwVkSetting {
+    char key[32], name[48], text[64], tab[16];
+    int value, lo, hi, step;
+    int restart, fixed;   /* the change applies at the next start; nothing to choose on this PC (the menu shows it greyed) */
+} MkwVkSetting;
+
 /* what the executable gives the back end */
 typedef struct MkwVkHost {
     uint32_t version;   /* MKWVK_API_VERSION */
@@ -103,7 +111,7 @@ typedef struct MkwVkHost {
     /// The soft write watch's marks within [ranges[i][0], ranges[i][1]) only, read and cleared (free with free_pages)
     int64_t (*collect_written_in)(const uint64_t (*ranges)[2], int n, uint32_t **pages);
     /// Zeroed guest memory of the renderer's own (address space above the heap, never freed; 0 when none is left):
-    /// what the NVN driver keeps in GPU memory of its own, such as its constant banks (mkw_eden.dll)
+    /// what the NVN driver keeps in GPU memory of its own, such as its constant banks
     uint64_t (*guest_alloc)(uint64_t size);
     /// (debugging) CPU writes to [guest, guest + size) logged with the writer's guest call stack (a page watch)
     void (*watch_guest_writes)(uint64_t guest, uint64_t size);
@@ -146,6 +154,12 @@ typedef struct MkwVkHost {
        (a bit each; HOS_WIDE_KEEP=<hex> over it); returns the margin of the middle 16:9 at either side, a fraction of the
        picture's width (0: the picture is 16:9) */
     float (*wide_menus)(uint32_t keep_mask);
+    /* (version 15, hookshot) the FPS counter's Breakdown (gpu/vk/vk_fps.cpp): time asleep so far, in ns (host/hos_thread.c):
+       [0] OoT's present poll, waiting for its frame's GPU work; [1] the window's acquire pacing the frames (both whichever
+       thread they are on), and the calling thread's other guest sleeps. Asked by the thread that presents, at its present */
+    void (*slept_ns)(int64_t out[2]);
+    /* (version 15, hookshot) whether the host times those sleeps: 1 while the Breakdown shows, 0 (the default) costs nothing */
+    void (*fps_timing)(int on);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */
@@ -202,6 +216,20 @@ typedef struct MkwVkRenderer {
     void (*option_set)(int id, int value);
     /* (version 14) one coherent camera-jitter sample, without per-axis queries */
     void (*jitter_sample)(MkwVkJitter *out);
+    /* (version 16, hookshot) the control bridge (host/control.c, docs/control.md) */
+    /* the presents replayed so far, the draws recorded since the start, and the picture's size (the window's swapchain, or
+       the offscreen image's) */
+    void (*frame_info)(int64_t *presents, int64_t *draws, int *width, int *height);
+    /* a PNG of the first present replayed after present `after` (-1: the next one), RX_VK_SHOTS' size, written to
+       path on a thread of its own, which then calls done(ctx, the present, 1 when the file was written). 0: not taken
+       (too many waiting) */
+    int (*shot)(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
+    /* the Insert menu's settings rows (shown on this PC; not the headings or the debug tools): the index-th, to list them (0:
+       past the last; an index is no name, rows come and go), and the one whose hookshot_options.ini key is key set to value
+       as the menu's Left and Right set it, kept in the options file, out the row after it (1 set, 0 no such row, -1 nothing
+       to choose on this PC) */
+    int (*setting)(int index, MkwVkSetting *out);
+    int (*setting_set)(const char *key, int value, MkwVkSetting *out);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */

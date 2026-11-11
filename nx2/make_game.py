@@ -31,6 +31,7 @@ import filecmp
 import hashlib
 import importlib.util
 import json
+import locale
 import ntpath
 import os
 import queue
@@ -412,6 +413,25 @@ def file_progress(verb, clock=time.monotonic):
 HEADS = ".hookshot_romfs_heads"   # (the extraction's damaged .zs list, under the stamp of the unpack that made it)
 
 
+def read_stamp(path):
+    """An unpack's stamp, which holds the .nup's name: UTF-8, or the Windows code page a builder before #2246 wrote it in.
+    Decoded exactly or not at all: a replaced letter would let another .nup's name match, and its unpack be skipped. A
+    stamp that cannot be read is "", which no unpack's stamp equals"""
+    with open(path, "rb") as f:
+        raw = f.read()
+    for encoding in ("utf-8", locale.getencoding()):   # (getencoding: the code page also in Python's UTF-8 mode)
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    return ""
+
+
+def write_stamp(path, stamp):
+    with open(path, "w", encoding="utf-8", newline="") as f:   # (not the code page: a name outside it stopped the build, #2246)
+        f.write(stamp)
+
+
 def keep_heads(out, game, stamp):
     """nup.py's list of the romfs .zs files that do not start as zstd (its HEADS_NAME, beside the extracted romfs), kept in the
     game folder under this unpack's stamp for stand_in_damaged_files: the ~100,000 files are then not opened again"""
@@ -436,12 +456,9 @@ def stand_in_damaged_files(out, romfs):
     if not os.path.isfile(good) or not os.path.isdir(romfs):
         return
     check_cache_paths(out, (good, checked, romfs))
-    with open(good) as f:
-        stamp = f.read()
-    if os.path.isfile(checked):
-        with open(checked) as f:
-            if f.read() == stamp:
-                return
+    stamp = read_stamp(good)
+    if os.path.isfile(checked) and read_stamp(checked) == stamp:
+        return
     import nup
     heads = os.path.join(out, HEADS)
     known = None
@@ -458,8 +475,7 @@ def stand_in_damaged_files(out, romfs):
         done = nup.stand_in_damaged(romfs, file_progress("checked"))
     else:   # (found while the .nup was extracted: no file opened again)
         done = nup.stand_in_damaged(romfs, damaged=[os.path.normpath(os.path.join(romfs, rel)) for rel in known])
-    with open(checked, "w") as f:
-        f.write(stamp)
+    write_stamp(checked, stamp)
     with contextlib.suppress(FileNotFoundError):
         os.remove(heads)
     if not done:
@@ -1465,6 +1481,75 @@ def warn_slow_disk(*folders):
             return
 
 
+
+def end_stale_games(folders):
+    """(Windows) The running processes whose exe is in one of folders (the game being updated): those with no visible window, a
+    copy left behind (a shader preparation that hung, a game whose window closed but whose process did not end), are ended and
+    waited for, as their file could not be replaced while they ran ("Could not replace bin/hookshot.exe", Discord 2026-11-10).
+    Returns the process ids of those with a window, which the player is to close: a game in play is never ended."""
+    if os.name != "nt":   # (tests run the finish step as Windows on Linux too: nothing to look for there)
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return []
+    k32, u32 = ctypes.WinDLL("kernel32", use_last_error=True), ctypes.WinDLL("user32", use_last_error=True)
+    roots = [os.path.normcase(os.path.abspath(f)) + os.sep for f in folders]
+
+    class Entry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.OpenProcess.restype = wintypes.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        return []
+    found = []
+    try:
+        e = Entry()
+        e.dwSize = ctypes.sizeof(Entry)
+        ok = k32.Process32FirstW(snap, ctypes.byref(e))
+        while ok:
+            if e.th32ProcessID != os.getpid() and e.szExeFile.lower().endswith(".exe"):
+                h = k32.OpenProcess(0x1000, False, e.th32ProcessID)   # (PROCESS_QUERY_LIMITED_INFORMATION)
+                if h:
+                    buf, n = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+                    if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)):
+                        path = os.path.normcase(buf.value)
+                        if any(path.startswith(r) for r in roots) and os.path.dirname(path) + os.sep in roots:
+                            found.append(e.th32ProcessID)
+                    k32.CloseHandle(h)
+            ok = k32.Process32NextW(snap, ctypes.byref(e))
+    finally:
+        k32.CloseHandle(snap)
+    if not found:
+        return []
+    visible = set()
+    proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def each(hwnd, _):
+        if u32.IsWindowVisible(hwnd):
+            pid = wintypes.DWORD()
+            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in found:
+                visible.add(pid.value)
+        return True
+    u32.EnumWindows(proc(each), 0)
+    for pid in found:
+        if pid in visible:
+            continue
+        h = k32.OpenProcess(0x0001 | 0x00100000, False, pid)   # (PROCESS_TERMINATE | SYNCHRONIZE)
+        if h:
+            print("A copy of Hookshot left running without a window (process %d) was ended so the update can replace it" % pid,
+                  flush=True)
+            k32.TerminateProcess(h, 1)
+            k32.WaitForSingleObject(h, 10000)
+            k32.CloseHandle(h)
+    return sorted(visible)
+
 def main(a=None):
     if a is None:
         a = parse_args()
@@ -1541,8 +1626,7 @@ def main(a=None):
         stamp = "unpacked by this builder: %s %d" % (os.path.basename(a.nup), st.st_size)
         same = False
         if os.path.exists(good) and os.path.isdir(romfs) and os.path.isdir(kept):
-            with open(good) as f:
-                same = f.read().strip() == stamp
+            same = read_stamp(good).strip() == stamp
         if same:
             print("the game was read from this .nup before: reading it again is skipped", flush=True)
             shutil.copytree(kept, exefs)
@@ -1574,8 +1658,7 @@ def main(a=None):
             shutil.rmtree(game, ignore_errors=True)
             shutil.rmtree(kept, ignore_errors=True)
             shutil.copytree(exefs, kept)
-            with open(good, "w") as f:
-                f.write(stamp + chr(10))
+            write_stamp(good, stamp + chr(10))
         check_modules(exefs)
         # (also when the .nup was read before: a folder built from a 23.3 GB dump by an earlier builder gets them too)
         stand_in_damaged_files(out, romfs)
@@ -1752,6 +1835,11 @@ def main(a=None):
             fail("Could not stage the new build at %s. Check that %s is readable and the staged file and output folder are writable, "
                  "close any program using that file, then retry. No installed files were replaced; the compiled source is still available."
                  % (dst + ".new", src))
+    if not LINUX:   # (a copy of this game still running holds its exe: one with no window is a leftover, ended; else named)
+        shown = end_stale_games([game_dir, out])
+        if shown:
+            fail("Hookshot is still running from this folder (%s). Close it, then retry. No installed files were replaced."
+                 % ", ".join("process %d" % pid for pid in shown))
     for src, dst in staged:
         try:
             os.replace(dst + ".new", dst)   # (linux: a running copy keeps its own file; windows: a running exe cannot be replaced)
