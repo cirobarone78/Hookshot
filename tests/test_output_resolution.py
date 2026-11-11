@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
     }
     if (mode == 2 && !opts.handheld) {   // (Ultrawide on a 21:9 monitor: the pictures it makes, the screen's own size named)
         screen_w = 5120, screen_h = 2160, opts.ultrawide = 1;
-        assert(strcmp(tx_output_res(2), "4416x1864") == 0);   // (at most 3840x2160's pixels: host/hos_wide_size.h)
+        assert(strcmp(tx_output_res(2), "5120x2160 (native)") == 0);   // (at most 5120x2160's pixels: host/hos_wide_size.h)
         assert(strcmp(tx_output_res(1), "3416x1440") == 0 && strcmp(tx_output_res(4), "3416x1440") == 0);
         assert(strcmp(tx_output_res(3), "2560x1080") == 0);
         assert(strcmp(tx_output_res(0), "2048x1152 (game's)") == 0);   // (the game's own keeps its name)

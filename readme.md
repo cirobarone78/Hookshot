@@ -345,7 +345,7 @@ HDR peak brightness show only while HDR is on.
   stretched across the 32:9 output, sharp but wide. For a size the menu does not offer (3440x1440, 2560x1080, ...), set
   `output_res=<width>x<height>` in `hookshot_options.ini`: each side a multiple of 8, at least 640x360, at most 5120x2880's
   pixels, and between 5:4 and 32:9 in shape; anything else uses the game's 2048x1152. The menu then offers it as its own
-  choice. With **Ultrawide** on, a picture wider than 16:9 is kept to 3840x2160's pixels, so above that a wide size is not a
+  choice. With **Ultrawide** on, a picture wider than 16:9 is kept to 5120x2160's pixels, so above that a wide size is not a
   native frame. For one run, set `HOS_OUTPUT_RES` to a size, such as `HOS_OUTPUT_RES=3840x2160`.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest
   picture, set the Output resolution to your screen's, and the row shows "Not needed (window = output)". It and

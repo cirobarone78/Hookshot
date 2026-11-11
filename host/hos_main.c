@@ -1526,8 +1526,9 @@ static int game_main(int argc, char **argv) {
         if (want > game * 1.01 || (want > 1.0f && want < game * 0.99)) {
             const double r = hos_wide_clamp(want);
             uint32_t hos_output_size(int height);   /* (host/nn_applet.c: the Output resolution's height, 1440 as shipped) */
-            /* (the height kept, the width at the screen's ratio, at most 3840 x 2160's pixels with the shape kept:
-               host/hos_wide_size.h, which the Insert menu's Output and Render resolution rows share; issue 1031) */
+            /* (the height kept, the width at the screen's ratio, at most hos_wide_max_px() pixels (5120 x 2160's, a 21:9 screen's
+               native at the 4K output) with the shape kept: host/hos_wide_size.h, which the Insert menu's Output and Render
+               resolution rows share; issue 1031) */
             unsigned ow, oh;
             hos_wide_size(hos_output_size(1), r, hos_wide_max_px(), &ow, &oh);
             const unsigned sh = oh * 3 / 4, sw = (unsigned)(ow * 0.75 / 8 + 0.5) * 8;   /* (the scene, 3/4 of the picture as shipped) */
