@@ -34,9 +34,10 @@ def main():
     copy = next(line.strip() for line in present.splitlines() if "vkCmdCopyImageToBuffer(r.cmd, shot_image," in line)
     consume = next(line.strip() for line in present.splitlines() if "if (pending.on &&" in line and "completed()" in line)
     rearm = next(line.strip() for line in present.splitlines() if "pending = {true, value, presents" in line)
+    submit = next(line.strip().split(";", 1)[0] + ";" for line in present.splitlines() if "submit_recording(r," in line)
     read_at = present.index("auto take = [&]")
     read = present[read_at:present.index("// (RX_VK_DUMP_BLACK", read_at)]
-    copy_at, submit_at, consume_at = present.index(copy), present.index("submit_recording(r);"), present.index(consume)
+    copy_at, submit_at, consume_at = present.index(copy), present.index(submit), present.index(consume)
     assert copy_at < submit_at < read_at < consume_at
     state = "struct PendingShot { bool on=false; uint64_t value=0; int64_t presents=0; std::shared_ptr<std::vector<uint8_t>> pixels{}; };"
     helper = ""
@@ -45,10 +46,10 @@ def main():
         state = block(source, "struct PendingShot {") + ";"
         helper = block(source, "std::shared_ptr<std::vector<uint8_t>> shot_pixels(")
     marker = "if (pending.on && (pending.presents & 1)"
-    actions = [(copy_at, copy), (submit_at, "submit_recording(r);")]
+    actions = [(copy_at, copy), (submit_at, submit)]
     if marker in present:
         at = present.index(marker)
-        assignment = "pending.pixels = shot_pixels(pending.value, pending.presents);"
+        assignment = "pending.pixels = shot_pixels(pending.value, pending.presents, pending.size);"
         end = present.index(assignment, at) + len(assignment)
         protect = present[at:end].strip()
         assert at < read_at, "slot protection must occur in the producer, before the consumer"
@@ -59,7 +60,8 @@ def main():
     fixture = fixture.replace("/* TAKE */", read).replace("/* PRODUCER */", producer).replace("/* CONSUME */", consume).replace("/* REARM */", rearm)
     with tempfile.TemporaryDirectory(prefix="capture-slot-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
-        cpp.write_text(fixture, encoding="utf-8")
+        prefix = '#include "' + str(ROOT / 'gpu/vk/vk_capture_size.h') + '"\nusing namespace mkwvk;\n'
+        cpp.write_text(prefix + fixture, encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True, timeout=20)
 

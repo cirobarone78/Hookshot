@@ -41,8 +41,9 @@ static uint8_t answers[4]{0,2,2,2};
 uint32_t driver_bank_word(const NvnState&, int, int, uint32_t offset) { return handles[offset/8]; }
 uint32_t stage_cbuf_word(const NvnState&, const Stage&, uint32_t, uint32_t offset) { return handles[offset/8]; }
 uint32_t stage_handle(const NvnState&, const Stage&, uint32_t) { std::abort(); }
-uint8_t texture_answer(uint32_t h) { return h ? answers[h] : 0xff; }
-uint32_t texture_slot_version(int id) { return 10+id; }
+uint8_t texture_answer(uint32_t h) { return h ? answers[h & 0xfffff] : 0xff; }
+static uint32_t version_bias=0;
+uint32_t texture_slot_version(int id) { return 10+id+version_bias; }
 #include MATCHER_FUNCTIONS
 static unsigned failed=0,checked=0;
 static void check(bool b,const char* what){checked++;if(!b){failed++;fprintf(stderr,"FAIL: %s\n",what);}}
@@ -56,56 +57,74 @@ static std::unique_ptr<Program> image(Shader::ImageFormat fmt,bool integer=true)
 static std::unique_ptr<Program> sampled(bool depth,bool integer=false){
  auto p=std::make_unique<Program>();p->stages.emplace_back();Shader::TextureDescriptor d{};d.type=Shader::TextureType::ColorArray2D;d.count=1;d.cbuf_index=2;d.is_depth=depth;d.is_integer=integer;p->stages[0].info.texture_descriptors.push_back(d);return p;
 }
+static bool checked_valid(const NvnState& s, const Program& p) {
+ std::vector<uint32_t> resolved;answer_handles(s,p,resolved);
+ const bool reference=still_valid(s,p);
+ check(resolved_answers_valid(p,resolved)==reference,"resolved handles match original validation");
+ return reference;
+}
 }
 int main(int argc, char** argv){using namespace mkwvk;auto s=std::make_unique<NvnState>();
  if(argc>1){
   unbind();auto p=image(Shader::ImageFormat::R32_UINT);record_answers(*p,*s);auto hash=p->variant;
   check(p->answers[2].type==128,"strict UINT prepared metadata unchanged");bind();
-  check(!still_valid(*s,*p),"strict UINT compare remains raw");record_answers(*p,*s);
+  check(!checked_valid(*s,*p),"strict UINT compare remains raw");record_answers(*p,*s);
   check(p->answers[2].type==0&&p->variant!=hash,"strict UINT record/hash remains raw");
-  answers[3]=130;check(!still_valid(*s,*p),"strict UINT changed raw bit still rejects");
+  answers[3]=130;check(!checked_valid(*s,*p),"strict UINT changed raw bit still rejects");
   unbind();auto d=sampled(true);record_answers(*d,*s);hash=d->variant;
   check(d->answers[0].type==3,"strict depth prepared metadata unchanged");bind();answers[1]=131;
-  check(!still_valid(*s,*d),"strict depth compare remains raw");record_answers(*d,*s);
+  check(!checked_valid(*s,*d),"strict depth compare remains raw");record_answers(*d,*s);
   check(d->answers[0].type==131&&d->variant!=hash,"strict depth record/hash remains raw");
-  answers[1]=3;check(!still_valid(*s,*d),"strict depth changed raw bit still rejects");
+  answers[1]=3;check(!checked_valid(*s,*d),"strict depth changed raw bit still rejects");
   unbind();auto f=sampled(false);f->stages[0].info.texture_descriptors[0].type_fixed=true;record_answers(*f,*s);bind();
-  answers[1]=2;check(!still_valid(*s,*f),"strict instruction-typed compare remains raw");
+  answers[1]=2;check(!checked_valid(*s,*f),"strict instruction-typed compare remains raw");
   printf("strict checks=%u failures=%u\n",checked,failed);return failed?1:0;
  }
 
  for(auto fmt:{Shader::ImageFormat::R8_UINT,Shader::ImageFormat::R16_UINT,Shader::ImageFormat::R32_UINT,Shader::ImageFormat::R32G32_UINT,Shader::ImageFormat::R32G32B32A32_UINT}){
   unbind();auto p=image(fmt);record_answers(*p,*s);auto hash=p->variant;check(p->answers.size()==3&&p->answers[2].type==128,"prepared UINT answer metadata retained");
   bind();std::vector<uint32_t> before,after;answer_handles(*s,*p,before);auto mask=answer_stage_mask(*p);
-  check(still_valid(*s,*p),"correct UINT module accepts float-base integer bit");record_answers(*p,*s);
+  check(checked_valid(*s,*p),"correct UINT module accepts float-base integer bit");record_answers(*p,*s);
   check(p->answers[2].type==128&&p->variant==hash,"UINT record/hash canonical across bound bit");
-  answers[3]=130;check(still_valid(*s,*p),"correct UINT module accepts integer-base bit");record_answers(*p,*s);check(p->variant==hash,"UINT integer bound hash stays canonical");
+  answers[3]=130;check(checked_valid(*s,*p),"correct UINT module accepts integer-base bit");record_answers(*p,*s);check(p->variant==hash,"UINT integer bound hash stays canonical");
   answer_handles(*s,*p,after);check(before==after&&before==std::vector<uint32_t>({1,11,2,12,3,13}),"all UINT handle/version entries preserved");
   check(answer_stage_mask(*p)==mask&&mask==1,"UINT binding-stage mask preserved");
-  answers[1]=130;check(!still_valid(*s,*p),"ordinary sampled integer dependency beside UINT retained");
+  answers[1]=130;check(!checked_valid(*s,*p),"ordinary sampled integer dependency beside UINT retained");
  }
  unbind();auto depth=sampled(true);record_answers(*depth,*s);auto hash=depth->variant;check(depth->answers[0].type==3,"depth canonical dimension3 retained");bind();answers[1]=131;
- check(still_valid(*s,*depth),"correct float depth accepts integer-bit-only change");record_answers(*depth,*s);check(depth->answers[0].type==3&&depth->variant==hash,"depth record/hash canonical");
- answers[1]=130;check(!still_valid(*s,*depth),"depth dimension dependency preserved");
- unbind();auto wrong_depth=sampled(true,true);record_answers(*wrong_depth,*s);bind();answers[1]=3;check(!still_valid(*s,*wrong_depth),"wrong integer-depth module not broadened to float");
- unbind();auto wrong_uint=image(Shader::ImageFormat::R32_UINT,false);record_answers(*wrong_uint,*s);bind();answers[3]=130;check(!still_valid(*s,*wrong_uint),"wrong float-UINT module not broadened to integer");
+ check(checked_valid(*s,*depth),"correct float depth accepts integer-bit-only change");record_answers(*depth,*s);check(depth->answers[0].type==3&&depth->variant==hash,"depth record/hash canonical");
+ answers[1]=130;check(!checked_valid(*s,*depth),"depth dimension dependency preserved");
+ unbind();auto wrong_depth=sampled(true,true);record_answers(*wrong_depth,*s);bind();answers[1]=3;check(!checked_valid(*s,*wrong_depth),"wrong integer-depth module not broadened to float");
+ unbind();auto wrong_uint=image(Shader::ImageFormat::R32_UINT,false);record_answers(*wrong_uint,*s);bind();answers[3]=130;check(!checked_valid(*s,*wrong_uint),"wrong float-UINT module not broadened to integer");
  for(auto fmt:{Shader::ImageFormat::Typeless,Shader::ImageFormat::R8_SINT,Shader::ImageFormat::R16_SINT}){
-  for(bool integer:{false,true}){unbind();auto p=image(fmt,integer);record_answers(*p,*s);auto old=p->variant;bind();answers[3]=integer?2:130;check(!still_valid(*s,*p),"Typeless/signed actual integer-bit changes preserved");record_answers(*p,*s);check(p->variant!=old,"Typeless/signed hashes still distinguish integer bit");}
+  for(bool integer:{false,true}){unbind();auto p=image(fmt,integer);record_answers(*p,*s);auto old=p->variant;bind();answers[3]=integer?2:130;check(!checked_valid(*s,*p),"Typeless/signed actual integer-bit changes preserved");record_answers(*p,*s);check(p->variant!=old,"Typeless/signed hashes still distinguish integer bit");}
  }
- unbind();auto ordinary=sampled(false);record_answers(*ordinary,*s);bind();answers[1]=131;check(!still_valid(*s,*ordinary),"ordinary sampled integer change retained");answers[1]=2;check(!still_valid(*s,*ordinary),"dimension change retained where an answer set the type");handles[0]=0;check(still_valid(*s,*ordinary),"unbound handling preserved");
+ unbind();auto ordinary=sampled(false);record_answers(*ordinary,*s);bind();answers[1]=131;check(!checked_valid(*s,*ordinary),"ordinary sampled integer change retained");answers[1]=2;check(!checked_valid(*s,*ordinary),"dimension change retained where an answer set the type");handles[0]=0;check(checked_valid(*s,*ordinary),"unbound handling preserved");
  // The instruction's own type (TextureDescriptor::type_fixed): the module and the view are the same whatever is bound.
  unbind();auto fixed=sampled(false);fixed->stages[0].info.texture_descriptors[0].type_fixed=true;record_answers(*fixed,*s);auto fixed_hash=fixed->variant;bind();
- answers[1]=2;check(still_valid(*s,*fixed),"instruction-typed slot accepts another dimension");record_answers(*fixed,*s);
+ answers[1]=2;check(checked_valid(*s,*fixed),"instruction-typed slot accepts another dimension");record_answers(*fixed,*s);
  check(fixed->answers[0].type==3&&fixed->variant==fixed_hash,"instruction-typed record/hash canonical across dimension");
- answers[1]=131;check(!still_valid(*s,*fixed),"instruction-typed slot keeps the integer bit");
- answers[1]=130;check(!still_valid(*s,*fixed),"instruction-typed slot keeps the integer bit across dimension");
- answers[1]=8;check(!still_valid(*s,*fixed),"a rectangle is still another module");
- answers[1]=7;check(!still_valid(*s,*fixed),"a buffer is still another module");
+ answers[1]=131;check(!checked_valid(*s,*fixed),"instruction-typed slot keeps the integer bit");
+ answers[1]=130;check(!checked_valid(*s,*fixed),"instruction-typed slot keeps the integer bit across dimension");
+ answers[1]=8;check(!checked_valid(*s,*fixed),"a rectangle is still another module");
+ answers[1]=7;check(!checked_valid(*s,*fixed),"a buffer is still another module");
  unbind();auto fixed_depth=sampled(true);fixed_depth->stages[0].info.texture_descriptors[0].type_fixed=true;record_answers(*fixed_depth,*s);bind();
- answers[1]=130;check(still_valid(*s,*fixed_depth),"instruction-typed float depth accepts dimension and integer-bit change");
+ answers[1]=130;check(checked_valid(*s,*fixed_depth),"instruction-typed float depth accepts dimension and integer-bit change");
  unbind();auto counted=image(Shader::ImageFormat::R32_UINT);for(auto& d:counted->stages[0].info.texture_descriptors)d.count=2;counted->stages[0].info.image_descriptors[0].count=2;record_answers(*counted,*s);check(counted->answers.empty()&&counted->variant==0,"count!=1 descriptors still omitted");
  // Hash-only callers (seed/census cache readers) have no stage metadata; do not change their contract.
  Program hash_only;hash_only.answers={{0,0,2,false},{0,1,2,false},{0,0,128,true}};check(answers_hash(hash_only)!=0,"answers_hash remains usable without module Info");
+ // Full handles preserve the difference between unbound and sampler-only slot zero.
+ for(uint32_t h : {0u,1u,2u,3u,0x100000u,0x100001u,0xfff00003u}) {
+  handles[0]=h;
+  for(unsigned a=0;a<256;++a){answers[h&0xfffff]=uint8_t(a);checked_valid(*s,*ordinary);}
+ }
+ std::vector<uint32_t> resolved;answer_handles(*s,*ordinary,resolved);
+ check(resolved[0]==handles[0],"full handle retained");
+ check(resolved[1]==10+(handles[0]&0xfffff),"version queried with masked slot");
+ auto before=resolved;version_bias++;answer_handles(*s,*ordinary,resolved);
+ check(resolved[0]==before[0]&&resolved[1]!=before[1],"slot re-registration invalidates unchanged handle");
+ resolved.push_back(0);check(!resolved_answers_valid(*ordinary,resolved),"long handle list refused");
+ resolved.clear();check(!resolved_answers_valid(*ordinary,resolved),"short handle list refused");
  printf("checks=%u failures=%u\n",checked,failed);return failed?1:0;
 }
 '''
@@ -133,7 +152,7 @@ def main():
     if 'bool answers_fit(' in source:   # (the answers from files checked against the stages and their slots)
         markers.append('bool answers_fit(')
     markers += ['uint64_t answers_hash(', 'size_t generated_stage(', 'std::vector<Program::Answer> answers_here(', 'void record_answers(', 'bool still_valid(',
-                'void answer_handles(', 'uint32_t answer_stage_mask(']
+                'void answer_handles(', 'uint32_t answer_stage_mask(', 'bool resolved_answers_valid(']
     functions = '\n\n'.join(block(source, marker) for marker in markers)
     if 'd.type_fixed' in functions:   # (the baseline has no such rule: nothing to hold the pass to)
         texture_pass = (vk / 'eden/shader_recompiler/ir_opt/texture_pass.cpp').read_text(encoding='utf-8')

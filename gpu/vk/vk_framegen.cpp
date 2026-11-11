@@ -13,6 +13,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <cstdio>
 #include <deque>
 #include <mutex>
 #include <thread>
@@ -496,6 +497,191 @@ void display_main() {
 }
 
 } // namespace
+
+namespace {
+struct NativeSlot {
+    Img image;
+    NativePresentSync sync;
+    int crop[4]{};
+    bool has_crop = false, busy = false;
+};
+struct NativePresent {
+    NativeSlot slots[3];
+    std::mutex mu;
+    std::condition_variable cv;
+    std::deque<NativeSlot*> jobs;
+    NativeSlot* recorded = nullptr;
+    uint32_t w = 0, h = 0;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    unsigned next = 0;
+    uint64_t queued = 0, attempted = 0, shown = 0;
+    bool started = false, failed = false, active = false;
+};
+// The renderer has process lifetime; do not destroy a worker-owned mutex at exit.
+NativePresent& native = *new NativePresent;
+
+bool native_idle() {
+    return native.jobs.empty() && !native.slots[0].busy && !native.slots[1].busy && !native.slots[2].busy;
+}
+void native_drain() {
+    std::unique_lock lk(native.mu);
+    native.cv.wait(lk, native_idle);
+}
+void native_note_timing(const NativePresentSync& s) {
+    static FILE* file = [] {
+        const char* path = std::getenv("RX_VK_ASYNC_PRESENT_LOG");
+        FILE* f = path && *path ? std::fopen(path, "w") : nullptr;
+        if (f) std::fputs("source_frame,source_ns,queued_ns,worker_ns,present_begin_ns,present_end_ns,finished_ns,accepted,result\n", f);
+        return f;
+    }();
+    if (!file) return;
+    std::fprintf(file, "%llu,%lld,%lld,%lld,%lld,%lld,%lld,%d,%d\n",
+                 (unsigned long long)s.source_frame, (long long)s.source_ns,
+                 (long long)s.queued_ns, (long long)s.worker_ns,
+                 (long long)s.present_begin_ns, (long long)s.present_end_ns,
+                 (long long)s.finished_ns, int(s.shown), int(s.present_result));
+    // Opt-in diagnostics: preserve the final accepted rows even if the process
+    // is stopped externally. These are host acceptance times, not scanout times.
+    std::fflush(file);
+}
+
+void native_display_main() {
+    SetThreadDescription(GetCurrentThread(), L"mkw_vk native display");
+    for (;;) {
+        NativeSlot* slot;
+        {
+            std::unique_lock lk(native.mu);
+            native.cv.wait(lk, [] { return !native.jobs.empty(); });
+            slot = native.jobs.front();
+            native.jobs.pop_front();
+        }
+        // The read explicitly waits for this owned image's capture, and signals
+        // its reusable value. A hidden/out-of-date swapchain still releases the
+        // capture with an ordered empty submission; no unfulfilled reuse wait.
+        slot->sync.worker_ns = present_trace_now();
+        present_kind.store(0);
+        present_image(slot->image.image, native.w, native.h, slot->has_crop ? slot->crop : nullptr, slot->image.view, &slot->sync);
+        if (!slot->sync.read_submitted) present_async_release(slot->sync);
+        if (slot->sync.shown) menu_note_frame(true);
+        slot->sync.finished_ns = present_trace_now();
+        native_note_timing(slot->sync);
+        {
+            std::lock_guard lk(native.mu);
+            slot->busy = false;
+            if (slot->sync.shown) ++native.shown;
+            if (++native.attempted % 120 == 0)
+                logf("vk: native async present: %llu queued, %llu attempted, %llu accepted, %llu pending (not physical display counts)",
+                     (unsigned long long)native.queued, (unsigned long long)native.attempted,
+                     (unsigned long long)native.shown, (unsigned long long)(native.queued - native.attempted));
+        }
+        native.cv.notify_all();
+    }
+}
+} // namespace
+
+bool present_async_record(VkCommandBuffer cmd, VkImage src, VkFormat format, uint32_t w, uint32_t h, const int crop[4]) {
+    static const bool enabled = getenv("RX_VK_ASYNC_PRESENT") && atoi(getenv("RX_VK_ASYNC_PRESENT")) != 0;
+    if (!enabled) return false;
+    const int64_t source_ns = present_trace_now();
+    if (native.failed || dev.offscreen || framegen_on() || !src || !w || !h) {
+        native_drain(); // old jobs must finish before switching to direct/interpolated presents
+        native.active = false;
+        return false;
+    }
+    if (!native.active) {
+        // Interpolation may have been disabled while its previous frames were
+        // still queued. Preserve frame order before starting the native worker.
+        std::unique_lock lock(fg.mu);
+        fg.cv.wait(lock, [] { return fg.jobs.empty() && !fg.sets[0].busy && !fg.sets[1].busy && !fg.sets[2].busy; });
+        native.active = true;
+    }
+    if (native.w != w || native.h != h || native.format != format) {
+        native_drain();
+        {
+            std::lock_guard qk(dev.present_mu);
+            device_wait_idle_locked(); // Flush work and serialize every queue before replacing images.
+        }
+        for (NativeSlot& slot : native.slots) {
+            drop_img(slot.image);
+            if (slot.sync.timeline) vkDestroySemaphore(dev.device, slot.sync.timeline, nullptr);
+            slot.sync = {};
+        }
+        native.w = w, native.h = h, native.format = format;
+        for (NativeSlot& slot : native.slots) {
+            VkSemaphoreTypeCreateInfo type{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+            type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+            VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+            semaphore.pNext = &type;
+            if (vkCreateSemaphore(dev.device, &semaphore, nullptr, &slot.sync.timeline) != VK_SUCCESS || !make_img(slot.image, w, h, format, VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) {
+                for (NativeSlot& partial : native.slots) {
+                    drop_img(partial.image);
+                    if (partial.sync.timeline) vkDestroySemaphore(dev.device, partial.sync.timeline, nullptr);
+                    partial.sync = {};
+                }
+                native.failed = true;
+                logf("vk: native async present: image allocation failed; using direct presents");
+                return false;
+            }
+        }
+        for (NativeSlot& slot : native.slots) to_general(cmd, slot.image.image);
+        logf("vk: native async present: three %ux%u images, format %u; no generated frames", w, h, (unsigned)format);
+    }
+    NativeSlot* slot;
+    {
+        std::unique_lock lk(native.mu);
+        native.cv.wait(lk, [] { return !native.slots[native.next].busy; });
+        slot = &native.slots[native.next];
+        native.next = (native.next + 1) % 3;
+        slot->busy = true;
+    }
+    slot->sync.ready = slot->sync.consumed + 1;
+    slot->sync.consumed = slot->sync.ready + 1;
+    slot->sync.read_submitted = false;
+    slot->sync.shown = false;
+    slot->sync.source_ns = source_ns;
+    slot->sync.present_begin_ns = slot->sync.present_end_ns = 0;
+    slot->sync.present_result = VK_NOT_READY;
+    slot->sync.native_pq = dev.hdr && opts.hdr == 2 && format == VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    slot->has_crop = crop != nullptr;
+    if (crop) std::memcpy(slot->crop, crop, sizeof slot->crop);
+    // Reuse is ordered after the worker's submitted read, never after just dequeuing a job.
+    full_barrier(cmd);
+    const VkImageCopy copy{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                          {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {w, h, 1}};
+    vkCmdCopyImage(cmd, src, VK_IMAGE_LAYOUT_GENERAL, slot->image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+    full_barrier(cmd);
+    native.recorded = slot;
+    return true;
+}
+
+NativePresentSync* present_async_pending() {
+    return native.recorded ? &native.recorded->sync : nullptr;
+}
+void present_async_queue(bool submitted, uint64_t source_frame = 0) {
+    if (!native.recorded) return;
+    if (!submitted) {
+        std::lock_guard lk(native.mu);
+        native.recorded->busy = false;
+        native.recorded = nullptr;
+        native.failed = true; // No worker may wait for a capture rejected by Vulkan.
+        native.cv.notify_all();
+        return;
+    }
+    if (!native.started) {
+        native.started = true;
+        std::thread(native_display_main).detach();
+    }
+    {
+        std::lock_guard lk(native.mu);
+        native.recorded->sync.source_frame = source_frame;
+        native.recorded->sync.queued_ns = present_trace_now();
+        native.jobs.push_back(native.recorded);
+        ++native.queued;
+        native.recorded = nullptr;
+    }
+    native.cv.notify_all();
+}
 
 // The Insert menu's Frame generation is off at 0. While it was ignored, every present still copied the frame and
 // reduced it to luma (framegen_record), then a second thread showed it. Open areas paid for that on a full GPU and

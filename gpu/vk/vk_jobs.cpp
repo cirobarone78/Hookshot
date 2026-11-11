@@ -11,6 +11,7 @@
 
 #include "vk_jobs.h"
 #include "vk_internal.h"
+#include "vk_thread_affinity.h"
 #include "vk_draw.h"   // (ub_thread_off)
 
 namespace mkwvk {
@@ -55,6 +56,7 @@ std::function<void()> with_failure(std::function<void()> fn, std::function<void(
 }
 
 void worker() {
+    background_thread_affinity(host->reserved_cpus ? host->reserved_cpus() : 0);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     SetThreadDescription(GetCurrentThread(), L"mkw_vk worker");
     ub_thread_off();
@@ -102,6 +104,7 @@ void jobs_push_serial(std::function<void()> fn, std::function<void()> on_failure
     if (!sstarted) {
         sstarted = true;
         std::thread([] {
+            background_thread_affinity(host->reserved_cpus ? host->reserved_cpus() : 0);
             SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
             SetThreadDescription(GetCurrentThread(), L"mkw_vk serial builds");
             ub_thread_off();

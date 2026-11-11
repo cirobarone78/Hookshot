@@ -24,6 +24,9 @@ inline HANDLE GetCurrentThread() { return nullptr; }
 inline int SetThreadPriority(HANDLE, int) { return 1; }
 inline long SetThreadDescription(HANDLE, const wchar_t*) { return 0; }
 namespace mkwvk {
+struct Host { unsigned long long (*reserved_cpus)() = nullptr; };
+inline Host host_value;
+inline Host* host = &host_value;
 inline void logf(const char*, ...) {}
 }
 """
@@ -61,6 +64,8 @@ def main():
             shutil.copy(ROOT / "gpu/vk" / name, tmp / name)
         (tmp / "vk_internal.h").write_text(STUB_INTERNAL, encoding="utf-8")
         (tmp / "vk_draw.h").write_text(STUB_DRAW, encoding="utf-8")
+        # Affinity has its own test; this fixture exercises queue progress only.
+        (tmp / "vk_thread_affinity.h").write_text("#pragma once\nnamespace mkwvk { inline bool background_thread_affinity(unsigned long long) { return true; } }\n")
         exe = tmp / "jobs-wait"
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-pthread", "-I", str(tmp),
                         str(tmp / "vk_jobs.cpp"), str(ROOT / "tests/test_jobs_wait_runs_queued.cpp"), "-o", str(exe)],

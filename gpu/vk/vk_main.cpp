@@ -293,11 +293,17 @@ bool create_device() {
             (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
             dev.queue_family = i;
     if (dev.queue_family == UINT32_MAX) return false;
-    const float priority = 1.0f;
+    const int present_queue_mode = getenv("RX_VK_PRESENT_QUEUE") ? atoi(getenv("RX_VK_PRESENT_QUEUE")) : 0;
+    // Mode 2 experiments with a second queue in the graphics family. Some Linux
+    // surfaces cannot present from the compute-only family used by mode 1.
+    // Keeping distinct queue handles lets an external present layer hold its
+    // queue lock while the replay continues submitting on queue zero.
+    const bool second_graphics_queue = present_queue_mode == 2 && families[dev.queue_family].queueCount >= 2;
+    const float priorities[2] = {1.0f, 1.0f};
     VkDeviceQueueCreateInfo q{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     q.queueFamilyIndex = dev.queue_family;
-    q.queueCount = 1;
-    q.pQueuePriorities = &priority;
+    q.queueCount = second_graphics_queue ? 2 : 1;
+    q.pQueuePriorities = priorities;
     // (hookshot) The presents on a queue of a compute family of their own, beside the replay's (RX_VK_PRESENT_QUEUE=1 / 0: on /
     // off; on by default with NVIDIA's driver on Windows, where it was measured). On the replay's queue vkQueuePresentKHR blocked
     // with dev.present_mu held, ~0.8 ms a present with frame interpolation at 4x and up to 8, and the game's main and presentation
@@ -318,7 +324,7 @@ bool create_device() {
         want = false;   // (v2.0.9: off by default with the write-back diff until issue 1161's device lost is placed; was:
         (void)dp;       //  NVIDIA's driver on Windows. RX_VK_PRESENT_QUEUE=1: on)
 #endif
-        if (const char* e = getenv("RX_VK_PRESENT_QUEUE")) want = atoi(e) != 0;
+        if (const char* e = getenv("RX_VK_PRESENT_QUEUE")) want = atoi(e) != 0 && present_queue_mode != 2;
         for (uint32_t i = 0; want && i < n && compute_family == UINT32_MAX; i++)
             if ((families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && !(families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
                 compute_family = i;
@@ -326,7 +332,7 @@ bool create_device() {
     VkDeviceQueueCreateInfo qs[2] = {q, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
     qs[1].queueFamilyIndex = compute_family;
     qs[1].queueCount = 1;
-    qs[1].pQueuePriorities = &priority;
+    qs[1].pQueuePriorities = priorities;
 
     // features: what the hardware has of what the replay uses (all of them on the GPUs MKW-class hardware maps to)
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
@@ -487,6 +493,7 @@ bool create_device() {
     dev.present_queue = VK_NULL_HANDLE;
     dev.present_family = dev.queue_family;
     if (compute_family != UINT32_MAX) vkGetDeviceQueue(dev.device, compute_family, 0, &dev.present_queue), dev.present_family = compute_family;
+    else if (second_graphics_queue) vkGetDeviceQueue(dev.device, dev.queue_family, 1, &dev.present_queue);
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
     reflex_device_created();
@@ -989,7 +996,10 @@ static void choose_present_queue() {
         dev.present_queue = VK_NULL_HANDLE, dev.present_family = dev.queue_family;
         return;
     }
-    logf("vk: presents on a queue of their own, of compute family %u (RX_VK_PRESENT_QUEUE=0: off)", dev.present_family);
+    if (dev.present_family == dev.queue_family)
+        logf("vk: presents on graphics queue 1 of family %u, replay on queue 0 (RX_VK_PRESENT_QUEUE=2)", dev.present_family);
+    else
+        logf("vk: presents on a queue of their own, of compute family %u (RX_VK_PRESENT_QUEUE=0: off)", dev.present_family);
 }
 
 int start(void* hwnd) {

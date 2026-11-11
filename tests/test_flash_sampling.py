@@ -17,7 +17,7 @@ def main():
     a = p.parse_args()
     source = (a.source / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     start = source.index("                constexpr uint32_t W = 64, H = 36;")
-    sampling = source[start:source.index("                static std::shared_ptr<std::vector<uint8_t>> sa, sb, pa, pb;", start)]
+    sampling = "const PresentContentSize size{kShotW,kShotH};\n" + source[start:source.index("                static std::shared_ptr<std::vector<uint8_t>> sa, sb, pa, pb;", start)]
     start = source.index("                    static const int fl_diff =", start)
     detector = source[start:source.index("                    if (region_hits && flashes_left > 0)", start)]
     decision = source[source.index("if (((hits >= fl_cells", start):].split(" {", 1)[0]
@@ -26,7 +26,8 @@ def main():
     fixture = template.replace("/* SAMPLING */", sampling).replace("/* DETECTOR */", detector).replace("/* DECISION */", condition)
     with tempfile.TemporaryDirectory(prefix="flash-sampling-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
-        cpp.write_text(fixture, encoding="utf-8")
+        prefix = '#include "' + str(ROOT / 'gpu/vk/vk_capture_size.h') + '"\nusing namespace mkwvk;\n'
+        cpp.write_text(prefix + fixture, encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++17", "-O1", str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe), a.case], check=True, timeout=40)
 

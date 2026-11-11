@@ -53,15 +53,17 @@ def main():
     source = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     code = (ROOT / "tests/png_publication_test.cpp").read_text(encoding="utf-8")
     actual = block(source, "uint32_t crc32(") + "\n" + block(source, "bool write_png(")
-    start = source.index("std::thread([px, path, at_present] {")
+    start = source.index("std::thread([px, path, at_present, size] {")
     body = block(source[start:], "std::thread(")
     body = body[body.index("{")+1:-1]
-    announce = "void announce(std::shared_ptr<std::vector<uint8_t>> px,std::string path,long long at_present){" + body + "}"
+    announce = "void announce(std::shared_ptr<std::vector<uint8_t>> px,std::string path,long long at_present){" + "const PresentContentSize size{kShotW,kShotH};" + body + "}"
+    code = "struct Host { unsigned long long (*reserved_cpus)() = nullptr; } host_value, *host=&host_value;\nvoid background_thread_affinity(unsigned long long) {}\n" + code
     code = code.replace("/* PNG */", actual).replace("/* ANNOUNCE */", announce)
     cases = ["healthy", "invalid", "bounded-report", "open-failure", "close-failure", "publish-failure", "cleanup-failure", "collisions", "collision-limit", "parallel", "same-target", "announce-success", "announce-failure"] + ["write-" + str(i) for i in range(1, 13)]
     with tempfile.TemporaryDirectory(prefix="png-publication-") as temp:
         cpp, exe = Path(temp)/"fixture.cpp", Path(temp)/"fixture.exe"
-        cpp.write_text(code, encoding="utf-8")
+        prefix = '#include "' + str(ROOT / 'gpu/vk/vk_capture_size.h') + '"\nusing namespace mkwvk;\n'
+        cpp.write_text(prefix + code, encoding="utf-8")
         subprocess.run([args.cxx, "-std=c++20", "-O1", "-pthread", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
         for case in cases:
             output = Path(temp)/case

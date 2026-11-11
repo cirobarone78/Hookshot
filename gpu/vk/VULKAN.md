@@ -150,3 +150,13 @@ Designed after totk-pc-recomp's runtime/vk_*.c (MIT) and Eden's renderer_vulkan,
 - **Headless**: without a window presents render offscreen; `RX_VK_SHOTS=<dir>` writes every `RX_VK_SHOT_EVERY`-th
   as a PNG. `work/run-vk.ps1` runs it (refuses while Siege runs, stops past `-MaxGB` of working set);
   `work/vksum.py <run>` summarises the log.
+
+### Ordering deferred uniform writes
+
+Uniform updates are flushed after the recording's draws, which consume overlay
+copies. Overlapping `vkCmdUpdateBuffer` writes in that flush still need a transfer
+write dependency between them; barriers only around the whole group do not
+establish last-writer ordering inside it. The replay tracks resolved buffer/offset
+ranges and inserts a transfer-write barrier on overlap. Distinct or adjacent
+ranges remain independent. Each flush starts with fresh tracking; the existing
+barriers around the group retain ordering against other GPU work.

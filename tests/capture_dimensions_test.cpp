@@ -43,9 +43,9 @@ void destroy_buffer(VkBuffer,VmaAllocation) {}
 VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice,VkImageView,const VkAllocationCallbacks*) {}
 /* SETUP */
 void present_image(VkImage,uint32_t,uint32_t,const int*,VkImageView) { presented++; }
-void tick() {
+void tick(bool interpolated, bool native_async) {
     VkImage src=reinterpret_cast<VkImage>(uintptr_t(0xff)); const char* shots="test";
-    uint32_t sw=1720,sh=720; const int* crop=nullptr; VkImageView direct_view{}; bool interpolated=false;
+    uint32_t sw=1720,sh=720; const int* crop=nullptr; VkImageView direct_view{};
     /* GATE */ { capture_entries++; }
     /* PRESENT_TAIL */
 }
@@ -62,9 +62,11 @@ int main(int argc,char**argv) {
     dev.swap_extent.height=std::min(720u,dev.props.limits.maxImageDimension2D);
     const bool valid=std::atoi(argv[2])!=0; dev.offscreen=std::atoi(argv[3])!=0;
     if(valid) expected_bytes=(uint64_t)kShotW*kShotH*4;
-    tick(); tick();
-    require(capture_entries==(valid?2u:0u),"invalid dimensions reached the capture producer");
+    for (bool interpolated : {false, true}) for (bool native_async : {false, true}) {
+        tick(interpolated, native_async); tick(interpolated, native_async);
+    }
+    require(capture_entries==(valid?8u:0u),"capture validation must apply to every presentation route");
     require(valid?calls==5:calls==0,"dimension rejection must precede every Vulkan allocation");
     require(errors==(valid?0u:1u),"invalid capture must be reported exactly once");
-    require(presented==(dev.offscreen?0u:2u),"capture rejection must preserve window/headless presentation policy");
+    require(presented==(dev.offscreen?0u:2u),"capture rejection must preserve window/headless/worker presentation policy");
 }

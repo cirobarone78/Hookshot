@@ -46,7 +46,7 @@ def main():
     require("if (!present_commit(" in display, "the display thread no longer shows deferred presents, or counts one not shown")
 
     image = block(replay, "void present_image(VkImage src")
-    submit, defer, present = image.find("vkQueueSubmit2("), image.find("if (present_defer_into)"), image.find("present_out(index, qk)")
+    submit, defer, present = image.find("vkQueueSubmit2("), image.find("if (present_defer_into)"), image.find("present_out(index, qk, sync)")
     require(0 <= submit < defer < present, "present_image must submit the copy, then stop when deferred, before it presents")
     commit = block(replay, "bool present_commit(")
     require(0 <= commit.find("p.swapchain != dev.swapchain") < commit.find("present_out("),

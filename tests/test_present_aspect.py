@@ -41,6 +41,7 @@ struct VkClearColorValue { float r, g, b, a; };
 struct VkImageSubresourceRange { int aspect, mip, levels, layer, layers; };
 struct { struct { uint32_t width, height; } swap_extent; bool hdr = false; } dev;
 std::atomic<bool> present_native_pq{false};
+struct NativePresentSync { bool native_pq; };
 struct Host { float (*aspect_ratio)(); };
 Host* host;
 float logical_aspect;
@@ -75,24 +76,25 @@ VkImage framegen_scale(int, VkImageView, VkImage, uint32_t, uint32_t, const int*
 void blit_crop_to_rect(int, VkImage src, uint32_t, uint32_t, const int* crop, VkImage, int, PresentRect rect) {
     ++blits; drawn = rect; drawn_crop = crop; drawn_source = src;
 }
-void actual_present(VkImage src, uint32_t sw, uint32_t sh, const int* crop, VkImageView view) {
+void actual_present(VkImage src, uint32_t sw, uint32_t sh, const int* crop, VkImageView view, NativePresentSync* sync = nullptr) {
     struct { int cmd; } f{1};
     VkImage dst = 2;
 ''' + block + r'''
 }
 void expect(VkImage src, uint32_t sw, uint32_t sh, const int* crop, uint32_t dw, uint32_t dh,
-            float aspect, PresentRect want, bool filter, bool with_host = true, bool with_callback = true) {
+            float aspect, PresentRect want, bool filter, bool with_host = true, bool with_callback = true,
+            NativePresentSync* sync = nullptr) {
     Host h{with_callback ? aspect_callback : nullptr}; host = with_host ? &h : nullptr;
     logical_aspect = aspect; filtered = filter;
     dev.swap_extent = {dw, dh};
     clears = blits = scales = barriers = hdr_calls = hdr_barriers = 0;
-    actual_present(src, sw, sh, crop, 7);
+    actual_present(src, sw, sh, crop, 7, sync);
     CHECK(blits == 1 && scales == 1);
     CHECK(drawn.x == want.x && drawn.y == want.y && drawn.w == want.w && drawn.h == want.h);
     CHECK(scale_w == want.w && scale_h == want.h);
     const bool bars = want.x || want.y || want.w != dw || want.h != dh;
     CHECK(clears == int(bars) && barriers == int(bars));
-    const bool hdr_attempted = dev.hdr && !present_native_pq.load();
+    const bool hdr_attempted = dev.hdr && !(sync ? sync->native_pq : present_native_pq.load());
     const bool hdr_emitted = hdr_attempted && hdr_ready;
     CHECK(hdr_calls == int(hdr_attempted) && hdr_barriers == int(hdr_emitted));
     if (hdr_attempted) CHECK(hdr_w == want.w && hdr_h == want.h);
@@ -121,6 +123,13 @@ int main() {
         expect(3, 4096, 2160, crop, 1280, 720, wide, {0, 92, 1280, 536}, filter);
         hdr_ready = true; present_native_pq = true; // Native PQ bypasses conversion.
         expect(3, 4096, 2160, crop, 1280, 720, wide, {0, 92, 1280, 536}, filter);
+        // A queued source retains its encoding when the producer moves to a different format.
+        NativePresentSync sdr{false}, pq{true};
+        expect(3, 4096, 2160, crop, 1280, 720, wide, {0, 92, 1280, 536}, filter, true, true, &sdr);
+        CHECK(hdr_calls == 1);
+        present_native_pq = false;
+        expect(3, 4096, 2160, crop, 1280, 720, wide, {0, 92, 1280, 536}, filter, true, true, &pq);
+        CHECK(hdr_calls == 0);
         present_native_pq = false; dev.hdr = false;
     }
     // Startup has no game image: one full clear, then the window-sized overlay.

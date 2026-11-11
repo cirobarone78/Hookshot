@@ -35,17 +35,23 @@ void wait_value(uint64_t value) {
 uint64_t completed() { return finished; }
 void invalidate_mapped(int, uint64_t bytes) { CHECK(bytes==sizeof pixels[0]); }
 void vkCmdCopyImageToBuffer(int,int,int,int slot,int,const int*) { recorded={slot,uint64_t(presents),false}; }
-void submit_recording(decltype(r)&) {
+bool native_async=false;
+int handoff=0, handoff_queries=0;
+int* present_async_pending() { ++handoff_queries; return &handoff; }
+void submit_recording(decltype(r)&, bool signal, uint64_t at, int* sync) {
+    CHECK(signal && at==0 && sync==(native_async ? &handoff : nullptr));
     queue.push_back(recorded); submitted=true;
     complete_through(fast ? uint64_t(presents) : 2);
 }
+PresentContentSize shot_size{kShotW,kShotH};
 /* STATE */
 /* READ_HELPER */
 void run(int64_t current,bool fast_new,bool pending_old) {
     queue.clear(); std::memset(pixels,0,sizeof pixels);finished=1;submitted=false;fast=fast_new;
     waits=waits_before_submit=0;
+    handoff_queries=0;
     PendingShot pending;
-    if (pending_old) { pending.on=true;pending.value=2;pending.presents=2;queue.push_back({0,2,false}); }
+    if (pending_old) { pending.on=true;pending.value=2;pending.presents=2;pending.size={1,1};queue.push_back({0,2,false}); }
     std::vector<std::pair<int64_t,std::vector<uint8_t>>> captures;
     /* TAKE */
         captures.emplace_back(at_present,*px);
@@ -56,9 +62,11 @@ void run(int64_t current,bool fast_new,bool pending_old) {
     CHECK(captures.empty() && waits==0 && pending.on==pending_old);
     presents=current;uint64_t value=uint64_t(current);shot=true;
     /* PRODUCER */
+    CHECK(handoff_queries==int(native_async));
     /* CONSUME */
     if (pending_old) {
         CHECK(captures.size()==1 && captures[0].first==2);
+        CHECK(captures[0].second.size()==4); // the older frame keeps its smaller dimensions
         CHECK(std::all_of(captures[0].second.begin(),captures[0].second.end(),[](uint8_t b){return b==2;}));
         CHECK(waits==1);
         CHECK(waits_before_submit==int((current & 1)==0));
@@ -66,12 +74,14 @@ void run(int64_t current,bool fast_new,bool pending_old) {
     // Re-arming must discard a saved snapshot, not attach it to the new frame.
     /* REARM */
     CHECK(pending.on && pending.value==value && pending.presents==current);
-    take(value,current);
+    take(value,current,shot_size);
     CHECK(captures.back().first==current);
+    CHECK(captures.back().second.size()==8); // the newly armed frame uses its own dimensions
     CHECK(std::all_of(captures.back().second.begin(),captures.back().second.end(),[current](uint8_t b){return b==(current & 255);}));
 }
 int main() {
-    for (int64_t current=3;current<100;current++) {
+    for (bool async : {false,true}) for (int64_t current=3;current<100;current++) {
+        native_async=async;
         run(current,true,true);
         run(current,false,true);
         run(current,true,false);

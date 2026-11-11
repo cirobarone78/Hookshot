@@ -29,6 +29,7 @@ def main():
     a = p.parse_args()
     draw = (a.source / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     replay = (a.source / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
+    framegen = (a.source / "gpu/vk/vk_framegen.h").read_text(encoding="utf-8")
     fixture = (ROOT / "tests/draw_stream_visibility_test.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("/* RES */", block(draw, "struct RecordingRes {") + ";")
     actual = "\n".join(block(draw, marker) for marker in ["bool stream_insert(", "bool stream_next(", "bool stream_reserve(", "uint64_t stream_alloc("])
@@ -36,7 +37,7 @@ def main():
     fixture = fixture.replace("/* STREAM */", actual)
     flush = block(draw, "void draw_flush_recording(") if "void draw_flush_recording(" in draw else ""
     fixture = fixture.replace("/* FLUSH */", flush).replace("/* BEGIN */", block(draw, "void draw_begin_recording("))
-    fixture = fixture.replace("/* SUBMIT */", block(replay, "void submit_recording("))
+    fixture = fixture.replace("/* SUBMIT */", block(framegen, "struct NativePresentSync {") + ";\n" + block(replay, "void submit_recording("))
     start = replay.index("        if (j->inits < 0) init_lost = true;")
     end = replay.index("        if (res == VK_ERROR_DEVICE_LOST) device_lost();", start)
     end += len("        if (res == VK_ERROR_DEVICE_LOST) device_lost();")

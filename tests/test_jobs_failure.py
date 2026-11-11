@@ -77,6 +77,10 @@ def main():
             shutil.copy(ROOT / "gpu/vk" / name, folder / name)
         (folder / "vk_internal.h").write_text(stubs["STUB_INTERNAL"], encoding="utf-8")
         (folder / "vk_draw.h").write_text(stubs["STUB_DRAW"], encoding="utf-8")
+        # Affinity is covered separately; keep this fixture focused on queue failure publication.
+        (folder / "vk_thread_affinity.h").write_text(
+            "#pragma once\nnamespace mkwvk { inline bool background_thread_affinity(unsigned long long) { return true; } }\n",
+            encoding="utf-8")
         exe = folder / "jobs-failure.exe"
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-pthread", "-I", str(folder),
                         str(folder / "vk_jobs.cpp"), str(ROOT / "tests/test_jobs_failure.cpp"), "-o", str(exe)], check=True)

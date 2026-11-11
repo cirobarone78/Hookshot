@@ -35,7 +35,7 @@ def main():
     p.add_argument("--cache", choices=["all", "coherent", "noncoherent"], default="all")
     a = p.parse_args()
     source = (a.source / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
-    start = source.index("        auto take = [&](uint64_t at_value, int64_t at_present) {")
+    start = source.index("        auto take = [&](uint64_t at_value, int64_t at_present, PresentContentSize size) {")
     end = source.index("            // (RX_VK_DUMP_BLACK", start)
     take = source[start:end] + "\n(void)at_present; return px; };\n"
     helper_start = source.index("std::shared_ptr<std::vector<uint8_t>> shot_pixels(")
@@ -60,7 +60,8 @@ def main():
     fixture = fixture.replace("/* HOST_BARRIER */", host).replace("/* NORMAL_COPY */", normal_copy).replace("/* MADE_COPY */", made_copy).replace("/* LOG_COPY */", log_copy)
     with tempfile.TemporaryDirectory(prefix="capture-visibility-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
-        cpp.write_text(fixture, encoding="utf-8")
+        prefix = '#include "' + str(ROOT / 'gpu/vk/vk_capture_size.h') + '"\nusing namespace mkwvk;\n'
+        cpp.write_text(prefix + fixture, encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I" + str(a.headers),
                         str(cpp), "-o", str(exe)], check=True)
         for phase in (["normal", "owned", "made", "log"] if a.phase == "all" else [a.phase]):

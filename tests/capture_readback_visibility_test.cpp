@@ -9,6 +9,9 @@
 #include <vector>
 
 constexpr uint32_t kShotW = 344, kShotH = 144, kLogW = 320, kLogH = 180;
+PresentContentSize shot_size{kShotW,kShotH}, made_size{kShotW,kShotH};
+struct PresentStageSample { enum {Fence}; void mark(int){} } stages;
+struct {void mark(const char*){}} trace;
 struct Allocation { std::vector<uint8_t> cpu, gpu; bool copied = false, host = false; } normal, made, binary;
 using VmaAllocation = Allocation*;
 void* shot_maps[2]{};
@@ -93,12 +96,12 @@ void read_log_after_fence() {
 void read_shot(bool generated, bool owned = false) {
     struct { bool on=false; int64_t presents=0; std::shared_ptr<std::vector<uint8_t>> pixels; } pending;
     if (owned) {
-        pending.on = true; pending.presents = 1; pending.pixels = shot_pixels(17, 1);
+        pending.on = true; pending.presents = 1; pending.pixels = shot_pixels(17, 1, shot_size);
         std::fill(normal.cpu.begin(), normal.cpu.end(), 0);
     }
     /* TAKE */
     if (!generated) {
-        auto px = take(17, 1);
+        auto px = take(17, 1, shot_size);
         require(*px == normal.gpu, "normal screenshot read stale CPU cache");
         return;
     }

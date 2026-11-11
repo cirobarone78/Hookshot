@@ -26,7 +26,9 @@ def main():
     parser.add_argument("--headers", required=True)
     args = parser.parse_args()
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
-    shared = block(replay, "uint64_t vk_retirement_value()") + "\n" + block(replay, "uint64_t vk_timeline_completed()") + "\n" + "\n".join(block(replay, m) for m in ["void queue_flush_locked()", "void submit_recording(", "void finish_recording(uint64_t value) {"])
+    header = (ROOT / "gpu/vk/vk_framegen.h").read_text(encoding="utf-8")
+    shared = block(header, "struct NativePresentSync {") + ";\n"
+    shared += block(replay, "uint64_t vk_retirement_value()") + "\n" + block(replay, "uint64_t vk_timeline_completed()") + "\n" + "\n".join(block(replay, m) for m in ["void queue_flush_locked()", "void submit_recording(", "void finish_recording(uint64_t value) {"])
     fixture = (ROOT / "tests/fsr_image_retirement_test.cpp").read_text(encoding="utf-8")
     with tempfile.TemporaryDirectory(prefix="fsr-retirement-") as tmp:
         for backend in ["vk_fsr3.cpp", "vk_fsr3fi.cpp"]:

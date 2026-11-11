@@ -54,6 +54,7 @@ void retire_pool(std::map<uint64_t,Pool>::iterator it) { imported.erase(it);last
 enum { VK_SUCCESS = 0 };
 thread_local bool import_cooling = false;
 thread_local int import_result = 0;
+thread_local const char* import_stage = "range";
 bool import_on_hold(uint64_t, uint64_t) { import_cooling = false; return false; }
 void import_remember_failure(uint64_t, uint64_t) {}
 '''+guard+'''

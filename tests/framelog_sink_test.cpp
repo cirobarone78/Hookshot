@@ -38,6 +38,10 @@ void logf(const char* format,...) {
     if(std::strstr(format,"writes every frame")) ++ready_messages;
     else ++errors;
 }
+struct Host { uint64_t (*reserved_cpus)(); };
+Host fixture_host{};
+Host* host = &fixture_host;
+void background_thread_affinity(uint64_t) {}
 int GetCurrentThread() { return 0; }
 void SetThreadDescription(int,const wchar_t*) {}
 bool create_image(const VkImageCreateInfo&,VkImage& image,VmaAllocation& allocation) {

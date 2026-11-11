@@ -21,6 +21,7 @@ struct VkClearColorValue { float r, g, b, a; };
 struct VkImageSubresourceRange { int aspect, mip, levels, layer, layers; };
 struct { struct { uint32_t width = 1720, height = 720; } swap_extent; bool hdr = false; } dev;
 std::atomic<bool> present_native_pq{false};
+struct NativePresentSync { bool native_pq; };
 struct Host { float (*aspect_ratio)(); };
 float ratio = 43.0f / 18.0f;
 int aspect_calls = 0;
@@ -46,7 +47,8 @@ VkImage framegen_hdr(int, VkImageView, uint32_t, uint32_t, const int*, uint32_t,
 }
 VkImage framegen_scale(int, VkImageView, VkImage, uint32_t, uint32_t, const int*, uint32_t, uint32_t) { return scaled ? 9 : 0; }
 void blit_crop_to_rect(int, VkImage, uint32_t, uint32_t, const int*, VkImage, int, PresentRect rect) { ++blits; drawn = rect; }
-void present(VkImage src = 1, uint32_t sw = 3440, uint32_t sh = 1440, const int* crop = nullptr, VkImageView view = 2) {
+void present(VkImage src = 1, uint32_t sw = 3440, uint32_t sh = 1440, const int* crop = nullptr, VkImageView view = 2,
+             NativePresentSync* sync = nullptr) {
     struct { int cmd = 1; } f; VkImage dst = 3;
     /* ACTUAL_DRAW */
     /* ACTUAL_TRACE */
@@ -102,6 +104,12 @@ int main(int argc, char** argv) {
     encoded = true; present_native_pq = true;
     const int before_native_pq = hdr_calls;
     present(1, 4096, 2160, crop); CHECK(hdr_calls == before_native_pq);
+    NativePresentSync sdr{false}, pq{true};
+    present(1, 4096, 2160, crop, 2, &sdr); CHECK(hdr_calls == before_native_pq + 1);
+    if (enabled) CHECK(messages.back().find("route=hdr") != std::string::npos);
+    present_native_pq = false;
+    present(1, 4096, 2160, crop, 2, &pq); CHECK(hdr_calls == before_native_pq + 1);
+    if (enabled) CHECK(messages.back().find("route=scaled") != std::string::npos);
     dev.hdr = false; present_native_pq = false; encoded = false;
     opts.framegen = 2; present_kind = 1; present(1, 2560, 1440);
     if (enabled) CHECK(messages.back().find("kind=made") != std::string::npos && messages.back().find("framegen-request=2") != std::string::npos);

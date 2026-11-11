@@ -26,6 +26,10 @@
 #include <windows.h>
 
 #include "vk_internal.h"
+#include "vk_thread_affinity.h"
+#include "vk_stage_trace.h"
+#include "vk_capture_cpu.h"
+#include <optional>
 #include "vk_texture.h"   // (upload_command_buffer)
 #include "vk_gprof.h"      // (RX_VK_PASS_TIMING)
 #include "import_hold.h"
@@ -103,11 +107,11 @@ SrwMutex pools_mu;
 uint32_t generation = ~0u;
 uint64_t align = 4096;
 uint64_t max_import_size = UINT64_MAX;
-int failures = 0;
 ImportHolds import_holds;          // (issue 218: a failed import is not tried again for ImportHolds::kGapMs)
 std::mutex import_holds_mu;
 thread_local bool import_cooling = false;
 thread_local VkResult import_result = VK_SUCCESS;
+thread_local const char* import_stage = "range";
 
 int64_t import_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -333,6 +337,7 @@ bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
 bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     import_cooling = false;
     import_result = VK_SUCCESS;
+    import_stage = "range";
     if (import_on_hold(lo, hi)) return false;   // (tried recently and failed: not again until the hold ends)
     if (hi <= lo || hi - lo > max_import_size) {
         logf("vk: import %#llx..%#llx exceeds the device's allocation/buffer limit", (unsigned long long)lo,
@@ -376,6 +381,7 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
 #ifdef __linux__
     if (import_dma_buf(lo, hi, p)) {
         t1 = t2 = t3 = t4 = clk::now();
+        import_stage = "complete (dma-buf)";
         return true;
     }
 #endif
@@ -383,8 +389,9 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     static uint32_t type = UINT32_MAX;
     if (type == UINT32_MAX) {
         VkMemoryHostPointerPropertiesEXT hp{VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
-        if (vkGetMemoryHostPointerPropertiesEXT(dev.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, ptr,
-                                                &hp) != VK_SUCCESS) {
+        import_stage = "vkGetMemoryHostPointerPropertiesEXT";
+        import_result = vkGetMemoryHostPointerPropertiesEXT(dev.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, ptr, &hp);
+        if (import_result != VK_SUCCESS) {
             import_remember_failure(lo, hi);
             return false;
         }
@@ -394,6 +401,7 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
                     (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
                 type = i;
         if (type == UINT32_MAX) {
+            import_stage = "no compatible host-memory type";
             import_remember_failure(lo, hi);
             return false;
         }
@@ -405,7 +413,9 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     bi.pNext = &eb;
     bi.size = bytes;
     bi.usage = kUsage;
-    if (vkCreateBuffer(dev.device, &bi, nullptr, &p.buffer) != VK_SUCCESS) {
+    import_stage = "vkCreateBuffer(host pointer)";
+    import_result = vkCreateBuffer(dev.device, &bi, nullptr, &p.buffer);
+    if (import_result != VK_SUCCESS) {
         import_remember_failure(lo, hi);
         return false;
     }
@@ -420,6 +430,7 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     ai.pNext = &im;
     ai.allocationSize = bytes;
     ai.memoryTypeIndex = type;
+    import_stage = "vkAllocateMemory(host pointer)";
     const VkResult allocated = vkAllocateMemory(dev.device, &ai, nullptr, &p.memory);
     t3 = clk::now();
     const VkResult bound = allocated == VK_SUCCESS ? vkBindBufferMemory(dev.device, p.buffer, p.memory, 0) : allocated;
@@ -438,6 +449,7 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
         logf("vk: addr import %#llx..%#llx at gpu %#llx..%#llx", (unsigned long long)lo, (unsigned long long)hi,
              (unsigned long long)p.address, (unsigned long long)(p.address + (hi - lo)));
     t4 = clk::now();
+    import_stage = "complete (host pointer)";
     return true;
 }
 
@@ -793,6 +805,7 @@ struct Capture {
     void* map = nullptr;
     uint64_t bsize = 0;
     size_t nbytes = 0;
+    CaptureCpuSnapshot cpu; // bounded CPU storage only for uncached submit buffers
     std::vector<uint32_t> late;      // (indices into pages: copied again by the replay once late_value is done)
     uint64_t late_value = 0;
 };
@@ -855,12 +868,18 @@ uint64_t cap_spare_max() {
     return v;
 }
 void cap_buf_free(VkBuffer buffer, VmaAllocation alloc, void* map, uint64_t size) {
+    // Trace outlives the lock: writing diagnostic rows must not hold the pool mutex.
+    StageTrace trace("capture_buffer_return", 0, size / 4096);
     std::lock_guard lk(cap_free_mu);
+    trace.mark("pool_lock_wait");
     if (cap_free.size() < 12 && size <= (64ull << 20) && cap_free_bytes + size <= cap_spare_max()) {
         cap_free.push_back({buffer, alloc, map, size});
         cap_free_bytes += size;
+        trace.mark("retain_spare");
     } else {
+        trace.mark("reject_spare");
         destroy_buffer(buffer, alloc);
+        trace.mark("destroy_buffer");
     }
 }
 void cap_buf_retire(std::map<uint32_t, CapBuf>::iterator it) {
@@ -878,20 +897,27 @@ uint64_t cap_buf_size(uint64_t need) {
     return s >= need ? s : (need + (1u << 20) - 1) & ~((1ull << 20) - 1);
 }
 bool cap_buf_get(uint64_t need, VkBuffer& buffer, VmaAllocation& alloc, void*& map, uint64_t& size) {
+    StageTrace trace("capture_buffer_get", 0, (need + 4095) / 4096);
     std::lock_guard lk(cap_free_mu);
+    trace.mark("pool_lock_wait");
     size_t best = cap_free.size();
     for (size_t i = 0; i < cap_free.size(); i++)
         if (cap_free[i].size >= need && (best == cap_free.size() || cap_free[i].size < cap_free[best].size)) best = i;
+    trace.mark("search_spares");
     if (best < cap_free.size()) {
         buffer = cap_free[best].buffer, alloc = cap_free[best].alloc, map = cap_free[best].map, size = cap_free[best].size;
         cap_free_bytes -= size;
         cap_free.erase(cap_free.begin() + (ptrdiff_t)best);
+        trace.mark("reuse_buffer");
         return map != nullptr;
     }
     size = cap_buf_size(need);
     map = nullptr;
-    return create_buffer_cached(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, buffer, alloc, &map,
-                                size >= (16ull << 20) && !getenv("RX_VK_CAP_BLOCKS")) && map;
+    trace.mark("select_size_class");
+    const bool created = create_buffer_cached(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, buffer, alloc, &map,
+                                size >= (16ull << 20) && !getenv("RX_VK_CAP_BLOCKS"));
+    trace.mark(created ? "create_buffer_cached" : "create_buffer_failed");
+    return created && map;
 }
 std::vector<std::pair<uint64_t, uint64_t>> cap_ranges;   // (the mirrored pools the captures take, as of the last one)
 std::mutex cap_ranges_mu;
@@ -937,14 +963,18 @@ void refresh_pool_ranges_locked() {   // (cap_ranges_mu held)
             v.push_back({list[i][0] & ~4095ull, (list[i][0] + list[i][1] + 4095) & ~4095ull});
     }
     pool_first_seen.swap(seen);
-    cap_ranges_ver++;
     std::sort(v.begin(), v.end());
     std::vector<std::pair<uint64_t, uint64_t>> m;
     for (const auto& r : v) {
         if (!m.empty() && r.first <= m.back().second) m.back().second = std::max(m.back().second, r.second);
         else m.push_back(r);
     }
-    pool_cap_ranges.swap(m);
+    // A periodic refresh may find the same union. Keep both threads' merged
+    // capture ranges valid unless membership actually changed.
+    if (m != pool_cap_ranges) {
+        pool_cap_ranges.swap(m);
+        cap_ranges_ver++;
+    }
 }
 bool capture_on() {
     static const bool on = [] {
@@ -1172,6 +1202,13 @@ const uint8_t* memory_as_submitted(uint64_t guest, const uint8_t* live, uint64_t
     if (!n || !shadow_n.load(std::memory_order_relaxed) || overlay_off()) return live;
     std::lock_guard lk(shadow_mu);
     bool any = false;
+    // Append live gaps and submitted pages directly; reserve avoids zero-initializing a second full snapshot.
+    const bool inplace = scratch.data() == live;
+    // A separate snapshot always uses the saved bytes. Comparing live bytes in
+    // that path only feeds diagnostics and can fault/read the whole source twice.
+    static const bool compare_stats = getenv("RX_VK_SHADOW_COMPARE_STATS") && atoi(getenv("RX_VK_SHADOW_COMPARE_STATS")) != 0;
+    uint64_t copied = guest;
+    int64_t overlaid = 0, differed = 0;
     for (uint64_t r = guest >> 21; r <= (guest + n - 1) >> 21; r++) {
         if (!shadow_regions.count((uint32_t)r)) continue;
         const uint64_t p0 = std::max(guest >> 12, r << 9), p1 = std::min((guest + n + 4095) >> 12, (r + 1) << 9);
@@ -1180,19 +1217,31 @@ const uint8_t* memory_as_submitted(uint64_t guest, const uint8_t* live, uint64_t
             if (it == shadow.end()) continue;
             if (!any) {
                 any = true;
-                if (scratch.data() != live) scratch.assign(live, live + n);
+                if (!inplace) { scratch.clear(); scratch.reserve(n); }
             }
             const uint64_t a = std::max(p << 12, guest), b = std::min((p + 1) << 12, guest + n);
-            st_overlaid++;
-            if (std::memcmp(scratch.data() + (a - guest), it->second.b.get() + (a - (p << 12)), b - a)) st_differed++;
-            std::memcpy(scratch.data() + (a - guest), it->second.b.get() + (a - (p << 12)), b - a);
+            overlaid++;
+            const uint8_t* saved = it->second.b.get() + (a - (p << 12));
+            const bool changed = (inplace || compare_stats) && std::memcmp(live + (a - guest), saved, b - a) != 0;
+            if (changed) differed++;
+            if (inplace) {
+                if (changed) std::memcpy(scratch.data() + (a - guest), saved, b - a);
+            } else {
+                if (a > copied) scratch.insert(scratch.end(), live + (copied - guest), live + (a - guest));
+                scratch.insert(scratch.end(), saved, saved + (b - a));
+                copied = b;
+            }
         }
     }
+    if (any && !inplace && copied < guest + n) scratch.insert(scratch.end(), live + (copied - guest), live + n);
+    // Publish statistics once per snapshot, not with an atomic operation for every page.
+    if (overlaid) st_overlaid.fetch_add(overlaid, std::memory_order_relaxed);
+    if (differed) st_differed.fetch_add(differed, std::memory_order_relaxed);
     static std::atomic<int64_t> served{0};
     if (any && served.fetch_add(1) % 2000 == 0)
         logf("vk: texture storage read as submitted (%lld times; %lld pages from the copies, %lld of them rewritten in "
-             "guest memory since their submit; %zu pages kept, %zu spans, %llu MB)", (long long)served.load(),
-             (long long)st_overlaid.load(), (long long)st_differed.load(), shadow.size(), tex_spans.size(),
+             "guest memory since their submit, %s; %zu pages kept, %zu spans, %llu MB)", (long long)served.load(),
+             (long long)st_overlaid.load(), (long long)st_differed.load(), compare_stats ? "all copies compared" : "in-place copies compared only", shadow.size(), tex_spans.size(),
              (unsigned long long)(tex_merged_bytes >> 20));
     return any ? scratch.data() : live;
 }
@@ -1387,6 +1436,7 @@ struct CopyHelpers {
     bool started = false;
 } copy_helpers;
 void copy_helper_main() {
+    background_thread_affinity(host->reserved_cpus ? host->reserved_cpus() : 0);
     SetThreadDescription(GetCurrentThread(), L"mkw_vk capture copy");
     for (;;) {
         CopyPart w;
@@ -1412,6 +1462,7 @@ int capture_copy_helpers() {   // (copy_pages and copy_pairs share one pool of h
 /// helper has taken yet the caller runs itself once its first is done, rather than waiting behind what another caller
 /// queued before them (copy_pairs runs with pools_mu and shadow_mu held, copy_pages' guest copies can take milliseconds)
 void copy_split(CopyPart whole, int64_t n) {
+    StageTrace trace("capture_copy", 0, n > 0 ? (uint64_t)n : 0);
     const int helpers = capture_copy_helpers();
     if (!helpers || n < 128) return copy_part({whole.pages, 0, n, whole.out, whole.ok, whole.pairs});
     const int k = helpers + 1;
@@ -1464,6 +1515,7 @@ void memory_capture_submit() {
 }
 /// (the pages the CPU wrote since the last capture, copied now: a submit's capture, or memory_capture_now's)
 std::unique_ptr<Capture> capture_make() {
+    StageTrace trace("capture_make", 0);
     if (!capture_on()) return nullptr;
     const auto t0 = std::chrono::steady_clock::now();
     std::unique_ptr<Capture> c;
@@ -1473,6 +1525,7 @@ std::unique_ptr<Capture> capture_make() {
     }
     if (!c) c = std::make_unique<Capture>();
     c->pages.clear(), c->copied.clear(), c->slots.clear(), c->nbytes = 0, c->late.clear(), c->late_value = 0;
+    c->cpu.reset();
     if (c->map) cap_buf_free(c->buffer, c->alloc, c->map, c->bsize), c->buffer = VK_NULL_HANDLE, c->map = nullptr;
     // (only the pools mirrored in VRAM, the ones the mirrors are filled from, and only their part of the write marks:
     // every written page was taken at first (hundreds of MB a submit where the game streams its world), and the whole
@@ -1500,12 +1553,15 @@ std::unique_ptr<Capture> capture_make() {
             }
         }
     }
+    trace.mark("prepare_ranges");
     captures_seen.store(true, std::memory_order_relaxed);
     const auto t_lock = std::chrono::steady_clock::now();
     uint32_t* pages = nullptr;
     const int64_t n = mirrored.empty() || !host->collect_written_in ? 0
                     : host->collect_written_in(reinterpret_cast<const uint64_t(*)[2]>(mirrored.data()), (int)mirrored.size(), &pages);
     const auto t_scan = std::chrono::steady_clock::now();
+    trace.dirty = n > 0 ? (uint64_t)n : 0;
+    trace.mark("scan_written");
     // (hookshot) A page the CPU wrote that a submission still on the GPU writes back: the copy waits for that write-back.
     // OoT's exposure meter page is written by both: the GPU adds the frame's light into it and the CPU sets the sums back to
     // 0 and fills in the rest. The CPU runs a frame ahead, and a copy taken before the write-back had landed had the GPU's
@@ -1532,20 +1588,43 @@ std::unique_ptr<Capture> capture_make() {
         if (v && cap_wait == 2) c->late_value = v;
         else if (v) vk_timeline_wait(v);
     }
+    trace.mark("writeback_dependencies");
     if (n > 0) shadow_written(pages, n);
+    trace.mark("shadow_written");
     if (n > 0) {
+        StageTrace allocation("capture_snapshot_allocate", 0, (uint64_t)n);
         c->pages.assign(pages, pages + n);
+        allocation.mark("assign_page_indices");
         if ((uint64_t)n * 4096 <= (256ull << 20) &&   // (a load writes more: those are read later, as before)
             cap_buf_get((uint64_t)n * 4096, c->buffer, c->alloc, c->map, c->bsize)) {
+            allocation.mark("buffer_get_inclusive");
             static thread_local std::vector<uint8_t> ok;
             ok.assign((size_t)n, 0);
-            copy_pages(pages, n, (uint8_t*)c->map, ok.data());
+            allocation.mark("initialize_copy_flags");
+            static const bool cpu_shadow = getenv("RX_VK_CAPTURE_CPU_UNCACHED") && atoi(getenv("RX_VK_CAPTURE_CPU_UNCACHED")) != 0;
+            if (cpu_shadow && !(allocation_memory_flags(c->alloc) & VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
+                c->cpu.allocate((uint64_t)n * 4096);
+            allocation.mark("allocate_cpu_shadow");
+            allocation.finish();
+            uint8_t* snapshot = c->cpu ? c->cpu.get() : (uint8_t*)c->map;
+            trace.mark("allocate_snapshot");
+            copy_pages(pages, n, snapshot, ok.data());
+            trace.mark("copy_pages_inclusive");
+            if (c->cpu)
+                for (int64_t i = 0; i < n;) {
+                    if (!ok[i]) { ++i; continue; }
+                    const int64_t first = i++;
+                    while (i < n && ok[i]) ++i;
+                    std::memcpy((uint8_t*)c->map + first * 4096, snapshot + first * 4096, (size_t)(i - first) * 4096);
+                }
+            trace.mark("upload_cpu_snapshot");
             for (int64_t i = 0; i < n; i++)
                 if (ok[i]) c->copied.push_back(pages[i]), c->slots.push_back((uint32_t)i);
             c->nbytes = (size_t)n * 4096;
             flush_mapped(c->alloc, c->nbytes);
         }
     }
+    trace.mark("flush_mapping");
     if (pages) host->free_pages(pages);
     {   // (what it cost, every 600 submits)
         static int64_t subs, written, copied;
@@ -1602,6 +1681,10 @@ void memory_recording_value(uint64_t value, uint64_t completed) {
     if (completed > mem_completed) mem_completed = completed;
 }
 bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed) {
+    StageTrace trace(c->cpu ? "take_capture_cpu_shadow" : "take_capture", value, c->pages.size(), c->copied.size(), c->late.size());
+    // One rotating page per capture, not per-page timers in the full hot loop.
+    // Declared before the locks: trace output happens only after their release.
+    if (trace.active) trace.memory_flags = allocation_memory_flags(c->alloc);
     const auto tk0 = std::chrono::steady_clock::now();
     if (c->late_value && c->map) {   // (the pages a submission still on the GPU writes back: see capture_make)
         // (timed apart: the replay thread waits here for the GPU, the more often the fewer pools have a mirror. With
@@ -1609,17 +1692,23 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         // 35-45 fps instead of 55, issue 995)
         const auto tw = std::chrono::steady_clock::now();
         vk_timeline_wait(c->late_value);
+        trace.mark("late_gpu_wait");
         st_tk_late += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tw).count();
         st_tk_late_n++;
         uint8_t* const base = (uint8_t*)host->guest_base();
-        for (uint32_t i : c->late)
-            guarded_copy((uint8_t*)c->map + (uint64_t)i * 4096, base + ((uint64_t)c->pages[i] << kPageShift), 4096);
+        for (uint32_t i : c->late) {
+            uint8_t* snapshot = c->cpu ? c->cpu.get() : (uint8_t*)c->map;
+            guarded_copy(snapshot + (uint64_t)i * 4096, base + ((uint64_t)c->pages[i] << kPageShift), 4096);
+            if (c->cpu) std::memcpy((uint8_t*)c->map + (uint64_t)i * 4096, snapshot + (uint64_t)i * 4096, 4096);
+        }
         flush_mapped(c->alloc, c->nbytes);
     }
+    trace.mark("late_copy_flush");
     const auto tl = std::chrono::steady_clock::now();
     std::lock_guard lk(pools_mu);
     const auto tk_locked = std::chrono::steady_clock::now();
     st_tk_lock += std::chrono::duration<double, std::milli>(tk_locked - tl).count();
+    trace.mark("pools_lock_wait");
     cur_cap_value = value;
     cur_cap_gen = 0;
     // (captures past the last kKeep, or past the byte budget, retired once the work that read them is done)
@@ -1629,14 +1718,17 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         if (!over || std::max(oldest->second.value, oldest->second.last_use) > completed) break;
         cap_buf_retire(oldest);
     }
+    trace.mark("retire_buffers");
     uint32_t g = 0;
     if (!c->pages.empty()) {
         g = ++gen_now;
         for (uint32_t p : c->pages) stamp_page(p, g);
         pages_collected += c->pages.size();
     }
+    trace.mark("stamp_pages");
     if (!c->pages.empty() && tex_capture_on()) {   // (the texture storage it took: the shadow, as of this submit)
         std::lock_guard sk(shadow_mu);
+        trace.mark("shadow_lock_wait");
         shadow_seq++;
         // (the copies of pages no capture took in the last 256 submits go, over 32 MB of them, every 256 captures: such a page is what guest
         // memory holds (a write drops its copy), and the cap's sweep below came only at 256 MB. RX_VK_SHADOW_SWEEP_OFF=1: the cap's alone)
@@ -1649,6 +1741,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                 it = shadow.erase(it);
                 shadow_n--;
             }
+        trace.mark("shadow_age_sweep");
         if (!tex_merged.empty()) {
             // (every page written since the last capture: its old copy is stale; the ones copied now replace it)
             // (hookshot: those copied now are overwritten in place below, their buffers kept: erasing every written page and
@@ -1675,6 +1768,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                 if (shadow_n.load(std::memory_order_relaxed) >= kShadowMax && !shadow.count(p)) {
                     if (swept) break;
                     swept = true;
+                    trace.mark("shadow_update_before_capacity_sweep");
                     for (auto it = shadow.begin(); it != shadow.end();) {
                         if (it->second.seq + 64 >= shadow_seq) { ++it; continue; }
                         auto r = shadow_regions.find(it->first >> 9);
@@ -1682,6 +1776,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                         it = shadow.erase(it);
                         shadow_n--;
                     }
+                    trace.mark("shadow_capacity_sweep");
                     if (shadow_n.load(std::memory_order_relaxed) >= kShadowMax) break;
                 }
                 ShadowPage& slot = shadow[p];
@@ -1691,7 +1786,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                     shadow_n++;
                 }
                 slot.seq = shadow_seq;
-                pairs.push_back({slot.b.get(), (const uint8_t*)c->map + (uint64_t)c->slots[i] * 4096});
+                pairs.push_back({slot.b.get(), (c->cpu ? c->cpu.get() : (const uint8_t*)c->map) + (uint64_t)c->slots[i] * 4096});
             }
             // (shadow_mu still held: no slot taken here goes before its copy; the sweep above drops only older ones)
             if (!pairs.empty()) copy_pairs(pairs.data(), (int64_t)pairs.size());
@@ -1699,6 +1794,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                 if (in_tex_merged((uint64_t)c->copied[i] << 12)) shadow_erase(c->copied[i]);
         }
     }
+    trace.mark("shadow_update");
     const auto tk1 = std::chrono::steady_clock::now();
     if (!c->copied.empty() && g && c->map) {   // (its buffer kept with the captures, for the mirror syncs)
         CapBuf b{value, c->buffer, c->alloc, c->bsize, c->map};
@@ -1708,7 +1804,9 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         cur_cap_gen = g;
         for (size_t i = 0; i < c->copied.size(); i++) cap_entry_set(c->copied[i], CapEntry{g, c->slots[i]});
     }
+    trace.mark("publish_capture");
     cap_view_bump();
+    c->cpu.reset();
     if (c->map) cap_buf_free(c->buffer, c->alloc, c->map, c->bsize), c->buffer = VK_NULL_HANDLE, c->map = nullptr;
     {
         std::lock_guard lk(cap_mu);
@@ -2009,32 +2107,40 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
         Pool p;
         bool ok = false;
         for (int pass = 0; pass < 2 && !ok; pass++) {
-            if (pass) {   // (a spanned import that failed: the range without the span, as imported before)
+            if (pass) {
                 plan(false);
                 if (lo == spanned_lo && hi == spanned_hi) break;
             }
             const auto t0 = std::chrono::steady_clock::now();
             ok = import_pool(lo, hi, p);
-            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-            static double total_ms;
-            static int n, logged;
-            total_ms += ms, n++;
-            if ((ms >= 2.0 && logged++ < 200) || n % 256 == 0)
-                logf("vk: pool %#llx+%#llx imported in %.1f ms as %#llx..%#llx (%d imports, %.0f ms in all)",
-                     (unsigned long long)range.lo, (unsigned long long)(range.hi - range.lo), ms, (unsigned long long)lo,
-                     (unsigned long long)hi, n, total_ms);
-        }
-        if (!ok) {
-            if (!import_cooling && failures++ < 16) {
-                if (import_result != VK_SUCCESS)
-                    logf("vk: pool %#llx+%#llx not imported (VkResult %d)", (unsigned long long)range.lo,
-                         (unsigned long long)(range.hi - range.lo), (int)import_result);
-                else
-                    logf("vk: pool %#llx+%#llx not imported", (unsigned long long)range.lo,
-                         (unsigned long long)(range.hi - range.lo));
+            {
+                // A cooldown is a rejected lookup, not a Vulkan import. Counting every lookup
+                // here previously logged millions of successful-looking "imports" while draws
+                // were actually being skipped because the buffers could not be allocated.
+                static uint64_t attempts, succeeded, failed, deferred;
+                static double total_ms;
+                static int slow_logged;
+                if (import_cooling) {
+                    deferred++;
+                } else {
+                    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                    total_ms += ms, attempts++;
+                    if (ok) succeeded++; else failed++;
+                    if ((!ok && failed <= 16) || (ms >= 2.0 && slow_logged++ < 200) || attempts % 256 == 0) {
+                        char result[64];
+                        if (import_result != VK_SUCCESS) snprintf(result, sizeof result, "VkResult %d", (int)import_result);
+                        else snprintf(result, sizeof result, "no Vulkan error reported");
+                        logf("vk: pool %#llx+%#llx: import %s at %s (%s), range %#llx..%#llx, %.1f ms; "
+                             "on-demand: %llu attempts, %llu succeeded, %llu failed, %llu deferred, %.0f ms in all",
+                             (unsigned long long)range.lo, (unsigned long long)(range.hi - range.lo), ok ? "succeeded" : "failed",
+                             import_stage, result, (unsigned long long)lo, (unsigned long long)hi, ms,
+                             (unsigned long long)attempts, (unsigned long long)succeeded, (unsigned long long)failed,
+                             (unsigned long long)deferred, total_ms);
+                    }
+                }
             }
-            return nullptr;
         }
+        if (!ok) return nullptr;
         for (uint64_t k : overlapped) {   // (the pools it took in)
             auto o = imported.find(k);
             if (o != imported.end()) retire_pool(o);
@@ -2536,8 +2642,10 @@ void memory_pool_created(uint64_t gpu, uint64_t size) {
 }
 
 int memory_guest_imported(uint64_t lo, uint64_t hi) {
+    if (hi <= lo) return 0;
     std::lock_guard lk(pools_mu);
-    auto it = imported.upper_bound(hi);   // (pools by lo: those starting below hi, the last ones checked first)
+    // Guest ranges are half-open: an import starting at hi must not keep these freed pages resident.
+    auto it = imported.lower_bound(hi);   // (pools by lo: those starting below hi, the last ones checked first)
     while (it != imported.begin()) {
         --it;
         if (it->second.hi > lo) return 1;
