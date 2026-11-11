@@ -3,7 +3,8 @@
 Auto is what the renderer chose before the row (mailbox where the driver has it; on Windows immediate when it has no
 mailbox), On is FIFO and Off immediate. The row is saved as vsync= and no Quality preset sets it. The environment's
 switches apply where the mode is chosen (menu_vsync), so they never reach hookshot_options.ini. Compile menu_vsync with
-the menu's Options and check the swapchain and present code by their text. No game or GPU is needed.
+the menu's Options, run create_swapchain's own choice of mode over the lists drivers give (as on Windows and on Linux),
+and check the swapchain and present code by their text. No game or GPU is needed.
 """
 import argparse
 import os
@@ -57,6 +58,38 @@ int main() {
 """
 
 
+# (create_swapchain's choice of mode, the real lines, over what drivers list: Windows and Linux)
+CHOICE = r"""
+#include <cstdio>
+#include <vector>
+enum VkPresentModeKHR { VK_PRESENT_MODE_IMMEDIATE_KHR = 0, VK_PRESENT_MODE_MAILBOX_KHR = 1, VK_PRESENT_MODE_FIFO_KHR = 2 };
+int row = 0;
+int menu_vsync() { return row; }
+VkPresentModeKHR choose(const std::vector<VkPresentModeKHR>& modes) {
+/* CHOICE */
+    return mode;
+}
+int main() {
+    const VkPresentModeKHR I = VK_PRESENT_MODE_IMMEDIATE_KHR, M = VK_PRESENT_MODE_MAILBOX_KHR, F = VK_PRESENT_MODE_FIFO_KHR;
+    const std::vector<VkPresentModeKHR> all{F, M, I}, no_mailbox{F, I}, fifo_only{F};
+    const bool windows = HOOKSHOT_TEST_WINDOWS;
+    struct Case { int row; const std::vector<VkPresentModeKHR>* modes; VkPresentModeKHR want; } cases[] = {
+        {0, &all, M}, {0, &no_mailbox, windows ? I : F}, {0, &fifo_only, F},   // (Auto: as before the row)
+        {1, &all, F}, {1, &no_mailbox, F}, {1, &fifo_only, F},                 // (On: FIFO)
+        {2, &all, I}, {2, &no_mailbox, I}, {2, &fifo_only, F},                 // (Off: immediate where there is one)
+    };
+    for (const Case& c : cases) {
+        row = c.row;
+        if (choose(*c.modes) != c.want) {
+            std::fprintf(stderr, "FAIL: V-Sync %d chose mode %d, wanted %d\n", c.row, (int)choose(*c.modes), (int)c.want);
+            return 1;
+        }
+    }
+    std::puts(windows ? "PASS: the present mode for each V-Sync choice (Windows)" : "PASS: the present mode for each V-Sync choice (Linux)");
+}
+"""
+
+
 def need(text, pattern, why):
     if not re.search(pattern, text, re.S):
         raise SystemExit("FAIL: " + why)
@@ -82,6 +115,22 @@ def main():
     need(swap, r"want_immediate = vsync == 2", "V-Sync Off does not ask for immediate")
     present = block(replay, "void present_image(")
     need(present, r"vsync_changed", "a V-Sync change does not make the swapchain again")
+
+    choice = swap[swap.index("    VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;"):swap.index("    VkSwapchainCreateInfoKHR ci{")]
+    choice = choice.replace("#ifdef _WIN32", "#if HOOKSHOT_TEST_WINDOWS")
+    with tempfile.TemporaryDirectory(prefix="vsync-choice-") as tmp:
+        for windows in (0, 1):
+            src = Path(tmp) / "choice.cpp"
+            exe = Path(tmp) / ("choice%d%s" % (windows, ".exe" if os.name == "nt" else ""))
+            src.write_text(CHOICE.replace("/* CHOICE */", choice), encoding="utf-8")
+            if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
+                command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/DHOOKSHOT_TEST_WINDOWS=%d" % windows, str(src),
+                           "/Fo" + str(Path(tmp) / "choice.obj"), "/Fe" + str(exe)]
+            else:
+                command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-DHOOKSHOT_TEST_WINDOWS=%d" % windows,
+                           str(src), "-o", str(exe)]
+            subprocess.run(command, cwd=tmp, check=True)
+            subprocess.run([str(exe)], check=True)
 
     options = re.search(r"struct Options \{.*?\n\};", header, re.S)
     vsync = re.search(r"int menu_vsync\(\) \{[^\n]*\}", menu)

@@ -10,6 +10,7 @@
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
 #include "hos_paths.h"
+#include "hos_wide_size.h"   /* (the widescreen picture's size, shared with the Insert menu) */
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/oot_cheat_items.h"
 #include <math.h>
@@ -437,6 +438,27 @@ int hos_oot_is_player(Ctx *c, uint64_t actor) {
     return resource && recomp_load32(c, resource + 88) == 0x79616c50 &&
            recomp_load16(c, resource + 92) == 0x7265 &&
            recomp_load8(c, resource + 94) == 0;
+}
+
+/* Movement speed (the Debug tab's row): Link's character controller and the row's percent, as oot_player_speed saw them on
+   his last update (0: none, or 1x) */
+static uint64_t oot_speed_controller;
+static int oot_speed_percent = 100;
+
+/* A character controller's forward speed being set (nx2/oot_patches.py patch_cct_speed: s0, in metres a second, or a frame when
+   per_second is 0): Link's scaled by the row while it is above 1x and the player steers him (a scene's walk, as the one into a
+   map, keeps its pace), the physics step moving him by it with its collisions. Only speeds up to 15 m/s (his run is 4.5): a ledge
+   climb sets some 55 for a frame, and scaled it threw him past the ledge. Every other controller as it is. */
+void hos_oot_cct_speed(Ctx *c, uint64_t controller, int per_second) {
+    if (!controller || controller != __atomic_load_n(&oot_speed_controller, __ATOMIC_RELAXED)) return;
+    const int percent = __atomic_load_n(&oot_speed_percent, __ATOMIC_RELAXED);
+    int hos_move_stick_held(void);   /* host/nn_hid.c */
+    if (percent <= 100 || percent > 400 || !hos_move_stick_held()) return;
+    float speed;
+    memcpy(&speed, &c->vreg[0][0], sizeof speed);
+    if (!(fabsf(speed) * (per_second ? 1.0f : 60.0f) <= 15.0f)) return;   /* (and NaN) */
+    speed *= percent / 100.0f;
+    memcpy(&c->vreg[0][0], &speed, sizeof speed);
 }
 
 #if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
@@ -933,6 +955,32 @@ static _Thread_local uint64_t flight_pose_actor;
 static _Thread_local float flight_transform_yaw;
 static int64_t flight_player_seen;
 
+/* Link's controller (vtable 0x84c54f10, the one OneShotPhysicsCctChangePosition moves) from his components, 0 when the chain
+   is not there */
+static uint64_t oot_player_controller(Ctx *c, uint64_t components) {
+    const unsigned offsets[] = {80, 32, 16, 8};
+    uint64_t controller = components;
+    for (unsigned i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
+        controller = recomp_load64(c, controller + offsets[i]);
+        if (!controller) return 0;
+    }
+    return recomp_load64(c, controller) == 0x84c54f10ULL ? controller : 0;
+}
+
+/* Movement speed (the Debug tab's row, HOS_OPT_CHEAT_SPEED in percent): Link's controller and the percent for
+   hos_oot_cct_speed, which scales the forward speed the game sets on it. (The controller's speed rate beside it, +476, is no
+   use: the game sets it again before each step.) */
+static void oot_player_speed(Ctx *c, uint64_t components) {
+    int rx_option(int id, int otherwise);
+    static int logged = 100;
+    int percent = rx_option(HOS_OPT_CHEAT_SPEED, 100);
+    if (percent < 100 || percent > 400) percent = 100;
+    __atomic_store_n(&oot_speed_controller, percent > 100 ? oot_player_controller(c, components) : 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&oot_speed_percent, percent, __ATOMIC_RELAXED);
+    if (percent != logged) hos_log("cheats: movement speed %d%%", percent);
+    logged = percent;
+}
+
 static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {
     int rx_option(int id, int otherwise);
     static uint64_t flying_actor, marked_actor, marked_controller;
@@ -948,6 +996,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     if (!action) action = __atomic_exchange_n(&hos_oot_live_action, 0, __ATOMIC_RELAXED);
     oot_teleport_followup(c);
     oot_inventory_refresh(c, now);
+    oot_player_speed(c, components);
     if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {
         oot_inventory_edit(c, action);
     } else if (action == OOT_AGE_ACTION) {
@@ -962,14 +1011,8 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     if (!flying && action != 2 && action != 3) return;
 
     // Follow OneShotPhysicsCctChangePosition to Link's controller.
-    const unsigned offsets[] = {80, 32, 16, 8};
-    uint64_t controller = components;
-    for (unsigned i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
-        controller = recomp_load64(c, controller + offsets[i]);
-        if (!controller) return;
-    }
-    const uint64_t vtable = recomp_load64(c, controller);
-    if (vtable != 0x84c54f10ULL || recomp_load64(c, vtable + 0xe8) != 0x806d2530ULL) return;
+    const uint64_t controller = oot_player_controller(c, components);
+    if (!controller || recomp_load64(c, 0x84c54f10ULL + 0xe8) != 0x806d2530ULL) return;
     A64Fn change_position = a64_lookup(0x806d2530ULL);
     if (!change_position) return;
 
@@ -1481,17 +1524,12 @@ static int game_main(int argc, char **argv) {
            cameras take its ratio, and the HUD fills its width instead of a middle 16:9 wider than the screen. A 4:3 CRT
            at the 1440 output: picture 1920 x 1440, scene 1440 x 1080, HUD 100%) */
         if (want > game * 1.01 || (want > 1.0f && want < game * 0.99)) {
-            double r = want > 32.0 / 9.0 ? 32.0 / 9.0 : want < 5.0 / 4.0 ? 5.0 / 4.0 : want;
+            const double r = hos_wide_clamp(want);
             uint32_t hos_output_size(int height);   /* (host/nn_applet.c: the Output resolution's height, 1440 as shipped) */
-            unsigned oh = hos_output_size(1), ow = (unsigned)(oh * r / 8 + 0.5) * 8;   /* (whole multiples of 8 pixels) */
-            /* (at most 3840 x 2160's pixels, the shape kept: the game's render targets come from a pool sized for its picture
-               (host/nn_applet.c hos_rt_pool_size), and a 32:9 screen at the 4K output made a 7680 x 2160 one. Its pool at the
-               output's size ran out as Kokiri Forest loaded (a null pointer, issue 1031); a pool for the whole picture, 1.4 GB,
-               failed the game's own reservation at boot. 5400 x 1520 there, more than the 5120 x 1440 screens it was seen on) */
-            if ((double)ow * oh > 3840.0 * 2160.0) {
-                oh = (unsigned)(sqrt(3840.0 * 2160.0 / r) / 8) * 8;
-                ow = (unsigned)(oh * r / 8) * 8;
-            }
+            /* (the height kept, the width at the screen's ratio, at most 3840 x 2160's pixels with the shape kept:
+               host/hos_wide_size.h, which the Insert menu's Output and Render resolution rows share; issue 1031) */
+            unsigned ow, oh;
+            hos_wide_size(hos_output_size(1), r, hos_wide_max_px(), &ow, &oh);
             const unsigned sh = oh * 3 / 4, sw = (unsigned)(ow * 0.75 / 8 + 0.5) * 8;   /* (the scene, 3/4 of the picture as shipped) */
             hos_wide_out = (uint64_t)oh << 32 | ow;
             hos_wide_scene = (uint64_t)sh << 32 | sw;
@@ -1555,10 +1593,21 @@ static DWORD WINAPI game_thread(void *p) {
     (void)p;
     ExitProcess((UINT)game_main(game_argc, game_argv));
 }
+/* (hookshot, linux) Room in the drivers' own shader caches for what the preparation builds. The pipelines the notes predict (~43,000
+   in OoT, vk_draw.cpp predict_run) are built into the driver's disk cache alone, not into mkw_vk_pipelines.bin, which is read in whole
+   at every start. NVIDIA's cache holds 1 GiB by default and cleans itself down to that as it is written: a full preparation filled
+   it to the limit (1026 MB) and the pipelines it dropped were compiled again in play. Mesa's (RADV, ANV) has the same 1 GiB default.
+   Raised for this process only, before anything loads Vulkan; a value the player set (or hookshot_env.txt) is kept. Windows: the
+   NVIDIA driver takes its size from the control panel's Shader Cache Size, which a program cannot set (readme) */
+static void driver_cache_room(void) {
+    setenv("__GL_SHADER_DISK_CACHE_SIZE", "10737418240", 0);   /* (10 GiB, bytes) */
+    setenv("MESA_SHADER_CACHE_MAX_SIZE", "10G", 0);
+}
 int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
     load_hookshot_env();
+    driver_cache_room();
     game_argc = argc, game_argv = argv;
     int prepare_shaders = 0;
     for (int i = 1; i < argc; i++) {

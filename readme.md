@@ -154,6 +154,19 @@ with `--update <game folder>`.
 
 </details>
 
+### Latest development build
+
+Want a fix before it is in a release? The
+[latest development build](https://github.com/NotRexed/Hookshot/releases/tag/nightly) is made from `main` after every
+change, with the same files as a release. It is untested and may break your saves or settings: copy them first (see
+above).
+
+- **Windows:** download `HookshotBuilder.exe` from it and start it from a terminal as `HookshotBuilder.exe --tag nightly`
+  (without `--tag nightly` it installs the latest release instead).
+- **Linux:** download `Hookshot-<version>-x86_64.AppImage` from it and use it as above.
+
+To go back, install the [latest release](https://github.com/NotRexed/Hookshot/releases/latest) the usual way.
+
 ### Where the files go
 
 - The build reads your game and never changes it. It writes to the folder you choose and to the builder's own folder:
@@ -183,6 +196,7 @@ with `--update <game folder>`.
 | Steam Deck: the game freezes and closes in Kokiri Forest or the Great Deku Tree (`gfx_0.0.0 timeout` in `journalctl -k`) | `RX_VK_MESH_NOCULL=2c56dc1006942f74` in `hookshot_env.txt` gets past it with every model drawn (the culling pass that runs for seconds is turned off). `RX_VK_SKIP_CODE=2c56dc1006942f74` also gets past it, but the models those draws make go missing (see the [development guide](docs/development.md#switches-for-testing-and-debugging), [#817](https://github.com/NotRexed/Hookshot/issues/817)) |
 | "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, or add `%LOCALAPPDATA%\HookshotBuilder` to its exclusions, then press **Repair** |
 | Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again |
+| Windows, NVIDIA: stutter every start in places you have seen, after the shaders were prepared | The driver's shader cache is too small to keep them all (the first start builds about 2 GB of pipelines into it). In the NVIDIA Control Panel, Manage 3D settings, set **Shader Cache Size** to **Unlimited** (or 10 GB). On Linux the game raises the driver's limit itself |
 | The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all |
 
 If the problem continues, [report it](https://github.com/NotRexed/Hookshot/issues/new/choose) with the version, where
