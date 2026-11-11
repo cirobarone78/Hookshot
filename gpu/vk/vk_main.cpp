@@ -744,8 +744,8 @@ std::string skipped_path() {
 //   not tell a slow driver from a stuck one.
 // - When it stops for good: a driver that faults inside a pipeline compile (caught by guarded_graphics: "the driver faulted
 //   compiling", above) can be left holding a lock of its own, and every other thread that asks it for anything then waits for
-//   ever: builds stuck on Radeon and GeForce RTX 40 cards (#2107). No part can go on from there, as each needs the driver. So when
-//   nothing has moved for RX_VK_PREPARE_STALL_S seconds (300; 0: never stopped. Long: some steps read the caches or
+//   ever: builds stuck on players' cards of all kinds, AMD and NVIDIA (#2107). No part can go on from there, as each needs the
+//   driver. So when nothing has moved for RX_VK_PREPARE_STALL_S seconds (300; 0: never stopped. Long: some steps read the caches or
 //   decide the predictions for a while with no count, on a slow disk or CPU too), the run says where it stopped and why, leaves
 //   hookshot_prepare_skipped so the game's own starts do not stop in the same place (what was not prepared is built when first
 //   drawn), and ends at once with exit status 4 (make_game.py: "the GPU driver stopped responding"). Not through exit(): that
