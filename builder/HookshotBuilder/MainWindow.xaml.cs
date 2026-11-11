@@ -1006,6 +1006,9 @@ public partial class MainWindow : Window
         }
         log.Clear();
         Log.Clear();
+        // (an AMD FSR 4 tick saved before the builder asked for AMD's license builds with FSR 4 but fetches nothing: say so)
+        if (!fsr && FsrTick.IsChecked == true && !fsrLicense)
+            AddLog("AMD's license not accepted yet: tick AMD FSR 4 again to have its runtime fetched");
         current = null;
         finished = "";
         compiled = 0;
