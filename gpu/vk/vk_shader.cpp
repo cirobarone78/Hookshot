@@ -722,9 +722,17 @@ uint32_t descriptor_handle(const NvnState& s, const Stage& st, const Shader::Ima
 uint8_t texture_answer(uint32_t handle) {
     if (!handle) return 0xFF;
     // (by the texture slot, until a slot is registered anew: variant checks ask on every draw)
-    static thread_local std::unordered_map<uint32_t, std::pair<uint32_t, uint8_t>> known;   // slot -> (version, answer)
+    static thread_local std::vector<std::pair<uint32_t, uint8_t>> fast;
+    static thread_local std::unordered_map<uint32_t, std::pair<uint32_t, uint8_t>> known;   // slot >= 65536
     const uint32_t id = handle & 0xFFFFF;
     const uint32_t version = texture_slot_version((int)id);
+    if (id < 65536) {
+        if (id < fast.size() && fast[id].first == version) return fast[id].second;
+        if (id >= fast.size()) fast.resize(std::min<size_t>(65536, std::max<size_t>(id + 1, std::max<size_t>(fast.size() * 2, 1024))), {~0u, 0});
+        const uint8_t a = (uint8_t)((uint8_t)handle_texture_type(handle) | (handle_is_integer(handle) ? 0x80 : 0));
+        fast[id] = {version, a};
+        return a;
+    }
     if (auto it = known.find(id); it != known.end() && it->second.first == version) return it->second.second;
     const uint8_t a = (uint8_t)((uint8_t)handle_texture_type(handle) | (handle_is_integer(handle) ? 0x80 : 0));
     known[id] = {version, a};
@@ -1647,9 +1655,11 @@ uint64_t pick_inputs(const NvnState& s, const uint8_t color_types[8]) {
 }
 void answer_handles(const NvnState& s, const Program& p, std::vector<uint32_t>& out) {
     out.clear();
+    out.reserve(p.answers.size() * 2);
     for (const Program::Answer& a : p.answers) {
-        const uint32_t id = answer_handle(s, p, a) & 0xFFFFF;
-        out.push_back(id);
+        const uint32_t h = answer_handle(s, p, a);
+        const uint32_t id = h & 0xFFFFF;
+        out.push_back(h ? id | 0x80000000u : 0u);
         out.push_back(texture_slot_version((int)id));
     }
 }
@@ -1700,11 +1710,13 @@ uint64_t compute_code_key(const NvnState& s) {
 bool prog_same(int kind, uint64_t serial, uint64_t stages, uint64_t bind, uint64_t reg, uint64_t ub, int nvattr,
                const uint32_t* vattr, const uint8_t* ct, int ckind, uint64_t cserial, uint64_t cstages, uint64_t cbind,
                uint64_t creg, uint64_t cub, int cnvattr, const uint32_t* cvattr, const uint8_t* cct) {
-    if (kind != ckind || serial != cserial || stages != cstages || bind != cbind || reg != creg || ub != cub ||
-        nvattr != cnvattr)
+    if (kind != ckind || serial != cserial || stages != cstages || bind != cbind || reg != creg || ub != cub)
         return false;
-    for (int i = 0; i < 16; i++)
-        if (vattr[i] != cvattr[i]) return false;
+    if (kind != 2 /*Mesh*/) {
+        if (nvattr != cnvattr) return false;
+        for (int i = 0; i < 16; i++)
+            if (vattr[i] != cvattr[i]) return false;
+    }
     for (int i = 0; i < 8; i++)
         if (ct[i] != cct[i]) return false;
     return true;
@@ -1750,8 +1762,8 @@ thread_local ProgFast prog_fast[2];
 
 const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t color_types[8]) {
     if (!s.has_prog) return nullptr;
-    if (kind == ProgramKind::Mesh) return mesh_program_for(s, color_types);
     const bool compute = kind == ProgramKind::Compute;
+    const bool mesh = kind == ProgramKind::Mesh;
     static int64_t st_hit, st_none, st_differ, st_calls, st_by_tex;   // (logged now and then: how the cache does)
     if (++st_calls % 200000 == 0)
         logf("vk: program picks: %lld kept (%lld by the last picks' textures, a uniform buffer bound since), %lld new, %lld with other textures (of %lld)",
@@ -1778,7 +1790,10 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
             return st_hit++, f.p;
         }
     }
-    const uint64_t key = (compute ? 0x5EED : pick_inputs(s, color_types)) * 1099511628211ull ^ s.prog.serial;
+    uint64_t ct_bits = 0;
+    if (!compute) std::memcpy(&ct_bits, color_types, 8);
+    const uint64_t in_hash = compute ? 0x5EEDull : mesh ? (0x4E58ull * 1099511628211ull ^ ct_bits) : pick_inputs(s, color_types);
+    const uint64_t key = (in_hash * 1099511628211ull ^ stages) * 1099511628211ull ^ ((uint64_t)kind << 56 | s.prog.serial);
     Pick& pk = picks[key];
     auto keep = [&](const Program* p) {
         if (!p || !p->ready.load(std::memory_order_acquire) || p->failed) return p;
@@ -1793,19 +1808,37 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
         return p;
     };
     if (pk.p && pk.p->ready.load(std::memory_order_acquire) && !pk.p->failed) {
-        if (pk.p->answers.empty()) return st_hit++, keep(pk.p);
+        const size_t n = pk.p->answers.size();
+        if (n == 0) return st_hit++, keep(pk.p);
         static thread_local std::vector<uint32_t> now;
-        answer_handles(s, *pk.p, now);
-        if (now == pk.handles) return st_hit++, keep(pk.p);
+        const bool same_size = pk.handles.size() == n * 2;
+        bool same_handles = same_size, valid = true;
+        now.resize(n * 2);
+        for (size_t i = 0; i < n; i++) {
+            const Program::Answer& a = pk.p->answers[i];
+            const uint32_t h = answer_handle(s, *pk.p, a);
+            const uint32_t id = h & 0xFFFFF;
+            const uint32_t id_flag = h ? id | 0x80000000u : 0u;
+            const uint32_t ver = texture_slot_version((int)id);
+            now[i * 2] = id_flag;
+            now[i * 2 + 1] = ver;
+            if (same_size && pk.handles[i * 2] == id_flag && pk.handles[i * 2 + 1] == ver) continue;
+            same_handles = false;
+            if (h && canonical_answer(*pk.p, a, answer_of(h, a.image)) != canonical_answer(*pk.p, a, a.type)) {
+                valid = false;
+                break;
+            }
+        }
+        if (same_handles) return st_hit++, keep(pk.p);
         st_differ++;
-        if (still_valid(s, *pk.p)) {   // (other textures of the same types: the same variant)
+        if (valid) {   // (other textures of the same types: the same variant)
             pk.handles.swap(now);
             return keep(pk.p);
         }
     } else {
         st_none++;
     }
-    const Program* picked = program_pick(s, kind, color_types);
+    const Program* picked = mesh ? mesh_program_for(s, color_types) : program_pick(s, kind, color_types);
     if (picked && picked->ready.load(std::memory_order_acquire) && !picked->failed) {
         pk.p = picked;
         answer_handles(s, *picked, pk.handles);
