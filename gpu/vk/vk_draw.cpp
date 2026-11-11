@@ -8064,7 +8064,8 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     const size_t total = notes.size() + computes.size() + fallbacks.size();
     // (the workers' state on the heap: a start whose last pipelines never finish (two of 4926 on an RX 5700 XT, "stuck at
     // 99%", Discord 11-08) goes on to the game after PRE_STALL_S seconds with no progress, the stragglers left running; it is
-    // let go then, never freed. RX_VK_PRECOMPILE_STALL_S=<s>, 0: wait for all, as before)
+    // let go then, never freed. RX_VK_PRECOMPILE_STALL_S=<s>, 0: wait for all, as before; RX_VK_PRECOMPILE_JOBS=<n>: worker
+    // count override (1..64; default: half_cpus() clamped to 1..16))
     struct Pre {
         std::vector<std::unique_ptr<PipeNote>> notes;
         std::vector<Program*> computes, fallbacks;
@@ -8138,8 +8139,11 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         }
     };
     std::vector<std::thread> threads;
-    const unsigned cpus = usable_cpus();
-    for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
+    const char* env_jobs = getenv("RX_VK_PRECOMPILE_JOBS");
+    const int env_n = env_jobs ? atoi(env_jobs) : 0;
+    const unsigned workers = std::min(env_n > 0 ? (unsigned)env_n : std::clamp(half_cpus(), 1u, 16u), 64u);
+    logf("vk: precompile: %u workers (%zu pipelines)", workers, total);
+    for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     static const int stall_s = getenv("RX_VK_PRECOMPILE_STALL_S") ? atoi(getenv("RX_VK_PRECOMPILE_STALL_S")) : 30;
     size_t last_done = 0;
     auto last_change = std::chrono::steady_clock::now();

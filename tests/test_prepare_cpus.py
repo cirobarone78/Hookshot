@@ -106,7 +106,7 @@ def main():
 
     for fn, need in (("bool prepare_run(", "half_cpus()"), ("void state_list_prepare(", "half_cpus()"),
                      ("bool warm_libraries(", "half_cpus()"), ("void predict_run(", "usable_cpus()"),
-                     ("void precompile_run(", "usable_cpus()")):
+                     ("void precompile_run(", "half_cpus()")):
         text = body(draw, fn)
         if need not in text:
             raise SystemExit("FAIL: %s does not size its workers by %s" % (fn.split("(")[0], need))
