@@ -1286,6 +1286,27 @@ def lifted_before(work, key):
     return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c"))
 
 
+def forget_failed_build(work, linked):
+    """(hookshot) After a compile or link that failed. It forgets the lift: the next build translates the game again. A lifted file
+    cut short (an antivirus, a full disk, a stopped run: "g_module_b" for g_module_base, issue 1197) or lifted C another builder
+    left (20 undefined game functions at the link, issue 1176) otherwise failed the same way at every try, the key still matching.
+    linked: every file compiled and the link (or a step after it) failed: the compiled objects go too, as a cached runtime object
+    from another version linked with every object "compiled in 0s" and a64_dirty, a64_icall, a64_lookup, recomp_cntpct undefined,
+    at every try (issue 1197, Linux, v2.0.10). A compile that failed or was stopped (a compiler out of memory twice, the build
+    closed or killed) never linked: the objects it finished are kept (each is cached only once its compiler succeeded, named by
+    its source, flags and headers), so the next try compiles only the rest, not up to an hour again on a small PC"""
+    key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
+    if os.path.exists(key_file):
+        os.remove(key_file)
+    if not linked:
+        print("the build failed before the link: the next one translates the game again, and compiles only the files not "
+              "compiled yet", flush=True)
+        return
+    for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
+        shutil.rmtree(sub, ignore_errors=True)
+    print("the build failed: the next one translates and compiles the game again (nothing of this one is reused)", flush=True)
+
+
 def ngx_script():
     """scripts/ngx_sdk.py: NVIDIA's DLSS SDK, its file table and where each file goes"""
     import importlib.util
@@ -1699,20 +1720,16 @@ def main(a=None):
             parts = line.split(" ")
             if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
                 plan[:] = [int(parts[1]), int(parts[2])]
+    linking = []   # (build.py's "compiled in Ns, 0 failed": every object made, the link next)
+
+    def compile_line(line):
+        if re.match(r"compiled in \d+s, 0 failed$", line):
+            linking.append(line)
+        compiled(line)
     try:
-        run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
+        run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compile_line)
     except SystemExit:
-        # (hookshot) a compile or link that failed forgets the lift: the next build translates the game again. A lifted file cut short
-        # (an antivirus, a full disk, a stopped run: "g_module_b" for g_module_base, issue 1197) or lifted C another builder left (20
-        # undefined game functions at the link, issue 1176) otherwise failed the same way at every try, the key still matching
-        key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
-        if os.path.exists(key_file):
-            os.remove(key_file)
-        # (and its compiled objects go too: a cached runtime object from another version linked with every object "compiled in 0s"
-        # and a64_dirty, a64_icall, a64_lookup, recomp_cntpct undefined, at every try (issue 1197, Linux, v2.0.10))
-        for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
-            shutil.rmtree(sub, ignore_errors=True)
-        print("the build failed: the next one translates and compiles the game again (nothing of this one is reused)", flush=True)
+        forget_failed_build(work, bool(linking))
         raise
     compile_seconds = time.time() - compile_started
 
