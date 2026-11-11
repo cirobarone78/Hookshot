@@ -5,6 +5,7 @@
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #include "vk_internal.h"
+#include "memory_priority.h"
 #include <vk_mem_alloc.h>
 #include <algorithm>
 #include <atomic>
@@ -25,8 +26,11 @@ bool vma_init(PFN_vkGetInstanceProcAddr gipa) {
     f.vkGetInstanceProcAddr = gipa;
     f.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
     VmaAllocatorCreateInfo ci{};
+    // (VK_EXT_memory_priority: VMA passes each create-info's priority on. Every one below sets memory_priority::kNormal:
+    // left at {}, it would be 0, the lowest, the first moved out of VRAM)
     ci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT |
-               (dev.memory_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0);
+               (dev.memory_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0) |
+               (dev.memory_priority ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT : 0);
     ci.physicalDevice = dev.physical;
     ci.device = dev.device;
     ci.instance = dev.instance;
@@ -68,11 +72,13 @@ VmaPool target_images_pool() {
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    ai.priority = memory_priority::kNormal;
     uint32_t type = 0;
     if (vmaFindMemoryTypeIndexForImageInfo(vma, &rep, &ai, &type) != VK_SUCCESS) return VK_NULL_HANDLE;
     VmaPoolCreateInfo pi{};
     pi.memoryTypeIndex = type;
     pi.blockSize = kImageBlock;
+    pi.priority = memory_priority::kNormal;   // (left at {}, 0: the render targets would leave VRAM first)
     if (vmaCreatePool(vma, &pi, &target_image_pool) != VK_SUCCESS) target_image_pool = VK_NULL_HANDLE;
     logf("vk: render targets' images from blocks of their own (%llu MB, memory type %u)%s", (unsigned long long)(kImageBlock >> 20),
          type, target_image_pool ? "" : ": not made");
@@ -92,11 +98,13 @@ VmaPool images_pool() {
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    ai.priority = memory_priority::kNormal;
     uint32_t type = 0;
     if (vmaFindMemoryTypeIndexForImageInfo(vma, &rep, &ai, &type) != VK_SUCCESS) return VK_NULL_HANDLE;
     VmaPoolCreateInfo pi{};
     pi.memoryTypeIndex = type;
     pi.blockSize = kImageBlock;
+    pi.priority = memory_priority::kNormal;   // (its images take the block's: a texture in one keeps the default)
     if (vmaCreatePool(vma, &pi, &image_pool) != VK_SUCCESS) image_pool = VK_NULL_HANDLE;
     logf("vk: images from a pool of %llu MB blocks (memory type %u)%s", (unsigned long long)(kImageBlock >> 20), type,
          image_pool ? "" : ": not made");
@@ -122,11 +130,13 @@ VmaPool textures_pool() {
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    ai.priority = memory_priority::kNormal;
     uint32_t type = 0;
     if (vmaFindMemoryTypeIndexForImageInfo(vma, &rep, &ai, &type) != VK_SUCCESS) return VK_NULL_HANDLE;
     VmaPoolCreateInfo pi{};
     pi.memoryTypeIndex = type;
     pi.blockSize = kImageBlock;
+    pi.priority = memory_priority::kNormal;   // (left at {}, 0: every texture in it would leave VRAM first)
     if (vmaCreatePool(vma, &pi, &texture_pool) != VK_SUCCESS) texture_pool = VK_NULL_HANDLE;
     logf("vk: textures from a pool of their own, %llu MB blocks (RX_VK_COMPACT)%s", (unsigned long long)(kImageBlock >> 20),
          texture_pool ? "" : ": not made");
@@ -193,6 +203,7 @@ bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& al
     // (in VRAM or not at all: an image VMA puts in system memory when VRAM is full is read over PCIe every frame,
     // and takes the RAM the game and everything else on the machine need)
     ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    ai.priority = memory_priority::kNormal;
     if (dev.memory_budget) ai.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
     if (dedicated) {   // (a memory object of its own, which freeing gives back whole: a pool's block is kept by VMA when it empties)
         VmaAllocationCreateInfo dai = ai;
@@ -221,6 +232,7 @@ bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& al
     if (env_on("RX_VK_IMAGES_VRAM_ONLY")) return false;
     VmaAllocationCreateInfo sai{};
     sai.usage = VMA_MEMORY_USAGE_AUTO;
+    sai.priority = memory_priority::kNormal;
     if (vmaCreateImage(vma, &ci, &sai, &image, &allocation, nullptr) != VK_SUCCESS) return false;
     static std::atomic<int> told{0};
     if (told++ < 4) logf("vk: VRAM full: a %ux%u image (format %d) in system memory", ci.extent.width, ci.extent.height, (int)ci.format);
@@ -241,6 +253,7 @@ bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, V
     bi.usage = usage;
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO;
+    ai.priority = memory_priority::kNormal;
     if (host_visible) ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     // (a buffer with VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT gets VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT from VMA:
     // vma_init sets VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT)
@@ -260,6 +273,7 @@ bool create_buffer_cached(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
     bi.usage = usage;
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+    ai.priority = memory_priority::kNormal;
     ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     if (dedicated) ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;   // (its own memory object: no part of a 64 MB block left unused)
     VmaAllocationInfo info{};
@@ -292,9 +306,19 @@ bool create_device_buffer(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    ai.priority = memory_priority::kNormal;
     if (dev.memory_budget) ai.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
     if (dedicated) ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     return vmaCreateBuffer(vma, &bi, &ai, &buffer, &allocation, nullptr) == VK_SUCCESS;
+}
+int set_allocation_priority(VmaAllocation allocation, float priority) {
+    if (!dev.pageable_memory || !vkSetDeviceMemoryPriorityEXT || !allocation) return -1;
+    VmaAllocationInfo2 info{};
+    vmaGetAllocationInfo2(vma, allocation, &info);
+    // (one in a block shares its memory object with the others there: a priority set on it would move theirs too)
+    if (!info.dedicatedMemory || !info.allocationInfo.deviceMemory) return 0;
+    vkSetDeviceMemoryPriorityEXT(dev.device, info.allocationInfo.deviceMemory, priority);
+    return 1;
 }
 /// (every heap: what VMA has in blocks and allocations there, what the process uses of it, its budget; one line)
 /// The image pools: their blocks, the images in them, and the free ranges between them (every 600 presents, with the heaps)

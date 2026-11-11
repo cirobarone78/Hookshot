@@ -83,6 +83,8 @@ struct Texture {
     uint32_t key_layout = 0, key_cls = 0;   // (the key's storage layout and format class)
     bool vw_listed = false;   // (in the list of GPU-written textures of virtual pools: texture_flush_to_guest)
     uint64_t pool_key = 0;    // (a render target's image: its create info's key in the pool it goes to when the texture does)
+    float mem_priority = 0.5f;   // (the priority its memory was made at or last given: memory_priority.h, texture_priorities)
+    int8_t mem_own = -1;         // (its allocation a memory object of its own, whose priority can change: 1; in a block: 0; not asked: -1)
     std::unordered_map<uint64_t, VkImageView> views;
     uint64_t view_failed_frame = 0;   // (transient allocation failure: retry uncached views next frame, keep cached ones usable)
     struct BlockAttachment {

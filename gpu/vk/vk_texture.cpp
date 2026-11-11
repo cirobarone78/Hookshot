@@ -51,6 +51,7 @@
 #include "astc_bc_policy.h"
 #include "vram_compact.h"
 #include "evict_reason.h"
+#include "memory_priority.h"
 #include "keep_rendered.h"
 #include "target_overlap.h"
 #include "host_shaders/block_linear_unswizzle_2d_comp_spv.h"
@@ -3799,6 +3800,37 @@ uint64_t preset_texture_budget(uint64_t preset_mb, bool preset_applies, bool vra
     return integrated ? std::min(b, own) : b;
 }
 
+// (hookshot) with VK_EXT_pageable_device_local_memory, every 60 presents: a texture unused for RX_VK_PRIORITY_IDLE presents
+// (600) drops to the lowest priority, and is back at the default once used again (memory_priority.h). When the process holds
+// more VRAM than the driver allows, the driver moves the lowest out first: a course left behind, an area's terrain arrays,
+// not what the scene draws. Only memory of a texture's own changes: a dedicated allocation (the big ones, past the image
+// pool's blocks) or a sparse image's chunks. One in a pool block keeps the block's, the default
+static void texture_priorities() {
+    static const uint64_t idle = memory_priority::idle_presents(getenv("RX_VK_PRIORITY_IDLE"));
+    if (!idle || !vkSetDeviceMemoryPriorityEXT) return;
+    size_t idle_n = 0, changed = 0;
+    uint64_t idle_b = 0;
+    for (auto& kv : textures) {
+        Texture* t = kv.second.get();
+        const float want = memory_priority::for_texture(frame_no, t->last_frame, idle);
+        if (want != t->mem_priority) {
+            if (t->sparse) {
+                for (VkDeviceMemory m : t->sparse_chunks) vkSetDeviceMemoryPriorityEXT(dev.device, m, want);
+                t->mem_priority = want, changed++;
+            } else if (t->mem_own != 0) {
+                const int r = set_allocation_priority(t->allocation, want);
+                t->mem_own = r > 0 ? 1 : 0;   // (in a block, or no allocation: not asked again)
+                if (r > 0) t->mem_priority = want, changed++;
+            }
+        }
+        if (t->mem_priority == memory_priority::kIdle) idle_n++, idle_b += t->bytes;
+    }
+    static const bool log_all = env_on("RX_VK_LOG_PRIORITY");   // (each pass that changed one)
+    if (frame_no % 600 == 0 || (changed && log_all))
+        logf("vk: memory priority: %zu textures (%llu MB) at the idle priority, %zu changed now", idle_n,
+             (unsigned long long)(idle_b >> 20), changed);
+}
+
 void texture_frame(uint64_t completed) {
     upload_frame_report();
     frame_upload_ns.store(0, std::memory_order_relaxed);
@@ -3879,6 +3911,7 @@ void texture_frame(uint64_t completed) {
         }
     }
     bc_scratch_idle();
+    if (dev.pageable_memory && frame_no % 60 == 0) texture_priorities();
     compact_step(completed);   // (hookshot, RX_VK_COMPACT: while its pass is open nothing of the textures' pool is freed)
     for (auto it = dead.begin(); it != dead.end();) {
         if (compact.in_pass) break;   // (hookshot, RX_VK_COMPACT: nothing is freed while a pass is open; a frame or two)

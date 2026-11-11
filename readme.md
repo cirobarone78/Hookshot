@@ -842,6 +842,12 @@ memory sync: in Hyrule Field on a 10 GB RTX 3080, about 66 MB and 4.4 ms a submi
 `RX_VK_WB_MAX_KB=1024` still copies the small results the CPU does read (the exposure meter and the like) and took the
 same scene to 59-60 fps. `0` or unset copies every written binding, as before.
 
+`RX_VK_MEMORY_PRIORITY=1` tries the memory priorities, which tell the driver what to move out of video memory first when
+the game needs more than the card has: big textures left unused, such as an area you walked out of. They are off by
+default until players on 6-8 GB cards report whether they help. The log's `vk: memory priorities:` line says whether
+your driver has them. `RX_VK_PRIORITY_IDLE=<frames>` sets how long a texture goes unused before it drops (600, about
+10 seconds; 0: never).
+
 </details>
 
 ## How it works
