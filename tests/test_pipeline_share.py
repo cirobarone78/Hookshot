@@ -8,6 +8,8 @@
     loads (host/mods.c's rule), "where you played" left empty, and no path of the player's;
   - a list that is missing, not a list, cut short or empty is refused with the reason, and no zip is written;
   - the C++ and the Python agree: the same fields, the same checks; the Python's names for the options are the menu's;
+  - the list holds only pipelines the game drew: state_record() is reached only from draw() (never the precompile, predicted
+    pipelines or the shipped list);
   - the menu's row (Debug tab, under Developer) saves on Enter (not the Controls page's catch-all), opens nothing in a run without a window, and the builders
     (Linux: hookshot_builder.py; Windows: MainWindow.xaml.cs, through nx2/pipeline_share.py --json) offer the same.
 
@@ -318,6 +320,57 @@ def check_sources():
     assert share.ISSUE_URL in cs
 
 
+def body_of(source, signature):
+    at = source.find(signature)
+    assert at >= 0, signature + " is missing"
+    body = source[at:]
+    return body[:body.index("\n}\n")]
+
+
+def check_drawn_only():
+    """The list a player shares holds only pipelines the game drew on that PC: hookshot_pipeline_states.bin gets a record only from
+    state_record(), which only pipeline_note() calls, and only with the draw's colour types, which only graphics_pipeline() passes,
+    which only draw() calls. The precompile's notes, predicted pipelines (predict_run, vk_predict.cpp) and the shipped list never
+    reach it"""
+    draw = (ROOT / "gpu" / "vk" / "vk_draw.cpp").read_text(encoding="utf-8")
+    others = {p.name: p.read_text(encoding="utf-8", errors="replace") for p in (ROOT / "gpu" / "vk").glob("*.cpp") if p.name != "vk_draw.cpp"}
+    for name, text in others.items():
+        assert "state_record(" not in text and "state_file" not in text, "%s writes the pipeline state list" % name
+    calls = [m.start() for m in re.finditer(r"(?<![\w:])state_record\(", draw)]
+    defs = [m.start() for m in re.finditer(r"\nvoid state_record\(", draw)]
+    callers = [c for c in calls if not any(d < c < d + 20 for d in defs)]
+    note = body_of(draw, "void pipeline_note(")
+    assert len(callers) == 1 and note.count("if (color_types) state_record(") == 1, \
+        "state_record() is called from somewhere other than pipeline_note(), with the draw's colour types"
+    # pipeline_note with colour types (a 6th argument): only graphics_pipeline()
+    def top_args(text):   # (the arguments at the call's own level)
+        n, depth = 1, 0
+        for ch in text:
+            depth += ch in "([{" and 1 or ch in ")]}" and -1 or 0
+            n += ch == "," and depth == 0
+        return n
+    six = [m for m in re.finditer(r"pipeline_note\(([^;]*)\);", draw) if top_args(m.group(1)) >= 6 and "uint64_t key" not in m.group(1)]
+    gp = body_of(draw, "PipeEntry* graphics_pipeline(")
+    assert len(six) == 1 and six[0].group(0) in gp, "pipeline_note() gets colour types from outside graphics_pipeline()"
+    users = [m.start() for m in re.finditer(r"(?<![\w:*])graphics_pipeline\(", draw)]
+    users = [u for u in users if draw[max(0, u - 12):u] != "PipeEntry* " and not draw[max(0, u - 11):u].endswith("PipeEntry* ")]
+    d = body_of(draw, "void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {")
+    assert len(users) == 1 and d.count("graphics_pipeline(") == 1, "graphics_pipeline() is reached from outside draw()"
+    for fn in ("void precompile_run(", "void state_list_prepare("):
+        if fn in draw:
+            b = body_of(draw, fn)
+            assert "state_record(" not in b and "graphics_pipeline(" not in b, fn + " can write the list"
+    # records are written in state_record() alone (state_open_locked writes a new list's header)
+    writes = [m.start() for m in re.finditer(r"fwrite\([^;]*state_file", draw)]
+    spans = []
+    for fn in (r"\nvoid state_record\([^;{]*\) \{", r"\nvoid state_open_locked\(\) \{"):
+        m = re.search(fn, draw)
+        assert m, fn
+        spans.append((m.start(), draw.index("\n}\n", m.start())))
+    assert writes and all(any(a <= w < b for a, b in spans) for w in writes), "the list is written outside state_record()"
+    assert "fwrite(&r, sizeof r, 1, state_file)" in draw[spans[0][0]:spans[0][1]]
+
+
 def check_linux_builder(tmp):
     """The Linux builder's action, without a display: the zip, then the clipboard, the folder and the issue through what it is
     given; a refusal opens nothing"""
@@ -349,6 +402,7 @@ def main():
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
     check_sources()
+    check_drawn_only()
     with tempfile.TemporaryDirectory() as tmp:
         check_python(tmp)
     with tempfile.TemporaryDirectory() as tmp:
