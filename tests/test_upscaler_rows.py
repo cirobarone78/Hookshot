@@ -135,6 +135,10 @@ def main():
         raise SystemExit("temporal_mode does not run the row's FSR 3.1 on the chain before falling back to the game's own")
     if "fsr3_engine()" not in function(temporal, "Engine& engine_of("):
         raise SystemExit("engine_of has no slot for FSR 3.1's engine")
+    # The chain's depth is reversed for FSR 3.1 (the prep's bit 3, from fsr_flip): the frame says so, for whatever else reads it
+    upscale = function(temporal, "bool temporal_upscale(")
+    if "(fsr_flip ? 8 : 0)" not in upscale or "f.depth_reversed = fsr_flip;" not in upscale:
+        raise SystemExit("temporal_upscale reverses the depth without saying so in the frame (TemporalFrame::depth_reversed)")
     chosen = function(temporal, "bool temporal_env_chosen() {")
     if "dlss_why() == DLSS_OK" not in chosen or "fsr4_why() == FSR_OK" not in chosen:
         raise SystemExit("temporal_env_chosen: a switch for an engine that cannot run here leaves the game's own, not the saved FSR 3.1")

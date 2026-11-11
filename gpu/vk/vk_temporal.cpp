@@ -989,6 +989,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     if (cam.near_z > 0.0f) f.near_z = cam.near_z, f.far_z = cam.far_z, f.fov_y = cam.fov_y;
     std::memcpy(f.projection, projection, sizeof f.projection);
     f.jitter_phases = (uint32_t)dlss_jitter_phases(rw, rh, dw, dh);
+    f.depth_reversed = fsr_flip;   // (the prep wrote 1 - d: bit 3 of its flags)
     if (!s.told_camera && cam.near_z > 0.0f) {
         s.told_camera = true;
         logf("vk: upscaler: the scene's camera: near %.3f, far %.1f, vertical field of view %.1f degrees", cam.near_z,

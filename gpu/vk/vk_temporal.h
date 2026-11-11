@@ -92,7 +92,7 @@ struct TemporalImage {
 };
 /// One frame's evaluation. color: the scene as the network samples it (tonemapped, square-root encoded: LDR, RGBA16F);
 /// depth: R32F in [0, 1], not reversed (reversed, 1 - d, for an engine with fsr_depth where the projection puts the near
-/// plane at 0: FSR 3.1); motion: RG16F in render pixels, towards the frame before, the jitter taken off. They
+/// plane at 0: FSR 3.1; depth_reversed says so); motion: RG16F in render pixels, towards the frame before, the jitter taken off. They
 /// are as large as the engine asked (in_w x in_h), the frame's part at the top left. output: RGBA16F, at the output's size
 /// (DLAA, FSR's native AA: the render size)
 struct TemporalFrame {
@@ -103,6 +103,9 @@ struct TemporalFrame {
     float near_z = 0.1f, far_z = 1000.0f, fov_y = 1.0f;   // (the scene's projection's, when it is a plain perspective one)
     float projection[16]{};     // (hookshot) the scene's projection without this frame's jitter: FSR 3.1's depth constants
     uint32_t jitter_phases = 8; // (hookshot) the length of the jitter's sequence the host runs (dlss_jitter_phases)
+    /// (hookshot) depth holds 1 - d (the engine's fsr_depth, where the projection puts the near plane at 0: FSR 3.1). Anything
+    /// else that reads this frame's depth (frame generation, other passes) must look here, not assume the plain depth
+    bool depth_reversed = false;
 };
 /// An engine: plain functions, each called with the chain's lock held, on the recording thread
 struct TemporalEngine {
