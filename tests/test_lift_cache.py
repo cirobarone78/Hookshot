@@ -41,6 +41,9 @@ def main():
             (work / "image" / "chunks.txt").write_text("80002000\n")
             check("other chunk boundaries change the key", make_game.lift_key(str(exefs), str(work), env) != key)
             (work / "image" / "chunks.txt").write_text("80001000\n")
+            (work / "image" / "hot_pieces.txt").write_text("f_80000000 1\n")   # (split_hot's kept pieces: the pieces' C follows them)
+            check("other kept hot pieces change the key", make_game.lift_key(str(exefs), str(work), env) != key)
+            (work / "image" / "hot_pieces.txt").unlink()
             check("another lift setting changes the key", make_game.lift_key(str(exefs), str(work), dict(env, A64_HOT_CHUNK="")) != key)
             with mock.patch.dict(os.environ, {"A64_KEEP_FLAGS": "1"}):
                 check("a lifter switch in the environment changes the key", make_game.lift_key(str(exefs), str(work), env) != key)
@@ -128,6 +131,10 @@ def check_lift_sources():
     check("the lift's later imports too", {str(ROOT / "nx2" / f) for f in ("oot_patches.py", "oot_wide.py")}
           <= sources)
     check("the builder's other modules are not", str(ROOT / "nx2" / "build.py") not in sources)
+    import re
+    dynamic = [f for f in sorted(sources) if f.endswith(".py") and re.search(r"\b__import__\(|\bimport_module\(|\bimportlib\b",
+                                                                            open(f, encoding="utf-8", errors="replace").read())]
+    check("no module of the lift imports by a name made at run time, which lift_sources' walk cannot see (%s)" % dynamic, not dynamic)
 
 
 if __name__ == "__main__":
