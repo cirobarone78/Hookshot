@@ -1369,6 +1369,31 @@ def fetch_fsr_runtime(a):
              "--fetch-fsr-runtime and put AMD's DLLs beside the game yourself (the readme)." % e)
 
 
+def linux_fsr_runtime():
+    """An explicitly supplied native runtime; fail before compiling if the bundle is incomplete."""
+    path = os.environ.get("HOOKSHOT_FSR_RUNTIME")
+    if path and not os.path.isfile(path):
+        fail("The native FSR runtime is missing: %s. Select an existing native FSR library, or restore the bundled runtime." % path)
+    if path:
+        with open(path, "rb") as library:
+            if library.read(4) != b"\x7fELF":
+                fail("The FSR runtime must be a native Linux shared library, not a Windows DLL: %s" % path)
+    return path
+
+
+def place_linux_fsr_runtime(out):
+    source = linux_fsr_runtime()
+    if not source:
+        return
+    target = os.path.join(out, "amd_fidelityfx_upscaler_vk.so")
+    shutil.copy2(source, target + ".new")
+    os.replace(target + ".new", target)
+    notices = os.path.join(os.path.dirname(source), "licenses")
+    if os.path.isdir(notices):
+        shutil.copytree(notices, os.path.join(out, "licenses", "fsr4-vk"), dirs_exist_ok=True)
+    print("AMD FSR 4: native Linux runtime installed", flush=True)
+
+
 def place_fsr_runtime(out):
     """(AMD FSR 4, --fetch-fsr-runtime) AMD's runtime into the game folder, where gpu/vk/vk_fsr4.cpp looks. Returns the folder,
     or None when nothing was fetched"""
@@ -1499,6 +1524,9 @@ def main(a=None):
     # (AMD FSR 4: the build's switch for nx2/build.py, and the folder's mark for the next --update)
     if fsr_wanted(a, out):
         os.environ["HOOKSHOT_FSR"] = "1"
+        if LINUX:
+            linux_fsr_runtime()
+            os.environ.pop("HOOKSHOT_VK_PREBUILT", None)
         if getattr(a, "fetch_fsr_runtime", False) and not LINUX:
             fetch_fsr_runtime(a)
         elif getattr(a, "fetch_fsr_runtime", False):
@@ -1767,6 +1795,8 @@ def main(a=None):
             except OSError:
                 pass
     place_ngx_runtime(out)
+    if fsr_wanted(a, out) and LINUX:
+        place_linux_fsr_runtime(out)
     if fsr_wanted(a, out) and getattr(a, "fetch_fsr_runtime", False):
         place_fsr_runtime(out)
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
