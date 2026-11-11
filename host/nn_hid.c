@@ -329,8 +329,8 @@ static void parse_script(void) {
     }
     parse_presses(getenv("HOS_INPUT_SCRIPT"), 0, 0);
     if (npresses)
-        hos_log("hid: input script of %d presses (last at %.0f s; the player's devices count too)", npresses,
-                script_end_ms / 1000.0);
+        hos_log("hid: input script of %d presses (last at %.0f s; the player's devices count too); origin_ns=%lld", npresses,
+                script_end_ms / 1000.0, (long long)script_t0);
 }
 
 static void live_input(void) {

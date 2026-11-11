@@ -31,7 +31,7 @@ static int64_t now_ns = 10000000000LL, sampling;
 static int key_bind[HOS_KEY_N][2], pad_raw_now;   /* (the keys-only controls after the Switch's buttons) */
 static unsigned char *memory;
 static char last_log[256];
-static int origin_logs;
+static int origin_logs, script_logs;
 static long long logged_origin;
 volatile int64_t hos_hid_last_read;
 volatile int hos_nvn_sync_log_on;
@@ -46,6 +46,13 @@ int rx_option(int id, int otherwise) { return id == 4 ? menu_background : id == 
 int64_t hos_now_ns(void) { return now_ns; }
 void hos_log(const char *format, ...) {
     va_list args; va_start(args, format); vsnprintf(last_log, sizeof last_log, format, args); va_end(args);
+    if (!strncmp(last_log, "hid: input script of ", 21)) {
+        const char *stamp = strstr(last_log, "; origin_ns=");
+        long long origin;
+        CHECK(stamp && sscanf(stamp, "; origin_ns=%lld", &origin) == 1);
+        CHECK(origin == now_ns);
+        CHECK(++script_logs == 1);
+    }
     if (!strncmp(last_log, "hid: input frame clock origin=", 29)) {
         origin_logs++;
         CHECK(sscanf(last_log, "hid: input frame clock origin=%lld native presents; rate=60", &logged_origin) == 1);
@@ -166,6 +173,7 @@ static void frame_clock_case(const char *name) {
         packet(1ULL << B_B, 0, 0, 0);
         CHECK(npresses == MAX_PRESSES);
     }
+    CHECK(script_logs == (getenv("HOS_INPUT_SCRIPT") && *getenv("HOS_INPUT_SCRIPT") ? 1 : 0));
     CHECK(bootstrap_polls == 1);
     CHECK(origin_logs == (wall ? 0 : 1));
 }
@@ -210,6 +218,7 @@ int main(int argc, char **argv) {
             packet(front ? (1ULL << B_B) | (1ULL << B_X) : 0, front ? 32767 : 0, 0, front ? 8000 : 0);
         }
     }
+    CHECK(script_logs == (getenv("HOS_INPUT_SCRIPT") && *getenv("HOS_INPUT_SCRIPT") ? 1 : 0));
     CHECK(bootstrap_polls == 1); /* production startup poll is allowed, but its Y/stick result is discarded */
     if (!front) {
         CHECK(key_queries == 0 && mouse_queries == 0);
