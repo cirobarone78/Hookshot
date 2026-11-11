@@ -3040,7 +3040,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
         w.descriptorType = type;
         return w;
     };
-    const uint64_t salign = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
+    const uint64_t salign = storage_binding_align();   // (the translator's: vk_internal.h)
     for (const Stage& st : p.stages) {
         const Shader::Info& info = st.info;
         const int ns = st.nvn_stage;
@@ -7468,7 +7468,9 @@ static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture
     std::lock_guard lk(mu);
     if (seen.size() < 32 && seen.insert(key).second)
         logf("vk: network %016llx does not translate here: %s draws its upscale (%ux%u -> %ux%u)", (unsigned long long)key,
-             fsr3 ? "FSR 3.1" : "the temporal upscaler", src->width, src->height, dst->width, dst->height);
+             fsr3 ? "FSR 3.1"
+                  : temporal_mode() == upscaler_rows::FSR3 ? "FSR 3.1 (on the temporal chain)" : "the temporal upscaler",
+             src->width, src->height, dst->width, dst->height);
     return true;
 }
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
