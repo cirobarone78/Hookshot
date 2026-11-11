@@ -155,7 +155,9 @@ def main():
         if need not in decide:
             raise SystemExit("FAIL: predict_pipelines does not filter its candidates by their types (%s)" % need)
     run = body(draw, "void predict_run(")
-    if "built.insert(pipeline_key(" not in run:
+    if "built.insert(mix(pipeline_key(" not in run or run.index("std::unordered_set<uint64_t> built;") > run.index("program_cache_borrow("):
+        raise SystemExit("FAIL: predict_run's duplicate check is per borrowed record, not per program key")
+    if "built.insert(mix(pipeline_key(" not in run:
         raise SystemExit("FAIL: predict_run builds predictions that are the same pipeline (pipeline_key) again")
     if "void note_color_types(const PipeNote& n, uint8_t types[8])" not in draw or "color_types_of(note_targets(n), types)" not in draw:
         raise SystemExit("FAIL: note_color_types is not the draw's color_types_of")

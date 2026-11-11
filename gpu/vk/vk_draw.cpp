@@ -7996,18 +7996,19 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
             const size_t i = next++;
             if (i >= keys.size()) return;
             const auto& list = by_program[keys[i]];
+            // (each pipeline once, by the key play looks it up by (pipeline_key): the prediction's vertex classes tell apart the
+            // exact topology and each stream's stride, which a pipeline takes as dynamic state, and a mesh program takes no vertex
+            // layout at all, so several predictions can be the one pipeline. Over the whole key, not each record: a variant kept
+            // twice is borrowed twice. The program's form (mesh, mesh fallback) goes with it: pipeline_key does not hold it)
+            std::unordered_set<uint64_t> built;
             program_cache_borrow(keys[i], [&](Program& p) {
                 ensure_layout(p);
-                // (each pipeline once, by the key play looks it up by (pipeline_key): the prediction's vertex classes tell apart the
-                // exact topology and each stream's stride, which a pipeline takes as dynamic state, and a mesh program takes no
-                // vertex layout at all, so several predictions can be the one pipeline)
-                std::unordered_set<uint64_t> built;
                 for (const PipeNote* n : list)
                     if (n->variant == p.variant) {
                         // (a mesh fallback program's own topology: its donor's may be an ordinary draw's, pipeline_topology)
                         const VkPrimitiveTopology topo = pipeline_topology(p, (VkPrimitiveTopology)n->topo);
                         const Targets at = note_targets(*n);
-                        if (!built.insert(pipeline_key(p, n->s, at, topo)).second) {
+                        if (!built.insert(mix(pipeline_key(p, n->s, at, topo), (uint64_t)p.mesh | (uint64_t)p.fallback << 1)).second) {
                             same++;
                             continue;
                         }
