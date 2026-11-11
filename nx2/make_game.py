@@ -811,48 +811,184 @@ def check_windows_sdk():
     fail("The compiler could not run a test build: %s" % why)
 
 
+def _cleanup_argv(command):
+    """Windows quoted arguments (backslashes escape quotes, not ordinary path characters).
+    Reject unmatched quotes rather than using an ambiguous command as ownership evidence."""
+    args, word, quoted, started = [], [], False, False
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if char in " \t" and not quoted:
+            if started:
+                args.append("".join(word))
+                word, started = [], False
+            i += 1
+            continue
+        started = True
+        if char == "\\":
+            j = i
+            while j < len(command) and command[j] == "\\":
+                j += 1
+            count = j - i
+            if j < len(command) and command[j] == '"':
+                word.extend("\\" * (count // 2))
+                if count % 2:
+                    word.append('"')
+                    i = j + 1
+                    continue
+            else:
+                word.extend("\\" * count)
+                i = j
+                continue
+            i = j
+            char = command[i]
+        if char == '"':
+            if quoted and i + 1 < len(command) and command[i + 1] == '"':
+                word.append('"')
+                i += 2
+                continue
+            quoted = not quoted
+        else:
+            word.append(char)
+        i += 1
+    if quoted:
+        return []
+    if started:
+        args.append("".join(word))
+    return args
+
+
+def _cleanup_path(path):
+    # CIM has no working directory: relative and drive-relative arguments prove nothing.
+    drive, tail = ntpath.splitdrive(path)
+    if not drive or not tail.startswith(("\\", "/")):
+        return None
+    return ntpath.normcase(ntpath.normpath(path))
+
+
+def _cleanup_python(argv):
+    i = 1
+    while i < len(argv) and argv[i].startswith("-"):
+        if argv[i] in ("-I", "-u", "-B", "-E", "-s", "-S", "-O", "-OO"):
+            i += 1
+        elif argv[i] in ("-X", "-W") and i + 1 < len(argv):
+            i += 2
+        else:
+            return None          # -c/-m and unknown invocation forms are not script evidence.
+    return (argv[i], argv[i + 1:]) if i < len(argv) else None
+
+
+def _cleanup_owns(q, work, default_work):
+    argv = _cleanup_argv(q.get("CommandLine") or "")
+    name = (q.get("Name") or "").lower()
+    if not argv or not work:
+        return False
+    if name in ("python.exe", "pythonw.exe", "python3.exe"):
+        invocation = _cleanup_python(argv)
+        if not invocation:
+            return False
+        script, options = invocation
+        entry = ntpath.basename(script).lower()
+        if entry not in ("make_game.py", "lift.py", "build.py"):
+            return False
+        works = []
+        for j, option in enumerate(options):
+            if option == "--work":
+                if j + 1 == len(options):
+                    return False
+                works.append(_cleanup_path(options[j + 1]))
+            elif option.startswith("--work="):
+                works.append(_cleanup_path(option[7:]))
+        if works:
+            # build.py gets OOT_WORK through its environment; it has no --work option.
+            return entry != "build.py" and all(w == work for w in works)
+        # Versions share the default work folder. An update must also recognize the
+        # packaged entry point of an earlier version, not arbitrary make_game scripts.
+        path, home = _cleanup_path(script), _cleanup_path(default_work)
+        if entry != "make_game.py" or path is None or work != home:
+            return False
+        if path == _cleanup_path(__file__):
+            return True
+        prefix = home.rstrip("\\") + "\\"
+        parts = path[len(prefix):].split("\\") if path.startswith(prefix) else []
+        return (len(parts) == 6 and parts[0] == "versions" and bool(parts[1])
+                and parts[2:] == ["hookshotbuilder", "tools", "nx2", "make_game.py"])
+    if name not in ("clang.exe", "clang++.exe", "clang-cl.exe", "ld.lld.exe", "lld-link.exe"):
+        return False
+    outputs = []
+    for i, arg in enumerate(argv[1:], 1):
+        if arg == "-o" and i + 1 < len(argv):
+            outputs.append(_cleanup_path(argv[i + 1]))
+        elif name == "lld-link.exe" and arg.lower().startswith("/out:"):
+            outputs.append(_cleanup_path(arg[5:]))
+        elif name == "clang-cl.exe" and arg.startswith("/Fo"):
+            outputs.append(_cleanup_path(arg[3:]))
+    # Input/include/response-file paths do not establish where a compiler writes.
+    return bool(outputs) and all(o and o.startswith(work.rstrip("\\") + "\\") for o in outputs)
+
+
+def _cleanup_build_child(child, parent):
+    """make_game runs this exact child in ROOT with OOT_WORK; an orphan has no such proof."""
+    python_names = ("python.exe", "pythonw.exe", "python3.exe")
+    if child.get("Name", "").lower() not in python_names or parent.get("Name", "").lower() not in python_names:
+        return False
+    c = _cleanup_python(_cleanup_argv(child.get("CommandLine") or ""))
+    p = _cleanup_python(_cleanup_argv(parent.get("CommandLine") or ""))
+    if not c or not p or not _cleanup_path(p[0]) or ntpath.basename(p[0]).lower() != "make_game.py":
+        return False
+    expected = ntpath.join(ntpath.dirname(p[0]), "build.py")
+    script, options = c
+    return ("--standalone" in options and
+            (_cleanup_path(script) == _cleanup_path(expected) or ntpath.normcase(script) == "nx2\\build.py"))
+
+
 def stop_stray_compilers(work, default_work):
-    """(issues 501, 530) A build left running by an earlier one on this work folder (the builder closed, crashed, or replaced by an
-    update mid-build) keeps its files open: the next build stopped at once with 'OSError: [Errno 22]' writing sa/gen/a64_fpx.h, or
-    WinError 1224 on the play profile. Only that build goes: an earlier make_game on this work folder, the build and lift steps
-    whose make_game is gone, and compilers whose command line names this work folder. Never this build or what started it."""
+    """Best-effort cleanup for issues 501/530, restricted to proven target outputs/work.
+    An interrupted Builder update can leave a compiler holding a64_fpx.h (Errno 22)
+    or its output executable (WinError 1224), including across packaged versions.
+    Unknown orphan ownership is preserved. Never terminate an unexamined child tree."""
     if LINUX:
         return
-    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'clang*' -or $_.Name -like 'ld.lld*' -or $_.Name -like 'python*' } "
-          "| Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress")
+    ps = ("Get-CimInstance Win32_Process | "
+          "Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress")
     try:
-        import json
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=90)
+        if r.returncode:
+            print("could not look for an earlier build's processes: process query exited with status %d"
+                  % r.returncode, flush=True)
+            return
         procs = json.loads(r.stdout or "[]")
         if isinstance(procs, dict):
             procs = [procs]
         alive = {q["ProcessId"]: q for q in procs}
-        mine, pid = set(), os.getpid()        # (this process and the chain that started it)
+        mine, pid = set(), os.getpid()
         while pid in alive and pid not in mine:
             mine.add(pid)
             pid = alive[pid]["ParentProcessId"]
         mine.add(pid)
-        w = os.path.normcase(os.path.abspath(work))
-        names = lambda c: os.path.normcase((c or "").replace("/", "\\"))
-        doomed = {}
+        w = _cleanup_path(os.fspath(work))
+        doomed = {q["ProcessId"]: q["Name"] for q in procs
+                  if q["ProcessId"] not in mine and _cleanup_owns(q, w, os.fspath(default_work))}
+        # A live, proven make_game parent establishes the build.py child's OOT_WORK contract.
+        # Do not infer this from an absent parent or propagate it to arbitrary descendants.
+        owned = set(doomed)
         for q in procs:
-            c, n = names(q.get("CommandLine")), q["Name"].lower()
-            if q["ProcessId"] in mine:
-                continue
-            if "make_game.py" in c and (w in c or ("--work" not in c and w == os.path.normcase(default_work))):
-                doomed[q["ProcessId"]] = n
-            elif ("build.py" in c or "lift.py" in c) and "--standalone" in c and q["ParentProcessId"] not in alive:
-                doomed[q["ProcessId"]] = n           # (its make_game is gone)
-            elif not n.startswith("python") and w in c:
-                doomed[q["ProcessId"]] = n
-        for k in doomed:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(k)], capture_output=True, timeout=60)
-        if doomed:
+            parent = alive.get(q["ParentProcessId"])
+            if q["ProcessId"] not in mine and q["ParentProcessId"] in owned and parent and _cleanup_build_child(q, parent):
+                doomed[q["ProcessId"]] = q["Name"]
+        stopped = []
+        for k, name in doomed.items():
+            # /T would also kill descendants whose folder was never established.
+            result = subprocess.run(["taskkill", "/F", "/PID", str(k)], capture_output=True, timeout=60)
+            if result.returncode == 0:
+                stopped.append(name)
+        if stopped:
             print("stopped %d process(es) an earlier build left running on this work folder: %s"
-                  % (len(doomed), " ".join(sorted(set(doomed.values())))), flush=True)
+                  % (len(stopped), " ".join(sorted(set(stopped)))), flush=True)
             time.sleep(2)
     except Exception as e:   # (not finding them is no reason to stop)
         print("could not look for an earlier build's processes: %s" % e, flush=True)
+
 
 
 def makefile_words(text):
@@ -1441,6 +1577,50 @@ def place_ngx_runtime(out):
     return dst
 
 
+def portable_game_home(out):
+    """Validate the portable context before a build changes output; association is relative to this game."""
+    if os.name != "nt" or os.environ.get("HOOKSHOT_BUILDER_PORTABLE") != "1":
+        return None
+    home = os.environ.get("HOOKSHOT_SETUP_BASE", "")
+    if not ntpath.isabs(home) or not ntpath.splitdrive(home)[0] or home.startswith(("\\\\?\\", "\\\\.\\")):
+        raise ValueError("The portable Builder home must be a fully qualified drive or UNC folder.")
+    home = os.path.abspath(home)
+    with open(os.path.join(home, ".hookshot-portable"), "rb") as f:
+        marker = f.read(36)
+    magic = b"Hookshot Builder portable home v1"
+    if len(marker) > len(magic) + 2 or marker.rstrip(b"\r\n") != magic:
+        raise ValueError("The portable Builder home marker is invalid.")
+    if os.path.dirname(home) == home:
+        raise ValueError("The portable Builder home must be a dedicated folder.")
+    launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HookshotBuilder-Setup.exe")
+    if not os.path.isfile(launcher):
+        raise ValueError("A portable game needs the packaged Builder setup launcher.")
+    try:
+        relative = os.path.relpath(home, os.path.abspath(out))
+    except ValueError as e:
+        raise ValueError("Keep a portable game and its Builder on the same volume.") from e
+    if len(home) >= 260 or len(relative.encode("utf-8")) >= 780 or any(c in relative for c in "\r\n\0:"):
+        raise ValueError("The portable Builder association cannot be represented by the Windows setup.")
+    return relative
+
+
+def write_game_home(out, relative):
+    """Only called after successful output finalization; never resolves relative to the process cwd."""
+    destination = os.path.join(out, ".hookshot_builder_home")
+    if relative is None:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(destination)
+        return
+    fd, partial = tempfile.mkstemp(prefix=".hookshot-home-", dir=out)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(relative)
+        os.replace(partial, destination)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--nup")
@@ -1449,7 +1629,8 @@ def parse_args():
     p.add_argument("--out")
     p.add_argument("--work", default=os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
                                                   "hookshot-builder-windows" if CROSS else "hookshot-builder")   # (the objects apart)
-                   if os.name != "nt" else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
+                   if os.name != "nt" else os.environ.get("HOOKSHOT_SETUP_BASE") or
+                   os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
     # (HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the AppImage's builds pass no --jobs)
     p.add_argument("--jobs", type=int)
     p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
@@ -1473,7 +1654,9 @@ def parse_args():
     if a.prepare:   # (first: a bad --game below is said as RecompLauncher's "error" line)
         global PREPARE
         PREPARE = True
-        a.out = a.out or os.path.join(os.path.expanduser("~"), "Games", "Hookshot")
+        a.out = a.out or (os.path.join(os.path.dirname(os.environ["HOOKSHOT_SETUP_BASE"]), "Hookshot")
+                          if os.name == "nt" and os.environ.get("HOOKSHOT_BUILDER_PORTABLE") == "1" and
+                          os.environ.get("HOOKSHOT_SETUP_BASE") else os.path.join(os.path.expanduser("~"), "Games", "Hookshot"))
     if a.game:   # (a path from a launcher: said plainly before any folder is made, not as a traceback halfway in)
         if os.path.isdir(a.game):
             a.romfs, a.exefs = os.path.join(a.game, "romfs"), os.path.join(a.game, "exefs")
@@ -1575,6 +1758,7 @@ def end_stale_games(folders):
 def main(a=None):
     if a is None:
         a = parse_args()
+    portable_home = portable_game_home(a.update or a.out) if not a.check and (a.update or a.out) else None
     if a.jobs is not None and a.jobs < 0:
         fail("--jobs must be 1 or more, or 0 for automatic.")
     a.jobs = chosen_jobs(a.jobs)
@@ -1911,9 +2095,12 @@ def main(a=None):
             if tag:
                 break
     if tag:
+        write_game_home(out, portable_home)
         with open(os.path.join(out, "hookshot_version.txt"), "w", encoding="utf-8", newline="\n") as f:
             f.write("version=%s\n" % tag)
-            if os.environ.get("HOOKSHOT_BUILDER_EXE"):
+            if portable_home is not None:
+                f.write("builder_local=1\n")
+            elif os.environ.get("HOOKSHOT_BUILDER_EXE"):
                 f.write("builder=%s\n" % os.environ["HOOKSHOT_BUILDER_EXE"])
                 # (the Python builder: builder is its pythonw.exe, and these the arguments before --update, host/hos_update.c)
                 if os.environ.get("HOOKSHOT_BUILDER_ARGS"):
