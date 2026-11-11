@@ -350,9 +350,9 @@ HDR peak brightness show only while HDR is on.
   can reach 120 FPS. Choose **Auto** in Frame generation to target the display's refresh rate instead of a fixed multiplier.
   A cap **past 60 is experimental**: the game keeps real time, but some cutscenes and bosses still count frames and can
   misbehave (Gohma running into the wall, the intro's narration running ahead: #1742). 60 is the safe choice.
-  **Uncapped** renders as fast as the PC can, up to 240 FPS (the game still keeps real time; far past that,
-  the game crashes in its quick menu). A display that waits for its refresh still holds the frames to its refresh rate:
-  V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=<61-240>` sets a cap for one run.
+  **Uncapped** renders as fast as the PC can (the game still keeps real time). A display that waits for its refresh still
+  holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=<61-1000>` sets a cap for one
+  run.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
   included. The **Upscaler** fills it from the 3D: the game's own network, NVIDIA DLSS or DLAA (the 3D at full size,
   edges smoothed), AMD FSR 3.1, or AMD FSR 4 or its Native AA (below). DLSS and DLAA look softer than the game's own: set
