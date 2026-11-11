@@ -4,6 +4,8 @@
 #pragma once
 
 #include <vector>
+#include "dlss_nr_support.h"
+#include "dlss_nr_settings.h"
 
 #include "vk_internal.h"
 
@@ -13,6 +15,26 @@ struct TemporalEngine;
 
 /// Whether this build has DLSS in it (HOOKSHOT_NGX)
 bool dlss_built();
+enum DlssNrStatus { NR_WAITING, NR_ACTIVE, NR_PENDING, NR_FAILED };
+DlssNrStatus dlss_nr_status(); // Last NR evaluation, for the live menu (never inferred from the enable switch).
+dlss_nr::Issue dlss_nr_check(bool refresh = false); // Checks local runtime, selected GPU, upstream and NGX capability.
+dlss_nr::Issue dlss_nr_issue();                   // Persistent, non-modal diagnostic, independent of requested enable.
+void dlss_nr_retry();
+void dlss_nr_compare(int override_value);         // -1 saved choice, 0 bypass, 1 request NR (never saves).
+struct DlssNrControls {
+    bool requested = false;
+    dlss_nr::Settings model;
+    int color = 100, history = 0, debug = 0;
+    bool native_hdr = false;
+};
+void dlss_nr_publish(const DlssNrControls& controls); // Immutable per-frame snapshot, separate from persisted UI options.
+struct DlssNrStats {
+    uint64_t frames = 0;
+    uint32_t width = 0, height = 0;
+    bool active = false;
+    char runtime[48]{};
+};
+DlssNrStats dlss_nr_stats();
 /// Why DLSS cannot be chosen here (the Insert menu's Upscaler row says it), DLSS_OK when it can or is not known yet
 enum DlssWhy { DLSS_OK, DLSS_NOT_BUILT, DLSS_ENV_OFF, DLSS_NEEDS_RTX, DLSS_NEEDS_DRIVER, DLSS_NO_RUNTIME,
                DLSS_RUNTIME_NOT_ASCII, DLSS_WHY_COUNT };

@@ -137,11 +137,20 @@ static int detect_pad_layout() { return 0; }
 static void dlss_probe() {}
 static void fsr4_probe() {}
 static void refresh_mics() {}
+static struct { bool active = false; } nr_comparison;
+static int nr_cancels;
+static void nr_compare_leave(bool commit) {
+    CHECK(!commit && nr_comparison.active);
+    nr_comparison.active = false;
+    ++nr_cancels;
+    open_now = true;
+}
 // TX_MENU_SHORTCUT
 
 // One tick with key pressed (0: none) and the options o, the menu open before it or not: whether it is open after. *back:
 // the Esc press left for menu_tick's pages below (back a page, or close the menu)
 static bool tick_key(const Options& o, int key, bool queued, bool open_before, bool* back) {
+    const bool was_comparing = nr_comparison.active;
     opts = o;
     focused = true;
     host = queued ? &queue_host : nullptr;
@@ -153,7 +162,8 @@ static bool tick_key(const Options& o, int key, bool queued, bool open_before, b
     const bool tune_down = compact_key_held;
     auto later = [] {};
     // ESC_BLOCK
-    CHECK(changed == (open_now.load() != open_before) && page == 0 && listening == 0);
+    if (was_comparing) CHECK(!nr_comparison.active && changed && open_now.load());
+    else CHECK(changed == (open_now.load() != open_before) && page == 0 && listening == 0);
     // (a menu Esc opens is the full menu, or the compact bar with its key held, as with Insert and F1)
     CHECK(tune_mode == (open_now.load() && !open_before && compact_key_held));
     (void)ask_sel;
@@ -186,6 +196,13 @@ static void test_esc() {
         compact_key_held = false;
     }
     std::puts("PASS: out of the box, Esc opens the closed menu (Insert, F1 or Esc); Insert or F1 and F1 only leave it closed");
+    for (bool queued : {false, true}) {
+        bool back;
+        tick_key(fresh, 0, queued, true, &back);
+        nr_comparison.active = true;
+        tick_key(fresh, VK_F1, queued, true, &back);
+    }
+    CHECK(nr_cancels == 2); // The menu shortcut cancels Compare and returns to settings.
 }
 
 // (menu_init's reading of hookshot_options.ini, stubbed around: the Menu shortcut row as the only row)
@@ -197,6 +214,7 @@ static std::string mic_key(const char* name) { return name; }
 static void mic_tell_host() {}
 static int rumble_step(int v) { return v; }
 struct Row { int tab; const char* name; int* value; int lo, hi; };
+static const char* nr_ini_key(const int*) { return nullptr; }
 // INI_KEY
 static Row rows[] = {{0, "Menu shortcut", &opts.menu_shortcut, 0, 2}};
 
@@ -211,8 +229,10 @@ static int loaded_as(int shortcut, int version) {
     opts = Options{};
     mic_want.clear();
     bool has_options = false, has_vram_budget = false, has_memory_budget = false;
+    bool has_nr = false, has_nr_profile = false;
     // LOAD_OPTIONS
     CHECK(has_options && !has_vram_budget && !has_memory_budget);
+    CHECK(!has_nr && !has_nr_profile);
     return opts.menu_shortcut;
 }
 
@@ -249,7 +269,9 @@ def main():
     tick = menu[menu.index("void menu_tick() {"):]
     key_poll = tick[tick.index("    enum { K_N ="):tick.index("    // (hookshot) the gamepads")]
     esc_at = tick.index("    const bool esc_opens")
-    esc_block = tick[esc_at:tick.index("    if (open_now.load() && page == 5) {", esc_at)]
+    # Compare precedes the restart page. Exercise shortcut routing up to the
+    # periodic NR probe, without pulling rendering or toolbar mouse code in.
+    esc_block = tick[esc_at:tick.index("    static int64_t nr_next_check", esc_at)]
     tx_at = menu.index("const char* tx_menu_shortcut(int v) {")
     tx = menu[tx_at:menu.index("\n}\n", tx_at) + 3]
     header = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")

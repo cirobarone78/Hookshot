@@ -1,0 +1,46 @@
+#version 450
+// Hookshot's NR input is perceptually encoded SDR (sqrt of the game's linear scene).
+// Change chromaticity at the NR luminance, then encode back for the existing DLSS path.
+layout(local_size_x=8, local_size_y=8) in;
+layout(binding=0) uniform sampler2D original;
+layout(binding=1) uniform sampler2D neural;
+layout(binding=2) uniform sampler2D depth;
+layout(binding=3) uniform sampler2D motion;
+layout(binding=4, rgba16f) uniform writeonly image2D result;
+layout(push_constant) uniform P { ivec2 size; ivec2 input_size; float color; int debug_view; } pc;
+const vec3 Y = vec3(0.2126, 0.7152, 0.0722);
+void main() {
+    ivec2 dst = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(dst, pc.size))) return;
+    ivec2 p = min(ivec2((vec2(dst) + 0.5) * vec2(pc.input_size) / vec2(pc.size)), pc.input_size - 1);
+    vec4 a = texelFetch(original, p, 0), b = texelFetch(neural, p, 0);
+    vec3 al = max(a.rgb, vec3(0)); al *= al;
+    vec3 bl = max(b.rgb, vec3(0)); bl *= bl;
+    vec3 c;
+    if (pc.debug_view == 1) { imageStore(result, dst, a); return; }
+    if (pc.debug_view == 2) { imageStore(result, dst, b); return; }
+    if (pc.debug_view == 3) {
+        float d = clamp(dot(abs(bl-al), Y) * 20.0, 0.0, 1.0);
+        c = clamp(vec3(3*d, 3*d-1, 3*d-2), 0.0, 1.0);
+    } else if (pc.debug_view == 4) {
+        c = vec3(clamp(texelFetch(depth, p, 0).r, 0.0, 1.0));
+    } else if (pc.debug_view == 5) {
+        vec2 mv = texelFetch(motion, p, 0).xy;
+        c = vec3(clamp(vec2(0.5) + mv/32.0, 0.0, 1.0), 0.5);
+    } else {
+        float ya = dot(al, Y), yb = dot(bl, Y);
+        vec3 kept = ya > 1e-6 ? al * (yb/ya) : vec3(yb);
+        c = mix(kept, bl, pc.color);
+        // Compress chroma toward neutral at constant luminance, rather than clipping channels.
+        if (yb >= 0 && yb <= 1) {
+            vec3 chroma = c - vec3(yb);
+            float k = 1.0;
+            for (int i=0; i<3; ++i) {
+                if (chroma[i] > 0) k = min(k, (1-yb)/chroma[i]);
+                if (chroma[i] < 0) k = min(k, -yb/chroma[i]);
+            }
+            c = vec3(yb) + max(k, 0) * chroma;
+        }
+    }
+    imageStore(result, dst, vec4(sqrt(max(c, vec3(0))), a.a));
+}

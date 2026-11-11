@@ -34,6 +34,12 @@ struct Options {
     int dlss_model = 0;   // DLSS's network, by its preset: 0 K (transformer), 1 M, 2 L (second-generation transformer), 3 NVIDIA's
                           // default (upscaler_rows.h model_preset; vk_dlss.cpp). RX_VK_DLSS_PRESET over it
     int sharpness = 0;    // 0 to 100
+    int dlss5 = 0;       // Experimental Neural Rendering, before SR/DLAA. All controls apply live.
+    int dlss5_intensity = 35, dlss5_structure = 100, dlss5_tone = 100, dlss5_skin = 100;
+    int dlss5_style = 0, dlss5_preset = 0, dlss5_mask = 1, dlss5_ui = 1;
+    int dlss5_profile = 4, dlss5_color = 100, dlss5_history = 0, dlss5_debug = 0;
+    int dlss5_advanced = 0, dlss5_group = 0;
+    int dlss5_compare_mode = 0, dlss5_compare_top = 0;
     int anisotropy = 4;   // (hookshot) Anisotropic filtering: 0 the game's own (1x or 2x), 1 2x, 2 4x, 3 8x, 4 16x (the
                           // device's limit at most; gpu/vk/vk_draw.cpp aniso_override, RX_VK_ANISO over it)
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
@@ -110,6 +116,8 @@ void menu_set_gpu_count(int count);
 std::string driver_text();   // (vk_main.cpp: the driver as it names itself, for the log and Save my pipeline list)
 void menu_tick();             // (each frame shown: the keys, while the game's window has the focus)
 bool menu_is_open();
+bool menu_nr_editing();       // A model slider is held: defer expensive feature recreation until release.
+bool menu_comparing();        // Comparison owns input but leaves the scene unpaused and unobscured.
 /// (hookshot) The game's scene tone mapped by PsychoV35: HDR set to Native on an HDR display, and the Tone mapper row so
 bool scene_tonemap_on();
 bool resolution_auto();       // (the game's dynamic resolution: Resolution Auto)

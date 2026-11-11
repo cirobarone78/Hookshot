@@ -125,15 +125,16 @@ int main(void) {
     check("ini_key(r)" in loop, "menu_init's options loop no longer reads rows by ini_key")
     cxx = r'''#include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 enum MenuTab { TAB_CONTROLS };
-struct Options { int output_res = 0, vsync = 0, resolution = 0, fps_cap = 0, upscale = 0, dlss = 0, handheld = 0, mesh_mode = 0, ultrawide = 0, stick_dead_zone = 0; } opts;   // (ultrawide: the Aspect ratio row's key)
+struct Options { int output_res = 0, vsync = 0, resolution = 0, fps_cap = 0, upscale = 0, dlss = 0, handheld = 0, mesh_mode = 0, ultrawide = 0, stick_dead_zone = 0, dlss5_group = 0, dlss5_debug = 0; } opts;   // (ultrawide: the Aspect ratio row's key)
 static int parse_output(const char* text) { return atoi(text); }   // (the Output row's own parse: not what this checks)
 ''' + block(menu, "struct Row {") + ";\n" + block(menu, "const char* tx_stick_dead_zone(") + "\n" + \
-        "Row rows[] = {" + row.group(0) + "};\n" + block(menu, "const char* ini_key(") + r'''
+        "Row rows[] = {" + row.group(0) + "};\n" + 'const char* nr_ini_key(const int*) { return nullptr; }\n' + block(menu, "const char* ini_key(") + r'''
 static int parse(const char* text) {
     opts.stick_dead_zone = 0;
     char line[80];

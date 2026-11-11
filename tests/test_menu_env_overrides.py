@@ -74,8 +74,13 @@ constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1;
 const char* const bind_names[1] = {"a"};
 struct Host { int (*binding)(int, int, int); } host_value{nullptr}, *host = &host_value;
 bool can_bind() { return false; }
+const char* nr_ini_key(const int*) { return nullptr; }
 /* INI_KEY */
+int nr_persisted_value(const int*);
 /* SAVE */
+int nr_persisted_value(const int* v) { return saved_value(const_cast<int*>(v)); }
+void nr_environment(bool) {}
+bool has_nr=false;
 void env_part() {
 /* ENV */
 }

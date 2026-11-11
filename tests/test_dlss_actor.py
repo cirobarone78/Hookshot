@@ -48,7 +48,7 @@ def main():
     glslang = shutil.which("glslangValidator")
     with tempfile.TemporaryDirectory(prefix="dlss-actor-") as tmp:
         if glslang:
-            for src in ("dlss_actor.vert", "dlss_actor.frag", "dlss_prep.comp", "dlss_out.comp"):
+            for src in ("dlss_actor.vert", "dlss_actor.frag", "dlss_prep.comp", "dlss_out.comp", "dlss_nr_composite.comp"):
                 var = src.replace(".", "_").upper() + "_SPV"
                 out = Path(tmp) / (src.replace(".", "_") + "_spv.h")
                 subprocess.run([glslang, "-V", "--target-env", "vulkan1.3", "--vn", var, "-o", str(out), str(SHADERS / src)],

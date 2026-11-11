@@ -18,6 +18,7 @@ enum Part {
     kCtlRow,    // the Controls page: a row's name (index; index == the count: Reset to defaults)
     kCtlCell,   // a binding: index the row, side the CtlColumn
     kListLine,  // a list (the teleport list, the inventory): a line as shown (index, 0 the top one), side -1 the left half, 1 the right half
+    kNrButton, // NR comparison toolbar, five cells, using the same drawing/hit map.
     kButton,    // the restart question's buttons: index 0 Later, 1 Restart now
 };
 enum CtlColumn { kCtlPrimary, kCtlAlternate, kCtlKeyboard, kCtlColumns };
