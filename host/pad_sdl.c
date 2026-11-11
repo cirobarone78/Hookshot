@@ -111,7 +111,7 @@ static int pads_start(void) {
         char kept[4096];
         if (list && *list && hos_sdl_knows_steam_pads() && steam_pads_without_valve(list, kept, sizeof kept) > 0 &&
             hos_sdl_hint_override("SDL_GAMECONTROLLER_IGNORE_DEVICES", kept))
-            hos_log("hid: Valve's controllers taken out of Steam's ignore list, for their motion sensors");
+            hos_log("hid: Valve's controllers (not the Steam Deck's) taken out of Steam's ignore list, for their motion sensors");
     }
     if (!hos_sdl_init(HOS_SDL_GAMEPAD)) {
         hos_log("hid: SDL could not start its controller support: %s", hos_sdl_error());
