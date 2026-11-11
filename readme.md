@@ -290,7 +290,7 @@ HDR peak brightness show only while HDR is on.
 | | HDR | Off, Expanded, Native (the game's) | Off |
 | | HDR paper white | 80 to 400 nits (while HDR is on) | 200 nits |
 | | HDR peak brightness | 400 to 4000 nits (while HDR is on) | 1000 nits |
-| | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS (after a restart) | 60 FPS |
+| | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS, Uncapped (after a restart) | 60 FPS |
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | AMD Anti-Lag 2 | Off, On (shown only on AMD GPUs with `VK_AMD_anti_lag`) | Off |
 | | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440, 5120x2880 (after a restart) | 2048x1152 |
@@ -306,7 +306,8 @@ HDR peak brightness show only while HDR is on.
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
-| Gameplay | FPS counter | Off, On | Off |
+| Gameplay | FPS counter | Off, FPS, Frame time, Graph, Breakdown | Off |
+| | FPS counter position | Top right, Top left, Bottom right, Bottom left | Top right |
 | | Menu size | Small, Medium, Large | Medium |
 | | Game speed | Per frame, Real time | Real time |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
@@ -344,6 +345,9 @@ HDR peak brightness show only while HDR is on.
   can reach 120 FPS. Choose **Auto** in Frame generation to target the display's refresh rate instead of a fixed multiplier.
   A cap **past 60 is experimental**: the game keeps real time, but some cutscenes and bosses still count frames and can
   misbehave (Gohma running into the wall, the intro's narration running ahead: #1742). 60 is the safe choice.
+  **Uncapped** renders as fast as the PC can (the game still keeps real time). A display that waits for its refresh still
+  holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=<61-1000>` sets a cap for one
+  run.
 - **The scaling rows**, in the picture's order: **Output resolution** is the size of the game's whole frame, HUD
   included. The **Upscaler** fills it from the 3D: the game's own network, NVIDIA DLSS or DLAA (the 3D at full size,
   edges smoothed), AMD FSR 3.1, or AMD FSR 4 or its Native AA (below). DLSS and DLAA look softer than the game's own: set
@@ -395,7 +399,19 @@ HDR peak brightness show only while HDR is on.
   can be faster on some NVIDIA cards.
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed
   down to 15 fps.
-- **FPS counter** shows in the top right corner. With frame generation on, it also shows the game's own rate.
+- **FPS counter** shows in a corner (**FPS counter position**; at the top right while the menu is open), at one of
+  four levels. **FPS** is the number alone (an options file's old On); with frame generation on, it also shows the
+  game's own rate. **Frame time** adds the game's frame time and its 1% low (the rate of the slowest 1% of frames over
+  the last 10 seconds). From this level on, the number and the frame time are green at the Game frame rate cap's rate,
+  amber under it and red under two thirds of it. (The cap's rate is the display's refresh instead with V-Sync On when
+  that is slower; with Uncapped and V-Sync not On there is no line, and the colours are against 60.) **Graph** adds
+  the frame times of the last 4 seconds (each point the slowest frame of its span, so no stutter is missed), with a
+  dashed line at the Game frame rate cap's frame time and a red mark over frames that took more than twice it; its
+  scale follows the usual frame, so a spike is drawn at the top rather than flattening the rest. **Breakdown** adds
+  where the frame's time went on the game's presenting thread, as a bar and in numbers: the game's own code (Game),
+  recording and submitting the GPU's work (Renderer), waiting for the GPU (GPU wait), and waiting for the frame's turn
+  (Pacing: the frame rate cap, vsync, Reflex); then the GPU's own time per frame, and the shaders built and draws left
+  out in the last 4 seconds (red marks on the graph where they happened, the usual cause of a stutter).
 - **Volume** scales the game's whole sound, on top of the game's own sound settings and Windows' volume. Its steps
   follow a curve so they sound about even: 50% is a quarter of the level (-12 dB). **Mute in background** silences the
   game while another window has the focus; an overlay such as Steam's or Discord's does not count as another window
