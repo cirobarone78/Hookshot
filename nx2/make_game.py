@@ -2317,21 +2317,20 @@ def main(a=None):
         note_shader_list(work, romfs, os.path.join(out, "hookshot_shaders.bin"))
     # (hookshot) the button prompts of other controllers (host/prompts.c): the game's icon font redrawn per controller, with fontTools.
     # Without it the game shows its own icons
-    prompts = os.path.join(out, "prompts")
+    # (hookshot) and with them the item wheel's icons (gpu/vk/vk_menu.cpp), the game's own: --wheel-icons. Without them the
+    # wheel shows the items' names
+    prompts, wheel = os.path.join(out, "prompts"), os.path.join(out, "wheel")
     shutil.rmtree(prompts, ignore_errors=True)
+    if os.path.exists(os.path.join(wheel, "icons.bin")):
+        os.remove(os.path.join(wheel, "icons.bin"))
     if importlib.util.find_spec("fontTools") is None:
         print("the button prompts of other controllers were not made (no fontTools): the game shows its own", flush=True)
-    elif run(PY + [os.path.join(HERE, "prompt_assets.py"), "--romfs", romfs, "--out", prompts], check=False, output=sys.stderr):
+    elif run(PY + [os.path.join(HERE, "prompt_assets.py"), "--romfs", romfs, "--out", prompts,
+                   "--wheel-icons", os.path.join(wheel, "icons.bin")], check=False, output=sys.stderr):
         print("the button prompts of other controllers were not made: the game shows its own", flush=True)
         shutil.rmtree(prompts, ignore_errors=True)
-    # (wheel mod) the item wheel's icons and sounds (gpu/vk/vk_menu.cpp, host/nn_audio.c): the game's own item icons and item
-    # row sounds, from the RomFS. Without them the wheel shows the items' names and its scroll tick is silent
-    wheel = os.path.join(out, "wheel")
-    if importlib.util.find_spec("PIL") is None or importlib.util.find_spec("texture2ddecoder") is None:
-        print("the item wheel's icons were not made (no Pillow or texture2ddecoder): it shows the items' names", flush=True)
-    elif run(PY + [os.path.join(HERE, "wheel_icons.py"), "--romfs", romfs, "--out", os.path.join(wheel, "icons.bin")],
-             check=False, output=sys.stderr):
-        print("the item wheel's icons were not made: it shows the items' names", flush=True)
+    # (hookshot) the item wheel's sounds (host/nn_audio.c): the game's own item row sounds, from the RomFS (the standard
+    # library and zstandard only). Without them its scroll tick is silent
     if run(PY + [os.path.join(HERE, "wheel_sounds.py"), "--romfs", romfs, "--out", os.path.join(wheel, "sounds.bin")],
            check=False, output=sys.stderr):
         print("the item wheel's sounds were not made: its scroll tick is silent", flush=True)

@@ -99,7 +99,7 @@ typedef struct {
     int bq_on[2];                              /* the voice's two biquad filters (BiquadFilterParameter, Q14) */
     float bq_b[2][3], bq_a[2][2], bq_z[2][MAX_CH][2];
     int dropped;
-    int hushed;                                /* (wheel mod) the item row's tick while the wheel steers the row: silent */
+    int hushed;                                /* (hookshot) the item row's tick while the wheel steers the row: silent */
 } Voice;
 
 static CRITICAL_SECTION lock;
@@ -378,7 +378,7 @@ static void effects_frame(int mix) {
         if (reverbs[e].used && reverbs[e].mix == mix) reverb_frame(&reverbs[e], &mixes[mix]);
 }
 
-/* ---- (wheel mod) the item wheel's sounds ------------------------------------------------------------------------ */
+/* ---- (hookshot) the item wheel's sounds ------------------------------------------------------------------------ */
 /* <game folder>/wheel/sounds.bin (nx2/wheel_sounds.py, run by make_game.py: the item row's own sounds, decoded from the RomFS), read
    at the first use. hos_audio_cue plays one over the game's output. While the wheel steers the game's hidden row
    (hos_wheel_hush, oot_wheel.c), the game's own voices of the row's tick (known by their ADPCM coefficients) are silent:
@@ -530,7 +530,7 @@ static void render_voice(Voice *v) {
             v->bq_z[f][ch][1] = z1;
         }
     }
-    if (v->hushed) memset(out, 0, sizeof out);   /* (wheel mod: it plays on, unheard, and its buffers are released) */
+    if (v->hushed) memset(out, 0, sizeof out);   /* (hookshot: it plays on, unheard, and its buffers are released) */
     if (v->dest_kind == DEST_MIX && mixes[v->dest].used) {
         Mix *m = &mixes[v->dest];
         for (int ch = 0; ch < v->channels; ch++)
@@ -1709,7 +1709,7 @@ HLE(_ZN2nn5audio16AppendWaveBufferEPNS0_9VoiceTypeEPKNS0_10WaveBufferE) {
             }
         }
         const Cmd k = {.op = OP_VOICE_APPEND, .idx = (int)(v - voices), .wbp = ARG(1), .wb = read_wb(ARG(1))};
-        {   /* (wheel mod) */
+        {   /* (hookshot) */
             const int hush = wheel_hushes(v);
             if (hush && !v->hushed) {
                 static int logged;

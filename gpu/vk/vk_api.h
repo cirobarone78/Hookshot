@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 19   /* (19: the wheel mod's item wheel, MkwVkHost wheel) */
+#define MKWVK_API_VERSION 19   /* (19: the item wheel, MkwVkHost wheel) */
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -47,7 +47,7 @@ enum { HOS_OPT_HDR_TONEMAP = 47 };
 /* Gameplay's vertical field of view, percent of the game's current angle; 100 is unchanged. */
 /* 49 and 50 are reserved for Walk mode and Walk speed (#2345). */
 enum { HOS_OPT_FOV = 51 };
-/* (wheel mod) the Gameplay tab's Item wheel row (host/oot_wheel.c): 1 the wheel, 0 the game's own item row */
+/* (hookshot) the Gameplay tab's Item wheel row (host/oot_wheel.c): 1 the wheel, 0 the game's own item row */
 enum { HOS_OPT_ITEM_WHEEL = 60 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
@@ -95,7 +95,7 @@ typedef struct MkwVkSetting {
     int value, lo, hi, step;
     int restart, fixed;   /* the change applies at the next start; nothing to choose on this PC (the menu shows it greyed) */
 } MkwVkSetting;
-/* (wheel mod) The R button's item row shown as a wheel (host/oot_wheel.c fills it, gpu/vk/vk_menu.cpp draws it): the
+/* (hookshot) The R button's item row shown as a wheel (host/oot_wheel.c fills it, gpu/vk/vk_menu.cpp draws it): the
    items in the row's order, the game's cursor and the stick's pick. seq changes whenever anything else does; the
    back end copies the whole and checks seq again (a copy made while the game side wrote is taken the next frame) */
 #define MKWVK_WHEEL_MAX 32
@@ -199,7 +199,7 @@ typedef struct MkwVkHost {
     /* (version 17, hookshot) what of the button prompts a change of face or controls reaches at once (host/prompts.c):
        HOS_PROMPTS_LIVE_* bits; 0 none (a mod's files, built without the prompts, or not loaded yet) */
     int (*prompts_live)(void);
-    /* (version 19, wheel mod) the item wheel's state (host/oot_wheel.c); never null once the back end runs */
+    /* (version 19, hookshot) the item wheel's state (host/oot_wheel.c); never null once the back end runs */
     const MkwVkWheel *(*wheel)(void);
 } MkwVkHost;
 
