@@ -16,9 +16,13 @@ Each is a runtime switch where it can be, so the game's own path stays reachable
   before any recompute. So the fixed path kept the dynamic path's last scale (0.75 docked: 1536x864 at every setting). Flag 1 now
   also asks for the recompute, and on the fixed path the flags +0xe20 bits 3/4 (a hardcoded 0.75 / 0.5 in place of the scale)
   are not looked at.
+- Camera speed (the Insert menu's "Camera speed", the supported build only): the player camera's update (f_80644c80) turns the
+  camera each frame by the speeds the right stick's turn functions return in s0; hos_camera_scale multiplies them at each of
+  their returns, 1.0 as shipped. Even the fastest of the game's own camera speeds turned slowly for players.
 """
 import glob
 import os
+import re
 import sys
 import whole_write   # (rewrites written beside and moved over: issue 1197)
 
@@ -403,7 +407,7 @@ def patch_text_speed(s):
         return None
     end = s.find("\nvoid f_", head + len(TEXT_HEAD))
     body = s[head:end if end >= 0 else len(s)]
-    for old in (TEXT_OLD_POLLED, TEXT_OLD):   # (with the interrupt poll before the block's backward goto, or without: --no-polls)
+    for old in (TEXT_OLD_POLLED, TEXT_OLD):   # (with the interrupt poll before the block's backward goto, or without: a lift run by hand with nx2/lift.py --no-polls)
         if old + TEXT_ADD in body:   # (applied already: a second run)
             return s
         if body.count(old) == 1:
@@ -417,11 +421,43 @@ def patch_text_speed(s):
     return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TEXT_DECL, 1)
 
 
+# Camera speed (host/nn_vi.c hos_camera_scale: the Insert menu's Camera speed, 1.0 as shipped). The player camera's update
+# (f_80644c80) multiplies the right stick into the turn of each frame by a speed each of these returns in s0:
+# - f_80643f10: the yaw's, the entry of the game's own camera speed option (options +0x254) in its speed table, times a factor;
+# - f_80643b60: the pitch's, the same option's entry in the other table;
+# - f_82ea21f0, f_82ea2220: the same two at level 2, the path taken while the stick's actor has the flag at +0x218.
+# None of them calls another, so each turn is scaled once. Only the supported build's functions have these names (apply).
+CAMERA_SPEED_HEADS = tuple("void f_%x(Ctx *__restrict A64_NOESC c) {" % a for a in (0x80643f10, 0x80643b60, 0x82ea21f0, 0x82ea2220))
+CAMERA_SPEED_DECL = "extern volatile float hos_camera_scale;\n"
+CAMERA_SPEED_RETURN = ("{ if (hos_camera_scale != 1.0f) { float _t; uint32_t _u; memcpy(&_t,c->vreg[0],4); _t *= hos_camera_scale; "
+                       "memcpy(&_u,&_t,4); a64_vset64(c->vreg[0],_u); } return; }   /* (nx2/oot_patches.py: camera speed) */")
+
+
+def patch_camera_speed(s):
+    """Each return of the camera's turn-speed functions scales s0 by hos_camera_scale: (s, the functions of s that do, made now
+    or by an earlier run). A function without a return is left as it is."""
+    found = 0
+    for head_text in CAMERA_SPEED_HEADS:
+        head = s.find(head_text)
+        if head < 0:
+            continue
+        end = s.find("\nvoid f_", head + len(head_text))
+        end = end if end >= 0 else len(s)
+        body = s[head:end]
+        if CAMERA_SPEED_RETURN not in body:   # (not made before: a lift patched again keeps its scale once)
+            body, n = re.subn(r"\breturn;", lambda _: CAMERA_SPEED_RETURN, body)
+            if not n:
+                continue
+            s = s[:head] + body + s[end:]
+        found += 1
+    if found and CAMERA_SPEED_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + CAMERA_SPEED_DECL, 1)
+    return s, found
+
+
 def apply(gen, *, protect_hearts=False, required=False):
     """required: the lift of the supported build (LIFE_BUILD_ID), whole: a missing output-size edit stops it (apply_output_size).
     The other patches only warn when their place is not found once."""
-    import oot_native_resolution   # (HOS_SCENE_NATIVE=1: the scene's base scale 1.0; off by default since #849's output resolution)
-    oot_native_resolution.apply(gen)
     done = {"dynamic resolution branch": 0, "text speed block": 0, "fixed path's scale": 0, "movie's frame count": 0}
     if protect_hearts:   # (the supported build's: these places are its functions)
         done["menu focus hook"] = 0
@@ -433,6 +469,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         done["mouse camera"] = 0
         done["disable camera centering"] = 0
     speed_hooks = 0   # (SPEED_PLACES', in one file or several)
+    camera_speed = 0   # (the turn-speed functions that scale by hos_camera_scale: patch_camera_speed)
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
     whole_sites = 0   # (the counters of WHOLE_SITES with the whole frames: patch_whole_frames)
     for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
@@ -506,6 +543,12 @@ def apply(gen, *, protect_hearts=False, required=False):
             out = view
             done["free camera"] += 1
             print("oot_patches: free camera in", os.path.basename(path))
+        if protect_hearts:   # (found by name alone: in another build these addresses are other functions)
+            made, n = patch_camera_speed(out)
+            camera_speed += n
+            if made != out:
+                out = made
+                print("oot_patches: camera speed at %d function(s) in %s" % (n, os.path.basename(path)))
         out, sites = patch_frame_seconds(out)
         if STEP_MARK in out:   # (made now, or by an earlier run over this file)
             step_sites += out.count(STEP_MARK)
@@ -523,6 +566,9 @@ def apply(gen, *, protect_hearts=False, required=False):
             print("oot_patches: WARNING: the %s was found %d times" % (what, n))
     if protect_hearts and speed_hooks != len(SPEED_PLACES):
         print("oot_patches: WARNING: the movement speed's places were found %d times, not %d" % (speed_hooks, len(SPEED_PLACES)))
+    if protect_hearts and camera_speed != len(CAMERA_SPEED_HEADS):
+        print("oot_patches: WARNING: the camera's turn speed was found in %d of %d functions (the Camera speed row turns only "
+              "those)" % (camera_speed, len(CAMERA_SPEED_HEADS)))
     if step_sites != len(STEP_SITES):
         # (both or neither: with one divide timed and the other stepping 1/60 s the two clocks of the game would run apart. Without
         # the hook the host keeps the rate up to the cap, as before: host/nn_vi.c, hos_step_probe)
