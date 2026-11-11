@@ -43,7 +43,7 @@ struct VendorFixes {
 inline VendorFixes vendor_fixes(const VendorFacts& f) {
     VendorFixes x;
     x.fetch_bounds = f.vendor_id != 0x10DE;
-    x.nan_bits = f.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY && f.driver_info && std::strstr(f.driver_info, "shader compiler");
+    x.nan_bits = f.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY && f.driver_info && std::strstr(f.driver_info, "proprietary shader compiler");
     switch (f.driver_id) {
     case VK_DRIVER_ID_AMD_PROPRIETARY:
     case VK_DRIVER_ID_AMD_OPEN_SOURCE:

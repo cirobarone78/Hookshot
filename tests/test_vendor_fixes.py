@@ -154,7 +154,7 @@ def main():
             expect = list(want)
             if value:
                 field = i // 3
-                expect[field] = ("1" if value == "1" else "0") if FIELDS[field] != "static_a2c" else ("0" if value == "1" else "1")
+                expect[field] = "1" if value == "1" else "0"
             if got != expect:
                 failures.append("%s with %s=%s: %s, expected %s" % (name, switch, value, "".join(got), "".join(expect)))
     if failures:

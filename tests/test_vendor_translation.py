@@ -2,8 +2,9 @@
 
 Both are cut out of the translator (FetchInBounds in backend/spirv/emit_spirv_image.cpp, IsNan in
 emit_spirv_floating_point.cpp) into a Sirit fixture: a compute shader that fetches from an image of every type a fetch
-reads (texel buffer, 1D, 1D array, 2D, 2D rect, 2D array, 3D, 2D multisampled) through FetchInBounds, and tests a 16-,
-32- and 64-bit float with IsNan, made once with the fixes off (fetch_bounds, nan_bits false: what NVIDIA gets) and once
+reads (texel buffer, 1D, 1D array, 2D, 2D rect, 2D array, 3D, 2D multisampled) through FetchInBounds, gathers from a 2D,
+2D rect, 2D array and cube texture through ImageGatherSubpixelOffset, and tests a 16-, 32- and 64-bit float with IsNan,
+made once with the fixes off (fetch_bounds, nan_bits false: what NVIDIA gets) and once
 on. Both must pass spirv-val. Off, IsNan is OpIsNan alone, as it was; on, there is no OpIsNan left, and every fetch's
 coordinates and level are checked against the image's size and levels. The fetch path with fetch_bounds off is checked
 to be the translator's old one, word for word. Nothing runs on a GPU.
@@ -42,21 +43,23 @@ FIXTURE = r"""
 #include <sirit/sirit.h>
 using u32 = std::uint32_t;
 using Sirit::Id;
-bool nan_bits = false, fetch_bounds = false;
+bool nan_bits = false, fetch_bounds = false, gather_offset = false;
 enum class TextureType { Color1D, ColorArray1D, Color2D, ColorArray2D, Color3D, ColorCube, ColorArrayCube, Buffer, Color2DRect };
 namespace IR { struct TextureInstInfo { TextureType type; }; }
 struct EmitContext : Sirit::Module {
     using Sirit::Module::Module;
-    Id U1{}, u32_zero_value{};
+    Id U1{}, u32_zero_value{}, f32_zero_value{};
     std::array<Id, 5> U32{}, F32{};
     Id Const(u32 v) { return Constant(U32[1], v); }
+    Id Const(float v) { return Constant(F32[1], v); }
 };
 @@ISNAN@@
 @@FETCH@@
+@@GATHER@@
 struct Case { TextureType type; spv::Dim dim; bool arrayed, ms, lod; u32 dims; };
 int main(int argc, char** argv) {
     if (argc < 3) return 2;
-    nan_bits = fetch_bounds = argv[1][0] == '1';
+    nan_bits = fetch_bounds = gather_offset = argv[1][0] == '1';
     EmitContext ctx{0x00010600};
     ctx.AddCapability(spv::Capability::Shader);
     ctx.AddCapability(spv::Capability::ImageQuery);
@@ -70,6 +73,7 @@ int main(int argc, char** argv) {
     ctx.U32[1] = u32t, ctx.F32[1] = f32t;
     for (int i = 2; i <= 4; i++) ctx.U32[i] = ctx.TypeVector(u32t, i), ctx.F32[i] = ctx.TypeVector(f32t, i);
     ctx.u32_zero_value = ctx.Const(0u);
+    ctx.f32_zero_value = ctx.Const(0.0f);
     // (the inputs, from a storage buffer: words the validator cannot fold)
     const Id words{ctx.TypeRuntimeArray(u32t)};
     ctx.Decorate(words, spv::Decoration::ArrayStride, 4u);
@@ -94,6 +98,20 @@ int main(int argc, char** argv) {
         ctx.Decorate(var, spv::Decoration::DescriptorSet, 0u);
         ctx.Decorate(var, spv::Decoration::Binding, u32(1 + i));
         images.push_back(var);
+        interface.push_back(var);
+    }
+    // (gathers through ImageGatherSubpixelOffset: 2D, 2D rect, 2D array, cube; the profile's gather offset is on with the fixes)
+    struct G { TextureType type; spv::Dim dim; bool arrayed; u32 dims; };
+    const std::vector<G> gathers{{TextureType::Color2D, spv::Dim::Dim2D, false, 2}, {TextureType::Color2DRect, spv::Dim::Dim2D, false, 2},
+                                 {TextureType::ColorArray2D, spv::Dim::Dim2D, true, 3}, {TextureType::ColorCube, spv::Dim::Cube, false, 3}};
+    std::vector<Id> gather_vars;
+    for (size_t i = 0; i < gathers.size(); i++) {
+        const Id image_type{ctx.TypeImage(f32t, gathers[i].dim, 0, gathers[i].arrayed, false, 1, spv::ImageFormat::Unknown)};
+        const Id var{ctx.AddGlobalVariable(ctx.TypePointer(spv::StorageClass::UniformConstant, ctx.TypeSampledImage(image_type)),
+                                           spv::StorageClass::UniformConstant)};
+        ctx.Decorate(var, spv::Decoration::DescriptorSet, 0u);
+        ctx.Decorate(var, spv::Decoration::Binding, u32(1 + cases.size() + i));
+        gather_vars.push_back(var);
         interface.push_back(var);
     }
     const Id voidt{ctx.TypeVoid()};
@@ -123,6 +141,17 @@ int main(int argc, char** argv) {
         else color = ctx.OpImageFetch(ctx.F32[4], image, coords);
         if (Sirit::ValidId(in_bounds)) color = ctx.OpSelect(ctx.F32[4], in_bounds, color, ctx.ConstantNull(ctx.F32[4]));
         output(ctx.OpBitcast(u32t, ctx.OpCompositeExtract(f32t, color, 0u)));
+    }
+    for (size_t i = 0; i < gathers.size(); i++) {
+        const G& g = gathers[i];
+        const Id image_type{ctx.TypeImage(f32t, g.dim, 0, g.arrayed, false, 1, spv::ImageFormat::Unknown)};
+        const Id sampled{ctx.OpLoad(ctx.TypeSampledImage(image_type), gather_vars[i])};
+        std::vector<Id> parts;
+        for (u32 k = 0; k < g.dims; k++) parts.push_back(ctx.OpBitcast(f32t, input()));
+        Id coords{ctx.OpCompositeConstruct(ctx.F32[g.dims], parts)};
+        if (gather_offset) coords = ImageGatherSubpixelOffset(ctx, IR::TextureInstInfo{g.type}, ctx.OpImage(image_type, sampled), coords);
+        const Id texels{ctx.OpImageGather(ctx.F32[4], sampled, coords, ctx.u32_zero_value)};
+        output(ctx.OpBitcast(u32t, ctx.OpCompositeExtract(f32t, texels, 0u)));
     }
     const Id f32v{ctx.OpBitcast(f32t, input())};
     const Id one{ctx.Const(1u)};
@@ -174,6 +203,7 @@ def main():
     fp = (SPIRV / "emit_spirv_floating_point.cpp").read_text(encoding="utf-8")
     fetch_at, fetch_end = block(image, "Id FetchInBounds(")
     nan_at, nan_end = block(fp, "Id IsNan(EmitContext& ctx, Id value, u32 bits)")
+    gather_at, gather_end = block(image, "Id ImageGatherSubpixelOffset(")
     emit_at, emit_end = block(image, "Id EmitImageFetch(")
     emit = image[emit_at:emit_end]
     guard_at, guard_end = block(emit, "if (fetch_bounds) {")
@@ -189,7 +219,8 @@ def main():
         raise SystemExit("FAIL: the colour outputs' NaN guard does not go through IsNan")
     if "IsNan(ctx, result, 16)" not in convert[slice(*block(convert, "Id EmitConvertF16F32("))]:
         raise SystemExit("FAIL: EmitConvertF16F32 does not go through IsNan")
-    fixture = FIXTURE.replace("@@ISNAN@@", fp[nan_at:nan_end]).replace("@@FETCH@@", image[fetch_at:fetch_end])
+    fixture = FIXTURE.replace("@@ISNAN@@", fp[nan_at:nan_end]).replace("@@FETCH@@", image[fetch_at:fetch_end]).replace(
+        "@@GATHER@@", image[gather_at:gather_end])
     sirit = ROOT / "gpu" / "vk" / "sirit"
     with tempfile.TemporaryDirectory(prefix="vendor-translation-") as tmp:
         tmp = Path(tmp)
@@ -219,15 +250,19 @@ def main():
             raise SystemExit("FAIL: with the fixes off the shader is not what it was (OpIsNan alone, no bounds)")
         if on.count(OP_IS_NAN) or on.count(OP_U_GREATER_THAN) < 3:
             raise SystemExit("FAIL: with nan_bits a NaN test is still OpIsNan")
-        # (6 fetches with a level: each its levels and its size at that level; the buffer and the multisampled image: the size)
-        if on.count(OP_QUERY_LEVELS) != 6 or on.count(OP_QUERY_SIZE_LOD) != 6 or on.count(OP_QUERY_SIZE) != 2:
+        # (6 fetches with a level: each its levels and its size at that level; the multisampled image: its size; the texel
+        # buffer none (robustBufferAccess2 answers it); 3 gathers nudged by their size (2D, rect, array), the cube's not)
+        if OP_QUERY_SIZE_LOD in off:
+            raise SystemExit("FAIL: with the fixes off a gather is nudged")
+        if on.count(OP_QUERY_LEVELS) != 6 or on.count(OP_QUERY_SIZE_LOD) != 6 + 3 or on.count(OP_QUERY_SIZE) != 1:
             raise SystemExit("FAIL: with fetch_bounds not every fetch is checked (levels %d, sizes %d + %d)" % (
                 on.count(OP_QUERY_LEVELS), on.count(OP_QUERY_SIZE_LOD), on.count(OP_QUERY_SIZE)))
         if on.count(OP_QUERY_SAMPLES) != 1 or OP_QUERY_SAMPLES in off:
             raise SystemExit("FAIL: with fetch_bounds the multisampled fetch's sample is not checked")
         if on.count(OP_IMAGE_FETCH) != 8 or off.count(OP_IMAGE_FETCH) != 8:
             raise SystemExit("FAIL: fetches went missing")
-    print("ok: fixes off: 3 OpIsNan, 8 plain fetches; on: NaN tests on bits, 8 fetches checked; both valid SPIR-V")
+    print("ok: fixes off: 3 OpIsNan, 8 plain fetches, 4 plain gathers; on: NaN tests on bits, 7 fetches checked (not the texel "
+          "buffer), 3 gathers nudged (not the cube); both valid SPIR-V")
 
 
 if __name__ == "__main__":

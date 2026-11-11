@@ -295,7 +295,6 @@ Id EmitFPUnordGreaterThanEqual32(EmitContext& ctx, Id lhs, Id rhs);
 Id EmitFPUnordGreaterThanEqual64(EmitContext& ctx, Id lhs, Id rhs);
 Id EmitFPIsNan16(EmitContext& ctx, Id value);
 Id EmitFPIsNan32(EmitContext& ctx, Id value);
-Id IsNan(EmitContext& ctx, Id value, u32 bits);   // (hookshot: OpIsNan, or a test of the bits: mma_layout.h nan_bits)
 Id EmitFPIsNan64(EmitContext& ctx, Id value);
 Id EmitIAdd32(EmitContext& ctx, IR::Inst* inst, Id a, Id b);
 Id EmitIAdd64(EmitContext& ctx, Id a, Id b);
@@ -645,5 +644,8 @@ Id EmitDPdxFine(EmitContext& ctx, Id op_a);
 Id EmitDPdyFine(EmitContext& ctx, Id op_a);
 Id EmitDPdxCoarse(EmitContext& ctx, Id op_a);
 Id EmitDPdyCoarse(EmitContext& ctx, Id op_a);
+
+// (hookshot) Helpers the emitters share, not IR instructions
+Id IsNan(EmitContext& ctx, Id value, u32 bits);   // (OpIsNan, or a test of the bits: mma_layout.h nan_bits)
 
 } // namespace Shader::Backend::SPIRV
