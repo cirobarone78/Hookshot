@@ -74,12 +74,18 @@ int64_t prof_ns[PROF_COUNT];
 Device dev;
 PFN_vkGetInstanceProcAddr instance_proc() { return vkx::instance_proc_addr(); }
 
+/// (hookshot) Milliseconds on the steady clock: the log's last line and the preparation's watchdog
+int64_t steady_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+std::atomic<int64_t> last_log_ms{0};   // (when logf last wrote: the preparation's status line comes after a silence)
 void logf(const char* fmt, ...) {
     char b[1024];
     std::va_list a;
     va_start(a, fmt);
     std::vsnprintf(b, sizeof b, fmt, a);
     va_end(a);
+    last_log_ms.store(steady_ms(), std::memory_order_relaxed);
     if (host) host->log(b);
 }
 
@@ -727,6 +733,83 @@ std::string skipped_path() {
     std::string path(exe, n);
     return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepare_skipped";
 }
+// (hookshot) The --prepare-shaders run's watchdog, for any GPU and any part of it.
+// - What it is doing, in the log the builder shows: a line whenever the log has been quiet for 30 s, with the part and its count,
+//   and, when that count has not moved, what it is waiting on and since when. Before, the builder's details showed
+//   the last line the run happened to write ("vertex format NVN 0xe -> vk 17") for as long as it ran or hung, and players could
+//   not tell a slow driver from a stuck one.
+// - When it stops for good: a driver that faults inside a pipeline compile (caught by guarded_graphics: "the driver faulted
+//   compiling", above) can be left holding a lock of its own, and every other thread that asks it for anything then waits for
+//   ever: builds stuck on Radeon and GeForce RTX 40 cards (#2107). No part can go on from there, as each needs the driver. So when
+//   nothing has moved for RX_VK_PREPARE_STALL_S seconds (300; 0: never stopped. Long: some steps read the caches or
+//   decide the predictions for a while with no count, on a slow disk or CPU too), the run says where it stopped and why, leaves
+//   hookshot_prepare_skipped so the game's own starts do not stop in the same place (what was not prepared is built when first
+//   drawn), and ends at once with exit status 4 (make_game.py: "the GPU driver stopped responding"). Not through exit(): that
+//   unloads the driver, which can wait on the same lock. Before, it waited until make_game.py stopped it after 15 minutes with no
+//   line, and the game's first start then stopped in the same place
+std::atomic<int64_t> prepare_moved_ms{0};
+std::atomic<size_t> prepare_seen_done{0}, prepare_seen_total{0};
+std::atomic<int> prepare_seen_part{-1};
+/// A part's count, from its progress: the watchdog's clock starts again when the part or its count changes. Part 3: the pipeline
+/// cache's save, the last, which has no count (and can take minutes on a large cache: every pipeline was made by then, so the
+/// driver answered; make_game.py's 15 minutes still cover it). The watchdog only reports it
+void prepare_moved(int part, size_t done, size_t total) {
+    if (part != prepare_seen_part.load() || done != prepare_seen_done.load() || !prepare_moved_ms.load()) {
+        prepare_seen_part.store(part), prepare_seen_done.store(done), prepare_seen_total.store(total);
+        prepare_moved_ms.store(steady_ms());
+    }
+}
+std::atomic<int> driver_faults_seen{0};
+void prepare_watchdog() {
+    static const int stall_s = getenv("RX_VK_PREPARE_STALL_S") ? atoi(getenv("RX_VK_PREPARE_STALL_S")) : 300;
+    // (a status line after this long with no other line; RX_VK_PREPARE_STATUS_S=<s>, for the tests)
+    static const int64_t quiet_s = getenv("RX_VK_PREPARE_STATUS_S") ? std::max(1, atoi(getenv("RX_VK_PREPARE_STATUS_S"))) : 30;
+    prepare_moved(0, 0, 0);
+    std::thread([] {
+        static const char* const parts[] = {"the shader programs", "the predicted pipelines", "the noted pipelines",
+                                            "the pipeline cache's save"};
+        for (;;) {
+            Sleep(1000);
+            const int64_t now = steady_ms();
+            const int part = prepare_seen_part.load();
+            const char* what = part >= 0 && part < 4 ? parts[part] : "the preparation";
+            const size_t done = prepare_seen_done.load(), total = prepare_seen_total.load();
+            const int64_t still = (now - prepare_moved_ms.load()) / 1000;
+            const int faults = driver_faults();
+            // (what it waits on: after a fault in the driver, most likely the driver; else the driver or the disk, a slow one
+            // reading the caches)
+            const char* waiting_on = faults ? "waiting on the GPU driver, which faulted (above)" : "waiting on the GPU driver or the disk";
+            if (faults != driver_faults_seen.exchange(faults))
+                logf("vk: preparation: the GPU driver faulted %d time%s so far (above): a driver can stop responding after one, so a "
+                     "stop here would be why", faults, faults == 1 ? "" : "s");
+            if (part < 3 && stall_s > 0 && still >= stall_s) {
+                logf("vk: preparation: STOPPED: nothing moved for %d s in %s (%zu of %zu): the GPU driver stopped responding%s. The "
+                     "rest is built in play, when first drawn; updating the GPU driver may help", stall_s, what, done, total,
+                     faults ? " after it faulted (above)" : "");
+                if (FILE* f = fopen(skipped_path().c_str(), "wb")) fclose(f);
+                if (host && host->log_flush) host->log_flush();
+                std::fflush(stdout);
+                std::fflush(stderr);
+#ifdef _WIN32
+                TerminateProcess(GetCurrentProcess(), 4);
+#endif
+                std::_Exit(4);
+            }
+            if (now - last_log_ms.load(std::memory_order_relaxed) < quiet_s * 1000) continue;
+            if (part >= 3)
+                logf("vk: preparation: still writing %s (%lld s): every pipeline is made, this is the disk", what, (long long)still);
+            else if (still < quiet_s)
+                logf("vk: preparation: still working on %s: %zu of %zu", what, done, total);
+            else if (stall_s > 0)
+                logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s. Stopped at %d s if nothing "
+                     "moves", what, (long long)still, done, total, waiting_on, stall_s);
+            else
+                logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s", what, (long long)still, done,
+                     total, waiting_on);
+            if (host && host->log_flush) host->log_flush();
+        }
+    }).detach();
+}
 // (hookshot) The first start after an update prepares every shader (prepare_run) and the pipelines the last sessions noted
 // (precompile_run): a minute and more, before the game's first frame. They run on a thread of their own while this one, the
 // renderer's start, shows the window at once with what they are doing on it, and keeps it shown and sized; on Windows it is also
@@ -890,9 +973,11 @@ bool started_up() {
         // from the start: PrepareBar. The fixed shares it had (70%, 20%, 10%) kept the predicted pipelines' minutes in a fifth)
         static int part;
         static PrepareBar bar;
+        prepare_watchdog();
         const auto progress = [](size_t done, size_t total) {
             static int last = -1;
             if (!total) return;
+            prepare_moved(part, done, total);
             bar.at(part, done, total);
             const int at = (int)(bar.fraction() * 1000);
             if (at == last) return;
@@ -914,10 +999,13 @@ bool started_up() {
             bar.skip(1);
         }
         part = 1;
+        prepare_moved(1, 0, 0);
         if (prepared) predict_run(progress);
         part = 2;
+        prepare_moved(2, 0, 0);
         bar.reach(2);
         precompile_run(progress);
+        prepare_moved(3, 0, 0);   // (the pipeline cache written out: the watchdog reports it, never stops it)
         pipeline_cache_save(true);
         remove(skipped_path().c_str());
         return true;
