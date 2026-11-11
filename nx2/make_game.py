@@ -330,10 +330,10 @@ def output_lines(p, silence):
         yield line
 
 
-def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROOT, base=None, silence=None):
+def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROOT, base=None, silence=None, allow=()):
     """A step, its output printed as it comes. show: what of each line is printed (its None: nothing; on_line and a failure's
     reason still get the line itself). base: the environment it starts from (os.environ). silence: seconds without a line after
-    which the step is stopped; it returns None then (with check, the build fails)"""
+    which the step is stopped; it returns None then (with check, the build fails). allow: exit statuses returned, not failed"""
     e = dict(os.environ if base is None else base, PYTHONIOENCODING="utf-8")
     e.update(env or {})
     p = subprocess.Popen(cmd, cwd=cwd, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
@@ -357,7 +357,7 @@ def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROO
         return None
     p.stdout.close()
     code = p.wait()
-    if code and check:
+    if code and check and code not in allow:
         step = next((os.path.basename(c) for c in cmd[1:] if c.endswith(".py")), os.path.basename(cmd[-1]))   # (issue 154: not "-u")
         status = "signal %d" % -code if os.name == "posix" and code < 0 else "exit status %d" % code
         fail("%s stopped (%s): %s" % (step, status, killed_reason() if os.name == "posix" and -code in (9, 15) else failure_reason(lines)))
@@ -1277,7 +1277,7 @@ def gen_print(gen):
     h = hashlib.sha1(usedforsecurity=False)
     for name in sorted(os.listdir(gen)):
         p = os.path.join(gen, name)
-        if name != LIFT_KEY and os.path.isfile(p):
+        if name not in (LIFT_KEY, KEPT_LIST) and os.path.isfile(p):   # (KEPT_LIST: build.py's, written after the lift)
             st = os.stat(p)
             h.update(("%s %d %d\n" % (name, st.st_size, st.st_mtime_ns)).encode())
     return h.hexdigest()
@@ -1323,6 +1323,47 @@ def lifted_before(work, key):
     if len(lines) != 2 or lines[0] != key or lines[1] != gen_print(gen):
         return False
     return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c"))
+
+
+KEPT_LIST = "lifted_objects.txt"   # (nx2/build.py's list of the lifted files' object keys, in <work>/sa/gen)
+KEPT_STALE = 3   # (nx2/build.py's exit status when that list no longer fits the build: the game is translated again)
+
+
+def kept_before(work, key):
+    """The last build had this lift key and its clean-up let the lifted C go but kept the rest of the lift and the list of its object
+    keys (keep_translation): the lift can be skipped, build.py linking the lifted files' objects from the cache by that list"""
+    gen = os.path.join(work, "sa", "gen")
+    try:
+        with open(os.path.join(gen, LIFT_KEY)) as f:
+            lines = f.read().split()
+    except OSError:
+        return False
+    if len(lines) != 3 or lines[0] != key or lines[1] != gen_print(gen) or lines[2] != "kept":
+        return False
+    if any(f.startswith("code_") for f in os.listdir(gen)):
+        return False
+    return all(os.path.isfile(p) for p in (os.path.join(gen, KEPT_LIST), os.path.join(gen, "a64_table.c"),
+                                           os.path.join(work, "sa", "image", "image.bin")))
+
+
+def keep_translation(work, key):
+    """(after a build that compiled every file) What a player's clean-up keeps of the lift: everything but the lifted C itself (1.5 GB:
+    code_*.c) and the build's outputs. The lift's other files (~130 MB: the headers the objects are keyed by, the runtime tables, the
+    image) and build.py's list of the lifted files' object keys stay, with the lift key marked "kept" (kept_before). Returns the
+    bytes kept, or None when there is nothing to keep it by (the lift and that list not from this build)"""
+    gen = os.path.join(work, "sa", "gen")
+    if not (lifted_before(work, key) or kept_before(work, key)) or not os.path.isfile(os.path.join(gen, KEPT_LIST)):
+        return None
+    for f in os.listdir(gen):
+        if f.startswith("code_"):
+            os.remove(os.path.join(gen, f))
+    shutil.rmtree(os.path.join(work, "sa", "build"), ignore_errors=True)
+    with open(os.path.join(gen, LIFT_KEY), "w") as f:
+        f.write(key + "\n" + gen_print(gen) + "\nkept\n")
+    kept = 0
+    for d, _, fs in os.walk(os.path.join(work, "sa")):
+        kept += sum(os.path.getsize(os.path.join(d, f)) for f in fs)
+    return kept
 
 
 def forget_failed_build(work, linked):
@@ -1674,41 +1715,48 @@ def main(a=None):
     gen_dir = os.path.join(work, "sa", "gen")
     # (issue 1197: a lifted file cut short, "g_module_b" where g_module_base was, stopped the compile at every try. Before the compile
     # every one must end as a function does: one that does not is translated again, once; a second time says what to check)
-    for _ in range(2):
-        if lifted_before(work, key):   # (never on the second pass: its key was taken away below)
-            print("the game was translated with these tools before: translating it again is skipped", flush=True)
-        else:
-            key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
+    def translate():
+        for _ in range(2):
+            if lifted_before(work, key):   # (never on the second pass: its key was taken away below)
+                print("the game was translated with these tools before: translating it again is skipped", flush=True)
+            elif kept_before(work, key):   # (a player's update with the same tools: keep_translation, below)
+                print("the game was translated with these tools before (its compiled code kept): translating it again is skipped",
+                      flush=True)
+                env["HOOKSHOT_KEPT_LIFT"] = os.path.join(gen_dir, KEPT_LIST)
+            else:
+                env.pop("HOOKSHOT_KEPT_LIFT", None)
+                key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
+                if os.path.exists(key_file):
+                    os.remove(key_file)   # (a lift stopped halfway leaves no key behind)
+                # (hookshot) the lifted C of an earlier lift goes first: a file that lift made and this one does not (another builder's
+                # naming, a chunk cut short) was compiled with the new ones, undefined or doubly defined game functions at the link (issue
+                # 1176). The objects stay cached by their contents, so a file this lift writes the same is not compiled again
+                if os.path.isdir(gen_dir):
+                    for f in os.listdir(gen_dir):
+                        if f.startswith("code_") and (f.endswith(".c") or f.endswith(".c.whole") or f.endswith(".part")):
+                            try:
+                                os.remove(os.path.join(gen_dir, f))
+                            except FileNotFoundError:
+                                pass   # (already gone: another cleanup removed it)
+                            except OSError as e:
+                                fail("Could not remove earlier translated file %s: %s. The new translation has not started." %
+                                     (os.path.join(gen_dir, f), e))
+                run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
+                if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
+                    run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
+                write_lift_key(work, key)
+            cut = lifted_cut_short(gen_dir)
+            if not cut:
+                break
+            key_file = os.path.join(gen_dir, LIFT_KEY)
             if os.path.exists(key_file):
-                os.remove(key_file)   # (a lift stopped halfway leaves no key behind)
-            # (hookshot) the lifted C of an earlier lift goes first: a file that lift made and this one does not (another builder's naming,
-            # a chunk cut short) was compiled with the new ones, undefined or doubly defined game functions at the link (issue 1176).
-            # The objects stay cached by their contents, so a file this lift writes the same is not compiled again
-            gen_dir = os.path.join(work, "sa", "gen")
-            if os.path.isdir(gen_dir):
-                for f in os.listdir(gen_dir):
-                    if f.startswith("code_") and (f.endswith(".c") or f.endswith(".c.whole") or f.endswith(".part")):
-                        try:
-                            os.remove(os.path.join(gen_dir, f))
-                        except FileNotFoundError:
-                            pass   # (already gone: another cleanup removed it)
-                        except OSError as e:
-                            fail("Could not remove earlier translated file %s: %s. The new translation has not started." %
-                                 (os.path.join(gen_dir, f), e))
-            run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
-            if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
-                run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
-            write_lift_key(work, key)
-        cut = lifted_cut_short(gen_dir)
-        if not cut:
-            break
-        key_file = os.path.join(gen_dir, LIFT_KEY)
-        if os.path.exists(key_file):
-            os.remove(key_file)
-        print("translated files cut short (%s): the game is translated again" % ", ".join(cut[:6]), flush=True)
-    else:
-        fail("The translated game came out cut short twice (%s). Check that the drive with %s has free space, and that no antivirus "
-             "and no second Hookshot Builder is working in that folder, then update again." % (", ".join(cut[:6]), work))
+                os.remove(key_file)
+            print("translated files cut short (%s): the game is translated again" % ", ".join(cut[:6]), flush=True)
+        else:
+            fail("The translated game came out cut short twice (%s). Check that the drive with %s has free space, and that no antivirus "
+                 "and no second Hookshot Builder is working in that folder, then update again." % (", ".join(cut[:6]), work))
+
+    translate()
 
     if LINUX:
         check_linux_compiler()
@@ -1766,7 +1814,17 @@ def main(a=None):
             linking.append(line)
         compiled(line)
     try:
-        run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compile_line)
+        if run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compile_line,
+               allow=(KEPT_STALE,) if "HOOKSHOT_KEPT_LIFT" in env else ()) == KEPT_STALE:
+            # (the translation kept from the last build no longer fits: an object of it gone, other flags or headers. Nothing was
+            # compiled: the game is translated, then compiled, as when nothing was kept)
+            os.remove(os.path.join(gen_dir, LIFT_KEY))
+            say("stage", "lift", "Translating the game to PC code")
+            translate()
+            say("stage", "compile", "Compiling")
+            run_files.clear()
+            done["n"] = 0.0
+            run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compile_line)
     except SystemExit:
         forget_failed_build(work, bool(linking))
         raise
@@ -1874,12 +1932,17 @@ def main(a=None):
         # again, an hour and more on many PCs (issue 1287, "updates rebuild everything"), where the update changes a few. The next
         # update translates again (minutes) and compiles only what changed. The builder's Free up space lets them go too.
         # HOOKSHOT_KEEP_BUILD_FILES=1 keeps everything, as before)
+        # The rest of the lift (~130 MB: its headers, runtime tables and image) stays too, with build.py's list of the lifted files'
+        # object keys: an update with the same tools then skips the lift (keep_translation, kept_before)
         if os.environ.get("HOOKSHOT_KEEP_BUILD_FILES", "0") in ("", "0"):
             kept = prune_object_cache(work)
-            for sub in ("sa", "probe"):
+            lift_kept = keep_translation(work, key)
+            for sub in ("probe",) if lift_kept is not None else ("sa", "probe"):
                 shutil.rmtree(os.path.join(work, sub), ignore_errors=True)
-            print("the build files in %s were deleted but this build's compiled objects (%d MB), so that an update compiles only what "
-                  "changed (HOOKSHOT_KEEP_BUILD_FILES=1 keeps all)" % (work, kept >> 20), flush=True)
+            print("the build files in %s were deleted but this build's compiled objects (%d MB)%s, so that an update compiles only "
+                  "what changed (HOOKSHOT_KEEP_BUILD_FILES=1 keeps all)" % (
+                      work, kept >> 20, "" if lift_kept is None else " and the translation's other files (%d MB)" % (lift_kept >> 20)),
+                  flush=True)
     total_seconds = time.time() - STARTED
     previous = record_times(work, run_files, compile_seconds, total_seconds, modules=plan[1],
                             kind="update" if a.update else "build")
