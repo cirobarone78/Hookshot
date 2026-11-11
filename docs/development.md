@@ -164,6 +164,7 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_ASYNC=1` | The replay on a thread of its own instead of the game's submitting thread |
 | `RX_VK_DESC_REUSE=0/1/2` | How far a draw keeps the descriptors of the draw before it, over the Descriptor reuse row: 0 never (every draw builds its own), 1 while no registration at all was made (the row's Off), 2 through registrations of slots it does not sample (the row's On, the default) |
 | `RX_VK_NAN_GUARD=0` | No NaN guard on float colour outputs (on by default on every card: one NaN texel spreads through bloom into glowing blocks) |
+| `RX_VK_FIFO=1`, `RX_VK_IMMEDIATE=1` | V-Sync On (FIFO) or Off (immediate) for one run, over the menu's V-Sync row |
 | `HOS_VCORES=0`, `HOS_CORES=<1..8>`, `HOS_RESERVE_CORE=0` | No virtual cores; the cores the game sees (6); no core kept for the replay (one is, with 8 or more logical processors) |
 
 ### Building

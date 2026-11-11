@@ -103,9 +103,7 @@ def main():
             continue
         for name in re.findall(r'getenv\("([A-Z0-9_]+)"\)\s*[!=]=\s*(?:nullptr|NULL)', text):
             presence.setdefault(name, []).append(path.relative_to(ROOT).as_posix())
-    # (left as they are here: the V-Sync row's pull request replaces the two reads in vk_main.cpp create_swapchain)
-    later = {"RX_VK_FIFO", "RX_VK_IMMEDIATE"}
-    old = sorted(n for n, where in presence.items() if len(where) == reads.get(n, 0) and n not in later)
+    old = sorted(n for n, where in presence.items() if len(where) == reads.get(n, 0))
     if old:
         raise SystemExit("FAIL: on/off switches still read as set-means-on (getenv(...) != NULL): use env_on:\n  " +
                          "\n  ".join("%s (%s)" % (n, ", ".join(sorted(set(presence[n])))) for n in old))
