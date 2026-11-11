@@ -16,8 +16,10 @@ void antilag_device_features(void**& tail);
 void antilag_device_created();
 /// Anti-Lag 2 can run on this device: the Insert menu's row offers it only then
 bool antilag_available();
-/// Before the present: the frame's present stage
-void antilag_present();
+/// The game frame whose input stage was given last (the one being made now), 0 while Anti-Lag 2 is off or none was
+uint64_t antilag_frame();
+/// Before the present that shows game frame `frame` (antilag_frame() when it was made): its present stage. 0: nothing
+void antilag_present(uint64_t frame);
 /// After the present: the next frame's input stage, where the driver waits until that frame should start
 void antilag_input();
 

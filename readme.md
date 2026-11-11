@@ -389,7 +389,8 @@ HDR peak brightness show only while HDR is on.
   detail. `RX_VK_UPSCALE_LOD_BIAS=0` turns it off.
 - **NVIDIA Reflex** Off is the game as without it. `RX_VK_REFLEX_LOG=1` logs the driver's latency timings every 300
   frames while it is on.
-- **AMD Anti-Lag 2** Off is the game as without it. Like Reflex, it is not used while Frame generation is on.
+- **AMD Anti-Lag 2** Off is the game as without it. It works with Frame generation too: each game frame counts as shown
+  when the first frame made from it is.
 - **Profile** runs the game as the console docked (at the Output resolution) or Handheld (1536x864): lighter on the GPU.
 - **V-Sync:** Auto is mailbox where the driver has it (no tearing, no wait for the display); otherwise On, or on Windows
   Off. On waits for each refresh (FIFO): no tearing, at most the display's rate. Off shows each frame at once and can

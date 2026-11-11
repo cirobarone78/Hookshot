@@ -19,6 +19,7 @@
 
 #include <cmath>
 
+#include "vk_antilag.h"
 #include "vk_framegen.h"
 #include "vk_fsr3_inputs.h"   // (AMD FSR 3.1 frame interpolation's depth and motion)
 #include "vk_fsr3fi.h"
@@ -65,6 +66,7 @@ struct Job {
     OutSet* set;
     int64_t at;
     uint64_t value;   // (the recording that makes its frames)
+    uint64_t antilag_frame;   // (AMD Anti-Lag 2: the game frame's index, its present stage given at the set's first present)
 };
 struct Pipe {
     VkDescriptorSetLayout set = VK_NULL_HANDLE;
@@ -457,7 +459,7 @@ void display_main() {
             for (int k = 0; k < shown; k++) {
                 present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
                 present_defer_into = &pending[k];
-                present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
+                present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view, k ? 0 : j.antilag_frame);
                 present_defer_into = nullptr;
             }
             if (pending[0].used) vkWaitForFences(dev.device, 1, &pending[0].done, VK_TRUE, 100000000ull);   // (100 ms at most)
@@ -478,7 +480,7 @@ void display_main() {
                 }
             } else {
                 present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
-                present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
+                present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view, k ? 0 : j.antilag_frame);
             }
             menu_note_frame(!timed && k == j.set->made);
             if (shown_at) {
@@ -822,7 +824,7 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
 void framegen_queue(uint64_t value) {
     if (!fg.recorded) return;
     std::lock_guard lk(fg.mu);
-    fg.jobs.push_back({fg.recorded, fg.recorded_at, value});
+    fg.jobs.push_back({fg.recorded, fg.recorded_at, value, antilag_frame()});
     fg.recorded = nullptr;
     fg.cv.notify_all();
 }
