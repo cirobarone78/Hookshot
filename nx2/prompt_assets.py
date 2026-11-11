@@ -645,9 +645,10 @@ def guide_draw(size, way, dot):
 def guide_line(size, bar, row, where, pad, stays):
     """a leader line (L, size) from a bar's row to the pad input's part (where: the picture's parts), ending on a dot"""
     way = guide_route(size, bar, row, where, pad, stays)
-    if not way:   # (no way round: straight along the row, then up or down)
+    if not way:   # (no way round: straight along the row, then up or down to the part's edge, as guide_route ends)
         x, y, r = guide_at(where[pad])
-        y += 0 if pad in ("lstick", "rstick") else -(r + 13) if row < y else r + 13
+        e = 0 if pad in ("lstick", "rstick") else max(r - 2, 0)
+        y += -e if row < y else e
         way = [(BARS[0] if bar == 0 else BARS[1], row + 3), (x, row + 3), (x, y)]
     return guide_draw(size, way, True)
 
@@ -674,7 +675,8 @@ def guide_frame(size, bar, row, where, group, stays):
 def game_line(im, bar, row):
     """where the game's line from bar (0 left, 1 right) at row is drawn in im (L, a guide texture): the shape it makes between
     the bars, as it is (the router's route to the same part runs elsewhere: taking that out left pieces of the game's line), a
-    little wider for its soft edge"""
+    little wider for its soft edge. The whole shape the line's pixels touch: a game line touching another between the bars
+    would be taken with it (the game's do not touch). None found near the label: an empty mask, said on stderr"""
     from PIL import Image, ImageDraw, ImageFilter
     x0, x1 = BARS[0] + 3, BARS[1] - 3   # (off the bars: they join the lines of one side)
     lit = im.point(lambda v: 255 if v > 24 else 0)
@@ -685,6 +687,7 @@ def game_line(im, bar, row):
             default=None)
     out = Image.new("L", im.size, 0)
     if y is None:
+        print(f"prompts: no game line from bar {bar} at row {row}: nothing taken out there", file=sys.stderr)
         return out
     ImageDraw.floodfill(inner, (x, y), 128)
     out.paste(inner.point(lambda v: 255 if v == 128 else 0).filter(ImageFilter.MaxFilter(7)).crop((BARS[0] + 1, 0, BARS[1], im.height)),
