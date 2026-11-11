@@ -92,7 +92,8 @@ class ProgramCacheReaderTests(unittest.TestCase):
     def test_source_uses_bounds(self):
         source = _with_cache(SOURCE)
         load = block(source, "void program_cache_read(")
-        self.assertIn("Reader r{data.data() + 16, data.data() + data.size()}", load)
+        self.assertIn("Reader r{payload, payload + payload_size}", load)   # (the record's own bytes, compressed or not)
+        self.assertIn("payload = plain.data();", load)
         self.assertIn("r.bad", load)
         self.assertIn("r.count(", block(source, "void get_info("))
 

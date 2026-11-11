@@ -81,6 +81,16 @@ void vkDestroyShaderModule(uintptr_t device, VkShaderModule module, const void* 
 void disk_init() {}
 void logf(const char*, ...) {}
 bool disk_on = true, disk_listing = true;
+bool disk_zstd = false;   // (vk_progcache.cpp's RX_VK_PROGRAM_CACHE_ZSTD; the tests below use the uncompressed records)
+constexpr size_t kZstdHead = 20;
+constexpr uint32_t kCompressedKind = 16;
+// (the zstd calls the cache functions may make; disk_zstd stays false here, and the stubs keep the link whole)
+extern "C" {
+size_t ZSTD_compressBound(size_t n) { return n + (n >> 8) + 64; }
+size_t ZSTD_compress(void*, size_t, const void*, size_t, int) { return 0; }
+size_t ZSTD_decompress(void*, size_t, const void*, size_t) { return 0; }
+unsigned ZSTD_isError(size_t) { return 0; }
+}
 FILE* disk_in = nullptr;
 FILE* disk_out = nullptr;
 FILE* disk_idx = nullptr;
