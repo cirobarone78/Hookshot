@@ -322,6 +322,101 @@ public partial class MainWindow : Window
     void LaunchFolderClick(object sender, RoutedEventArgs e) =>
         Process.Start(new ProcessStartInfo(launchFolder) { UseShellExecute = true });
 
+    // ---- Save my pipeline list: the game folder's pipeline list and the "Submit your pipelines" issue's template, filled in,
+    // zipped into the Downloads folder by nx2/pipeline_share.py (as the Linux builder and the game's menu do), then the template
+    // on the clipboard, the zip shown in its folder and the issue opened. Nothing is uploaded: the player attaches the zip ----
+    const string ShareIssue = "https://github.com/NotRexed/Hookshot/issues/2034";
+
+    async void LaunchShareClick(object sender, RoutedEventArgs e)
+    {
+        var tools = Tools.Find();
+        LaunchShareStatus.Visibility = Visibility.Visible;
+        if (tools == null)
+        {
+            LaunchShareStatus.Text = "The builder's tools were not found: start it again from its own folder.";
+            return;
+        }
+        LaunchShare.IsEnabled = false;
+        LaunchShareStatus.Text = "Saving…";
+        var folder = launchFolder;
+        var (zip, template, count, error) = await Task.Run(() => SharePipelines(tools, folder, DownloadsFolder()));
+        LaunchShare.IsEnabled = true;
+        if (zip == null)
+        {
+            LaunchShareStatus.Text = error ?? "The pipeline list could not be saved.";
+            return;
+        }
+        var copied = false;
+        try { Clipboard.SetText(template ?? ""); copied = true; } catch (Exception) { }
+        var explorer = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");   // (not one found on the path)
+        try { Process.Start(new ProcessStartInfo(File.Exists(explorer) ? explorer : "explorer.exe", $"/select,\"{zip}\"") { UseShellExecute = true }); } catch (Exception) { }
+        var opened = false;
+        try { Process.Start(new ProcessStartInfo(ShareIssue) { UseShellExecute = true }); opened = true; } catch (Exception) { }
+        LaunchShareStatus.Text = $"Saved {System.IO.Path.GetFileName(zip)} ({count} pipelines) in {System.IO.Path.GetDirectoryName(zip)}. " +
+            (copied ? "The report is copied. " : "The report is in the zip. ") +
+            (opened ? "Issue #2034 is open in your browser: attach" : $"Open {ShareIssue} and attach") +
+            " the zip to a comment, then paste the report and say where you played.";
+    }
+
+    /// nx2/pipeline_share.py --json: (the zip, the template, the pipelines) or the reason there is none
+    static (string? Zip, string? Template, int Count, string? Error) SharePipelines(Tools tools, string folder, string outDir)
+    {
+        var si = new ProcessStartInfo(tools.Python)
+        {
+            WorkingDirectory = tools.Root,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+        };
+        si.Environment["PYTHONIOENCODING"] = "utf-8";
+        foreach (var a in tools.PythonArgs ?? Array.Empty<string>()) si.ArgumentList.Add(a);
+        si.ArgumentList.Add("-I");
+        si.ArgumentList.Add(System.IO.Path.Combine(tools.Root, "nx2", "pipeline_share.py"));
+        si.ArgumentList.Add(folder);
+        si.ArgumentList.Add("--out-dir");
+        si.ArgumentList.Add(outDir);
+        si.ArgumentList.Add("--json");
+        try
+        {
+            using var p = Process.Start(si)!;
+            var stderr = p.StandardError.ReadToEndAsync();   // (drained, so a long complaint cannot stall it)
+            var line = p.StandardOutput.ReadToEnd().Trim().Split('\n').LastOrDefault() ?? "";
+            p.WaitForExit();
+            if (!line.StartsWith("{"))   // (the script stopped before its answer: what it said last)
+            {
+                var last = stderr.Result.Trim().Split('\n').LastOrDefault()?.Trim();
+                return (null, null, 0, "The pipeline list could not be saved" + (string.IsNullOrEmpty(last) ? "." : ": " + last));
+            }
+            using var doc = System.Text.Json.JsonDocument.Parse(line);
+            var r = doc.RootElement;
+            if (r.GetProperty("ok").GetBoolean())
+                return (r.GetProperty("zip").GetString(), r.GetProperty("template").GetString(), r.GetProperty("pipelines").GetInt32(), null);
+            return (null, null, 0, r.GetProperty("error").GetString());
+        }
+        catch (Exception ex)
+        {
+            return (null, null, 0, tools.OwnPythonMissing ? Tools.OwnPythonMissingText : "The pipeline list could not be saved: " + ex.Message);
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, ExactSpelling = true)]
+    static extern int SHGetKnownFolderPath([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPStruct)] Guid id,
+                                           uint flags, IntPtr token, out string path);
+
+    /// Where a browser's file picker opens: the Downloads folder, else the user's own
+    static string DownloadsFolder()
+    {
+        try
+        {
+            if (SHGetKnownFolderPath(new Guid("374DE290-123F-4565-9164-39C4925E467B"), 0, IntPtr.Zero, out var path) == 0 && Directory.Exists(path))
+                return path;
+        }
+        catch (Exception) { }
+        return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    }
+
     // ---- what the player chose last time (BuilderSettings.cs): builder-settings.json beside the versions ----
     static string SettingsPath => System.IO.Path.Combine(Storage.Base, "builder-settings.json");
 
@@ -336,6 +431,7 @@ public partial class MainWindow : Window
         PrepareTick.IsChecked = !s.PrepareLater;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
+        dlssLicense = s.DlssLicense;
         FsrTick.IsChecked = s.Fsr;
         fsrLicense = s.FsrLicense;
         MemoryBox.SelectedItem = BuildMemory.Saved(MemoryBox.ItemsSource.Cast<object>(), s.MemoryGb);
@@ -363,7 +459,8 @@ public partial class MainWindow : Window
             var s = new BuilderSettings { Out = BuilderHome.SavePath(OutPath.Text),
                                           Nup = BuilderHome.SavePath(romfs == null ? chosenNup : null),
                                           Romfs = BuilderHome.SavePath(romfs), Exefs = BuilderHome.SavePath(exefs),
-                                          Dlss = DlssTick.IsChecked == true, Fsr = FsrTick.IsChecked == true,
+                                          Dlss = DlssTick.IsChecked == true, DlssLicense = dlssLicense,
+                                          Fsr = FsrTick.IsChecked == true,
                                           FsrLicense = fsrLicense,
                                           PrepareLater = PrepareTick.IsChecked != true,
                                           MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null,
@@ -798,12 +895,18 @@ public partial class MainWindow : Window
         "Hookshot never includes or shares them: never share a game folder built with them.\n\n" +
         "Do you accept NVIDIA's license?";
 
+    /// NVIDIA's license accepted on the DLSS tick, kept in the settings (DlssLicense): an update keeps a folder's DLSS by it.
+    /// It was the SDK's LICENSE.txt, a download: with the SDK gone, the update built without DLSS and its runtime went
+    bool dlssLicense;
+
     /// The NVIDIA DLSS tick: NVIDIA's license first, and the tick stays only when it is accepted
     void DlssChanged(object sender, RoutedEventArgs e)
     {
         if (DlssTick.IsChecked == true &&
             MessageBox.Show(this, DlssLicense, "NVIDIA DLSS", MessageBoxButton.YesNo, MessageBoxImage.Information) != MessageBoxResult.Yes)
             DlssTick.IsChecked = false;
+        else if (DlssTick.IsChecked == true)
+            dlssLicense = true;
         SaveSettings();   // (kept at once, not only when Build is pressed: ticked and closed, it is still ticked next time)
     }
 
@@ -1325,13 +1428,14 @@ public partial class MainWindow : Window
         download = null;
         if (rows.TryGetValue("download", out var d)) { d.Done(); d.Small("Build tools checked"); }
         // (the saved tick also opts an existing game into DLSS. After a self-update ApplySettings has not run yet;
-        // a folder already built with DLSS keeps it, its license accepted then)
-        var dlss = BuilderSettings.Load(SettingsPath)?.Dlss == true ||
+        // a folder already built with DLSS keeps it, its license accepted then: the settings' record, or for a license accepted
+        // before the record, the SDK's LICENSE.txt)
+        var saved = BuilderSettings.Load(SettingsPath);
+        var dlss = saved?.Dlss == true ||
                    (File.Exists(System.IO.Path.Combine(folder, "ngx", "nvngx_dlss.dll")) &&
-                    File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt")));
+                    (saved?.DlssLicense == true || File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt"))));
         // (AMD FSR 4, the same: the saved tick with AMD's license accepted, or a folder built with FSR 4 whose AMD runtime
         // was fetched, AMD's license saved beside it then, keeps it and its runtime)
-        var saved = BuilderSettings.Load(SettingsPath);
         var fsr = (saved?.Fsr == true && saved.FsrLicense) ||
                   (File.Exists(System.IO.Path.Combine(folder, ".hookshot_fsr")) &&
                    File.Exists(System.IO.Path.Combine(folder, "amd_fidelityfx_upscaler_vk.dll")) &&

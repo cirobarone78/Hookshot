@@ -451,6 +451,84 @@ def patch_whole_frames(s):
     return s, done
 
 
+# Above a Frame rate cap of 60, two places that need whole 60 fps frames (host/oot_high_fps.h has why and the logic; at a cap of
+# 60 the host hands back what the game computed):
+# - the sound manager's job, f_80435300 (phase in w2; phase 0 loads the game step, [[slot]]+0x10, and hands it to the sound
+#   engine): its head asks hos_oot_sound_gate whether to run now (60 Hz above 60 fps, the other phases following phase 0), and
+#   the step it loads goes through hos_oot_sound_step (a whole one while the gate holds the job). After zortos293/Lichii PR #1289
+#   (auz466), which does the same as a code patch for the emulator.
+# - the physics solver's step count, set each update from the frame step in f_838ceb80 and f_838cfc10 (the same code in both):
+#   hos_oot_solver_steps rounds it up instead of down, at least 1, so Link stays on moving platforms (issue 1798).
+SOUND_HEAD = "void f_80435300(Ctx *__restrict A64_NOESC c) {\n"
+SOUND_SLOT = "g_module_base + 0x80435000ULL + (int64_t)75927552"   # (the page of the step's pointer, whose +2192 holds it)
+SOUND_OLD = ("    c->x[8]=" + SOUND_SLOT + ";\n"
+             "    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[19] = _r; }\n"
+             "    c->x[8]=recomp_load64(c,c->x[8] + 2192);\n"
+             "    c->x[8]=recomp_load64(c,c->x[8] + 0);\n"
+             "    { { uint64_t _v=recomp_load32(c,(c->x[8]+16ULL)); a64_vset64(c->vreg[0],_v); } }\n")
+SOUND_NEW = SOUND_OLD.replace("uint64_t _v=recomp_load32(c,(c->x[8]+16ULL));",
+                              "uint64_t _v=hos_oot_sound_step((uint32_t)recomp_load32(c,(c->x[8]+16ULL)));")
+SOUND_GATE = ("    if (!hos_oot_sound_gate(c, (uint32_t)c->x[2], " + SOUND_SLOT + " + 2192)) return;"
+              "   /* (nx2/oot_patches.py: the sound job at 60 Hz above 60 fps) */\n")
+SOUND_DECL = "extern int hos_oot_sound_gate(Ctx *c, uint32_t phase, uint64_t slot);\nextern uint32_t hos_oot_sound_step(uint32_t step_bits);\n"
+SOLVER_HEADS = ("void f_838ceb80(Ctx *__restrict A64_NOESC c) {\n", "void f_838cfc10(Ctx *__restrict A64_NOESC c) {\n")
+# (the cut of frame step * steps a frame + 0.001, then its store into the solver: vreg 0 the float cut, vreg 1 the steps a frame)
+SOLVER_OLD = ("    c->x[1]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
+              "    recomp_store32(c,c->x[0] + 712,c->x[1]);\n")
+SOLVER_NEW = SOLVER_OLD.replace(
+    "    recomp_store32(", "    c->x[1]=hos_oot_solver_steps((uint32_t)c->x[1], (uint32_t)c->vreg[0][0], (uint32_t)c->vreg[1][0]);"
+    "   /* (nx2/oot_patches.py: solver steps rounded up above 60 fps) */\n    recomp_store32(", 1)
+SOLVER_DECL = "extern uint32_t hos_oot_solver_steps(uint32_t game, uint32_t scaled_bits, uint32_t per_frame_bits);\n"
+
+
+def _function(s, head_text):
+    """(start, end) of the function whose head is head_text, or None"""
+    head = s.find(head_text)
+    if head < 0:
+        return None
+    end = s.find("\nvoid f_", head + len(head_text))
+    return head, end if end >= 0 else len(s)
+
+
+def patch_sound_job(s):
+    """The sound job's gate and step: (s, 1) when the job is in s with them (made now or before), (s, 0) when it is not here or
+    its code differs (another game version: left as it is)"""
+    at = _function(s, SOUND_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(SOUND_NEW) == 1 and body.count(SOUND_GATE) == 1:
+        return s, 1
+    if body.count(SOUND_OLD) != 1 or SOUND_GATE in body:
+        return s, 0
+    body = body.replace(SOUND_OLD, SOUND_NEW, 1)
+    body = SOUND_HEAD + SOUND_GATE + body[len(SOUND_HEAD):]
+    s = s[:head] + body + s[end:]
+    if SOUND_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SOUND_DECL, 1)
+    return s, 1
+
+
+def patch_solver_steps(s):
+    """The solver step count's two places: (s, how many of them are in s with the hook, made now or before)"""
+    done = 0
+    for head_text in SOLVER_HEADS:
+        at = _function(s, head_text)
+        if at is None:
+            continue
+        head, end = at
+        body = s[head:end]
+        if body.count(SOLVER_NEW) == 1:
+            done += 1
+        elif body.count(SOLVER_OLD) == 1:
+            s = s[:head] + body.replace(SOLVER_OLD, SOLVER_NEW, 1) + s[end:]
+            done += 1
+    if done and SOLVER_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SOLVER_DECL, 1)
+    return s, done
+
+
 def patch_text_speed(s):
     """The scale at the head of the letters' block of f_80b1e140 (Text speed), and the call to hos_oot_text_pane after it
     (Text size: host/oot_text_size.c); None when the file has no such function, s unchanged when the
@@ -506,6 +584,36 @@ def patch_camera_speed(s):
     if found and CAMERA_SPEED_DECL not in s:
         s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + CAMERA_SPEED_DECL, 1)
     return s, found
+
+
+# Scene format (host/nn_vi.c hos_scene_rgba16f: the Insert menu's HDR set to Native with the PsychoV35 tone mapper). f_80672260 picks the format of the scene
+# buffer the game tone maps into (main+0x652340: RGBA16F, 44, under two of its flags, else R11G11B10F, 26) and makes the buffer
+# again when the one it has differs (+440). R11G11B10F has no sign and 6 bits of mantissa, so the native HDR banded; with the
+# switch on both choices are RGBA16F (RenoDX's zelda-oot-oz patch of main+0x65234C, github.com/clshortfuse/renodx, MIT).
+SCENE_FORMAT_HEAD = "void f_80672260(Ctx *__restrict A64_NOESC c) {\n"
+SCENE_FORMAT_OLD = "    c->x[10] = 0x2cULL;\n    c->x[10] &= 0xFFFFFFFFULL;\n"
+SCENE_FORMAT_PICK = "    c->x[9] = 0x1aULL;\n    c->x[9] &= 0xFFFFFFFFULL;\n    { uint64_t _r = (!c->z) ? c->x[10] : c->x[9];"
+SCENE_FORMAT_NEW = ("    c->x[9] = hos_scene_rgba16f ? 0x2cULL : 0x1aULL;\n    c->x[9] &= 0xFFFFFFFFULL;\n"
+                    "    { uint64_t _r = (!c->z) ? c->x[10] : c->x[9];")
+SCENE_FORMAT_DECL = "extern volatile int hos_scene_rgba16f;\n"
+
+
+def patch_scene_format(s):
+    """The scene buffer's format by hos_scene_rgba16f in f_80672260; None when the file has no such function, s unchanged when the
+    function is there but its code differs (another game version)."""
+    head = s.find(SCENE_FORMAT_HEAD)
+    if head < 0:
+        return None
+    end = s.find("\nvoid f_", head + len(SCENE_FORMAT_HEAD))
+    end = end if end >= 0 else len(s)
+    body = s[head:end]
+    if SCENE_FORMAT_NEW in body:   # (applied already: a second run)
+        return s
+    if body.count(SCENE_FORMAT_OLD) != 1 or body.count(SCENE_FORMAT_PICK) != 1 or \
+            body.index(SCENE_FORMAT_OLD) > body.index(SCENE_FORMAT_PICK):
+        return s
+    s = s[:head] + body.replace(SCENE_FORMAT_PICK, SCENE_FORMAT_NEW, 1) + s[end:]
+    return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SCENE_FORMAT_DECL, 1)
 
 
 # (from TomShafford/Hookshot 55d68e8cd6 and 65c1998222) f_804566e0's two calls of f_80522050, the GPU memory a model's material
@@ -636,6 +744,12 @@ def patch_file(s, name, protect_hearts=False):
         out = view
         counts["free camera"] += 1
         lines.append("oot_patches: free camera in " + name)
+    scene = patch_scene_format(out) if protect_hearts else None
+    if scene is not None and SCENE_FORMAT_NEW in scene:
+        counts["scene format"] += 1
+        if scene != out:
+            lines.append("oot_patches: the scene buffer's format for native HDR in " + name)
+        out = scene
     if protect_hearts:   # (found by name alone: in another build these addresses are other functions)
         made, n = patch_camera_speed(out)
         counts["camera speed"] += n
@@ -656,6 +770,16 @@ def patch_file(s, name, protect_hearts=False):
     counts["whole sites"] += out.count(WHOLE_MARK)   # (made now, or by an earlier run over this file)
     if whole:
         lines.append("oot_patches: %d frame counter(s) with the step's whole frames in %s" % (whole, name))
+    sound, found = patch_sound_job(out)
+    counts["sound jobs"] += found
+    if sound != out:
+        lines.append("oot_patches: the sound job at 60 Hz above 60 fps in " + name)
+    out = sound
+    solver, found = patch_solver_steps(out)
+    counts["solver sites"] += found
+    if solver != out:
+        lines.append("oot_patches: the solver steps rounded up above 60 fps in " + name)
+    out = solver
     return out, counts, lines
 
 
@@ -675,6 +799,7 @@ def report(paths, counts, protect_hearts=False):
         done["free camera"] = 0
         done["mouse camera"] = 0
         done["disable camera centering"] = 0
+        done["scene format"] = 0
     total = collections.Counter()
     for c in counts:
         total.update(c)
@@ -689,6 +814,10 @@ def report(paths, counts, protect_hearts=False):
     step_sites = total["step sites"]   # (the divides with the hook)
     step_files = [p for p, c in zip(paths, counts) if c["step sites"]]   # (the files that have it)
     whole_sites = total["whole sites"]   # (the counters of WHOLE_SITES with the whole frames: patch_whole_frames)
+    if total["sound jobs"] != 1:   # (without it, above 60 fps sounds and then the music can stop after a few loading zones)
+        print("oot_patches: WARNING: the sound job was found %d times, not once" % total["sound jobs"])
+    if total["solver sites"] != len(SOLVER_HEADS):   # (without them, above 60 fps moving platforms can drop Link)
+        print("oot_patches: WARNING: the solver step count was found at %d of %d places" % (total["solver sites"], len(SOLVER_HEADS)))
     for what, n in done.items():
         if n != 1:
             print("oot_patches: WARNING: the %s was found %d times" % (what, n))
