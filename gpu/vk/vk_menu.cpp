@@ -640,6 +640,11 @@ const char* hn_framegen(int v, int variant) {
     return b[std::clamp(v, 2, 8)];
 }
 MENU_HINTS(hn_pace, 0, "As soon as it is ready.", "At an even interval: less stutter, at up to one frame of delay.")
+const char* tx_framegen_by(int v) { return v ? "Built-in" : "Auto"; }
+MENU_HINTS(hn_framegen_by, 0,
+           "NVIDIA DLSS Frame Generation where it runs (RTX 40 and newer, with the Upscaler's depth and motion), else the "
+           "built-in one.",
+           "The renderer's own: made from the finished picture alone.")
 const char* tx_vsync(int v) {
     static const char* const t[] = {"Auto", "On", "Off"};
     return t[std::clamp(v, 0, 2)];
@@ -741,10 +746,6 @@ Row rows[] = {
      "Fills the whole screen with the game, without the window's border. The same as F11.", nullptr, false, true},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
      "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
-    {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
-     "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
-     "show artifacts.", hn_framegen, false, true},
-    {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
     {TAB_GRAPHICS, "V-Sync", &opts.vsync, 0, 2, 1, tx_vsync,
      "Whether a frame waits for the display's refresh before it is shown. Changes at once.", hn_vsync, false, true},
     {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
@@ -755,6 +756,11 @@ Row rows[] = {
      "How bright the picture's white is with HDR on. Around 200 for a normal room; higher in a bright one.", nullptr, false, true},
     {TAB_GRAPHICS, "HDR peak brightness", &opts.hdr_peak, 400, 4000, 100, tx_nits,
      "The brightest highlights with HDR on: set it to your display's peak brightness.", nullptr, false, true},
+    {TAB_GRAPHICS, "HDR contrast", &opts.hdr_contrast, 50, 200, 5, tx_percent,
+     "The HDR picture's contrast around mid grey, as the RenoDX HDR mods grade it: above 100% deeper shadows and brighter "
+     "highlights, which ease into the peak brightness; below it flatter. With Native the game's own HDR picture is graded too, "
+     "under the peak brightness the game is told.",
+     nullptr, false, true},
     {TAB_GRAPHICS, "Game frame rate cap", &opts.fps_cap, 0, 6, 1, tx_fps_cap,
      "Limits frames rendered by the game. Generated frames are additional. Takes a restart. "
      "Past 60 is experimental: the game keeps real time, but some cutscenes and bosses can misbehave (Gohma, the intro's "
@@ -762,7 +768,8 @@ Row rows[] = {
      "refresh rate is the limit.",
      nullptr, true, true},
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
-     "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex, false, true},
+     "NVIDIA GPUs: each frame starts as late as it can, for less input delay. With frame generation too: it paces the "
+     "game's frames.", hn_reflex, false, true},
     {TAB_GRAPHICS, "AMD Anti-Lag 2", &opts.antilag, 0, 1, 1, tx_antilag,
      "AMD GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_antilag, false, true},
     // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, then the window)
@@ -775,6 +782,15 @@ Row rows[] = {
      "Which of NVIDIA's DLSS networks draws the picture.", hn_dlss_model, false, true},
     {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution,
      "The share of the output the 3D is drawn at; the Upscaler fills in the rest.", hn_resolution},
+    // (frame generation beside the Upscaler: the frames it makes come from the same picture, and DLSS Frame Generation from
+    // the Upscaler's own depth and motion)
+    {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
+     "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
+     "show artifacts.", hn_framegen, false, true},
+    {TAB_GRAPHICS, "Frame generation by", &opts.framegen_by, 0, 1, 1, tx_framegen_by,
+     "Who makes the frames at 2x and up. NVIDIA DLSS Frame Generation needs a temporal Upscaler (DLSS, DLAA or FSR) for "
+     "the scene's depth and motion. Changes at once.", hn_framegen_by, false, true},
+    {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
     {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_filter,
      "How the finished picture is scaled to the window, when its size differs from the Output resolution.", hn_filter},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
@@ -1141,7 +1157,7 @@ int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 
 /// A row on its tab: the debug tools only with them on; a row for what this PC cannot run not at all (Reflex and Anti-Lag 2
 /// only where the driver has them, the Upscaler only where more than the game's own runs, the DLSS model only where DLSS
-/// runs); HDR's paper white and peak brightness only with HDR on. A row that comes or goes moves those after it: the
+/// runs); HDR's paper white, peak brightness and contrast only with HDR on. A row that comes or goes moves those after it: the
 /// selection is a place on its tab (tab_selected), so a row hidden after the selected one leaves the selection where it is,
 /// and menu_tick brings back one past the end
 bool row_shown(int i) {
@@ -1150,7 +1166,7 @@ bool row_shown(int i) {
            (v != &opts.antilag || antilag_available()) &&
            (v != &opts.dlss || ur::upscaler_shown(upscalers_available())) &&
            (v != &opts.dlss_model || ur::model_shown(dlss_why() == DLSS_OK)) &&
-           ((v != &opts.hdr_white && v != &opts.hdr_peak) || opts.hdr != 0);
+           ((v != &opts.hdr_white && v != &opts.hdr_peak && v != &opts.hdr_contrast) || opts.hdr != 0);
 }
 int tab_row_count(int t) {
     int c = 0;
@@ -1385,6 +1401,14 @@ void save() {
     }
 }
 
+/// (hookshot) The Button prompts row: a new face shows at once where the game has every part of the prompts from
+/// host/prompts.c, nothing to restart for then; else, as the other restart rows, at the next start
+void prompts_at_once(const Row& r) {
+    if (r.value == &opts.prompts && host && host->prompts_live &&
+        (host->prompts_live() & HOS_PROMPTS_LIVE_ALL) == HOS_PROMPTS_LIVE_ALL)
+        restart_state.restart_value(restart_slot_of(r), *r.value);
+}
+
 /// A row's new value v, as the arrows set it (dir: 1 up, -1 down, for the rows that skip or wrap), saved unless !keep
 /// (a slider's drag: saved once it is let go)
 void set_row(Row& r, int v, int dir, bool keep = true) {
@@ -1429,6 +1453,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     // (hookshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
     if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset)
         samplers_changed();
+    prompts_at_once(r);   // (hookshot)
     {   // (a row that takes a restart, or a preset that sets one: asked again at the next close)
         int now[mr::kMax];
         restart_values(now);
