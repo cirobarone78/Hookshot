@@ -78,20 +78,37 @@ def patch_scene(s):
     return s.replace(HEADER, HEADER + SCENE_DECL, 1)
 
 
+PLACES = (("scene base scale (f_806702e0)", patch_config), ("scene scale check (f_831f3200)", patch_scene))
+
+
+def patch_file(s, name):
+    """one lifted file's edits: (its text, the places made in it, the lines to print). apply() and nx2/chunks.py edit_c"""
+    out, made, lines = s, [], []
+    for what, fn in PLACES:
+        r = fn(out)
+        if r is not None and r != out:
+            out = r
+            made.append(what)
+            lines.append("oot_native_resolution: %s in %s" % (what, name))
+    return out, made, lines
+
+
+def report(made):
+    """the warnings for places not made once; made: every file's, in one list"""
+    for what, _ in PLACES:
+        if made.count(what) != 1:
+            print("oot_native_resolution: WARNING: the %s was found %d times" % (what, made.count(what)))
+
+
 def apply(gen):
-    done = {"scene base scale (f_806702e0)": 0, "scene scale check (f_831f3200)": 0}
+    made = []
     for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
-        out = s
-        for what, fn in (("scene base scale (f_806702e0)", patch_config), ("scene scale check (f_831f3200)", patch_scene)):
-            r = fn(out)
-            if r is not None and r != out:
-                out = r
-                done[what] += 1
-                print("oot_native_resolution: %s in %s" % (what, os.path.basename(path)))
+        out, here, lines = patch_file(s, os.path.basename(path))
+        made += here
+        if lines:
+            print("\n".join(lines))
         if out != s:
             whole_write.write_whole(path, out, newline="")
-    for what, n in done.items():
-        if n != 1:
-            print("oot_native_resolution: WARNING: the %s was found %d times" % (what, n))
+    report(made)
