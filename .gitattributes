@@ -1,3 +1,6 @@
 * text=auto eol=lf
 *.bat text eol=crlf
 *.xz binary
+
+# Unified diff context includes a space on otherwise empty lines.
+patches/**/*.patch whitespace=-blank-at-eol,-blank-at-eof

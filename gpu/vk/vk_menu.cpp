@@ -45,6 +45,7 @@
 #include "vk_antilag.h"
 #include "upscaler_rows.h"
 #include "menu_restart.h"
+#include "dlss5_controls.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 #ifndef HOOKSHOT_VERSION   // (nx2/build.py gives it to this file: nx2/version.py)
 #define HOOKSHOT_VERSION "unknown"
@@ -56,6 +57,8 @@ HWND app_window();
 Options opts;
 
 namespace {
+namespace d5 = dlss5_controls;
+d5::Client dlss5_control(getenv("HOS_DLSS5_CONTROL"));
 enum MenuTab {
     TAB_GRAPHICS = 0,
     TAB_AUDIO = 1,
@@ -85,6 +88,18 @@ struct Row {
     signed char cheat = -1;   // (a debug tool, on the Debug tab with the tools on: its index in the cheat_ tables, -1 none)
     bool heading = false;     // (a section's title on its tab, not a row: the selection steps over it)
 };
+bool dlss5_reset_row(const Row& row) { return !row.value && !strcmp(row.name,"Reset DLSS5 settings"); }
+// Confirm includes Enter, the controller's confirm button and a row click.
+// Left/right never activate an action; unavailable/pending requests do nothing.
+bool dlss5_reset_press(const Row& row, bool confirm, bool back, bool focused) {
+    if(!dlss5_reset_row(row))return false;
+    if(confirm && !back && focused)dlss5_control.reset();
+    return true;
+}
+bool dlss5_row(const Row& row) {
+    return dlss5_control.setting(row.value)>=0 || row.value==&dlss5_control.status_value ||
+           row.value==&dlss5_control.advanced || dlss5_reset_row(row) || !strcmp(row.name,"DLSS5 enhancement");
+}
 /// A row's hints from a table, the value lo first (nullptr: none for that value)
 const char* hint_in(const char* const* t, int n, int lo, int v, int variant) {
     return variant <= 0 && v - lo >= 0 && v - lo < n ? t[v - lo] : nullptr;
@@ -99,6 +114,14 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_dlss5_status(int) { return dlss5_control.status(); }
+const char* tx_dlss5_style(int v) { static const char* names[]={"Default","Natural","Cinematic"};return names[std::clamp(v,0,2)]; }
+const char* tx_dlss5_compare(int v) { static const char* names[]={"Off","Side by side","Wipe"};return names[std::clamp(v,0,2)]; }
+const char* tx_dlss5_transfer(int v) { static const char* names[]={"Classic","Matched residual","Native + edit"};return names[std::clamp(v,0,2)]; }
+const char* tx_dlss5_motion(int v) { static const char* names[]={"Fast","Balanced","Quality"};return names[std::clamp(v,0,2)]; }
+const char* tx_dlss5_grid(int v) { static const char* names[]={"1 pixel","2 pixels","4 pixels","8 pixels"};return names[std::clamp(v,0,3)]; }
+const char* tx_dlss5_preset(int v) { static char text[16];snprintf(text,sizeof text,"%d",v);return text; }
+const char* tx_dlss5_skin(int v) { static char text[16];if(v==-100)return "Follow local";snprintf(text,sizeof text,"%d%%",v);return text; }
 const char* tx_profile(int v) { return v ? "Handheld" : "Docked"; }   // (opts.handheld: the Profile row)
 const char* tx_menu_shortcut(int v) {
     // (F1 is never turned off: the menu is always one key away. Esc as well, as a PC game's pause menu)
@@ -420,6 +443,8 @@ const char* hn_resolution(int v, int variant) {
 }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
+    if(value==&dlss5_control.status_value)return true;
+    if(dlss5_control.setting(value)>=0)return !dlss5_control.available();
     return (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::render_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr));
@@ -774,6 +799,53 @@ Row rows[] = {
      "How the game's mesh programs (much of the scenery) run: on the GPU's own mesh shaders, or as compute shaders, which "
      "every GPU has. Applies after a restart.", hn_mesh_mode, true},
 
+    {TAB_GRAPHICS, "DLSS5 enhancement", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
+    {TAB_GRAPHICS, "Enhancement status", &dlss5_control.status_value, 0, 0, 1, tx_dlss5_status,
+     "The external enhancement session. Changes apply while playing and are saved automatically for the next launch.", nullptr, false, true},
+    {TAB_GRAPHICS, "Enhancement enabled", &dlss5_control.values[d5::Enabled], 0, 1, 1, tx_onoff,
+     "Runs the external model. Off keeps the game's original frame. This is separate from the Upscaler above.", nullptr, false, true},
+    {TAB_GRAPHICS, "Model resolution", &dlss5_control.values[d5::WorkingScale], 25, 100, 5, tx_percent,
+     "The resolution used by the enhancement model. Lower values reduce its cost; the game's output size stays the same.", nullptr, false, true},
+    {TAB_GRAPHICS, "Enhancement style", &dlss5_control.values[d5::Style], 0, 2, 1, tx_dlss5_style,
+     "The model's processing style. Changing it rebuilds the model and can briefly pause enhancement.", nullptr, false, true},
+    {TAB_GRAPHICS, "Enhancement preset", &dlss5_control.values[d5::Preset], 0, 15, 1, tx_dlss5_preset,
+     "The model's own render preset. Changing it rebuilds the model.", nullptr, false, true},
+    {TAB_GRAPHICS, "Enhancement intensity", &dlss5_control.values[d5::Intensity], 0, 400, 5, tx_percent,
+     "The strength requested from the model. Changing it rebuilds the model.", nullptr, false, true},
+    {TAB_GRAPHICS, "Detail strength", &dlss5_control.values[d5::Detail], 0, 400, 5, tx_percent,
+     "How much of the model's detail edit is blended into the original picture.", nullptr, false, true},
+    {TAB_GRAPHICS, "Colour strength", &dlss5_control.values[d5::Colour], 0, 400, 5, tx_percent,
+     "How much of the model's colour edit is blended into the picture.", nullptr, false, true},
+    {TAB_GRAPHICS, "Enhancement sharpness", &dlss5_control.values[d5::Sharpness], 0, 100, 5, tx_percent,
+     "The model's sharpening strength, applied while playing.", nullptr, false, true},
+    {TAB_GRAPHICS, "Compare enhancement", &dlss5_control.values[d5::Compare], 0, 2, 1, tx_dlss5_compare,
+     "Compares the original picture with the enhanced result.", nullptr, false, true},
+    {TAB_GRAPHICS, "Comparison split", &dlss5_control.values[d5::CompareSplit], 0, 100, 5, tx_percent,
+     "Where the comparison divides the original and enhanced picture.", nullptr, false, true},
+    {TAB_GRAPHICS, "Reset DLSS5 settings", nullptr, 0, 0, 0, nullptr,
+     "Restores all 19 enhancement settings to their defaults and saves them. Other game settings stay as they are. "
+     "The model may briefly rebuild. Activate with Enter, the confirm button or a click.", nullptr, false, true},
+    {TAB_GRAPHICS, "Advanced enhancement", &dlss5_control.advanced, 0, 1, 1, tx_onoff,
+     "Shows model tone, masking, composition and motion-estimation controls.", nullptr, false, true},
+    {TAB_GRAPHICS, "Apply model result", &dlss5_control.values[d5::ApplyModel], 0, 1, 1, tx_onoff,
+     "Applies the result to the picture. Off can keep the model running without showing its edit.", nullptr, false, true},
+    {TAB_GRAPHICS, "Local tone", &dlss5_control.values[d5::LocalTone], 0, 400, 5, tx_percent,
+     "The model's local tone strength. Changing it rebuilds the model.", nullptr, false, true},
+    {TAB_GRAPHICS, "Local structure", &dlss5_control.values[d5::LocalStructure], 0, 400, 5, tx_percent,
+     "The model's local structure strength. Changing it rebuilds the model.", nullptr, false, true},
+    {TAB_GRAPHICS, "Skin structure", &dlss5_control.values[d5::SkinStructure], -100, 400, 5, tx_dlss5_skin,
+     "Skin structure strength. Follow local uses the local structure setting. Changing it rebuilds the model.", nullptr, false, true},
+    {TAB_GRAPHICS, "Automatic skin mask", &dlss5_control.values[d5::AutoMask], 0, 1, 1, tx_onoff,
+     "Uses the model's automatic skin mask. Changing it rebuilds the model.", nullptr, false, true},
+    {TAB_GRAPHICS, "Raw model output", &dlss5_control.values[d5::Bypass], 0, 1, 1, tx_onoff,
+     "Shows the model output directly instead of compositing its edit with native detail.", nullptr, false, true},
+    {TAB_GRAPHICS, "Edit composition", &dlss5_control.values[d5::Transfer], 0, 2, 1, tx_dlss5_transfer,
+     "How the model's edit is combined with the original frame. Native + edit retains native detail at reduced model resolution.", nullptr, false, true},
+    {TAB_GRAPHICS, "Motion quality", &dlss5_control.values[d5::MotionQuality], 0, 2, 1, tx_dlss5_motion,
+     "The requested motion-estimation quality. Higher quality can cost more GPU time.", nullptr, false, true},
+    {TAB_GRAPHICS, "Motion grid", &dlss5_control.values[d5::MotionPixels], 0, 3, 1, tx_dlss5_grid,
+     "The requested motion grid. The helper may use a supported fallback on this GPU.", nullptr, false, true},
+
     // Audio
     {TAB_AUDIO, "Volume", &opts.volume, 0, 100, 5, tx_percent,
      "How loud the game plays. The game's own sound settings and Windows' volume still apply.", nullptr, false, true},
@@ -1116,6 +1188,10 @@ int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 /// and menu_tick brings back one past the end
 bool row_shown(int i) {
     const int* v = rows[i].value;
+    if(dlss5_row(rows[i])) {
+        const int setting=dlss5_control.setting(v);
+        return dlss5_control.configured() && (setting<0 || !d5::specs[setting].advanced || dlss5_control.advanced);
+    }
     return (rows[i].cheat < 0 || cheats_on()) && (v != &opts.reflex || reflex_available()) &&
            (v != &opts.antilag || antilag_available()) &&
            (v != &opts.dlss || ur::upscaler_shown(upscalers_available())) &&
@@ -1153,7 +1229,7 @@ int drag_row = -1;
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
 bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume; }
 /// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
-bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume; }
+bool stops_at_ends(const Row& r) { return (dlss5_control.setting(r.value)>=0 && r.hi>15) || r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
 int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
 std::string ini_path() {
@@ -1279,13 +1355,14 @@ void save() {
             const std::string key(line, (size_t)(eq - line));
             bool mine = key == "microphone_device" || key == "options_version";
             for (const Row& r : rows)
-                if (!mine && r.value && key == ini_key(r)) mine = true;
+                if (!mine && r.value && !dlss5_row(r) && key == ini_key(r)) mine = true;
             if (!mine) others += line, others += others.back() == '\n' ? "" : "\n";
         }
         fclose(f);
     }
     if (FILE* f = fopen(ini_path().c_str(), "w")) {
         for (const Row& r : rows) {
+            if(dlss5_row(r))continue; // external settings persist through the session adapter
             if (r.value == &opts.output_res) {   // (the size itself: host/nn_applet.c reads it)
                 const Out o = output_at(*r.value);
                 fprintf(f, "%s=%ux%u\n", ini_key(r), o.w, o.h);
@@ -1313,6 +1390,12 @@ void save() {
 void set_row(Row& r, int v, int dir, bool keep = true) {
     // (nothing else to choose: no change, no save. A saved choice that cannot run here is kept)
     if (row_fixed(r.value)) return;
+    if(dlss5_row(r)) {
+        v=stops_at_ends(r)?std::clamp(v,r.lo,r.hi):v>r.hi?r.lo:v<r.lo?r.hi:v;
+        if(r.value==&dlss5_control.advanced)*r.value=v;
+        else dlss5_control.set(dlss5_control.setting(r.value),v);
+        return;
+    }
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
     // (the Upscaler by engine; the Render resolution's Native is the engine's full-size form: upscaler_rows.h)
     if (r.value == &opts.dlss) v = ur::step_engine(upscaler(), dir, upscalers_available());
@@ -1904,7 +1987,7 @@ void draw_options(ui::Ctx& c) {
     const bool confirms = &selr == &rows[kRestartRow] || &selr == &rows[kQuitRow];
     ui::Prompt prompt_list[5] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kTabs, "Tabs"}, {ui::kBack, "Close"}};
     int prompts_n = cur_tab == TAB_MOTION ? 3 : 4;
-    if (!selr.value) prompt_list[1] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : "Open"};
+    if (!selr.value) prompt_list[1] = {ui::kConfirm, dlss5_reset_row(selr) ? "Reset" : confirms ? (pending == &selr ? "Confirm" : selr.name) : "Open"};
     if (cur_tab == TAB_MOTION) prompt_list[2] = {ui::kBack, "Back"};   // (Esc: to Controls)
     if (selr.cheat >= 0) {   // (a debug tool: Change when Left and Right do something, then what confirm does)
         prompts_n = 1;
@@ -1958,6 +2041,10 @@ void draw_options(ui::Ctx& c) {
             halves_cell(c, va, vb, "Off", "On", tool == "On", selected, false);
         } else if (r.cheat >= 0 && !tool.empty()) {   // (a debug tool with a value: arrows when Left and Right choose it)
             choice_cell(c, va, vb, tool, selected, cheat_chooses(r.cheat), cheat_chooses(r.cheat));
+        } else if (dlss5_reset_row(r)) {
+            const bool ready = dlss5_control.can_reset();
+            const char* label = ready ? "Reset" : dlss5_control.pending() ? "Applying..." : "Unavailable";
+            choice_cell(c, va, vb, label, selected, false, false, !ready);
         } else if (!r.value) {   // (a page, or Restart and Quit: Confirm until the second press)
             if (pending == &r) choice_cell(c, va, vb, "Press again to confirm", selected, false, false);
             else {
@@ -2595,7 +2682,7 @@ void menu_init() {
             if (!eq) continue;
             *eq = 0;
             for (Row& r : rows) {
-                if (!r.value || strcmp(line, ini_key(r))) continue;
+                if (!r.value || dlss5_row(r) || strcmp(line, ini_key(r))) continue;
                 const int v = atoi(eq + 1);
                 *r.value = r.value == &opts.output_res ? parse_output(eq + 1) : std::min(std::max(v, r.lo), r.hi);
             }
@@ -2834,6 +2921,7 @@ void cheat_press(int i, const bool* press, bool& changed) {
 }
 
 void menu_tick() {
+    if(dlss5_control.tick(open_now.load(std::memory_order_relaxed)))menu_refresh=true;
     fullscreen_tick();
     enum { K_N = 17 };
     static bool held[K_N];
@@ -3188,7 +3276,9 @@ void menu_tick() {
         Row& r = rows[tab_row_to_global(cur_tab, selected)];
         const bool confirm_selected = &r == &rows[kQuitRow] || &r == &rows[kRestartRow];
         if (pending && (pending != &r || !mine)) pending = nullptr, changed = true;
-        if (press[7] && confirm_selected) {
+        if (dlss5_reset_press(r, press[7], press[5], mine)) {
+            if (press[7]) changed = true;
+        } else if (press[7] && confirm_selected) {
             if (mine && !press[5]) {
                 if (pending != &r) {
                     pending = &r, changed = true;

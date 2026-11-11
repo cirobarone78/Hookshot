@@ -131,6 +131,7 @@ struct Options { int output_res = 0, vsync = 0, resolution = 0, fps_cap = 0, ups
 static int parse_output(const char* text) { return atoi(text); }   // (the Output row's own parse: not what this checks)
 ''' + block(menu, "struct Row {") + ";\n" + block(menu, "const char* tx_stick_dead_zone(") + "\n" + \
         "Row rows[] = {" + row.group(0) + "};\n" + block(menu, "const char* ini_key(") + r'''
+static bool dlss5_row(const Row&) { return false; } // This fixture contains only the stick setting.
 static int parse(const char* text) {
     opts.stick_dead_zone = 0;
     char line[80];

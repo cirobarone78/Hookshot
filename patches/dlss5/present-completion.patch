@@ -1,0 +1,195 @@
+--- a/layer_linux/src/layer.cpp
++++ b/layer_linux/src/layer.cpp
+@@ -482,6 +482,7 @@
+     X(vkGetSwapchainImagesKHR) X(vkQueuePresentKHR) X(vkQueueSubmit) X(vkQueueSubmit2) X(vkQueueWaitIdle) X(vkCreateCommandPool) \
+     X(vkDestroyCommandPool) X(vkAllocateCommandBuffers) X(vkBeginCommandBuffer) X(vkEndCommandBuffer) \
+     X(vkCreateFence) X(vkDestroyFence) X(vkWaitForFences) X(vkResetFences) \
++    X(vkCreateSemaphore) X(vkDestroySemaphore) \
+     X(vkCreateImage) X(vkDestroyImage) X(vkGetImageMemoryRequirements) X(vkAllocateMemory) \
+     X(vkFreeMemory) X(vkBindImageMemory) X(vkCreateImageView) X(vkDestroyImageView) \
+     X(vkMapMemory) X(vkUnmapMemory) X(vkCreateBuffer) X(vkDestroyBuffer) \
+@@ -491,6 +492,8 @@
+ 
+ struct SwapchainState {
+     std::vector<VkImage> images;
++    // Present waits are reused only after this same image has been reacquired.
++    std::vector<VkSemaphore> presentReady;
+     // The queue this swapchain was last presented on, and a fence for the repaint's own acquire.
+     // A repaint has to submit somewhere, and the only queue known to be right for a swapchain is
+     // the one the application itself uses.
+@@ -508,7 +511,7 @@
+     // Two fences, not one. Leg 1's must be waited on before the proxy is handed to the helper --
+     // the sequence number is the helper's only ordering signal, and it may not be bumped ahead of
+     // the write it announces. Leg 2's needs no wait at all in its own frame: the present follows it
+-    // on the same queue, so the GPU orders them without the CPU. The wait moves to the start of the
++    // through the image's presentReady semaphore without a CPU wait. The fence wait moves to the start of the
+     // next present, where the command buffer and the composed surfaces are reused, which takes a
+     // full GPU stall out of the frame it belongs to.
+     VkFence fenceLeg1 = VK_NULL_HANDLE;
+@@ -796,15 +799,20 @@
+ // Both declared here for the idle repaint, which draws a frame the application did not ask for.
+ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
+                            VkImage swapchainImage, uint32_t waitCount, const VkSemaphore* pWaits,
+-                           bool repaint, bool* waitsConsumed);
++                           bool repaint, bool* waitsConsumed, VkSemaphore presentReady);
+ 
+ // Put the captured frame back, for when the effect is switched off while the picture is still.
+ //
+ // No model and no round trip: the composed result is replaced by the frame it was made from, which
+ // is what the application drew and what it would draw again if it were running. Without this,
+ // switching the effect off while paused leaves the edit on screen until something else redraws.
+-static bool RestorePresent(DeviceChain* dc, SwapchainState& sc, VkImage swapchainImage) {
++static bool RestorePresent(DeviceChain* dc, SwapchainState& sc, VkImage swapchainImage, VkSemaphore presentReady) {
+     if (!sc.comp || !sc.comp->HasCapturedFrame()) return false;
++    if (sc.leg2Pending) {
++        if (dc->vkWaitForFences(dc->self, 1, &sc.fenceLeg2, VK_TRUE, UINT64_MAX) != VK_SUCCESS) return false;
++        if (dc->vkResetFences(dc->self, 1, &sc.fenceLeg2) != VK_SUCCESS) return false;
++        sc.leg2Pending = false;
++    }
+     VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+     if (dc->vkBeginCommandBuffer(sc.cb, &bi) != VK_SUCCESS) return false;
+@@ -816,12 +824,10 @@
+     VkSubmitInfo si{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+     si.commandBufferCount = 1;
+     si.pCommandBuffers = &sc.cb;
++    si.signalSemaphoreCount = 1;
++    si.pSignalSemaphores = &presentReady;
+     if (dc->vkQueueSubmit(sc.queue, 1, &si, sc.fenceLeg2) != VK_SUCCESS) return false;
+-    // Waited for here rather than left to the next frame: there may not be a next frame, and the
+-    // command buffer is reused by the repaint after this one.
+-    dc->vkWaitForFences(dc->self, 1, &sc.fenceLeg2, VK_TRUE, 500ull * 1000ull * 1000ull);
+-    dc->vkResetFences(dc->self, 1, &sc.fenceLeg2);
+-    sc.leg2Pending = false;
++    sc.leg2Pending = true;
+     {
+         static std::once_flag said;
+         std::call_once(said, [] { Log("[layer] idle repaint: put the captured frame back"); });
+@@ -1134,10 +1140,12 @@
+ 
+                 const bool drew =
+                     on ? ProcessPresent(dc, *sc, sc->queue, sc->images[index], 0, nullptr,
+-                                         /*repaint=*/true, nullptr)
+-                       : RestorePresent(dc, *sc, sc->images[index]);
++                                         /*repaint=*/true, nullptr, sc->presentReady[index])
++                       : RestorePresent(dc, *sc, sc->images[index], sc->presentReady[index]);
+                 if (drew) {
+                     VkPresentInfoKHR pi{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
++                    pi.waitSemaphoreCount = 1;
++                    pi.pWaitSemaphores = &sc->presentReady[index];
+                     pi.swapchainCount = 1;
+                     pi.pSwapchains = &swapchain;
+                     pi.pImageIndices = &index;
+@@ -1201,6 +1209,8 @@
+         for (auto& kv : dc->swapchains) {
+             SwapchainState& sc = kv.second;
+             sc.comp.reset();
++            for (VkSemaphore ready : sc.presentReady)
++                if (ready) dc->vkDestroySemaphore(device, ready, nullptr);
+             if (sc.fenceLeg1) dc->vkDestroyFence(device, sc.fenceLeg1, nullptr);
+             if (sc.fenceLeg2) dc->vkDestroyFence(device, sc.fenceLeg2, nullptr);
+             if (sc.repaintFence) dc->vkDestroyFence(device, sc.repaintFence, nullptr);
+@@ -1346,6 +1356,8 @@
+         lk.lock();
+         SwapchainState& sc = it->second;
+         sc.comp.reset();
++        for (VkSemaphore ready : sc.presentReady)
++            if (ready) dc->vkDestroySemaphore(device, ready, nullptr);
+         if (sc.fenceLeg1) dc->vkDestroyFence(device, sc.fenceLeg1, nullptr);
+         if (sc.fenceLeg2) dc->vkDestroyFence(device, sc.fenceLeg2, nullptr);
+         if (sc.repaintFence) dc->vkDestroyFence(device, sc.repaintFence, nullptr);
+@@ -1398,6 +1410,11 @@
+     if (dc->vkCreateFence(d, &fci, nullptr, &sc.fenceLeg1) != VK_SUCCESS) return false;
+     if (dc->vkCreateFence(d, &fci, nullptr, &sc.fenceLeg2) != VK_SUCCESS) return false;
+ 
++    VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
++    sc.presentReady.resize(sc.images.size(), VK_NULL_HANDLE);
++    for (VkSemaphore& ready : sc.presentReady)
++        if (dc->vkCreateSemaphore(d, &sci, nullptr, &ready) != VK_SUCCESS) return false;
++
+     if (!dc->instance) return false;
+     sc.comp = std::make_unique<dlssnr::Composition>(&dc->table, &dc->instance->table, d, dc->physical);
+     if (!sc.comp->Usable()) {
+@@ -1434,18 +1451,18 @@
+ // crosses to the helper and comes back as the model's answer, and the pass composes the answer onto
+ // the frame. The proxy's crossing is fenced on the CPU because the model is in another process and
+ // there is nothing to wait on but a sequence number; the answer's return is not -- leg 2 and the
+-// present are ordered by the queue itself, and the fence that covers leg 2 is only waited on at the
++// present are ordered by an image-owned semaphore; the fence covering leg 2 is only waited on at the
+ // start of the NEXT frame, where the command buffer and the composed surfaces are reused.
+ //
+ // The caller's present semaphores are consumed by the first submit, because that submit is the first
+ // thing to touch the image. They are therefore unsignalled by the time this returns and must not be
+-// handed to vkQueuePresentKHR again; the caller presents with none.
++// handed to vkQueuePresentKHR again; the caller instead waits for presentReady after a successful compose.
+ //
+ // Every path out leaves the swapchain image in PRESENT_SRC_KHR, including the ones that give up.
+ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
+                             VkImage swapchainImage, uint32_t waitCount,
+                             const VkSemaphore* waitSemaphores, bool repaint,
+-                            bool* waitsConsumed) {
++                            bool* waitsConsumed, VkSemaphore presentReady) {
+     if (waitsConsumed) *waitsConsumed = false;
+     if (!sc.comp) return false;
+     VkDevice d = dc->self;
+@@ -1648,9 +1665,11 @@
+         dc->vkEndCommandBuffer(cb);
+         return false;
+     }
+-    // No wait. The present that follows runs on this same queue behind these commands, so the image
+-    // is composed before it is shown without the CPU ever parking here; the fence is collected at
+-    // the top of the next frame, where the reused surfaces actually need it.
++    // Queue order alone does not make presentation wait for composition. The
++    // image-owned binary semaphore orders that read; the fence still protects
++    // the reusable command buffer and composition surfaces on the next frame.
++    si.signalSemaphoreCount = 1;
++    si.pSignalSemaphores = &presentReady;
+     if (!endAndSubmit(sc.fenceLeg2)) return false;
+     sc.leg2Pending = true;
+     const double tReturn = time ? NowMs() : 0.0;
+@@ -1695,11 +1714,12 @@
+     dc->lastPresentMs.store(NowMs(), std::memory_order_relaxed);
+ 
+     // Whether this call's wait semaphores have already been consumed by a submit of ours. They are
+-    // handed to the first swapchain we actually process; every path after that presents with none,
++    // handed to the first swapchain we actually process; later paths replace them with our completion waits,
+     // because a semaphore signalled once may only be waited on once. Presenting with them a second
+     // time is a wait that never completes -- which is what a second layer in the chain, Steam's
+     // overlay among them, turns from a latent bug into a hang.
+     bool waitsConsumed = false;
++    std::vector<VkSemaphore> presentWaits;
+ 
+     // Held from here to the present at the end, alongside Hook_QueueSubmit{,2}. Vulkan requires
+     // external synchronization for every operation on a queue; the repaint uses the application's
+@@ -1747,8 +1767,10 @@
+             bool submittedWaits = false;
+             const bool composed = ProcessPresent(dc, sc, queue, sc.images[pPresentInfo->pImageIndices[i]],
+                                                  waitCount, pPresentInfo->pWaitSemaphores,
+-                                                 /*repaint=*/false, &submittedWaits);
++                                                 /*repaint=*/false, &submittedWaits,
++                                                 sc.presentReady[pPresentInfo->pImageIndices[i]]);
+             waitsConsumed = waitsConsumed || submittedWaits;
++            if (composed) presentWaits.push_back(sc.presentReady[pPresentInfo->pImageIndices[i]]);
+             if (!composed) ++dc->framesPassedThrough;
+             if (VerboseEnabled()) {
+                 Log("[present] swapchain=%p image=%u seq=%u composed=%d",
+@@ -1768,13 +1790,16 @@
+         }
+     }
+ 
+-    if (!waitsConsumed) return dc->vkQueuePresentKHR(queue, pPresentInfo);
++    if (!waitsConsumed && presentWaits.empty()) return dc->vkQueuePresentKHR(queue, pPresentInfo);
++    if (!waitsConsumed && pPresentInfo->waitSemaphoreCount)
++        presentWaits.insert(presentWaits.end(), pPresentInfo->pWaitSemaphores,
++                           pPresentInfo->pWaitSemaphores + pPresentInfo->waitSemaphoreCount);
+ 
+     // pNext is carried through untouched: present ids, present timing and the rest belong to the
+     // caller and none of them are about semaphores.
+     VkPresentInfoKHR pi = *pPresentInfo;
+-    pi.waitSemaphoreCount = 0;
+-    pi.pWaitSemaphores = nullptr;
++    pi.waitSemaphoreCount = uint32_t(presentWaits.size());
++    pi.pWaitSemaphores = presentWaits.empty() ? nullptr : presentWaits.data();
+     return dc->vkQueuePresentKHR(queue, &pi);
+ }
+ 

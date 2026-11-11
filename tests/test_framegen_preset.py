@@ -45,6 +45,9 @@ FIXTURE = r"""
 Options opts;
 /* TABS */
 /* ROW */
+// The external enhancement section is unrelated to this native option fixture.
+struct { int advanced=0; int setting(const int*) const {return -1;} bool set(int,int){return false;} } dlss5_control;
+bool dlss5_row(const Row&) {return false;}
 int saves = 0;
 void save() { ++saves; }
 void apply_pad_layout(int) {}

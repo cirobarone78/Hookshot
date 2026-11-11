@@ -1,0 +1,80 @@
+diff --git a/layer_linux/src/layer.cpp b/layer_linux/src/layer.cpp
+index 6959af8..f609bdf 100644
+--- a/layer_linux/src/layer.cpp
++++ b/layer_linux/src/layer.cpp
+@@ -128,11 +128,11 @@ struct ShmMap {
+     // Three mappings rather than one.
+     //
+     // The file is a header followed by two pixel regions each large enough for the biggest frame the
+-    // protocol allows, which is a quarter of a gigabyte in total. Mapping all of it was fine on
++    // protocol allows, which is about half a gigabyte in total. Mapping all of it was fine on
+     // 64-bit and is not on 32-bit: a 32-bit game has about 3 GB of address space and would be handing
+     // a tenth of it to a reservation it never touches. Both region offsets are page-aligned by
+     // construction, so each can be mapped on its own at the size actually in use -- a few megabytes
+-    // for a real frame instead of 265.
++    // for a real frame. On 64-bit, reserve both full ranges to keep imported pointers stable.
+     int fd = -1;
+     ShmHeader* hdr = nullptr;
+     uint8_t* inPixels = nullptr;
+@@ -193,16 +193,24 @@ static void* ShmMapAligned(int fd, off_t offset, size_t want, uintptr_t hint) {
+     return mmap(nullptr, want, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset);
+ }
+ 
+-// Maps the two pixel regions at the size this frame needs, remapping when the size changes.
++// Keep host-imported addresses stable for the lifetime of the device on 64-bit.
++// Composition objects may still own VkDeviceMemory imports when a model grows;
++// unmapping their pages here would invalidate those imports before they are freed.
++// Reserve the protocol's full ranges, but only import/touch the current frame.
++// 32-bit retains its existing smaller address-space reservations.
+ static bool ShmMapFrames(ShmMap& s, size_t bytes) {
+-    if (s.mappedFrameBytes >= bytes && s.inPixels && s.outPixels) return true;
+     if (bytes > kMaxFrame) return false;
++    if (s.mappedFrameBytes >= bytes && s.inPixels && s.outPixels) return true;
+ 
+     // Round up so a small change in resolution does not remap every frame, and to a 64 KiB multiple so
+     // a host-pointer import of the whole region (whose allocation size must be a multiple of the
+     // driver's import alignment) stays inside the mapping.
+     const size_t kImportAlign = 65536;
++#if UINTPTR_MAX > 0xFFFFFFFFull
++    const size_t want = ((kMaxFrame + kImportAlign - 1) / kImportAlign) * kImportAlign;
++#else
+     const size_t want = ((bytes + kImportAlign - 1) / kImportAlign) * kImportAlign;
++#endif
+ 
+     if (s.inPixels) munmap(s.inPixels, s.mappedFrameBytes);
+     if (s.outPixels) munmap(s.outPixels, s.mappedFrameBytes);
+@@ -234,6 +242,15 @@ static bool ShmMapFrames(ShmMap& s, size_t bytes) {
+     return true;
+ }
+ 
++// Call only after all compositions have freed their imported VkDeviceMemory.
++static void ShmClose(ShmMap& s) {
++    if (s.inPixels) munmap(s.inPixels, s.mappedFrameBytes);
++    if (s.outPixels) munmap(s.outPixels, s.mappedFrameBytes);
++    if (s.hdr) munmap(s.hdr, kHeaderBytes);
++    if (s.fd >= 0) close(s.fd);
++    s = ShmMap{};
++}
++
+ static bool ShmOpen(ShmMap& s) {
+     if (s.hdr) return true;
+     const char* path = getenv("DLSSNR_SHM");
+@@ -1191,6 +1208,7 @@ static VKAPI_ATTR void VKAPI_CALL Hook_DestroyDevice(VkDevice device,
+         }
+         dc->swapchains.clear();
+     }
++    ShmClose(dc->shm);
+     if (dc->vkDestroyDevice) dc->vkDestroyDevice(device, pAllocator);
+     delete dc;
+ }
+@@ -1474,8 +1492,8 @@ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
+ 
+     // Point the transport at the shared-memory regions before Prepare sizes anything, so the first
+     // frame at a new raster imports the mapping instead of building staging that then has to be
+-    // thrown away. The regions are mapped at the model's own size, which is what the GPU copies
+-    // into and out of.
++    // thrown away. Only the current model's bytes are imported, even when the mapping reserves
++    // the protocol's maximum range to keep its addresses stable across resolution changes.
+     if (dc->shm.hdr && ShmOpen(dc->shm)) {
+         uint32_t mw = 0, mh = 0;
+         dlssnr::Composition::ModelExtent(sc.width, sc.height, fs, mw, mh);
