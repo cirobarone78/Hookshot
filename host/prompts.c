@@ -482,7 +482,8 @@ static Run *texture_runs(const uint8_t *t, long tn, const int *bind, size_t *nru
 }
 
 static void live_textures_start(const char *bntx, const Run *runs, size_t nruns);
-static void live_start(int face, const int *bind);
+static void part_served(int p, int face, const int *bind);
+enum { PART_TEXTURES, PART_LAYOUTS, PART_FONT, PARTS };
 
 static int build_textures(char *out, size_t cap) {
     char dir[MAX_PATH], path[MAX_PATH];
@@ -498,7 +499,6 @@ static int build_textures(char *out, size_t cap) {
     size_t nruns;
     Run *runs = texture_runs(t, tn, bind, &nruns);
     snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
-    live_start(face, bind);
     live_textures_start(path, runs, nruns);   /* (before write_patched sorts them: the ranges only) */
     snprintf(out, cap, "%sprompts/Common.bntx.zs", dir);
     snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
@@ -507,6 +507,7 @@ static int build_textures(char *out, size_t cap) {
     const int ok = write_patched(path, out, keypath, h, runs, nruns);
     hos_log("prompts: %s textures, %zu runs for this pad's controls%s", faces[face], nruns,
             ok ? "" : ": could not be written");
+    if (ok) part_served(PART_TEXTURES, face, bind);
     free(runs);
     free(t);
     return ok;
@@ -614,21 +615,26 @@ static struct {
     uint64_t sample[SAMPLES];             /* file offsets of bytes no run of the start's writes */
     uint8_t want[SAMPLES][SAMPLE_LEN];
     uint8_t *bins[HOS_PROMPT_N];          /* each face's textures.bin, read when first chosen (the runs point into it) */
+    uint32_t (*served)[2];                /* the runs of the file as served (offset, length): a pool made again holds them */
+    size_t nserved;
     long nbins[HOS_PROMPT_N];
 } tex;
 
 /* what the game is to show now (the start's, then each change's): the face and the controls; and what each part it loaded
    shows (PART_*: the start's until written over, so a part found after a change catches up) */
-enum { PART_TEXTURES, PART_LAYOUTS, PART_FONT, PARTS };
 static int live_face_now = -1, live_bind_now[HOS_SW_N];
 static int part_face[PARTS], part_bind[PARTS][HOS_SW_N];
-static int start_face, start_bind[HOS_SW_N];   /* (the files served: what a part the game loads again shows) */
+static int served_face[PARTS], served_bind[PARTS][HOS_SW_N];   /* (each part's file as served: what the game loads again) */
 static void live_start(int face, const int *bind) {   /* (the first file served: the start's) */
     if (live_face_now >= 0) return;
-    start_face = face, memcpy(start_bind, bind, sizeof start_bind);
     memcpy(live_bind_now, bind, sizeof live_bind_now);
-    for (int p = 0; p < PARTS; p++) part_face[p] = face, memcpy(part_bind[p], bind, sizeof part_bind[p]);
     live_face_now = face;
+}
+static void part_served(int p, int face, const int *bind) {   /* (its file written for this face and these controls) */
+    served_face[p] = part_face[p] = face;
+    memcpy(served_bind[p], bind, sizeof served_bind[p]);
+    memcpy(part_bind[p], bind, sizeof part_bind[p]);
+    live_start(face, bind);
 }
 
 /* (build_textures) the file's texture data, with bytes to know its pool by, and the ranges of the start's runs */
@@ -660,6 +666,10 @@ static void live_textures_start(const char *bntx, const Run *runs, size_t nruns)
     }
     snprintf(tex.l.path, sizeof tex.l.path, "%s", bntx);
     keep_ranges(&tex.l, runs, nruns);
+    free(tex.served);
+    tex.served = (uint32_t (*)[2])malloc((nruns ? nruns : 1) * sizeof *tex.served);
+    if (tex.served) memcpy(tex.served, tex.l.ranges, nruns * sizeof *tex.served);
+    tex.nserved = tex.served ? nruns : 0;
 }
 
 /* nvn_native.c: a memory pool the game made (its storage, size bytes): the one Common.bntx's texture data is in? (Its
@@ -679,8 +689,14 @@ void hos_prompts_pool(uint64_t mem, uint64_t size) {
     const int first = !tex.l.base;
     if (first) {
         tex.l.lo = mem, tex.l.hi = mem + size;
-        part_face[PART_TEXTURES] = start_face;   /* (the file as served: a change since is written at the next look) */
-        memcpy(part_bind[PART_TEXTURES], start_bind, sizeof start_bind);
+        part_face[PART_TEXTURES] = served_face[PART_TEXTURES];   /* (the file as served: a change since is written at the next look) */
+        memcpy(part_bind[PART_TEXTURES], served_bind[PART_TEXTURES], sizeof part_bind[PART_TEXTURES]);
+        if (tex.served) {   /* (the served runs: the bytes put back at that look) */
+            free(tex.l.ranges);
+            tex.l.ranges = (uint32_t (*)[2])malloc((tex.nserved ? tex.nserved : 1) * sizeof *tex.l.ranges);
+            if (tex.l.ranges) memcpy(tex.l.ranges, tex.served, tex.nserved * sizeof *tex.served);
+            tex.l.nranges = tex.l.ranges ? tex.nserved : 0;
+        }
         __atomic_store_n(&tex.l.base, base, __ATOMIC_RELEASE);   /* (lo and hi first: the input thread reads them once base is set) */
     }
     ReleaseSRWLockExclusive(&tex_lock);
@@ -753,6 +769,18 @@ static uint64_t lay_n;         /* its length, 0 not served */
    for by the file's first bytes at the pages of each region's first 1 MB, every 2 s from when the textures' pool is known
    (the game unpacks its resources then; without the textures, at once), 30 times at most; then the runs served that are still there are the ones a change
    puts the game's bytes back over (put_runs, guarded: never over a pointer the game made) */
+/* run r's bytes at q as write_patched left them: each one the run's, or a later run's (idx) over it */
+static int run_as_served(const Run *runs, size_t n, size_t r, const uint8_t *q) {
+    for (uint32_t k = 0; k < runs[r].len; k++) {
+        if (q[k] == runs[r].data[k]) continue;
+        const uint64_t at = (uint64_t)runs[r].off + k;
+        int over = 0;
+        for (size_t s = 0; s < n && !over; s++) over = runs[s].idx > runs[r].idx && at >= runs[s].off && at < (uint64_t)runs[s].off + runs[s].len;
+        if (!over) return 0;
+    }
+    return 1;
+}
+
 static void find_layouts(void) {
     static int tries;
     static int64_t last;
@@ -775,7 +803,7 @@ static void find_layouts(void) {
         for (size_t r = 0; r < lay_start.n; r++) {
             const Run *run = &lay_start.runs[r];
             const uint8_t *q = (const uint8_t *)hos_guest_range(lay.base + run->off, run->len);
-            if (q && !memcmp(q, run->data, run->len)) memmove(lay.ranges[kept++], lay.ranges[r], sizeof *lay.ranges);
+            if (q && run_as_served(lay_start.runs, lay_start.n, r, q)) memmove(lay.ranges[kept++], lay.ranges[r], sizeof *lay.ranges);
         }
         lay.nranges = kept;
     }
@@ -791,6 +819,12 @@ static void find_layouts(void) {
 }
 
 static int live_layouts(const char *dir, int face, const int *bind) {
+    const uint8_t *q = (const uint8_t *)hos_guest_range(lay.base, sizeof lay_head);
+    if (!q || memcmp(q, lay_head, sizeof lay_head)) {   /* (the game let the memory go: nothing written there) */
+        hos_log("prompts: the layouts at %#llx are no longer there: they change at the next start", (unsigned long long)lay.base);
+        lay.base = 0;
+        return 0;
+    }
     Layout o;
     if (!layout_runs(dir, face, bind, &o)) return 0;
     size_t written, put_back;
@@ -905,9 +939,14 @@ void hos_prompts_glyph(uint64_t slot) {
         last = face;   /* (another font: not looked at again while its glyphs follow each other) */
         return;
     }
-    const uint8_t *q = (const uint8_t *)hos_guest_range(base[0], font.n - 8);
-    if (!q || memcmp(q, font.head, sizeof font.head)) return;
-    font.at = base[0];
+    const uint64_t at = base[0] + (base[1] == font.n ? 8 : 0);   /* (kept with its 8-byte header, or without) */
+    const uint8_t *q = (const uint8_t *)hos_guest_range(at, font.n - 8);
+    if (!q) return;
+    if (memcmp(q, font.head, sizeof font.head)) {
+        last = face;   /* (another font of that size) */
+        return;
+    }
+    font.at = at;
     hos_log("prompts: the font at %#llx: the icons in texts follow at once", (unsigned long long)font.at);
 }
 
@@ -943,6 +982,7 @@ static int live_face(void) {
 
 /* nn_hid.c, as the game reads its controller (every frame; looked at every 100 ms): the face or the controls changed, or a
    part found since that still shows what was before? */
+int hos_prompts_live_parts(void);
 void hos_prompts_live(void) {
     static volatile LONG busy;
     static int64_t last;
@@ -955,6 +995,11 @@ void hos_prompts_live(void) {
         int bind[HOS_SW_N];
         current_binds(bind);
         const int face = live_face();
+        if ((hos_prompts_live_parts() & HOS_PROMPTS_LIVE_ALL) != HOS_PROMPTS_LIVE_ALL) {   /* (the menu asks for a restart then:
+            nothing changes before, no part on another face than the rest) */
+            InterlockedExchange(&busy, 0);
+            return;
+        }
         live_face_now = face;
         memcpy(live_bind_now, bind, sizeof live_bind_now);
         const int found[PARTS] = {0, lay.base != 0, font.at != 0};   /* (the textures: looked at under tex_lock) */
@@ -978,7 +1023,7 @@ void hos_prompts_live(void) {
 }
 
 /* hos_prompts_romfs: the font, the textures, the layouts: 0 not built, 1 being built, 2 built, 3 none (a build without
-   them, a mod's size table that cannot take ours: the game's own, whatever the face) */
+   them, a mod's own file, a mod's size table that cannot take ours: the same whatever the face) */
 static volatile LONG romfs_state[3];
 
 /* what the Insert menu's Button prompts row can change at once (vk_api.h HOS_PROMPTS_LIVE_*): the parts the game has loaded
@@ -1036,7 +1081,6 @@ static int build_layouts(char *out, size_t cap) {
     current_binds(bind);
     Layout o;
     if (!layout_runs(dir, face, bind, &o)) return 0;
-    live_start(face, bind);
     char keypath[MAX_PATH];
     snprintf(out, cap, "%sprompts/Common.blarc.zs", dir);
     snprintf(path, sizeof path, "%sprompts/Common.blarc", dir);
@@ -1049,6 +1093,7 @@ static int build_layouts(char *out, size_t cap) {
     const int ok = write_patched(path, out, keypath, o.h, o.runs, o.n);
     hos_log("prompts: the Talk ring's A B X Y at places %d %d %d %d, the ocarina hint %s%s", o.place[0], o.place[1],
             o.place[2], o.place[3], o.spread ? "spread" : "as is", ok ? "" : ": could not be written");
+    if (ok) part_served(PART_LAYOUTS, face, bind);
     if (ok && headed) {   /* (for find_layouts: the file, and the runs served) */
         snprintf(lay.path, sizeof lay.path, "%s", path);
         lay.guarded = 1;
@@ -1148,7 +1193,7 @@ static int build(char *out, size_t cap) {
     if (ok) {
         int bind[HOS_SW_N];
         current_binds(bind);
-        live_start(face, bind);
+        part_served(PART_FONT, face, bind);
         font.n = n >= 8 + 64 ? (uint32_t)n : 0;
     }
     free(b);
@@ -1170,9 +1215,12 @@ int hos_prompts_romfs(const char *key, const char *mod, char *out, size_t cap) {
         snprintf(out, cap, "%sprompts/rsizetable.zs", dir);
         return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
     }
-    if (mod) return 0;
     const int which = !strcmp(key, FONT_PATH) ? 0 : !strcmp(key, TEXTURES_PATH) ? 1 : !strcmp(key, LAYOUTS_PATH) ? 2 : -1;
     if (which < 0) return 0;
+    if (mod) {   /* (the mod's file: the same whatever the face, as one none was served for) */
+        InterlockedCompareExchange(&state[which], 3, 0);
+        return 0;
+    }
     static int (*const builders[3])(char *, size_t) = {build, build_textures, build_layouts};
     if (InterlockedCompareExchange(&state[which], 1, 0) == 0)
         InterlockedExchange(&state[which], builders[which](path[which], MAX_PATH) ? 2 : 3);
