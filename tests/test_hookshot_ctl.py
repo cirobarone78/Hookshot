@@ -1,5 +1,5 @@
 """scripts/hookshot_ctl.py, the control bridge's client, against a tiny fake game: a Python stand-in for the executable
-that serves the bridge's protocol on $HOS_CONTROL (docs/control.md) and writes down each request. The commands' requests
+that serves the bridge's protocol on $HOS_CONTROL (docs/dev/automation.md) and writes down each request. The commands' requests
 and plain output, --json, exit codes (an error reply, a timeout, no game), watch, launch (which starts the stand-in as a
 game folder's hookshot and waits for its socket), and the mem commands. Linux only: a Unix socket.
 

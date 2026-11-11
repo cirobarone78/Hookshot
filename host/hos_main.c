@@ -171,7 +171,8 @@ static int reserve_guest(void) {
                     warned = 1;
                     const char *warning = "WARNING: /dev/udmabuf permission denied; GPU imports may be slower, especially on AMD/RADV. "
                         "Ask your administrator for access via its device group or a device-specific udev rule "
-                        "(see README, On Linux). Do not run the game as root.";
+                        "(see https://github.com/NotRexed/Hookshot/blob/main/docs/user/troubleshooting.md#linux-udmabuf-warning). "
+                        "Do not run the game as root.";
                     if (startup_stderr >= 0) dprintf(startup_stderr, "%s (%s)\n", warning, strerror(err));
                     hos_log("%s (%s)", warning, strerror(err));
                 }

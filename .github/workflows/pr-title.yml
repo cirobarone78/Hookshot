@@ -1,7 +1,7 @@
-# A pull request's title must be a Conventional Commit: it becomes the squash-merged commit on main, which release-please
-# reads for the next version and its changelog (CONTRIBUTING.md, docs/versioning.md). Only the title is read: the pull
-# request's code is never checked out, so pull_request_target, which also runs for pull requests from forks, is safe.
-# No game data is involved.
+# A pull request's title must be a Conventional Commit: it becomes the squash-merged commit on main, which
+# release-please reads for the next version and its changelog (CONTRIBUTING.md, docs/dev/releasing.md). Only the title
+# is read: the pull request's code is never checked out, so pull_request_target, which also runs for pull requests from
+# forks, is safe. No game data is involved.
 name: PR title
 
 on:

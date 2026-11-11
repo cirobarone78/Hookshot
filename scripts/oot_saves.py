@@ -16,7 +16,7 @@ folder), which is searched for the game's saves. --hookshot DIR does the same fo
 image.bin and user\\), which has to be given there. The side being overwritten is copied first to
 <backup>/<import or export>-<name>-<YYYYmmdd-HHMMSS> (Linux: $XDG_DATA_HOME/oot-save-backups, Windows:
 %LOCALAPPDATA%\\Hookshot\\oot-save-backups; --backup-dir changes it). Close every game first: --force skips that check.
-Standard library only; the guide is docs/saves.md.
+Standard library only; the guide is docs/user/saves.md.
 """
 import argparse
 import collections
@@ -37,7 +37,8 @@ Program = collections.namedtuple("Program", "name display folders processes alia
 # Everything that runs the game and where it keeps its data, one entry each. folders: per OS, where to look, in order
 # ({data} = $XDG_DATA_HOME or ~/.local/share, {appdata} = %APPDATA%, {localappdata} = %LOCALAPPDATA%, {home} = the
 # home folder); the saves are then found under it by LAYOUTS. processes: lower case, without .exe, for the
-# running-game check. The sources are in docs/saves.md.
+# running-game check. The sources: each emulator's src/common/fs/fs_paths.h, path_util.cpp and
+# src/core/file_sys/savedata_factory.cpp; NX2navi's docs/launcher.md, docs/installer.md and docs/README-BuildKit.md.
 EDEN = {"linux": ["{data}/eden"], "windows": ["{appdata}/eden"]}
 # (Lichii has a data folder of its own since its build 150, 2026-11-10; a build from before keeps its saves in Eden's)
 LICHII = {"linux": ["{data}/lichii"] + EDEN["linux"], "windows": ["{appdata}/lichii"] + EDEN["windows"]}

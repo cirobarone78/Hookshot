@@ -1,6 +1,6 @@
 # Work list
 
-The prioritized list of open work, scored as [docs/workflow.md](workflow.md) describes: **score = severity weight x
+The prioritized list of open work, scored as [docs/dev/workflow.md](dev/workflow.md) describes: **score = severity weight x
 reach x confidence** (S0 8, S1 5, S2 3, S3 1; reach 0-1 from `scripts/hardware_report.py` and the Steam survey;
 confidence 1.0 reproduced with a log, 0.7 two or more reporters with logs, 0.4 one report or no log). Work from the
 top of **Open**. A GitHub issue stays the full record; this list is the order.

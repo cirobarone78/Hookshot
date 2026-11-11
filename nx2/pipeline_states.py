@@ -124,7 +124,7 @@ def parse(data, path, strict=False):
     if head not in ((MAGIC, SIZE), (MAGIC2, SIZE2)):
         found = data[:8].decode("ascii", "replace") if data[:7] == MAGIC[:7] else "no list"
         raise SystemExit("%s: not a pipeline state list this build reads (%s, %d-byte records, or %s, %d; found %s): make it "
-                         "again with this build (docs/development.md, \"The pipeline state list\")"
+                         "again with this build (docs/dev/building.md, \"The pipeline state list\")"
                          % (path, MAGIC2.decode(), SIZE2, MAGIC.decode(), SIZE, found))
     size = head[1]
     over = (len(data) - 12) % size
@@ -143,7 +143,7 @@ def read(path, strict=False):
 def check_shipped(path):
     """A list a release ships: present, whole, of this build's format and not empty; its records. Stops with the reason"""
     if not os.path.isfile(path):
-        raise SystemExit("%s is missing, and a release must ship it (docs/development.md, \"The pipeline state list\")" % path)
+        raise SystemExit("%s is missing, and a release must ship it (docs/dev/building.md, \"The pipeline state list\")" % path)
     recs = read(path, strict=True)
     if not recs:
         raise SystemExit("%s holds no pipelines" % path)
@@ -339,7 +339,7 @@ def check_sources(d):
     problems = []
     paths = sources(d)
     if not paths:
-        raise SystemExit("%s holds no pipeline state lists, and a release must ship one (docs/development.md, \"The pipeline "
+        raise SystemExit("%s holds no pipeline state lists, and a release must ship one (docs/dev/building.md, \"The pipeline "
                          "state list\")" % d)
     seen = set()
     v2 = False   # (a version 2 source: the merge converts the version 1 ones)

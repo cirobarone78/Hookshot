@@ -240,7 +240,7 @@ typedef struct MkwVkRenderer {
     void (*option_set)(int id, int value);
     /* (version 14) one coherent camera-jitter sample, without per-axis queries */
     void (*jitter_sample)(MkwVkJitter *out);
-    /* (version 16, hookshot) the control bridge (host/control.c, docs/control.md) */
+    /* (version 16, hookshot) the control bridge (host/control.c, docs/dev/automation.md) */
     /* the presents replayed so far, the draws recorded since the start, and the picture's size (the window's swapchain, or
        the offscreen image's) */
     void (*frame_info)(int64_t *presents, int64_t *draws, int *width, int *height);

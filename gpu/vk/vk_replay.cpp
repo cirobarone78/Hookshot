@@ -3071,7 +3071,7 @@ void frame_log_present() {
     if (++frames % 60 == 0) std::fflush(fl);
 }
 
-// ---- (hookshot) the control bridge's shots (host/control.c, docs/control.md): a PNG of the first present after a given one,
+// ---- (hookshot) the control bridge's shots (host/control.c, docs/dev/automation.md): a PNG of the first present after a given one,
 // asked for from another thread. Read back as RX_VK_SHOTS' are (at a later present, once the GPU reached it, and written on a
 // thread of its own), with an image and a buffer of their own: the two kinds never share a readback. Never waited for: a
 // present looks at the readback once its value is completed() and moves on otherwise ----

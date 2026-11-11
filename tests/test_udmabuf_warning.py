@@ -59,7 +59,7 @@ int main(int argc, char **argv) {
                     assert log.read_text() == result.stderr
                 if case < 2:
                     assert result.stderr.count("WARNING:") == 1, result.stderr
-                    for word in ("/dev/udmabuf", "permission", "group", "udev", "README", "AMD"):
+                    for word in ("/dev/udmabuf", "permission", "group", "udev", "docs/user/troubleshooting.md", "AMD"):
                         assert word in result.stderr, (word, result.stderr)
                 else:
                     assert not result.stderr, result

@@ -1,4 +1,4 @@
-"""A client for the game's control bridge (host/control.c, docs/control.md): start the game with HOS_CONTROL=<socket>, then
+"""A client for the game's control bridge (host/control.c, docs/dev/automation.md): start the game with HOS_CONTROL=<socket>, then
 steer it and read its state from a shell, a test or a coding agent. Standard library only.
 
     python -I scripts/hookshot_ctl.py [--sock S] [--json] COMMAND ...

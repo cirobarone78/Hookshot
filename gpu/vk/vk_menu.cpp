@@ -3759,7 +3759,7 @@ void menu_option_set(int id, int value) {
     save();
 }
 
-// ---- (hookshot) the control bridge's option_get and option_set (host/control.c, docs/control.md) ----
+// ---- (hookshot) the control bridge's option_get and option_set (host/control.c, docs/dev/automation.md) ----
 // The settings rows (a value, not a heading or a debug tool, shown on this PC: row_shown), found by their key in
 // hookshot_options.ini (ini_key), which stays the same while rows come and go or are renamed. The bridge calls these from
 // its own thread: menu_mu keeps them apart from menu_tick (the present's thread) and from menu_option_set (the game's)

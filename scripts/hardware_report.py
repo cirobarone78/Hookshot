@@ -1,4 +1,4 @@
-"""Who reports problems: the GPU vendor, card class and OS named in the issue forms (docs/workflow.md, "Reach").
+"""Who reports problems: the GPU vendor, card class and OS named in the issue forms (docs/dev/workflow.md, "Reach").
 
     python -I scripts/hardware_report.py [--limit 1000] [--state all|open|closed]
 

@@ -1,4 +1,4 @@
-# Releases with release-please (docs/versioning.md). Every release is first a release candidate:
+# Releases with release-please (docs/dev/releasing.md). Every release is first a release candidate:
 # - On every push to main, release-please keeps one release pull request open: the next release candidate (2.1.0-rc.1,
 #   then 2.1.0-rc.2 of the same version), from the Conventional Commit titles of the pull requests merged since the last
 #   one, and its CHANGELOG.md entry.

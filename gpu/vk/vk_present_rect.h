@@ -10,8 +10,11 @@ struct PresentSourceRect {
     uint32_t x, y, w, h;
 };
 
+// The one source region that direct presentation, capture, scaling and interpolation all sample.
 // Vulkan blit offsets and the interpolation copy shader use signed 32-bit coordinates.
-// A nonpositive crop extent keeps the existing full-image convention; an invalid origin is empty.
+// A null crop or a nonpositive crop extent selects the whole image; a negative or out-of-image origin is empty;
+// positive extents are clipped to the image by subtraction, so x + width never overflows. An empty result
+// presents black (direct and capture) or is declined before setup (scaling and interpolation).
 constexpr PresentSourceRect present_source_rect(uint32_t sw, uint32_t sh, const int crop[4]) noexcept {
     if (!sw || !sh || sw > INT32_MAX || sh > INT32_MAX) return {0, 0, 0, 0};
     if (!crop || crop[2] <= 0 || crop[3] <= 0) return {0, 0, sw, sh};

@@ -5,9 +5,9 @@
 > `RX_BACKEND` only to pick another; the image and upload code of `vk_image.cpp` and `vk_upload.cpp` is in
 > `vk_texture.cpp`; a draw whose pipeline is not ready waits with `RX_VK_PIPE_SKIP=0` (there is no `RX_VK_PIPE_WAIT`);
 > `RX_VK_DUMP` takes a present number and writes PNGs; `RX_VK_FRAMEGEN` only turns frame generation off (the Insert
-> menu turns it on); the texture budget `RX_VK_VRAM_MB` defaults to 70% of what the driver allows (at most 6 GB),
+> menu turns it on); the texture budget `RX_VK_VRAM_MB` defaults to 70% of what the driver allows (45% on cards of 8.5 GB or less; at most 6 GB),
 > `RX_VK_TEX_MAX_MB` to 1536 and `RX_VK_MIRROR_MB` to a share of the card; and `eden/` carries Hookshot's changes.
-> The current switches are in [docs/development.md](../../docs/development.md#switches-for-testing-and-debugging).
+> The current switches are in [docs/dev/switches.md](../../docs/dev/switches.md).
 
 The game renders through `hookshot_vk.dll` (`RX_BACKEND` unset or `vulkan`) instead of the WebGPU renderer in the executable
 (`gpu/render`). `host/rx_backend.c` owns the `rx_*` names the host calls. It loads the DLL, passes it the host

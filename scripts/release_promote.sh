@@ -1,6 +1,6 @@
 #!/bin/bash
 # Promote: a release candidate (v2.1.0-rc.2) published as its version (v2.1.0), the release players get. The Release
-# workflow runs this when it is started by hand (docs/versioning.md, "Promoting a release candidate"). Needs gh, with
+# workflow runs this when it is started by hand (docs/dev/releasing.md, "Promoting a release candidate"). Needs gh, with
 # GH_TOKEN (contents: write) and GH_REPO set.
 #
 #   scripts/release_promote.sh prepare [<rc tag>]   the release candidate (the newest one when not given) checked, its
@@ -86,7 +86,7 @@ prepare() {
     if [[ $draft == false ]]; then
         fail "$tag is already published ($(gh api "repos/$GH_REPO/releases/$id" --jq '"\(.html_url), \(.published_at)"')):" \
             "a version is promoted once. Its record (.release-please-manifest.json and CHANGELOG.md) is made by the" \
-            "Release workflow's record job; see docs/versioning.md, \"When a promotion goes wrong\""
+            "Release workflow's record job; see docs/dev/releasing.md, \"When a promotion goes wrong\""
     fi
     if gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
         # (a promotion run again after a failure: the same tag, and its release still a draft or not made)

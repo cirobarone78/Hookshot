@@ -1,5 +1,5 @@
 # What a Windows player downloads, made without game data: HookshotBuilder-Setup.exe (builder/setup/setup.c, with
-# llvm-mingw) and the Hookshot Builder package (dotnet publish, versioned from the tag as docs/versioning.md says), split
+# llvm-mingw) and the Hookshot Builder package (dotnet publish, versioned from the tag as docs/dev/releasing.md says), split
 # into the parts the setup downloads by scripts/make_setup_parts.py. The Python, emsdk, CPM and wgpu-native parts, and the
 # third_party part's prebuilt files, are the latest release's (scripts/release_parts.py); the CPM part gets dav1d added
 # (the dav1d job) when that release's lacks it. The Windows Vulkan back end is

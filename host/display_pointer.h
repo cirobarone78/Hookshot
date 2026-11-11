@@ -1,5 +1,10 @@
 /* One window-thread sample, consumed by the renderer without querying the window or SDL.
-   The dimensions remain available while inactive/minimized; input is discarded on loss of eligibility. */
+   The dimensions remain available while inactive/minimized; input is discarded on loss of eligibility.
+   Positions and sizes are client-area physical pixels (SDL: scaled from window units before rounding down, so
+   fractional and negative positions survive). A publish merges pending button edges and wheel motion; a take
+   consumes the edges and whole notches once, keeping a fractional notch. The first pending press keeps the
+   position and geometry of its own event until taken. No window or SDL call runs with the lock held. The Insert
+   menu works in swapchain coordinates; the game's own menus read a separate mailbox on Windows. */
 #pragma once
 #include <windows.h>
 #include "../gpu/vk/vk_api.h"
