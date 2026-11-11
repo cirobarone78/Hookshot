@@ -77,9 +77,9 @@ sealed class Runner
     readonly string? ngxSdk;
     readonly int? memoryGb;
     readonly string? ffxSdk;
-    Process? process;
+    volatile Process? process;
     string? error;
-    bool cancelled;
+    volatile bool cancelled;
 
     public event Action<string>? Line;
     public event Action<string?>? Finished;
@@ -144,6 +144,8 @@ sealed class Runner
             {
                 using var p = Process.Start(Info(tools, args, workers, ngxSdk, memoryGb, ffxSdk))!;
                 process = p;
+                // (Cancel pressed while it was starting: it found no process to stop, so it is stopped here)
+                if (cancelled) try { p.Kill(entireProcessTree: true); } catch (Exception) { }
                 p.ErrorDataReceived += (_, e) => { if (e.Data != null) Line?.Invoke(e.Data); };
                 p.BeginErrorReadLine();
                 try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch (Exception) { }

@@ -65,9 +65,11 @@ static class Storage
         new[] { "objcache", "sa", "exefs", "probe", "image", "system_headers.txt", "hot_funcs.txt", "hot_order.txt", "hookshot_pieces.prof", "hookshot.res" }
             .Select(n => Path.Combine(work, n));
 
-    /// The builder versions that stay: the one installed last (current.txt) and the one running
-    static bool Kept(string versionDir)
+    /// The builder versions that stay: the one installed last (current.txt), the one running, and keep's (the release the game
+    /// folder holds now: switched back to an older release, its builder stays, and switching again downloads nothing)
+    static bool Kept(string versionDir, string? keep = null)
     {
+        if (LaunchList.SameTag(Path.GetFileName(versionDir), keep)) return true;
         try
         {
             if (File.ReadAllText(Path.Combine(Base, "versions", "current.txt")).Trim() == Path.GetFileName(versionDir)) return true;
@@ -92,7 +94,7 @@ static class Storage
     /// What Free lets go. afterBuild: what goes once the game is ready, the compiled objects of the build (objcache, which make_game.py
     /// prunes to them) and their system headers' stamp kept, so that the next update compiles only what changed (issue 1287: every
     /// update compiled all ~600 files again, an hour and more). The Free up space button lets those go too
-    static IEnumerable<string> Freeable(bool afterBuild = false)
+    static IEnumerable<string> Freeable(bool afterBuild = false, string? keep = null)
     {
         foreach (var d in afterBuild ? new[] { "sa", "exefs", "probe" } : new[] { "objcache", "sa", "exefs", "probe" })
             if (!(afterBuild && d == "sa" && KeptTranslation(Path.Combine(Work, d))))
@@ -102,7 +104,8 @@ static class Storage
         var versions = Path.Combine(Base, "versions");
         if (Directory.Exists(versions))
             foreach (var v in Directory.EnumerateDirectories(versions))
-                if (!Kept(v)) yield return v;
+                // (<tag>.part: a version the setup is unpacking now, the launcher's engine mode beside a build that just ended)
+                if (!Kept(v, keep) && !v.EndsWith(".part", StringComparison.OrdinalIgnoreCase)) yield return v;
     }
 
     /// Bytes in the builder's folder and the build files folder, and in what Free lets go (an object hard-linked in both sa\build and
@@ -117,15 +120,16 @@ static class Storage
         return (Math.Max(total, freeable), freeable);
     }
 
-    /// Lets go of what Measure counts as freeable; returns the bytes it could not delete (a file in use)
-    public static long Free(bool afterBuild = false)
+    /// Lets go of what Measure counts as freeable; returns the bytes it could not delete (a file in use). keep: a release whose
+    /// builder stays too (Kept)
+    public static long Free(bool afterBuild = false, string? keep = null)
     {
-        foreach (var d in Freeable(afterBuild)) Delete(d);
+        foreach (var d in Freeable(afterBuild, keep)) Delete(d);
         if (!afterBuild) Delete(Path.Combine(Work, "system_headers.txt"));   // (the stamp of the compiled objects' system headers goes with them)
         if (!afterBuild) return Measure().freeable;
         var seen = new HashSet<(uint, ulong)>();   // (what of the after-build set is still there: a file in use)
         long left = 0;
-        foreach (var d in Freeable(afterBuild: true)) left += Size(d, seen);
+        foreach (var d in Freeable(afterBuild: true, keep)) left += Size(d, seen);
         return left;
     }
 

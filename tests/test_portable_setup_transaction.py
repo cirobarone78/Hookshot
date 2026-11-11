@@ -1,4 +1,5 @@
-"""Execute production portable part copying and repair publication over authored directories."""
+"""Execute production portable part copying and repair publication over authored directories, and the launcher's engine mode
+(--engine) reusing a part by links, which leaves the version in use whole in a standard home and a portable one alike."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -32,6 +33,7 @@ def main():
 #include <stdlib.h>
 #include "portable_home.h"
 static HbHome g_home;
+static int g_engine;
 static void fail(const wchar_t *format, ...) { (void)format; exit(90); }
 static const wchar_t *failed_stage;
 static BOOL move_fixture(LPCWSTR from, LPCWSTR to) {
@@ -43,17 +45,18 @@ static BOOL move_fixture(LPCWSTR from, LPCWSTR to) {
     part_end = source.index("} Part;") + len("} Part;")
     code += source[source.rfind("typedef struct", 0, part_end):part_end] + "\n"
     for marker in ("static int home_path(", "static void rmtree(", "static void mkdirs(", "static void read_small(", "static int part_folder(",
-                   "static int copy_part_tree(", "static int publish_install(", "static int reuse_part("):
+                   "static int link_tree(", "static int copy_part_tree(", "static int publish_install(", "static int reuse_part("):
         code += function(source, marker) + "\n"
     code += r'''
 int wmain(int argc, wchar_t **argv) {
     if (argc != 5) return 20;
     int mode = _wtoi(argv[1]);
-    if (mode == 4 || mode == 5) {
+    if (mode == 4 || mode == 5 || mode == 6 || mode == 7) {
         Part part = {0};
         strcpy(part.sha,"authored-checksum"); strcpy(part.dest,"."); strcpy(part.from,"-"); strcpy(part.to,"-");
         strcpy(part.url,"https://invalid.example/HookshotBuilder-python-authored.zip");
-        g_home.portable = mode == 4;
+        g_home.portable = mode == 4 || mode == 7;
+        g_engine = mode == 6 || mode == 7;
         return reuse_part(argv[2],"v-new",&part,argv[3]) == _wtoi(argv[4]) ? 0 : 22;
     }
     if (mode == 2) failed_stage = argv[2];
@@ -112,10 +115,16 @@ int wmain(int argc, wchar_t **argv) {
         assert old.is_dir() and copied_part.read_text() == "original reusable part"
         copied_part.write_text("isolated portable copy")
         assert (old / "keep").read_text() == "original reusable part"
+        # (the launcher's engine mode, beside the version in use: its files linked, in a standard home and a portable one)
+        for mode, name in ((6, "engine.part"), (7, "engine-portable.part")):
+            run(mode, versions, versions / name, 1)
+            linked = versions / name / "HookshotBuilder/tools/python/keep"
+            assert old.is_dir() and linked.read_text() == "original reusable part"
+            assert linked.stat().st_ino == (old / "keep").stat().st_ino and (old / "keep").stat().st_nlink >= 2
         standard_candidate = versions / "standard.part"
         run(5, versions, standard_candidate, 1)
         assert not old.exists() and (standard_candidate / "HookshotBuilder/tools/python/keep").read_text() == "original reusable part"
-        print("portable setup transaction: 9 native scenarios passed; actual part reuse, source preservation, repair rollback")
+        print("portable setup transaction: 11 native scenarios passed; actual part reuse, source preservation, repair rollback, engine links")
 
 
 if __name__ == "__main__":

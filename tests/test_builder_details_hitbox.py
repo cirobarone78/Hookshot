@@ -1,4 +1,4 @@
-"""Hit-test the production WPF building footer offscreen, without starting the Builder or opening a window."""
+"""Hit-test the production WPF row under a build's bar (Show details, Cancel) offscreen, without starting the Builder or opening a window."""
 import argparse
 import json
 import os

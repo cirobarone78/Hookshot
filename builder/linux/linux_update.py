@@ -224,7 +224,7 @@ def game_version(folder):
                 if line.startswith("version="):
                     version = line[8:].strip() or None
                     break
-    except OSError:
+    except (OSError, ValueError):   # (ValueError: a file that is not UTF-8, damaged: no version, as a missing one)
         pass
     return version, kept
 

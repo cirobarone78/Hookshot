@@ -9,6 +9,13 @@
        tag <tag>
        part <sha256> <bytes> <folder under the install> <top folder in the zip to rename, or -> <new name, or -> <url>
        run <the builder, relative to the install>
+
+   --engine --tag <tag> (the launcher, builder/HookshotBuilder/Launcher.cs: a version its player picked that is not on the PC):
+   that release installed beside the others with no window, nothing started and nothing removed. The version in use stays the
+   one in use (versions\current.txt is not written, no other version is pruned), and a part it shares with that version is
+   linked from it, file by file, not moved out of it. What it does is said on stdout, a line each, UTF-8:
+       @@setup <what it is doing>      @@percent <0..100, of the part being downloaded>
+       @@installed <tag>, exit code 0  @@error <why it stopped>, exit code 1
    Build: clang -O2 -mwindows -municode setup.c setup_rc.o -lwinhttp -lbcrypt -lcomctl32 -lshell32 -lole32 -o HookshotBuilder-Setup.exe */
 #define WIN32_LEAN_AND_MEAN
 #ifndef UNICODE
@@ -35,6 +42,8 @@ static wchar_t g_status[512];
 static volatile LONG g_percent = -1;
 static DWORD g_http_status;   /* (the last answer: 0 when the server was not reached) */
 static wchar_t g_cmdline[2048];
+static int g_engine;          /* (--engine: no window, lines on stdout) */
+static HANDLE g_out;
 static HbHome g_home;
 static int g_home_ok;
 /* (RecompLauncher) --cli <make_game.py's options>: no window, the builder's lines on this process's stdout and stderr, its exit code
@@ -84,12 +93,38 @@ static int list_name_ok(const char *s, int path) {
     return 1;
 }
 
+/* (engine mode) a line for the launcher that started this: "<kind> <text>", UTF-8, on stdout */
+static void say(const char *kind, const wchar_t *text) {
+    char line[2400];
+    int n = snprintf(line, 64, "%s ", kind);
+    const int t = WideCharToMultiByte(CP_UTF8, 0, text, -1, line + n, (int)sizeof line - n - 2, NULL, NULL);
+    /* (one line: the launcher reads a line at a time, and a message of several, fail's, kept only its first) */
+    for (int i = n; t > 0 && i < n + t - 1; i++)
+        if (line[i] == '\r' || line[i] == '\n') line[i] = ' ';
+    n += t > 0 ? t - 1 : 0;
+    line[n++] = '\n';
+    DWORD put;
+    WriteFile(g_out, line, (DWORD)n, &put, NULL);
+}
+
 static void status(const wchar_t *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vswprintf(g_status, 512, fmt, ap);
     va_end(ap);
-    PostMessageW(g_win, WM_STATUS, 0, 0);
+    if (g_engine) say("@@setup", g_status);
+    else PostMessageW(g_win, WM_STATUS, 0, 0);
+}
+
+/* how much of the part being downloaded is here (-1: not downloading): the bar, or a line when the number changes */
+static void percent(LONG p) {
+    const LONG was = InterlockedExchange(&g_percent, p);
+    if (!g_engine) PostMessageW(g_win, WM_STATUS, 0, 0);
+    else if (p >= 0 && p != was) {
+        wchar_t n[16];
+        swprintf(n, 16, L"%ld", p);
+        say("@@percent", n);
+    }
 }
 
 static void fail(const wchar_t *fmt, ...) {
@@ -98,6 +133,10 @@ static void fail(const wchar_t *fmt, ...) {
     va_start(ap, fmt);
     vswprintf(msg, 1024, fmt, ap);
     va_end(ap);
+    if (g_engine) {
+        say("@@error", msg);
+        ExitProcess(1);
+    }
     if (g_headless) say_error(msg), ExitProcess(1);
     MessageBoxW(g_win, msg, L"Hookshot Builder setup", MB_OK | MB_ICONERROR);
     PostMessageW(g_win, WM_DONE, 1, 0);
@@ -153,7 +192,7 @@ static int http_get(const char *url8, Sink sink, void *user, unsigned long long 
                 if (!n) break;
                 if (!sink(user, buf, n)) { ok = 0; break; }
                 got += n;
-                if (expect) InterlockedExchange(&g_percent, (LONG)(got * 100 / expect)), PostMessageW(g_win, WM_STATUS, 0, 0);
+                if (expect) percent((LONG)(got * 100 / expect));
             }
             if (expect && got != expect) ok = 0;
         }
@@ -377,6 +416,32 @@ static int part_folder(const Part *p, wchar_t *rel, int n) {
     return 1;
 }
 
+/* (engine mode) A folder made again in another version, its files linked: the two versions hold them on the disk once, and
+   deleting either leaves the other whole. A file that cannot be linked (another drive, a file system without links) is
+   copied. 0: not all of it could be made (a path too long, no room): what was made is removed, and the part is downloaded.
+   So nothing may write a part's file in place: it would change the other version's too. Nothing does: the parts are compilers,
+   Python, headers and libraries, only read; Python's bytecode caches are written to a new file and renamed over (importlib),
+   which replaces this version's link alone; emsdk is used for its clang only, never emcc and its cache */
+static int link_tree(const wchar_t *from, const wchar_t *to) {
+    enum { LONG_PATH = 1024 };
+    wchar_t pat[LONG_PATH], a[LONG_PATH], b[LONG_PATH];
+    WIN32_FIND_DATAW fd;
+    if (!CreateDirectoryW(to, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return 0;
+    if (swprintf(pat, LONG_PATH, L"%ls\\*", from) < 0) return 0;
+    HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    int ok = 1;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+        if (swprintf(a, LONG_PATH, L"%ls\\%ls", from, fd.cFileName) < 0 || swprintf(b, LONG_PATH, L"%ls\\%ls", to, fd.cFileName) < 0) ok = 0;
+        else if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ok = 0;   /* (a link to somewhere else: not followed) */
+        else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ok = link_tree(a, b);
+        else ok = CreateHardLinkW(b, a, NULL) || CopyFileW(a, b, TRUE);
+    } while (ok && FindNextFileW(h, &fd));
+    FindClose(h);
+    return ok;
+}
+
 /* (players asked for less in %LOCALAPPDATA%: the downloaded zips are not kept beside the unpacked version any more. So that an update
    still downloads only what changed, a part whose checksum the installed version lists in its parts.txt (and whose folder it has)
    is moved over from it instead of downloaded: that version is deleted after the install anyway) */
@@ -441,6 +506,11 @@ static int reuse_part(const wchar_t *versions, const char *tag, const Part *p, c
     wcscpy(parent, to);
     wchar_t *slash = wcsrchr(parent, L'\\');
     if (slash) *slash = 0, mkdirs(parent);
+    if (g_engine) {   /* (the installed version keeps its folder, in a portable home too: this one gets its files, linked) */
+        if (link_tree(from, to)) return 1;
+        rmtree(to);
+        return 0;
+    }
     if (!g_home.portable) return MoveFileW(from, to) != 0;
     if (copy_part_tree(from, to)) return 1;
     rmtree(to);   /* only this attempt's derived part destination, never the source */
@@ -666,6 +736,14 @@ static const char *manifest_url(void) {
     return u;
 }
 
+/* (a part's link is https. One exception, for trying installs without GitHub (tests/builder_launcher/rig): a list that
+   HOOKSHOT_SETUP_LIST took from this PC itself may name parts on this PC too. A list from anywhere else never can) */
+static int part_url_ok(const char *url) {
+    static const char here[] = "http://127.0.0.1:";
+    if (!_strnicmp(url, "https://", 8)) return 1;
+    return !strncmp(manifest_url(), here, sizeof here - 1) && !strncmp(url, here, sizeof here - 1);
+}
+
 static DWORD WINAPI work(LPVOID unused) {
     (void)unused;
     /* (--repair, from the builder's Repair button: every part checked again and the version unpacked anew, after the builder that
@@ -683,7 +761,14 @@ static DWORD WINAPI work(LPVOID unused) {
     home_path(downloads, L"%ls\\downloads", base);
     mkdirs(downloads);
 
-    status(L"Looking for the latest Hookshot Builder...");
+    wchar_t looking[200];
+    {
+        char want[128];
+        wanted_tag(want, sizeof want);
+        if (want[0]) swprintf(looking, 200, L"Looking for the Hookshot Builder of %hs...", want);
+        else wcscpy(looking, L"Looking for the latest Hookshot Builder...");
+    }
+    status(L"%ls", looking);
     Mem man = {0};
     /* (tried again on a server error or no answer: GitHub's release downloads answered 504 for an hour, 2026-11-08, and every
        start failed at once) */
@@ -696,7 +781,7 @@ static DWORD WINAPI work(LPVOID unused) {
         if (attempt) {
             status(L"GitHub didn't answer (%lu). Trying again in %d s...", g_http_status, waits[attempt - 1]);
             Sleep(waits[attempt - 1] * 1000);
-            status(L"Looking for the latest Hookshot Builder...");
+            status(L"%ls", looking);
         }
         free(man.p);
         man = (Mem){0};
@@ -712,6 +797,7 @@ static DWORD WINAPI work(LPVOID unused) {
         }
         if (!ok && !retryable(g_http_status)) break;   /* (404 and the like: trying again changes nothing) */
     }
+    if (!ok && g_engine && g_http_status == 404) fail(L"That release has no builder to download (it holds no setup files).");
     if (!ok)
         fail(g_http_status == 404
                  ? L"The latest Hookshot release has no setup files yet. Download HookshotBuilder.zip from the releases page for now: "
@@ -736,7 +822,7 @@ static DWORD WINAPI work(LPVOID unused) {
         int bad = !list_name_ok(tag, 0) || !list_name_ok(run, 1);
         for (int i = 0; i < nparts && !bad; i++) {
             const Part *p = &parts[i];
-            bad = strlen(p->sha) != 64 || strspn(p->sha, "0123456789abcdef") != 64 || _strnicmp(p->url, "https://", 8) ||
+            bad = strlen(p->sha) != 64 || strspn(p->sha, "0123456789abcdef") != 64 || !part_url_ok(p->url) ||
                   (strcmp(p->dest, ".") && !list_name_ok(p->dest, 1)) || (strcmp(p->from, "-") && !list_name_ok(p->from, 0)) ||
                   (strcmp(p->to, "-") && !list_name_ok(p->to, 0));
         }
@@ -761,6 +847,13 @@ static DWORD WINAPI work(LPVOID unused) {
     home_path(marker, L"%ls\\installed.txt", install);
     home_path(exe, L"%ls\\%ls", install, wrun);
     for (wchar_t *q = exe; *q; q++) if (*q == L'/') *q = L'\\';
+    if (g_engine) {   /* (never over the version in use: installing unpacks into its place) */
+        wchar_t cur[MAX_PATH];
+        char now[128];
+        swprintf(cur, MAX_PATH, L"%ls\\current.txt", versions);
+        read_small(cur, now, sizeof now);
+        if (!strcmp(now, tag)) fail(L"%ls is the version in use: it is not installed again beside itself.", wtag);
+    }
 
     if (repair || GetFileAttributesW(marker) == INVALID_FILE_ATTRIBUTES || !builder_ready(exe)) {
         /* (unpacked into <tag>.part and renamed once complete: a setup stopped half way never leaves a version that looks installed) */
@@ -807,7 +900,7 @@ static DWORD WINAPI work(LPVOID unused) {
                     BCryptFinishHash(fs.h, d, 32, 0);
                     BCryptDestroyHash(fs.h);
                     BCryptCloseAlgorithmProvider(a, 0);
-                    InterlockedExchange(&g_percent, -1);
+                    percent(-1);
                     hex(d, 32, have);
                     /* (a download cut off half way answered 200 and stopped the tries at once: only a definite no stops them) */
                     if (!got && !retryable(g_http_status)) break;
@@ -882,6 +975,11 @@ static DWORD WINAPI work(LPVOID unused) {
         home_path(have_list, L"%ls\\parts.txt", final_dir);
         if (GetFileAttributesW(have_list) == INVALID_FILE_ATTRIBUTES) write_parts(final_dir, parts, nparts);
     }
+    if (g_engine) {   /* (beside the others: nothing pruned, no version made the current one, nothing started) */
+        rmtree(downloads);
+        say("@@installed", wtag);
+        ExitProcess(0);
+    }
     prune(versions, downloads, tag, parts, nparts);
     rmtree(downloads);   /* (installed: its zips are not kept; an update moves unchanged folders over instead, reuse_part) */
 
@@ -925,7 +1023,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
-/* (launch mode) "Hookshot Launcher.exe" in a game folder (nx2/make_game.py puts this file there under that name): the installed
+/* (launch mode) hookshot.exe in a game folder (nx2/make_game.py puts this file there under that name): the installed
    builder opened as the game's launcher (--launch <that folder>: Play, and Update when a newer release is out), at once, with no
    window, download or network of its own. With no builder installed yet, the setup runs as usual and then opens the launcher. */
 static int launch_installed(const wchar_t *args) {
@@ -983,6 +1081,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
     {
         const wchar_t *c = g_cmdline;
         while (*c == L' ') c++;
+        /* (the launcher's: no window; work() ends the process itself, and says @@error when the Builder home it was given
+           (HOOKSHOT_SETUP_BASE, HOOKSHOT_BUILDER_PORTABLE: BuilderHome.PassTo) is not one. First on the line, as --cli's
+           options are make_game.py's) */
+        if (!wcsncmp(c, L"--engine", 8) && (c[8] == L' ' || !c[8])) {
+            g_engine = 1;
+            g_out = GetStdHandle(STD_OUTPUT_HANDLE);
+            g_home_ok = init_home(0);
+            work(NULL);
+            return 1;
+        }
         if (!wcsncmp(c, L"--play", 6) && (c[6] == L' ' || !c[6])) return play_folder(c + 6);
         if (!wcsncmp(c, L"--cli", 5) && (c[5] == L' ' || !c[5])) g_headless = 1, show = SW_HIDE;
     }

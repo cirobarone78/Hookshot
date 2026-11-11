@@ -30,7 +30,38 @@ public partial class App : Application
             Environment.Exit(Cli(e.Args.Skip(1).ToList()));
             return;
         }
+        // (a mistake of the window's own, in a handler that runs on its own (async void): written down and said, and the window
+        // stays, rather than closing with no word and the hidden programs of a build still running)
+        DispatcherUnhandledException += (_, x) =>
+        {
+            var file = WriteError(x.Exception);
+            x.Handled = true;
+            if (Environment.GetEnvironmentVariable("HOOKSHOT_UI_SHOT") is { Length: > 0 }) return;   // (development: no box, off the screen)
+            MessageBox.Show($"Something went wrong in Hookshot Builder: {x.Exception.Message}" +
+                            (file != null ? $"\n\nThe details are in {file}." : ""), "Hookshot", MessageBoxButton.OK, MessageBoxImage.Error);
+        };
+        TaskScheduler.UnobservedTaskException += (_, x) =>
+        {
+            WriteError(x.Exception);
+            x.SetObserved();
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, x) => { if (x.ExceptionObject is Exception ex) WriteError(ex); };   // (only written: it cannot be stopped)
         base.OnStartup(e);
+    }
+
+    /// (launcher-error.txt beside the versions, appended; started again once it is over 256 KB). The file, or null when it could
+    /// not be written
+    static string? WriteError(Exception e)
+    {
+        try
+        {
+            var file = Path.Combine(Storage.Base, "launcher-error.txt");
+            Directory.CreateDirectory(Storage.Base);
+            if (File.Exists(file) && new FileInfo(file).Length > 256 << 10) File.Delete(file);
+            File.AppendAllText(file, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} Hookshot Builder {Tools.Find()?.Version ?? "(source)"}\n{e}\n\n");
+            return file;
+        }
+        catch (Exception) { return null; }
     }
 
     static int Cli(List<string> args)

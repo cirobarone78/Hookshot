@@ -140,24 +140,26 @@ class PythonBuilder(unittest.TestCase):
 
 
 class WindowsBuilder(unittest.TestCase):
+    # (the C# builder is the launcher now, builder/HookshotBuilder/Launcher.cs: an update runs from it and goes back to it)
+    LAUNCHER = (ROOT / "builder" / "HookshotBuilder" / "Launcher.cs").read_text(encoding="utf-8")
+
     def test_back_and_cancel_go_through_one_function(self):
-        self.assertIn("void Back(object sender, RoutedEventArgs e) => ToFiles();", MAIN)
+        self.assertIn("void Back(object sender, RoutedEventArgs e) => BackFromBuild();", MAIN)
         ended = block(MAIN, "void Ended(string? failure)")
         cancelled = ended[ended.index('if (failure == "cancelled")'):]
-        self.assertIn("ToFiles();", cancelled[:cancelled.index("return;")])
-        self.assertEqual(MAIN.count("ShowPage(FilesPage);"), 1)   # (no other way back to it)
+        self.assertIn("BackFromBuild();", cancelled[:cancelled.index("return;")])
 
-    def test_it_lets_the_button_go_and_sets_the_page_up(self):
-        to_files = block(MAIN, "async void ToFiles()")
-        self.assertIn("if (BuildButton == null || updating || runner != null) return;", block(MAIN, "void RefreshMode()"))
-        order = ["ShowPage(FilesPage);", "if (!updating) return;", "updating = false;", "if (!filesReady)", "filesReady = true;",
-                 "var folder = OutPath.Text;", "Finder.FindDumps", "ApplySettings();", "OutPath.Text = folder;", "FillDumps();",
-                 "CheckAll();", "latestTag ??=", "Refresh();"]
-        at = [to_files.index(part) for part in order]
+    def test_an_update_goes_back_to_the_launcher_which_offers_it_again(self):
+        back = block(MAIN, "void BackFromBuild()")
+        order = ["if (updating && File.Exists(GameExe(OutPath.Text)))", "EnterLauncher(OutPath.Text);", "return;", "updating = false;"]
+        at = [back.index(part) for part in order]
         self.assertEqual(at, sorted(at))
-        start = block(MAIN, "async void Start()")
-        self.assertLess(start.index("FillDumps();"), start.index("filesReady = true;"))
-        self.assertLess(start.index("filesReady = true;"), start.index("ShowMain();", start.index("FillDumps();")))
+        # (the launcher lets the update go, lists the releases and asks GitHub for them when it has not yet: Update is offered
+        # again, with no restart)
+        enter = block(self.LAUNCHER, "void EnterLauncher(string folder")
+        order = ["launchFolder = folder;", "updating = false;", "ShowFace(Face.Launcher);", "FillChoices();", "CheckReleases(say: false)"]
+        at = [enter.index(part) for part in order]
+        self.assertEqual(at, sorted(at))
 
 
 if __name__ == "__main__":

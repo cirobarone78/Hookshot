@@ -48,6 +48,13 @@ printf '%s
 ' "$VERSION" > "$T/VERSION"   # (no git history in here: nx2/version.py reads the release name from it)
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
 cp -a builder/linux "$T/builder/"
+# (the launcher's fonts, kept once in the repository beside the Windows builders that use them: Marcellus for Play's word,
+# Inter for its lines and Inter SemiBold for its buttons' words, each with its licence. builder/linux/hookshot_launcher.py
+# reads them from here)
+mkdir -p "$T/builder/linux/launcher/fonts"
+cp builder/HookshotBuilder/Fonts/Marcellus-Regular.ttf builder/HookshotBuilder/Fonts/Marcellus-LICENSE.txt \
+   builder/py/hookshot_builder/assets/Fonts/Inter-Regular.ttf builder/py/hookshot_builder/assets/Fonts/Inter-SemiBold.ttf \
+   builder/py/hookshot_builder/assets/Fonts/Inter-LICENSE.txt "$T/builder/linux/launcher/fonts/"
 cp -a gpu/render/*.h "$T/gpu/render/"
 # (every gpu/vk header the host's sources include: v2.0.6 shipped without oot_cheat_items.h and no Linux build finished, issue 990.
 # tests/test_appimage_headers.py checks that this covers what host/ includes)

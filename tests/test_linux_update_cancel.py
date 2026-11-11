@@ -213,9 +213,14 @@ class Window:
             startup_manifest=lambda root, get=None, tag=None: SimpleNamespace(tag=manifest_tag), install=install,
             fetch_bytes=linux_update.fetch_bytes, game_version=lambda folder: (tools,), older_version=lambda new, old: False)
         scope = {"os": SimpleNamespace(killpg=lambda pid, sig: self.killed.append(pid)), "signal": SimpleNamespace(SIGTERM=15),
-                 "linux_update": update, "queue": queue,
+                 "linux_update": update, "queue": queue, "traceback": __import__("traceback"),
                  "threading": SimpleNamespace(Thread=lambda target, daemon: SimpleNamespace(start=lambda: self.threads.append(target)))}
         self.cancel_, self.begin_update_, self.pump_ = method("cancel", scope), method("begin_update", scope), method("pump", scope)
+        # (pump hands each line to message_in, which acts on it)
+        self.message_in_ = method("message_in", scope)
+
+    def message_in(self, kind, v):
+        self.message_in_(self, kind, v)
 
     def show_progress(self, title):
         self.shown.append(("page", title))

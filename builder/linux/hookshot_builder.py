@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 from tkinter import filedialog, messagebox, ttk
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -449,12 +450,22 @@ class Builder(tk.Tk):
         self.time_text = tk.StringVar()
         self.page = None
         self.build_button = None
+        self.launcher = None
+        # The launcher's one screen (hookshot_launcher.py) is the window whenever it can be drawn: a game folder's launcher,
+        # an update of one, and the build itself. The pages below are what is left without it (a Python with no numpy), and
+        # the builder's own update, which has no game folder.
         if update is not None:
-            self.after(200, self.begin_update)
+            if update and self.open_launcher(update):
+                self.after(200, lambda: self.launcher.start_update(tag, fetched))
+            else:
+                self.after(200, self.begin_update)
         elif launch:
             self.show_launch(launch)
         else:
-            self.show_form()
+            # (the launcher of the game built last, or the build's choices on its screen when there is none yet)
+            last = self.cfg.get("out", "")
+            if not self.open_launcher(last if game_ready(last) else ""):
+                self.show_form()
             self.after(200, self.lookup_latest)
         self.after(100, self.pump)
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -914,9 +925,17 @@ class Builder(tk.Tk):
         args = ["--nup", self.nup.get()] if self.kind.get() == "nup" else ["--exefs", self.exefs.get()]
         self.check_text.set("Checking the game version...")
 
+        # (development) HOOKSHOT_MAKE_GAME=<script>: that instead of make_game.py, as the launcher's build takes it
+        make = os.environ.get("HOOKSHOT_MAKE_GAME") or os.path.join(ROOT, "nx2", "make_game.py")
+
         def run():
-            r = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--check"] + args,
-                               capture_output=True, text=True, cwd=ROOT)
+            # (make_game.py writes UTF-8 whatever the locale; a check that cannot run says so, not "Checking..." for good)
+            try:
+                r = subprocess.run([sys.executable, "-I", make, "--check"] + args,
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=ROOT)
+            except OSError as e:
+                self.lines.put(("check", "The version could not be checked: %s" % e))
+                return
             said = []
             for l in r.stdout.splitlines():
                 t = make_game.reported(l)
@@ -1004,7 +1023,28 @@ class Builder(tk.Tk):
         if hasattr(self, "launch_update"):
             self.launch_update.pack(side="right", padx=self.px(4)) if show else self.launch_update.pack_forget()
 
+    def open_launcher(self, folder):
+        """The launcher's screen (hookshot_launcher.py: the Windows launcher's, drawn with numpy) on that game folder; with no
+        folder, or none that holds a game, on the build's choices. False: it cannot be drawn here (a checkout run by a
+        Python that has no numpy)."""
+        try:
+            import hookshot_launcher
+        except ImportError:
+            return False
+        if self.page:
+            self.page.destroy()
+        self.title("Hookshot")
+        self.build_button = None
+        self.launch_folder = folder
+        self.launcher = hookshot_launcher.Launcher(self, folder)
+        self.page = self.launcher.canvas
+        return True
+
     def show_launch(self, folder):
+        if not self.open_launcher(folder):
+            self.show_launch_plain(folder)
+
+    def show_launch_plain(self, folder):
         if self.page:
             self.page.destroy()
         self.title("Hookshot")
@@ -1252,38 +1292,50 @@ class Builder(tk.Tk):
             self.after(1000, self.tick)
 
     def pump(self):
+        # (each message on its own: one that raises is printed, and the ones after it, and the next pump, still come. Before,
+        # an exception here ended the loop for good and the window stopped hearing anything)
         try:
             while True:
                 kind, v = self.lines.get_nowait()
-                if kind == "check":
-                    self.check_text.set(v)
-                elif kind == "latest":
-                    self.latest = v or None
-                    self.apply_mode()
-                elif kind == "note":
-                    if hasattr(self, "stage_text") and not self.stop_update.is_set():
-                        self.stage_text.set(v)
-                elif kind == "do-build":
-                    if self.stop_update.is_set():   # (Cancel after the thread's last look at it: no make_game.py)
-                        self.lines.put(("update-error", str(linux_update.Cancelled())))
-                    else:
-                        self.start_make_update(v)
-                elif kind == "update-error":
-                    if hasattr(self, "stage_text"):
-                        self.stage_text.set(v + " Your game folder is unchanged.")
-                    if hasattr(self, "buttons"):
-                        for widget in self.buttons.winfo_children():
-                            widget.destroy()
-                        ttk.Button(self.buttons, text="Back", command=self.show_form, cursor="hand2").pack(side="right", padx=self.px(4))
-                    if hasattr(self, "stage_label"):
-                        self.stage_label.configure(style="Bad.Stage.TLabel")
-                elif kind == "line":
-                    self.on_line(v)
-                elif kind == "exit":
-                    self.on_exit(v)
+                try:
+                    self.message_in(kind, v)
+                except Exception:
+                    traceback.print_exc()
         except queue.Empty:
             pass
-        self.after(100, self.pump)
+        finally:
+            self.after(100, self.pump)
+
+    def message_in(self, kind, v):
+        if kind == "check":
+            self.check_text.set(v)
+        elif kind == "latest":
+            self.latest = v or None
+            self.apply_mode()
+        elif kind == "launcher":   # (GitHub's releases, for the launcher's screen)
+            if self.launcher is not None:
+                self.launcher.message(v)
+        elif kind == "note":
+            if hasattr(self, "stage_text") and not self.stop_update.is_set():
+                self.stage_text.set(v)
+        elif kind == "do-build":
+            if self.stop_update.is_set():   # (Cancel after the thread's last look at it: no make_game.py)
+                self.lines.put(("update-error", str(linux_update.Cancelled())))
+            else:
+                self.start_make_update(v)
+        elif kind == "update-error":
+            if hasattr(self, "stage_text"):
+                self.stage_text.set(v + " Your game folder is unchanged.")
+            if hasattr(self, "buttons"):
+                for widget in self.buttons.winfo_children():
+                    widget.destroy()
+                ttk.Button(self.buttons, text="Back", command=self.show_form, cursor="hand2").pack(side="right", padx=self.px(4))
+            if hasattr(self, "stage_label"):
+                self.stage_label.configure(style="Bad.Stage.TLabel")
+        elif kind == "line":
+            self.on_line(v)
+        elif kind == "exit":
+            self.on_exit(v)
 
     def on_line(self, line):
         if line.startswith("@@stage "):
