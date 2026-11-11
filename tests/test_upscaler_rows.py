@@ -140,6 +140,10 @@ def main():
     upscale = function(temporal, "bool temporal_upscale(")
     if "(fsr_flip ? 8 : 0)" not in upscale or "f.depth_reversed = fsr_flip;" not in upscale:
         raise SystemExit("temporal_upscale reverses the depth without saying so in the frame (TemporalFrame::depth_reversed)")
+    # DLSS Frame Generation (NGX) copies the chain's depth: it must hand NGX the depth convention the frame says
+    dlss = (ROOT / "gpu" / "vk" / "vk_dlss.cpp").read_text(encoding="utf-8")
+    if "g.depth_reversed = f.depth_reversed;" not in dlss or "o.depthInverted = g.depth_reversed;" not in dlss:
+        raise SystemExit("DLSS Frame Generation tells NGX the chain's depth is not reversed while FSR 3.1 reverses it")
     chosen = function(temporal, "bool temporal_env_chosen() {")
     if "dlss_why() == DLSS_OK" not in chosen or "fsr4_why() == FSR_OK" not in chosen:
         raise SystemExit("temporal_env_chosen: a switch for an engine that cannot run here leaves the game's own, not the saved FSR 3.1")
