@@ -869,8 +869,11 @@ def main():
     costs = chunk_costs(gen)
     srcs.sort(key=lambda s: -compile_cost(s, costs))
     # (hookshot) code_hot.c, the lift's hot functions together (A64_HOT_FUNCS + A64_HOT_CHUNK=1): at RX_HOT_OPT
-    # (default O2), so the hot callees inline into their hot callers
-    hot_fl = [("-" + os.environ.get("RX_HOT_OPT", "O2")) if f == "-" + a.opt else f for f in fl]
+    # (default O2), so the hot callees inline into their hot callers. No loop unrolling: with the profile it unrolled the guest's
+    # loops inside the giant functions and the eight pieces took the longest of the cold compile (the longest piece 261 -> 216 s
+    # alone, 912 -> 425 s on a loaded 6-core build; the whole hot set 4547 -> 2807 s of CPU there), and the game ran as fast
+    # without it (Kokiri Forest, 62.8/64.8 fps with it, 65.1/65.2 without)
+    hot_fl = [("-" + os.environ.get("RX_HOT_OPT", "O2")) if f == "-" + a.opt else f for f in fl] + ["-fno-unroll-loops"]
     # (hookshot) RX_PGO=gen: code_hot.c counts its branches (host/pgo_rt.c writes them; -O1 builds much sooner, and the counters are
     # placed before the optimiser, so a profile from it fits the -O2 build). RX_PGO=<merged .prof>: built with that profile
     if PGO == "gen":
