@@ -1,6 +1,8 @@
 // jobs_wait (gpu/vk/vk_jobs.cpp): a waited-for job still in the queue runs on the waiting thread at once, instead of after
 // every job queued before it. Built against stand-ins for the renderer's headers (tests/test_jobs_wait_runs_queued.py).
 #include "vk_jobs.h"
+#include "vk_internal.h"   // fixture logging stand-in
+#include "vk_compile_threads.h"
 
 #include <atomic>
 #include <chrono>
@@ -45,9 +47,10 @@ int main() {
     std::vector<std::atomic<bool>> holds_done(workers);
     for (unsigned i = 0; i < workers; i++)
         jobs_push([&holds_done, i] { hold(); holds_done[i].store(true); jobs_notify(); }, false, &holds_done[i]);
+    const unsigned expected = compile_worker_count(std::clamp(std::thread::hardware_concurrency() / 3, 2u, 4u));
     const auto t0 = std::chrono::steady_clock::now();
-    while (held.load() < 2 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5)) std::this_thread::yield();
-    expect(held.load() >= 2, "the workers took the holding jobs");
+    while (held.load() < (int)expected && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5)) std::this_thread::yield();
+    expect(held.load() == (int)expected, "every physical-core-budgeted worker took a holding job");
 
     std::atomic<bool> ready{false};
     std::thread::id ran_on{};

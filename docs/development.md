@@ -146,6 +146,13 @@ case-sensitive, and an unknown one is ignored.
 
 ### The GPU
 
+Shader and pipeline compiler pools are capped by physical CPU cores, within their existing affinity-aware budgets
+and smaller stage limits. This reduces concurrent compiler work and can use less memory, at the cost of longer preparation.
+Linux counts cores among the calling thread's allowed CPUs; Windows counts core records across processor groups and
+honors process affinity on single-group systems. If topology is unavailable, the previous pool budget is kept and a warning
+is logged once. A missing Linux CPU record is counted separately when other records are readable. Cache readers keep their
+usable logical-CPU budget. The OS schedules these workers; the graphics driver can start threads of its own.
+
 | Switch | What it does |
 |---|---|
 | `RX_VK_VALIDATION` (set) | The Khronos validation layer |
@@ -155,6 +162,7 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_SKIP_PROG=<prefix>,...` | Leaves out the draws of these programs (default `53509044401d78d2`; `-` leaves out none) |
 | `RX_VK_PIPE_SKIP=0`, `1` or `2` | Default/`1`: wait for shader translation; a pending pipeline can be skipped only for attachment-only draws whose targets hold an earlier frame. `0`: wait for every pipeline too. `2`: restore the old skip for untranslated draws with persistent targets; this can omit writes before the shader is known. Translated memory-writing draws still wait |
 | `RX_VK_PRECOMPILE=0` or `1` | The shader preparation before the title off or on (on in builds made with `RX_RELEASE=1`, as the builders' are) |
+| `RX_VK_COMPILE_LOGICAL=1` | Use the existing usable logical-CPU budgets instead of the physical-core cap; each pool keeps its smaller stage limit |
 | `RX_VK_TASK_MESH_FALLBACK=0` or `1` | Task + mesh draws through the compute fallback (1) or the driver's mesh shaders (0). By default the fallback is on for AMD's Navi 21 and Navi 22 on Windows (RX 6800, 6800 XT, 6900 XT, 6950 XT, 6700 XT), where the native path timed out the driver (issue 996) |
 | `RX_VK_DRIVER_FAULTS=0` or `2` | 0: programs the driver's compiler faulted on are asked of it again. By default they are left out for the rest of the run and, through `hookshot_driver_faults.txt` beside the executable, on later runs with the same driver, and on AMD one program's builds go to the driver one at a time (issue 996). 2: one at a time on every driver |
 | `RX_VK_NO_PROGRAM_CACHE` (set) | Neither reads nor writes `hookshot_programs.bin` and the pipeline notes |

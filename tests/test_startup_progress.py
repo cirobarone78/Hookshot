@@ -180,13 +180,13 @@ def main():
         body = body[:body.index("\n}\n")]
         if body.count("prepare_stopped()") < 2:
             raise SystemExit(fn + " does not stop its workers and its wait when the window is closed")
-    # the predicted pipelines are built in the preparation, all of them, unless RX_VK_PREDICT_S sets a budget; on every CPU
+    # Every predicted pipeline is prepared unless RX_VK_PREDICT_S sets a budget; cap the usable CPU budget by physical cores.
     predict = draw[draw.index("void predict_run("):]
     predict = predict[:predict.index("\n}\n")]
     if 'getenv("RX_VK_PREDICT_S") ? atoi(getenv("RX_VK_PREDICT_S")) : 0;' not in predict:
         raise SystemExit("predict_run has a time budget by default: the predicted pipelines past it are built in play")
-    if "THREAD_PRIORITY_BELOW_NORMAL" in predict or "cpus / 2" in predict:
-        raise SystemExit("predict_run builds on half the CPUs or below normal priority: nothing else runs before the game")
+    if "THREAD_PRIORITY_BELOW_NORMAL" in predict or "cpus / 2" in predict or "compile_worker_count(std::min(cpus, 64u))" not in predict:
+        raise SystemExit("predict_run must cap its usable CPU budget at normal priority before the game")
     for need in ("prepare_guess(", "bar.at(", "st.whole"):
         if need not in screen:
             raise SystemExit("the start-up screen's bar does not count every part from the start (" + need + ")")

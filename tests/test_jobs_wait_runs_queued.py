@@ -18,11 +18,17 @@ STUB_INTERNAL = """#pragma once
 #include <cstdlib>
 #include <functional>
 #include <thread>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
 using HANDLE = void*;
 constexpr int THREAD_PRIORITY_BELOW_NORMAL = -1;
 inline HANDLE GetCurrentThread() { return nullptr; }
 inline int SetThreadPriority(HANDLE, int) { return 1; }
 inline long SetThreadDescription(HANDLE, const wchar_t*) { return 0; }
+#endif
 namespace mkwvk {
 inline void logf(const char*, ...) {}
 }
@@ -57,7 +63,7 @@ def main():
     check_source()
     with tempfile.TemporaryDirectory(prefix="jobs-wait-") as tmp:
         tmp = Path(tmp)
-        for name in ("vk_jobs.cpp", "vk_jobs.h"):
+        for name in ("vk_jobs.cpp", "vk_jobs.h", "vk_compile_threads.h"):
             shutil.copy(ROOT / "gpu/vk" / name, tmp / name)
         (tmp / "vk_internal.h").write_text(STUB_INTERNAL, encoding="utf-8")
         (tmp / "vk_draw.h").write_text(STUB_DRAW, encoding="utf-8")

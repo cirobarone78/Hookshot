@@ -82,7 +82,7 @@ std::string predict_pending_path() {
 }
 void predicted_sample_write(const std::vector<std::unique_ptr<PipeNote>>&) {}
 void driver_cache_log(const char*) {}
-unsigned usable_cpus() { return std::max(1u, std::thread::hardware_concurrency()); }
+unsigned usable_cpus() { return 4; }   // synthetic driver scenarios use four workers on every host
 inline uint64_t mix(uint64_t h, uint64_t v) { return (h ^ v) * 0x100000001b3ull; }
 struct { uintptr_t device = 1; } dev;
 thread_local bool driver_cache_only = false;
@@ -107,6 +107,9 @@ void logf(const char* f, ...) {
     logged += "\n";
 }
 bool prepare_stopped() { return false; }
+// A deterministic pool for the synthetic driver scenarios, independent of host topology. The real physical-core
+// detector and budget helper are exercised by test_compile_threads.py.
+unsigned compile_worker_count(unsigned limit) { return std::min(4u, limit); }
 int driver_faults() { return faults.load(); }
 void prepare_left_workers_note() { left_noted = true; }
 void prepare_progress_log(const char*, size_t, size_t, std::chrono::steady_clock::time_point, std::chrono::steady_clock::time_point&) {}
@@ -178,7 +181,7 @@ int main(int argc, char** argv) {
         CHECK(logged.find("gone on without the pipelines the driver did not finish") != std::string::npos);
         CHECK(left_noted);
         CHECK(secs < 20);
-        if (mode == 1 && std::thread::hardware_concurrency() > 1)   // (only the stuck program's left: its first, if it was first)
+        if (mode == 1)   // (four fixture workers: only the stuck program's left; its first, if it was first)
             CHECK(built >= all - per_program && built <= all - per_program + 1);
         std::fflush(stdout);
         std::_Exit(0);   // (its workers are still in the "driver")

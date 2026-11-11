@@ -1,5 +1,7 @@
 // Exercise the real job queues without a GPU or game, including a waiting draw stealing its job.
 #include "vk_jobs.h"
+#include "vk_internal.h"   // fixture logging stand-in
+#include "vk_compile_threads.h"
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -47,7 +49,8 @@ int main(int argc, char** argv) {
             ++held;
             while (!release.load()) std::this_thread::sleep_for(1ms);
         });
-        check(until([&] { return held.load() >= 2; }), "workers started");
+        const unsigned expected = compile_worker_count(std::clamp(std::thread::hardware_concurrency() / 3, 2u, 4u));
+        check(until([&] { return held.load() == (int)expected; }), "every physical-core-budgeted worker started");
     }
     std::atomic<bool> started{false}, ready{false}, waiting_done{false};
     int failure_calls = 0;

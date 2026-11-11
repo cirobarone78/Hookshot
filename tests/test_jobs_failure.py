@@ -73,7 +73,7 @@ def main():
     stubs = runpy.run_path(str(ROOT / "tests/test_jobs_wait_runs_queued.py"))
     with tempfile.TemporaryDirectory(prefix="jobs-failure-") as folder:
         folder = Path(folder)
-        for name in ("vk_jobs.cpp", "vk_jobs.h"):
+        for name in ("vk_jobs.cpp", "vk_jobs.h", "vk_compile_threads.h"):
             shutil.copy(ROOT / "gpu/vk" / name, folder / name)
         (folder / "vk_internal.h").write_text(stubs["STUB_INTERNAL"], encoding="utf-8")
         (folder / "vk_draw.h").write_text(stubs["STUB_DRAW"], encoding="utf-8")

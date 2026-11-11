@@ -46,6 +46,7 @@
 #include "vk_dump.h"
 #include "vk_gprof.h"
 #include "vk_jobs.h"
+#include "vk_compile_threads.h"
 #include "vk_shader.h"
 #include "vk_texture.h"
 #include "movie_upscale_policy.h"
@@ -1683,7 +1684,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
         }
     };
     std::vector<std::thread> threads;
-    for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(worker);
+    for (unsigned i = 0; i < compile_worker_count(std::clamp(half_cpus(), 1u, 32u)); i++) threads.emplace_back(worker);
     for (std::thread& t : threads) t.join();
     // then each pipeline, noted as a draw would note it
     std::unordered_set<uint64_t> keys;
@@ -1725,7 +1726,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
         }
     };
     threads.clear();
-    for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(variant_worker);
+    for (unsigned i = 0; i < compile_worker_count(std::clamp(half_cpus(), 1u, 32u)); i++) threads.emplace_back(variant_worker);
     for (std::thread& t : threads) t.join();
     size_t noted_n = 0, no_variant = 0, noted_mesh = 0, noted_fallback = 0;
     auto s = std::make_unique<NvnState>();
@@ -7718,7 +7719,7 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
         }
     };
     std::vector<std::thread> threads;
-    for (unsigned i = 0; i < std::clamp(half_cpus(), 1u, 32u); i++) threads.emplace_back(worker);
+    for (unsigned i = 0; i < compile_worker_count(std::clamp(half_cpus(), 1u, 32u)); i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load(), total);
         Sleep(100);
@@ -7892,7 +7893,8 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     const unsigned cpus = usable_cpus();
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     const unsigned quarter = std::clamp(std::max(1u, std::thread::hardware_concurrency()) / 4, 2u, 4u);
-    const unsigned workers = background ? std::min(quarter, cpus) : std::clamp(half_cpus(), 1u, 32u);
+    const unsigned workers = compile_worker_count(background ? std::min(quarter, cpus) : std::clamp(half_cpus(), 1u, 32u));
+    logf("vk: shader preparation on %u workers", workers);
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
@@ -8082,7 +8084,9 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     };
     std::vector<std::thread> threads;
     const unsigned cpus = usable_cpus();
-    for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
+    const unsigned workers = compile_worker_count(std::min(cpus, 64u));
+    logf("vk: noted pipelines on %u workers", workers);
+    for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     static const int stall_s = getenv("RX_VK_PRECOMPILE_STALL_S") ? atoi(getenv("RX_VK_PRECOMPILE_STALL_S")) : 30;
     size_t last_done = 0;
     auto last_change = std::chrono::steady_clock::now();
@@ -8275,7 +8279,9 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     const int faults_before = driver_faults();
     std::vector<std::thread> threads;
     const unsigned cpus = usable_cpus();
-    for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
+    const unsigned workers = compile_worker_count(std::min(cpus, 64u));
+    logf("vk: predicted pipelines on %u workers", workers);
+    for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     // (hookshot) Nothing finished for this long, on any worker (each pipeline counts as it finishes): the run goes on, the stuck
     // workers left in the driver, the rest of the predicted pipelines built in play when first drawn. When:
     // - the driver faulted in this run (driver_faults: caught, and a driver can stop answering after one): wherever the run is;

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "vk_jobs.h"
+#include "vk_compile_threads.h"
 #include "vk_internal.h"
 #include "vk_draw.h"   // (ub_thread_off)
 
@@ -73,7 +74,7 @@ void worker() {
 }
 
 void start() {
-    const unsigned n = std::clamp(std::thread::hardware_concurrency() / 3, 2u, 4u);
+    const unsigned n = compile_worker_count(std::clamp(std::thread::hardware_concurrency() / 3, 2u, 4u));
     for (unsigned i = 0; i < n; i++) std::thread(worker).detach();
     started = true;
     logf("vk: %u background workers (shader translation, pipelines)", n);
