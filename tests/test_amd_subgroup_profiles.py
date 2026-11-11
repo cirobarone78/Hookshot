@@ -63,7 +63,14 @@ int main(int argc, char** argv) {
     dev.subgroup_max = number(2);
     dev.sg32_stages = number(3);
     dev.driver_id = number(4);
+    // (storage buffers bound and translated at 16 bytes at least: AMD's 4 made the 8- and 16-byte vector views inexact)
+    for (const uint64_t device : {uint64_t{4}, uint64_t{16}, uint64_t{64}}) {
+        dev.props.limits.minStorageBufferOffsetAlignment = device;
+        assert(storage_binding_align() == std::max<uint64_t>(device, 16));
+    }
+    dev.props.limits.minStorageBufferOffsetAlignment = 4;
     check(profile(), number(5));
+    assert(profile().min_ssbo_alignment == 16);
     check(profile_graphics(VK_SHADER_STAGE_VERTEX_BIT), number(6));
     check(profile_graphics(VK_SHADER_STAGE_FRAGMENT_BIT), number(7));
     check(profile_pinned(), number(8));
@@ -109,7 +116,9 @@ void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
     assert(added);
 }
 '''
-    fixture = (FIXTURE + section(shader, "Shader::Profile make_profile(", "Shader::HostTranslateInfo host_info()")
+    internal = (VK / "vk_internal.h").read_text(encoding="utf-8")
+    fixture = (FIXTURE + section(internal, "inline uint64_t storage_binding_align()", "/// A range of guest memory")
+               + section(shader, "Shader::Profile make_profile(", "Shader::HostTranslateInfo host_info()")
                + section(shader, "const Shader::Profile& profile()", "const std::vector<Code>& codes_of(")
                + section(warp, "Id HostThreadId(", "Id GuestLane(")
                + section(warp, "bool UseShuffleFallback(", "Id ShuffleAbsolute(") + check_stamp + CASES)

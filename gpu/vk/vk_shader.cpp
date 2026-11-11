@@ -569,7 +569,7 @@ Shader::Profile make_profile() {
     // (RX_VK_FRAG_SHUFFLE_FALLBACK=0 or 1, a test: the fragment stages' shuffles native or through broadcasts, whatever the
     // driver; in the cache's stamp)
     if (const char* e = getenv("RX_VK_FRAG_SHUFFLE_FALLBACK")) p.has_broken_spirv_fragment_shuffle = e[0] == '1';
-    p.min_ssbo_alignment = dev.props.limits.minStorageBufferOffsetAlignment;
+    p.min_ssbo_alignment = storage_binding_align();   // (at least 16: vk_internal.h)
     return p;
 }
 
@@ -583,7 +583,7 @@ Shader::HostTranslateInfo host_info() {
     h.needs_demote_reorder = false;
     h.support_snorm_render_buffer = true;
     h.support_viewport_index_layer = true;
-    h.min_ssbo_alignment = dev.props.limits.minStorageBufferOffsetAlignment;
+    h.min_ssbo_alignment = storage_binding_align();
     h.support_geometry_shader_passthrough = false;
     h.support_conditional_barrier = true;   // (barriers in loops kept: see the WebGPU renderer's 4f5e3e6)
     return h;
