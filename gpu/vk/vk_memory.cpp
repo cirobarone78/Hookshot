@@ -1515,6 +1515,9 @@ std::unique_ptr<Capture> capture_make() {
 // ~2150-draw scene), so those pages are copied again by the replay, before it uses this capture, once the submission is
 // done: the replay waits instead, while the game goes on. RX_VK_CAPTURE_WAIT=1: the game's thread waits, 0: no wait
     if (n > 0) {
+        // Default 2: mark late exposure pages and let the replay wait (game thread keeps going). Mode 0 skips
+        // the wait and causes one-frame exposure flashes / strobing light (photosensitivity hazard). Mode 1
+        // waits on the game thread. Never default to 0 for performance.
         static const int cap_wait = getenv("RX_VK_CAPTURE_WAIT") ? atoi(getenv("RX_VK_CAPTURE_WAIT")) : 2;
         uint64_t v = 0;
         if (cap_wait) {
@@ -2747,11 +2750,13 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         // tens of MB of culling lists and per-frame buffers through the GPU that the CPU never reads; copying them
         // back was most of a submit's memory sync (issue 384: 68 MB a frame, 7 ms of the GPU's time, and
         // RX_VK_NO_WRITEBACK took an RTX 4080 from 45 to 57 fps). Small results the CPU does read (the exposure
-        // meter and the like) stay copied. 0 or unset: every written binding, as before.
+        // meter and the like) stay copied. Unset defaults to 1024 KB (readme: Hyrule Field 45-48 -> 59-60 fps).
+        // RX_VK_WB_MAX_KB=0: every written binding, as before.
         static const uint64_t wb_max = [] {
             const char* e = getenv("RX_VK_WB_MAX_KB");
-            const uint64_t kb = e ? (uint64_t)std::max(0, atoi(e)) : 0;
+            const uint64_t kb = e ? (uint64_t)std::max(0, atoi(e)) : 1024;
             if (kb) logf("vk: write-backs only of written bindings up to %llu KB (RX_VK_WB_MAX_KB)", (unsigned long long)kb);
+            else logf("vk: write-backs of every written binding (RX_VK_WB_MAX_KB=0)");
             return kb << 10;
         }();
         if (!wb_max || size <= wb_max)

@@ -24,10 +24,12 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <map>
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <tuple>
 #include <unordered_set>
@@ -226,9 +228,380 @@ std::unordered_map<const Texture*, uint64_t> remade;   // (made again: how many 
 uint64_t evicted_key(uint64_t gpu, uint32_t w, uint32_t h, uint32_t fmt) {
     return gpu ^ ((uint64_t)w << 48) ^ ((uint64_t)h << 32) ^ ((uint64_t)fmt << 20);
 }
+// Huge BC3 arrays (terrain ~213 MB): pin by storage identity across Texture remakes. Per-object
+// bc3_hit_frame was lost when the image was destroyed and created again (#326 → #5793), so the
+// same pair was re-uploaded for 240–600 ms and FPS fell back to ~12.
+std::unordered_map<uint64_t, uint64_t> huge_bc3_pin;   // key -> frame pinned
+uint64_t huge_bc3_key(const Texture& tex) {
+    return evicted_key(tex.gpu, tex.width, tex.height, tex.nvn_format) ^ ((uint64_t)tex.layers << 8) ^
+           ((uint64_t)tex.levels << 20);
+}
+void huge_bc3_pin_hit(const Texture& tex, uint64_t nbytes) {
+    if (nbytes < (32ull << 20) && tex.bytes < (32ull << 20)) return;
+    huge_bc3_pin[huge_bc3_key(tex)] = frame_no;
+    if (huge_bc3_pin.size() > 32) {   // keep only the newest pins
+        uint64_t oldest = frame_no;
+        uint64_t old_k = 0;
+        for (const auto& kv : huge_bc3_pin)
+            if (kv.second < oldest) oldest = kv.second, old_k = kv.first;
+        if (old_k) huge_bc3_pin.erase(old_k);
+    }
+}
+bool huge_bc3_is_pinned(const Texture& tex) {
+    auto it = huge_bc3_pin.find(huge_bc3_key(tex));
+    return it != huge_bc3_pin.end() && frame_no - it->second < 1800;   // ~30 s at 60 fps
+}
+/// Bytes reserved so medium materials cannot push the two terrain arrays out of the create budget.
+/// IMPORTANT: once terrain is pinned it is already inside total_bytes. Subtracting reserve again
+/// made every medium create fail (log: cache 1340 MB, cap 960 MB) → missing textures + ASTC remake storms on camera turns.
+uint64_t huge_bc3_reserve() {
+    if (!huge_bc3_pin.empty()) return 0;   // live terrain already counted in total_bytes
+    // Before the first outdoor pin: leave room for two ~213 MB arrays so a material spam cannot steal the slot.
+    return 440ull << 20;
+}
 bool remade_log_on() {
     static const bool on = getenv("RX_VK_LOG_REMADE") && atoi(getenv("RX_VK_LOG_REMADE")) != 0;
     return on;
+}
+
+// (hookshot) Present draw count → light UI (pause/map). While low, the scene's uploaded ASTC must stay resident: with a
+// 1.8 GB budget the open world sits over it, so a few seconds unused in a menu used to retire ~2 GB and remake it on close
+// (uploads of 200+ ms). RX_VK_LIGHT_UI_DRAWS=<n> (600), RX_VK_MENU_KEEP=0: off. Leaving the UI raises the upload budget
+// briefly (RX_VK_UPLOAD_BURST_FRAMES / RX_VK_UPLOAD_BURST_MS) so any remakes still catch up without stacking hitches.
+std::atomic<int64_t> present_draws_atom{2000};
+std::atomic<int> light_ui_frames_atom{0};
+std::atomic<int> load_ui_frames_atom{0};
+std::atomic<bool> load_barrier_on{false};
+/// SSD prebake: hold gameplay budgets until the current load's BC3 is on disk (RX_VK_PREBAKE).
+std::atomic<bool> prebake_on{false};
+/// Load screen seen — prebake_on only starts when there is real BC3 work (avoids 0 MB on/off thrash).
+std::atomic<bool> prebake_armed{false};
+/// frame_no until which new prebake must not start (after complete / empty abort).
+std::atomic<uint64_t> prebake_cooldown_until{0};
+std::atomic<int> upload_burst_left{0};
+int64_t light_ui_draw_thresh() {
+    static const int64_t t =
+        getenv("RX_VK_LIGHT_UI_DRAWS") ? (int64_t)std::max(0, atoi(getenv("RX_VK_LIGHT_UI_DRAWS"))) : 600;
+    return t;
+}
+/// Area-change loading screens sit far below pause-menu draw counts (often <100). Used as a preload barrier.
+int64_t load_ui_draw_thresh() {
+    static const int64_t t =
+        getenv("RX_VK_LOAD_UI_DRAWS") ? (int64_t)std::max(0, atoi(getenv("RX_VK_LOAD_UI_DRAWS"))) : 100;
+    return t;
+}
+/// RX_VK_PREBAKE=0 off; =1 on; unset: on for <=4.5 GB cards (SSD GPU-ready cache before hitchy gameplay).
+bool prebake_enabled() {
+    static const int v = [] {
+        if (const char* e = getenv("RX_VK_PREBAKE")) return atoi(e);
+        uint64_t used = 0, allowed = 0;
+        return (vram_usage(&used, &allowed) && allowed && allowed <= (4608ull << 20)) ? 1 : 0;
+    }();
+    return v != 0;
+}
+bool prebake_hold_enabled() {
+    static const int v = getenv("RX_VK_PREBAKE_HOLD") ? atoi(getenv("RX_VK_PREBAKE_HOLD")) : 1;
+    return v != 0;
+}
+bool area_load_barrier() {
+    return load_barrier_on.load(std::memory_order_relaxed) || prebake_on.load(std::memory_order_relaxed);
+}
+bool prebake_in_cooldown() {
+    return frame_no < prebake_cooldown_until.load(std::memory_order_relaxed);
+}
+void prebake_set_cooldown(uint64_t frames) {
+    prebake_cooldown_until.store(frame_no + frames, std::memory_order_relaxed);
+}
+/// Start prebake only when armed and not cooling down. Returns true if this call turned it on.
+bool prebake_try_begin(const char* why) {
+    if (!prebake_enabled() || !prebake_armed.load(std::memory_order_relaxed) || prebake_in_cooldown()) return false;
+    if (prebake_on.exchange(true, std::memory_order_relaxed)) return false;
+    load_barrier_on.store(true, std::memory_order_relaxed);
+    static const int load_burst =
+        getenv("RX_VK_LOAD_BURST_FRAMES") ? std::max(0, atoi(getenv("RX_VK_LOAD_BURST_FRAMES"))) : 600;
+    if (load_burst)
+        upload_burst_left.store(std::max(upload_burst_left.load(std::memory_order_relaxed), load_burst),
+                                std::memory_order_relaxed);
+    logf("vk: SSD prebake on (%s): translate ASTC→BC3 to disk before gameplay", why ? why : "work");
+    return true;
+}
+
+// (hookshot) SSD cold tier for uploaded ASTC guest blobs. The GPU can only sample from VRAM (or system RAM over PCIe):
+// the SSD cannot replace AVRAM for "everything live". What it can do is hold cold scene data so VRAM keeps the hot set,
+// and a remake staging-fills from a sequential SSD read (often already in the OS page cache) instead of faulting guest
+// pages. ASTC→BC3 still runs on remake — that decode, not the SSD, is the hitch. RX_VK_TEX_DISK=0 off; =1 or unset on
+// <=4.5 GB: %LOCALAPPDATA%\Hookshot\texcache; =path: that folder. RX_VK_TEX_DISK_MB=<n> (30720 = 30 GB on low VRAM).
+uint64_t tex_disk_key(uint64_t gpu, uint32_t w, uint32_t h, uint32_t fmt, uint64_t guest_size) {
+    return evicted_key(gpu, w, h, fmt) ^ (guest_size * 0x9e3779b97f4a7c15ULL);
+}
+std::atomic<int64_t> tex_disk_hits{0}, tex_disk_misses{0}, tex_disk_stored{0}, tex_disk_hit_bytes{0};
+const std::string& tex_disk_root() {
+    static const std::string root = []() -> std::string {
+        const char* e = getenv("RX_VK_TEX_DISK");
+        if (e && (!e[0] || strcmp(e, "0") == 0)) return {};
+        if (e && strcmp(e, "1") != 0) {
+            CreateDirectoryA(e, nullptr);
+            return std::string(e);
+        }
+        uint64_t used = 0, allowed = 0;
+        const bool low = vram_usage(&used, &allowed) && allowed && allowed <= (4608ull << 20);
+        if (!e && !low) return {};
+        char base[MAX_PATH];
+        const DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", base, MAX_PATH);
+        if (!n || n >= MAX_PATH) return {};
+        const std::string hook = std::string(base) + "\\Hookshot";
+        const std::string dir = hook + "\\texcache";
+        CreateDirectoryA(hook.c_str(), nullptr);
+        CreateDirectoryA(dir.c_str(), nullptr);
+        return dir;
+    }();
+    return root;
+}
+uint64_t tex_disk_max_bytes() {
+    // 30 GB default on low-VRAM boxes: BC3 terrain arrays are ~200 MB each; a long session fills several GB of cold tier.
+    static const uint64_t v =
+        (uint64_t)(getenv("RX_VK_TEX_DISK_MB") ? std::max(0ll, atoll(getenv("RX_VK_TEX_DISK_MB"))) : 30720) << 20;
+    return v;
+}
+std::string tex_disk_path(uint64_t key, uint64_t size) {
+    char name[96];
+    snprintf(name, sizeof name, "\\%016llx_%llu.astc", (unsigned long long)key, (unsigned long long)size);
+    return tex_disk_root() + name;
+}
+bool tex_disk_exists(uint64_t key, uint64_t size) {
+    if (tex_disk_root().empty() || size < (256ull << 10)) return false;
+    const DWORD a = GetFileAttributesA(tex_disk_path(key, size).c_str());
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+void tex_disk_trim(uint64_t max_bytes) {
+    namespace fs = std::filesystem;
+    const std::string& root = tex_disk_root();
+    if (root.empty() || !max_bytes) return;
+    std::error_code ec;
+    std::vector<std::pair<fs::file_time_type, fs::path>> files;
+    uint64_t total = 0;
+    for (const auto& ent : fs::directory_iterator(root, ec)) {
+        if (ec || !ent.is_regular_file(ec)) continue;
+        const auto sz = (uint64_t)ent.file_size(ec);
+        if (ec) continue;
+        total += sz;
+        files.push_back({ent.last_write_time(ec), ent.path()});
+    }
+    if (total <= max_bytes) return;
+    std::sort(files.begin(), files.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (const auto& [t, p] : files) {
+        if (total <= max_bytes) break;
+        std::error_code e2;
+        const auto sz = (uint64_t)fs::file_size(p, e2);
+        if (!e2 && fs::remove(p, e2)) total -= sz;
+        (void)t;
+    }
+}
+bool tex_disk_load(uint64_t key, uint64_t size, uint8_t* dst) {
+    if (tex_disk_root().empty() || !dst || size < (256ull << 10) || size > (96ull << 20)) return false;
+    const std::string path = tex_disk_path(key, size);
+    // SEQUENTIAL_SCAN + Windows file cache: chipset/NVMe SSDs refill staging in one pass; hot files stay in RAM.
+    const HANDLE h =
+        CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        tex_disk_misses.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    LARGE_INTEGER sz{};
+    if (!GetFileSizeEx(h, &sz) || (uint64_t)sz.QuadPart != size) {
+        CloseHandle(h);
+        tex_disk_misses.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    DWORD got = 0;
+    const BOOL ok = ReadFile(h, dst, (DWORD)size, &got, nullptr);
+    CloseHandle(h);
+    if (ok && got == (DWORD)size) {
+        tex_disk_hits.fetch_add(1, std::memory_order_relaxed);
+        tex_disk_hit_bytes.fetch_add((int64_t)size, std::memory_order_relaxed);
+        return true;
+    }
+    tex_disk_misses.fetch_add(1, std::memory_order_relaxed);
+    return false;
+}
+void tex_disk_store_async(uint64_t key, uint64_t size, std::vector<uint8_t>&& bytes) {
+    if (tex_disk_root().empty() || bytes.size() != size) return;
+    const uint64_t max_bytes = tex_disk_max_bytes();
+    if (!max_bytes) return;
+    if (tex_disk_exists(key, size)) return;   // already cold-tiered
+    const std::string path = tex_disk_path(key, size);
+    auto* held = new std::vector<uint8_t>(std::move(bytes));
+    jobs_push([held, path, max_bytes] {
+        const HANDLE h = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD put = 0;
+            WriteFile(h, held->data(), (DWORD)held->size(), &put, nullptr);
+            CloseHandle(h);
+            tex_disk_stored.fetch_add(1, std::memory_order_relaxed);
+            if (tex_disk_stored.load(std::memory_order_relaxed) % 40 == 0) tex_disk_trim(max_bytes);
+        }
+        delete held;
+    });
+}
+const uint8_t* guest_bytes(uint64_t gpu, uint64_t n, std::vector<uint8_t>& scratch);
+/// Copy guest ASTC into the SSD cold tier (first upload and/or eviction). Remakes prefer this over cold guest pages.
+void tex_disk_save(const Texture& tex) {
+    if (!tex.astc || tex.gpu_written || tex_disk_root().empty()) return;
+    if (tex.guest_size < (256ull << 10) || tex.guest_size > (64ull << 20)) return;
+    const uint64_t key = tex_disk_key(tex.gpu, tex.width, tex.height, tex.nvn_format, tex.guest_size);
+    if (tex_disk_exists(key, tex.guest_size)) return;
+    std::vector<uint8_t> scratch, bytes(tex.guest_size);
+    const uint8_t* src = guest_bytes(tex.gpu, tex.guest_size, scratch);
+    if (!src) return;
+    std::memcpy(bytes.data(), src, tex.guest_size);
+    tex_disk_store_async(key, tex.guest_size, std::move(bytes));
+}
+void tex_disk_evict_save(const Texture& tex) { tex_disk_save(tex); }
+
+// (hookshot) BC3-ready SSD tier: after ASTC→BC3 once, the linear BC3 blocks live on disk. Remakes CopyBufferToImage
+// and skip the GPU ASTC decode (the 56 MB terrain arrays that cost 70-110 ms). RX_VK_BC3_DISK=0: off (default on with
+// TEX_DISK). Built during area-load barriers / when VRAM retires a BC3 image.
+std::atomic<int64_t> bc3_disk_hits{0}, bc3_disk_stored{0}, bc3_disk_hit_bytes{0};
+
+void tex_disk_log_stats() {
+    if (tex_disk_root().empty()) return;
+    const int64_t h = tex_disk_hits.load(std::memory_order_relaxed);
+    const int64_t m = tex_disk_misses.load(std::memory_order_relaxed);
+    const int64_t s = tex_disk_stored.load(std::memory_order_relaxed);
+    const int64_t hb = tex_disk_hit_bytes.load(std::memory_order_relaxed);
+    if (!(h | m | s | bc3_disk_hits.load(std::memory_order_relaxed) | bc3_disk_stored.load(std::memory_order_relaxed)))
+        return;
+    const int64_t bh = bc3_disk_hits.load(std::memory_order_relaxed);
+    const int64_t bs = bc3_disk_stored.load(std::memory_order_relaxed);
+    const int64_t bb = bc3_disk_hit_bytes.load(std::memory_order_relaxed);
+    logf("vk: SSD texcache: %lld ASTC hits (%.1f MB), %lld misses, %lld stored; %lld BC3 hits (%.1f MB), %lld BC3 "
+         "stored (cap %llu MB%s)",
+         (long long)h, hb / 1048576.0, (long long)m, (long long)s, (long long)bh, bb / 1048576.0, (long long)bs,
+         (unsigned long long)(tex_disk_max_bytes() >> 20),
+         prebake_on.load(std::memory_order_relaxed) ? ", SSD prebake"
+         : area_load_barrier()                      ? ", load barrier"
+                                                      : "");
+}
+bool bc3_disk_on() {
+    if (tex_disk_root().empty()) return false;
+    if (const char* e = getenv("RX_VK_BC3_DISK")) return atoi(e) != 0;
+    return true;
+}
+uint64_t bc3_linear_bytes(const Texture& tex) {
+    uint64_t n = 0;
+    for (uint32_t level = 0; level < tex.levels; level++) {
+        const uint32_t w = std::max(1u, tex.width >> level), h = std::max(1u, tex.height >> level);
+        n += (uint64_t)((w + 3) / 4) * ((h + 3) / 4) * 16ull * tex.layers;
+    }
+    return n;
+}
+uint64_t bc3_disk_key(const Texture& tex) {
+    return tex_disk_key(tex.gpu, tex.width, tex.height, tex.nvn_format, tex.guest_size) ^
+           ((uint64_t)tex.levels << 40) ^ ((uint64_t)tex.layers << 24) ^ (tex.bc_resized ? 0x9e3779b9ull : 0);
+}
+std::string bc3_disk_path(uint64_t key, uint64_t size) {
+    char name[96];
+    snprintf(name, sizeof name, "\\%016llx_%llu.bc3", (unsigned long long)key, (unsigned long long)size);
+    return tex_disk_root() + name;
+}
+bool bc3_disk_exists(uint64_t key, uint64_t size) {
+    if (!bc3_disk_on() || size < (64ull << 10)) return false;
+    const DWORD a = GetFileAttributesA(bc3_disk_path(key, size).c_str());
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+bool bc3_disk_load(uint64_t key, uint64_t size, uint8_t* dst) {
+    // 256 MB: OoT terrain material arrays are ~213 MB BC3 (1365x1365x90); 96 MB excluded them and forced ASTC remakes.
+    if (!bc3_disk_on() || !dst || size < (64ull << 10) || size > (256ull << 20)) return false;
+    const HANDLE h = CreateFileA(bc3_disk_path(key, size).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                 FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER sz{};
+    if (!GetFileSizeEx(h, &sz) || (uint64_t)sz.QuadPart != size) {
+        CloseHandle(h);
+        return false;
+    }
+    DWORD got = 0;
+    const BOOL ok = ReadFile(h, dst, (DWORD)size, &got, nullptr);
+    CloseHandle(h);
+    if (ok && got == (DWORD)size) {
+        bc3_disk_hits.fetch_add(1, std::memory_order_relaxed);
+        bc3_disk_hit_bytes.fetch_add((int64_t)size, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+/// Write BC3 bytes to the SSD cache immediately. Eviction used the async path and remakes raced the job —
+/// menu close then ASTC-decoded from stale guest memory (wrong clothing/scene colours, full reload hitch).
+bool bc3_disk_store_sync(uint64_t key, uint64_t size, const uint8_t* data) {
+    if (!bc3_disk_on() || !data || !size) return false;
+    if (bc3_disk_exists(key, size)) return true;
+    // WriteFile DWORD limit — BC3 dumps are capped at 256 MB, but guard anyway (pass 2).
+    if (size > 0x7fffffffULL) return false;
+    const uint64_t max_bytes = tex_disk_max_bytes();
+    if (!max_bytes) return false;
+    const std::string path = bc3_disk_path(key, size);
+    const std::string tmp = path + ".tmp";
+    const HANDLE h = CreateFileA(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD put = 0;
+    const BOOL ok = WriteFile(h, data, (DWORD)size, &put, nullptr);
+    CloseHandle(h);
+    if (!ok || put != (DWORD)size) {
+        DeleteFileA(tmp.c_str());
+        return false;
+    }
+    // Atomic replace: remakes must never see a half-written .bc3 (wrong colours).
+    DeleteFileA(path.c_str());
+    if (!MoveFileA(tmp.c_str(), path.c_str())) {
+        DeleteFileA(tmp.c_str());
+        return false;
+    }
+    bc3_disk_stored.fetch_add(1, std::memory_order_relaxed);
+    if (bc3_disk_stored.load(std::memory_order_relaxed) % 20 == 0) tex_disk_trim(max_bytes);
+    return true;
+}
+void bc3_disk_store_async(uint64_t key, uint64_t size, std::vector<uint8_t>&& bytes) {
+    if (!bc3_disk_on() || bytes.size() != size || bc3_disk_exists(key, size)) return;
+    const uint64_t max_bytes = tex_disk_max_bytes();
+    if (!max_bytes) return;
+    // Pass 2: sync write up to 16 MB (clothes/props/most scene mats). Larger terrain stays async +
+    // eviction refuses destroy until the file exists.
+    if (size <= (16ull << 20)) {
+        bc3_disk_store_sync(key, size, bytes.data());
+        return;
+    }
+    const std::string path = bc3_disk_path(key, size);
+    auto* held = new std::vector<uint8_t>(std::move(bytes));
+    jobs_push([held, path, max_bytes] {
+        const HANDLE h = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD put = 0;
+            WriteFile(h, held->data(), (DWORD)held->size(), &put, nullptr);
+            CloseHandle(h);
+            bc3_disk_stored.fetch_add(1, std::memory_order_relaxed);
+            if (bc3_disk_stored.load(std::memory_order_relaxed) % 20 == 0) tex_disk_trim(max_bytes);
+        }
+        delete held;
+    });
+}
+struct Bc3DumpReq {
+    uint32_t id = 0;
+    uint64_t gpu = 0, key = 0, bytes = 0, ready = 0;
+};
+std::mutex bc3_dump_mu;
+std::deque<Bc3DumpReq> bc3_dump_q;
+void bc3_dump_request(const Texture& tex, uint64_t ready_value) {
+    if (!tex.bc || !tex.image || !bc3_disk_on()) return;
+    const uint64_t nbytes = bc3_linear_bytes(tex);
+    if (nbytes < (64ull << 10) || nbytes > (256ull << 20)) return;
+    const uint64_t key = bc3_disk_key(tex);
+    if (bc3_disk_exists(key, nbytes)) return;
+    std::lock_guard lk(bc3_dump_mu);
+    for (const Bc3DumpReq& r : bc3_dump_q)
+        if (r.key == key) return;
+    if (bc3_dump_q.size() > 48) bc3_dump_q.pop_front();
+    bc3_dump_q.push_back({tex.id, tex.gpu, key, nbytes, ready_value});
 }
 // (hookshot) Textures uploaded from the game's memory (never drawn by the GPU) that the budget evicted: storage, size and format.
 // Made again, such a texture is uploaded from that memory whatever ranges render targets once took over it (upload's "storage
@@ -277,11 +650,22 @@ std::unordered_map<uint64_t, std::vector<Pooled>> target_pool;   // by pool_key_
 uint64_t pool_bytes, pool_n, st_pool_reused, st_pool_made, st_pool_destroyed;
 bool pool_pressed;   // (VRAM near what the driver allows: texture_frame's budget)
 bool compact_on() {   // (hookshot, RX_VK_COMPACT=1: the textures in a pool of their own, compacted: compact_step)
-    static const bool v = getenv("RX_VK_COMPACT") && atoi(getenv("RX_VK_COMPACT")) != 0;
-    return v;
+    // Unset: on for cards whose driver allows <= 4.5 GB (4 GB laptop GPUs). RX_VK_COMPACT=0 forces off.
+    static const int v = [] {
+        if (const char* e = getenv("RX_VK_COMPACT")) return atoi(e) != 0 ? 1 : 0;
+        return -1;
+    }();
+    if (v >= 0) return v != 0;
+    uint64_t used = 0, allowed = 0;
+    return vram_usage(&used, &allowed) && allowed && allowed <= (4608ull << 20);
 }
 uint64_t pool_cap() {
-    static const uint64_t mb = getenv("RX_VK_TARGET_POOL_MB") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_TARGET_POOL_MB"))) : 256;
+    // 4 GB cards: a smaller idle RT pool; the old 256 MB default sat on top of an already tight budget.
+    static const uint64_t mb = []() -> uint64_t {
+        if (const char* e = getenv("RX_VK_TARGET_POOL_MB")) return (uint64_t)std::max(0, atoi(e));
+        uint64_t used = 0, allowed = 0;
+        return (vram_usage(&used, &allowed) && allowed && allowed <= (4608ull << 20)) ? 96 : 256;
+    }();
     return mb << 20;
 }
 uint64_t pool_key_of(const VkImageCreateInfo& ci) {
@@ -419,6 +803,61 @@ uint64_t completed_value = 0;
 std::map<uint64_t, std::pair<uint64_t, uint64_t>> gpu_wrote;
 std::mutex gpu_wrote_mu;
 }  // namespace
+void texture_note_present_draws(int64_t draws) {
+    present_draws_atom.store(draws, std::memory_order_relaxed);
+    // Area load / black screens: raise upload budget. Prebake is only ARMED here — prebake_on starts when real
+    // BC3 work appears (encode / dump queue). Boot UI with 1–2 draws and 0 textures used to thrash
+    // on/complete 0 MB hundreds of times (log 12:09).
+    const int64_t load_thresh = load_ui_draw_thresh();
+    static const int load_burst =
+        getenv("RX_VK_LOAD_BURST_FRAMES") ? std::max(0, atoi(getenv("RX_VK_LOAD_BURST_FRAMES"))) : 600;
+    if (load_thresh > 0 && draws >= 0 && draws < load_thresh) {
+        const int n = load_ui_frames_atom.fetch_add(1, std::memory_order_relaxed) + 1;
+        // Longer arm window: ignore brief 1-draw blinks; need a real loading stretch.
+        if (n >= 20) {
+            const bool was_off = !load_barrier_on.exchange(true, std::memory_order_relaxed);
+            if (prebake_enabled()) prebake_armed.store(true, std::memory_order_relaxed);
+            if (was_off) {
+                if (load_burst)
+                    upload_burst_left.store(std::max(upload_burst_left.load(std::memory_order_relaxed), load_burst),
+                                            std::memory_order_relaxed);
+                logf("vk: area load barrier on (%lld draws/present): higher upload budget for the next region's textures",
+                     (long long)draws);
+            }
+        }
+    } else {
+        // Draws rose — hold only while an active prebake still has work. Otherwise clear arm + barrier.
+        if (prebake_enabled() && prebake_hold_enabled() && prebake_on.load(std::memory_order_relaxed)) {
+            load_barrier_on.store(true, std::memory_order_relaxed);
+            if (load_burst)
+                upload_burst_left.store(std::max(upload_burst_left.load(std::memory_order_relaxed), load_burst / 2),
+                                        std::memory_order_relaxed);
+        } else {
+            prebake_armed.store(false, std::memory_order_relaxed);
+            if (load_barrier_on.exchange(false, std::memory_order_relaxed)) {
+                static const int after =
+                    getenv("RX_VK_UPLOAD_BURST_FRAMES") ? std::max(0, atoi(getenv("RX_VK_UPLOAD_BURST_FRAMES"))) : 300;
+                if (after)
+                    upload_burst_left.store(std::max(upload_burst_left.load(std::memory_order_relaxed), after),
+                                            std::memory_order_relaxed);
+                logf("vk: area load barrier off — catch-up burst %d presents", after);
+            }
+            load_ui_frames_atom.store(0, std::memory_order_relaxed);
+        }
+    }
+    const int64_t thresh = light_ui_draw_thresh();
+    if (thresh > 0 && draws >= 0 && draws < thresh) {
+        light_ui_frames_atom.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const int was = light_ui_frames_atom.exchange(0, std::memory_order_relaxed);
+    if (was >= 20) {
+        static const int burst =
+            getenv("RX_VK_UPLOAD_BURST_FRAMES") ? std::max(0, atoi(getenv("RX_VK_UPLOAD_BURST_FRAMES"))) : 120;
+        if (burst) upload_burst_left.store(std::max(upload_burst_left.load(std::memory_order_relaxed), burst),
+                                           std::memory_order_relaxed);
+    }
+}
 bool gpu_wrote_into(Texture& tex);
 namespace {
 Staging staging(uint64_t n, uint64_t align = 256) {
@@ -938,12 +1377,91 @@ VkImageView astc_level_view(Texture* tex, uint32_t level, uint32_t layer) {
 /// (hookshot) why the last upload_astc_gpu on this thread failed, for the log of a BC3 image left to be tried again
 thread_local const char* astc_fail = nullptr;
 
+/// Remake a BC3 image from the SSD BC3 tier: CopyBufferToImage only — no ASTC decode / BC encode.
+/// Chunked staging (16 MB): a single 214 MB arena alloc used to fail on 4 GB cards and fall back to a 300-700 ms
+/// ASTC remake of the terrain arrays even when the .bc3 file was already on disk.
+bool upload_bc3_from_disk(Texture& tex, const Ranges* dirty) {
+    if (!tex.bc || dirty || !tex.image || !bc3_disk_on()) return false;
+    const uint64_t nbytes = bc3_linear_bytes(tex);
+    if (nbytes < (64ull << 10) || nbytes > (256ull << 20)) return false;
+    const uint64_t key = bc3_disk_key(tex);
+    const std::string path = bc3_disk_path(key, nbytes);
+    const HANDLE file =
+        CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER sz{};
+    if (!GetFileSizeEx(file, &sz) || (uint64_t)sz.QuadPart != nbytes) {
+        CloseHandle(file);
+        return false;
+    }
+    const HANDLE mapping = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (!mapping) {
+        CloseHandle(file);
+        return false;
+    }
+    const uint8_t* view = (const uint8_t*)MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+    if (!view) {
+        CloseHandle(mapping);
+        CloseHandle(file);
+        return false;
+    }
+
+    constexpr uint64_t kChunk = 16ull << 20;
+    VkCommandBuffer cmd = upload_cmd();
+    full_barrier(cmd);
+    uint64_t file_at = 0;
+    bool ok = true;
+    for (uint32_t level = 0; level < tex.levels && ok; level++) {
+        const uint32_t w = std::max(1u, tex.width >> level), h = std::max(1u, tex.height >> level);
+        const uint64_t layer_bytes = (uint64_t)((w + 3) / 4) * ((h + 3) / 4) * 16ull;
+        if (!layer_bytes) continue;
+        const uint32_t layers_per = (uint32_t)std::max<uint64_t>(1, std::min<uint64_t>(tex.layers, kChunk / layer_bytes));
+        for (uint32_t layer0 = 0; layer0 < tex.layers && ok;) {
+            const uint32_t n = std::min(layers_per, tex.layers - layer0);
+            const uint64_t chunk = layer_bytes * n;
+            const Staging s = staging(chunk, 16);
+            if (!s.buffer || !s.data) {
+                ok = false;
+                break;
+            }
+            std::memcpy(s.data, view + file_at, chunk);
+            flush_mapped_range(s.allocation, s.offset, chunk);
+            VkBufferImageCopy c{};
+            c.bufferOffset = s.offset;
+            c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer0, n};
+            c.imageExtent = {w, h, 1};
+            vkCmdCopyBufferToImage(cmd, s.buffer, tex.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+            file_at += chunk;
+            layer0 += n;
+        }
+    }
+    full_barrier(cmd);
+    UnmapViewOfFile(view);
+    CloseHandle(mapping);
+    CloseHandle(file);
+    if (!ok || file_at != nbytes) return false;
+
+    bc3_disk_hits.fetch_add(1, std::memory_order_relaxed);
+    bc3_disk_hit_bytes.fetch_add((int64_t)nbytes, std::memory_order_relaxed);
+    tex.bc3_hit_frame = frame_no;
+    huge_bc3_pin_hit(tex, nbytes);
+    st_astc++;
+    st_bytes += (int64_t)nbytes;
+    static std::atomic<int> told{0};
+    if (told.fetch_add(1) < 60)
+        logf("vk: BC3 from SSD: #%u %#llx %ux%u x%u levels %u (%.1f MB, skipped ASTC decode, chunked)", tex.id,
+             (unsigned long long)tex.gpu, tex.width, tex.height, tex.layers, tex.levels, nbytes / 1048576.0);
+    return true;
+}
+
 bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     astc_fail = nullptr;
     if (tex.type != VK_IMAGE_TYPE_2D || tex.samples != VK_SAMPLE_COUNT_1_BIT || !astc_ready()) {
         astc_fail = "not a 2D image the GPU decoder takes";
         return false;
     }
+    // Prefer a prior BC3 bake on SSD over re-decoding ASTC (area remakes / VRAM trim).
+    if (upload_bc3_from_disk(tex, dirty)) return true;
     const uint64_t layer_size = tex.layers > 1 ? tex.L.layer_size : std::max<uint64_t>(tex.L.layer_size, total);
     const uint64_t tail0 = level_geo(tex, 0).offset;
     if (!layer_size || tail0 >= layer_size || (tail0 & 15) || (layer_size & 15)) {
@@ -962,11 +1480,22 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         return false;
     }
     std::vector<uint8_t> scratch;
+    std::vector<uint8_t> disk;
+    const uint64_t dkey = tex_disk_key(tex.gpu, tex.width, tex.height, tex.nvn_format, tex.guest_size);
+    const bool from_disk = tex.guest_size == total && tex.guest_size <= (96ull << 20) && [&] {
+        disk.resize(tex.guest_size);
+        if (!tex_disk_load(dkey, tex.guest_size, disk.data())) {
+            disk.clear();
+            return false;
+        }
+        return true;
+    }();
     for (size_t k = 0; k < layers.size(); k++) {
         const uint64_t at = (uint64_t)layers[k] * layer_size + tail0;
         if (at >= total) continue;
         const uint64_t n = std::min(tail, total - at);
-        std::memcpy(s.data + k * tail, guest_bytes(tex.gpu + at, n, scratch), n);
+        const uint8_t* src = from_disk ? disk.data() + at : guest_bytes(tex.gpu + at, n, scratch);
+        std::memcpy(s.data + k * tail, src, n);
     }
     const uint64_t staged = tail * layers.size();
     flush_mapped_range(s.allocation, s.offset, staged);   // (encoded blocks read by the GPU decoder, not necessarily coherent)
@@ -1023,6 +1552,20 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
             }
         }
         st_astc++;
+        // Queue a BC3 SSD bake once this upload's submission completes (area loads dump aggressively).
+        // During prebake the pump drains every present; mid-area new mats re-enter a short prebake so
+        // gameplay does not ASTC-decode on the hot path (industry: disk holds GPU-ready bytes).
+        bc3_dump_request(tex, rec_value);
+        // Begin prebake when a load is armed and this encode is not yet on SSD. Small outdoor mats
+        // (≤2 MB) only go through the dump pump — no re-enter thrash (log: 20× 0.8 MB re-enters).
+        if (prebake_enabled() && bc3_disk_on()) {
+            const uint64_t nb = bc3_linear_bytes(tex);
+            if (nb >= (2ull << 20) && !bc3_disk_exists(bc3_disk_key(tex), nb)) {
+                char why[96];
+                snprintf(why, sizeof why, "#%u %.1f MB", tex.id, nb / 1048576.0);
+                prebake_try_begin(why);
+            }
+        }
         return true;
     }
     for (uint32_t level = 0; level < tex.levels; level++) {
@@ -1346,6 +1889,9 @@ struct UpSlow { int64_t ns; uint32_t w, h, layers, nvn; int route; uint64_t byte
 std::vector<UpSlow> up_slowest;
 std::mutex up_mu;   // (uploads may come from a parallel replay's threads)
 std::atomic<int64_t> frame_upload_ns{0};   // (this frame's time in upload(), every thread's)
+std::atomic<int64_t> frame_commit_ns{0};   // estimated cost reserved by upload_defer (all threads)
+std::atomic<int> frame_oversized{0};       // oversized escapes used this present
+std::atomic<uint64_t> frame_commit_at{0};  // frame_no the commit counters apply to
 std::atomic<int64_t> st_deferred{0}, st_deferred_frame{0};
 void upload_frame_report() {
     std::lock_guard lk(up_mu);
@@ -1376,6 +1922,9 @@ bool upload(Texture& tex, const Ranges* dirty) {
     const auto t0 = std::chrono::steady_clock::now();
     up_route = UP_CPU;
     const bool ok = upload_inner(tex, dirty);
+    // Warm the SSD cold tier on first successful ASTC fill (not only on eviction): VRAM can then drop the hot image
+    // later knowing a remake staging-fills from disk.
+    if (ok && tex.astc && !tex.gpu_written) tex_disk_save(tex);
     const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
     frame_upload_ns.fetch_add(ns, std::memory_order_relaxed);
     std::lock_guard lk(up_mu);
@@ -2097,21 +2646,80 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
              x.sparse_req.formatProperties.imageGranularity.width, x.sparse_req.formatProperties.imageGranularity.height,
              x.sparse_req.imageMipTailFirstLod, (unsigned long long)(x.sparse_req.imageMipTailSize >> 10),
              x.sparse_req.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT ? ", one for all layers" : " a layer");
-    } else if (in_textures && create_image(ci, x.image, x.allocation, false, false, true)) {
-        // (made in the textures' pool; one refused there is made as any other, below)
-    } else if (!(pool_key && pool_take(pool_key, x.image, x.allocation, x.views)) && (st_pool_made += pool_key != 0, true) &&
-               !create_image(ci, x.image, x.allocation, false, as_target && !is_bc(x.format) && !is_astc(x.format)) &&
-               // (a compressed image refused: made again without its raw attachment usage, then without its raw storage
-               // usage, as #1332 does; its raw views are then not made, as before)
-               !((ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && is_bc(x.format) &&
-                 (ci.usage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, x.usage = ci.usage, create_image(ci, x.image, x.allocation))) &&
-               !((ci.usage & VK_IMAGE_USAGE_STORAGE_BIT) && (is_bc(x.format) || is_astc(x.format)) &&
-                 (ci.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT, x.usage = ci.usage, create_image(ci, x.image, x.allocation)))) {
-        static int logged;
-        if (logged++ < 16)
-            logf("vk: image %ux%ux%u x%u levels %u format %d (NVN %#x) not made", x.width, x.height, x.depth, x.layers,
-                 x.levels, (int)x.format, d.format);
-        return nullptr;
+    } else {
+        // Hard stop: do not allocate more sampling ASTC/BC3 images once the cache is far past the card budget.
+        // Creating them first and trimming later still spikes VRAM to 4+ GB for several seconds (GTX 1650 log).
+        static const uint64_t create_cap = []() -> uint64_t {
+            if (const char* e = getenv("RX_VK_VRAM_MB")) return (uint64_t)std::max(256, atoi(e)) << 20;
+            return 1600ull << 20;
+        }();
+        uint64_t est = 0;
+        for (uint32_t l = 0; l < x.levels; l++)
+            est += (uint64_t)std::max(1u, x.width >> l) * std::max(1u, x.height >> l) * std::max(1u, x.depth >> l);
+        est *= x.layers * (uint64_t)(x.bc || is_bc(x.format) ? 1 : astc ? 4 : std::max(1, bpb)) *
+               (uint64_t)std::max<uint32_t>(1u, (uint32_t)x.samples);
+        const bool sampling_astc = !as_target && !pool_key && (astc || x.bc);
+        const bool is_huge_array = x.layers >= 32 && est >= (32ull << 20);
+        // Reserve only before terrain is pinned (see huge_bc3_reserve). After pin, cap == create_cap.
+        const uint64_t reserved = is_huge_array ? 0 : huge_bc3_reserve();
+        const uint64_t cap_now = create_cap > reserved ? create_cap - reserved : create_cap / 2;
+        // Soft ceiling only for big first-time encodes (≥32 MB). Medium materials (~2 MB) must create or the
+        // camera turn shows missing tiles; they are cheap and BC3-from-SSD remakes even cheaper.
+        const uint64_t soft_cap = (create_cap / 100) * 92;
+        // Large images: no slack. Medium: 16 MB. Tiny (<2 MB): 64 MB so HUD/UI still appears.
+        const uint64_t slack = est > (16ull << 20) ? 0 : est > (4ull << 20) ? (16ull << 20) : (64ull << 20);
+        static std::unordered_map<uint64_t, uint64_t> create_deny;   // key -> until frame
+        const uint64_t deny_k = t->gpu ^ ((uint64_t)x.width << 32) ^ x.height ^ ((uint64_t)x.layers << 16);
+        // Remake from SSD BC3 is cheap — never soft/hard-skip those unless the cache is far past the card.
+        const bool bc3_on_ssd =
+            x.bc && bc3_disk_on() && bc3_disk_exists(bc3_disk_key(x), bc3_linear_bytes(x));
+        if (sampling_astc) {
+            // Clear denies as soon as we are back under the budget (+256 MB grace). Old logic required
+            // total+64 < create_cap while terrain held ~430 MB over the soft/hard floor — denies stuck forever.
+            if (total_bytes < create_cap + (256ull << 20) && !create_deny.empty() && frame_no % 15 == 0)
+                create_deny.clear();
+            auto den = create_deny.find(deny_k);
+            if (den != create_deny.end() && frame_no < den->second && !bc3_on_ssd) return nullptr;
+        }
+        const bool over_soft =
+            !is_huge_array && !bc3_on_ssd && est > (32ull << 20) && total_bytes + est > soft_cap;
+        // Small materials (clothes / props ≤4 MB): allow a little past the cap — skipping them leaves wrong/missing
+        // colours on the character while terrain already fills the budget. Prefer BC3-from-SSD creates always.
+        // Pass 3: also never deny ≤2 MB (HUD / skin / small props) while under create_cap+384.
+        const bool small_material =
+            (est <= (4ull << 20) && total_bytes + est <= create_cap + (256ull << 20)) ||
+            (est <= (2ull << 20) && total_bytes + est <= create_cap + (384ull << 20));
+        const bool over_hard =
+            !is_huge_array && est > (2ull << 20) && total_bytes + est > cap_now + slack && !small_material &&
+            !(bc3_on_ssd && total_bytes + est <= create_cap + (384ull << 20));
+        if (sampling_astc && (over_soft || over_hard)) {
+            // Pass 3: shorter deny; never deny when BC3 is already on SSD (cheap remake).
+            if (!bc3_on_ssd) create_deny[deny_k] = frame_no + (over_hard ? 30 : 15);
+            if (create_deny.size() > 256) create_deny.clear();
+            static int logged;
+            if (logged++ < 40)
+                logf("vk: texture create skipped %#llx %ux%u x%u (~%llu MB): cache %llu MB, cap %llu MB (reserve %llu)%s",
+                     (unsigned long long)t->gpu, x.width, x.height, x.layers, (unsigned long long)(est >> 20),
+                     (unsigned long long)(total_bytes >> 20), (unsigned long long)(cap_now >> 20),
+                     (unsigned long long)(reserved >> 20), over_soft && !over_hard ? " soft" : "");
+            return nullptr;
+        }
+        if (in_textures && create_image(ci, x.image, x.allocation, false, false, true)) {
+            // (made in the textures' pool; one refused there is made as any other, below)
+        } else if (!(pool_key && pool_take(pool_key, x.image, x.allocation, x.views)) && (st_pool_made += pool_key != 0, true) &&
+                   !create_image(ci, x.image, x.allocation, false, as_target && !is_bc(x.format) && !is_astc(x.format)) &&
+                   // (a compressed image refused: made again without its raw attachment usage, then without its raw storage
+                   // usage, as #1332 does; its raw views are then not made, as before)
+                   !((ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && is_bc(x.format) &&
+                     (ci.usage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, x.usage = ci.usage, create_image(ci, x.image, x.allocation))) &&
+                   !((ci.usage & VK_IMAGE_USAGE_STORAGE_BIT) && (is_bc(x.format) || is_astc(x.format)) &&
+                     (ci.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT, x.usage = ci.usage, create_image(ci, x.image, x.allocation)))) {
+            static int logged;
+            if (logged++ < 16)
+                logf("vk: image %ux%ux%u x%u levels %u format %d (NVN %#x) not made", x.width, x.height, x.depth, x.layers,
+                     x.levels, (int)x.format, d.format);
+            return nullptr;
+        }
     }
     // what it costs: the level chain's texels
     uint64_t px = 0;
@@ -2198,6 +2806,9 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
             evicted_at.erase(ev);
         }
     }
+    // Pin huge array identities as soon as the image exists so create_cap reserves headroom before
+    // hundreds of medium materials fill the budget and later force a terrain remake.
+    if (p->layers >= 32 && p->bytes >= (32ull << 20)) huge_bc3_pin_hit(*p, p->bytes);
     static int logged;
     if (logged++ < 40 || textures.size() % 500 == 0 || p->bytes > (64ull << 20))
         logf("vk: texture %#llx %ux%ux%u x%u levels %u NVN %#x -> vk %d%s (%zu textures, %llu MB)",
@@ -2207,6 +2818,23 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
 }
 
 } // namespace
+
+/// Empty the render-target reuse pool so create_image can retry in VRAM before spilling to system memory.
+size_t pool_empty() {
+    std::lock_guard lk(pool_mu);
+    size_t n = 0;
+    for (auto it = target_pool.begin(); it != target_pool.end();) {
+        for (auto& p : it->second) {
+            pool_destroy(p);
+            n++;
+        }
+        it = target_pool.erase(it);
+    }
+    pool_bytes = 0;
+    pool_n = 0;
+    if (n) pool_pressed = true;
+    return n;
+}
 
 std::atomic<uint64_t> work_epoch{0};
 namespace {
@@ -2379,17 +3007,140 @@ namespace {
 /// ones can be data (height maps, look-up tables) that a frame without would get wrong. RX_VK_UPLOAD_BUDGET_MS=<n>: the
 /// budget (40: only an area load's burst; at 8 the ground's streamed textures waited a frame in ordinary play and the ground
 /// flickered, Discord 2026-11-09), 0: no deferral, as before
+///
+/// Camera turns on 4 GB cards: several 30-160 ms ASTC/BC3 first uploads used to start in the same present (the first one
+/// always passed the old "spent < budget" check). Commit estimated cost up front, allow at most one oversized upload a
+/// frame, and only after it has been deferred a few times so the hitch is isolated instead of stacked.
+/// RX_VK_UPLOAD_LARGE_MB=<n>: large threshold (default 2 on <=4.5 GB, else 4).
 bool upload_defer(const Texture& tex) {
-    static const int64_t budget_ns = (int64_t)(getenv("RX_VK_UPLOAD_BUDGET_MS") ? atof(getenv("RX_VK_UPLOAD_BUDGET_MS")) : 40.0) * 1000000;
-    if (!budget_ns || !upload_defer_ok || tex.uploaded || !tex.astc || tex.gpu_written) return false;
-    if (frame_upload_ns.load(std::memory_order_relaxed) < budget_ns) return false;
-    st_deferred.fetch_add(1, std::memory_order_relaxed), st_deferred_frame.fetch_add(1, std::memory_order_relaxed);
-    return true;
+    static const bool low_vram = [] {
+        uint64_t used = 0, allowed = 0;
+        return vram_usage(&used, &allowed) && allowed && allowed <= (4608ull << 20);
+    }();
+    static const double budget_ms = [] {
+        if (const char* e = getenv("RX_VK_UPLOAD_BUDGET_MS")) return atof(e);
+        // Headroom inside a 33 ms (30 fps) frame on 4 GB; leave CPU time for 1k-4k draws on a turn.
+        return low_vram ? 16.0 : 40.0;
+    }();
+    static const double burst_ms = [] {
+        if (const char* e = getenv("RX_VK_UPLOAD_BURST_MS")) return atof(e);
+        // After a menu/map: refill faster than the turn-safe 16 ms, still below a 33 ms frame.
+        return low_vram ? 48.0 : 64.0;
+    }();
+    if (!budget_ms || !upload_defer_ok || tex.uploaded || !tex.astc || tex.gpu_written) return false;
+    // SSD prebake: never defer — translate the whole load leva to BC3 on disk before gameplay hitches.
+    if (prebake_on.load(std::memory_order_relaxed)) return false;
+
+    const uint64_t bc3_nb =
+        (tex.bc && bc3_disk_on()) ? bc3_linear_bytes(tex) : 0;
+    const bool bc3_ready_ssd = bc3_nb && bc3_disk_exists(bc3_disk_key(tex), bc3_nb);
+    static const uint64_t bc3_free_bytes =
+        (uint64_t)(getenv("RX_VK_BC3_FREE_MB") ? std::max(1, atoi(getenv("RX_VK_BC3_FREE_MB"))) : 4) << 20;
+    static const double load_ms = [] {
+        if (const char* e = getenv("RX_VK_LOAD_BUDGET_MS")) return atof(e);
+        return low_vram ? 48.0 : 80.0;
+    }();
+    static const uint64_t pressure_budget = []() -> uint64_t {
+        if (const char* e = getenv("RX_VK_VRAM_MB")) return (uint64_t)std::max(256, atoi(e)) << 20;
+        return 1600ull << 20;
+    }();
+    const bool loading = area_load_barrier();
+    const bool cache_pressure = total_bytes > pressure_budget + (64ull << 20);
+    // Driver already paging (used > allowed): even 16–48 KB ASTC uploads took 100–260 ms (log). Freeze the
+    // upload queue until trim recovers — future DEVICE_LOST / multi-second hitches start here.
+    uint64_t v_used = 0, v_allowed = 0;
+    const bool driver_over = vram_usage(&v_used, &v_allowed) && v_allowed && v_used > v_allowed;
+    // Free-pass only when the cache is healthy. Under pressure, never-defer of "small" BC3 remakes let
+    // thousands of SSD hits stack in one present (log: 12k BC3 hits / 23 GB, FPS 11–15 thrash).
+    // Pass 4: also free-pass small BC3 during post-menu burst (leaving UI must not show empty clothes).
+    const bool bursting = upload_burst_left.load(std::memory_order_relaxed) > 0 || loading;
+    if (bc3_ready_ssd && bc3_nb <= bc3_free_bytes && !loading && !driver_over &&
+        (!cache_pressure || bursting))
+        return false;
+
+    double use_ms = loading ? load_ms : bursting ? burst_ms : budget_ms;
+    if (cache_pressure && !loading && !bursting) use_ms = std::min(use_ms, budget_ms);
+    if (driver_over) use_ms = std::min(use_ms, 8.0);
+    // Camera turns: prefer SSD BC3 remakes over first-time ASTC→BC3 encodes (log: 15–56 ms each, FPS 8–12).
+    // Give BC3 a slightly larger slice; keep ASTC encodes on the tight budget.
+    if (bc3_ready_ssd && !driver_over && !loading) use_ms = std::max(use_ms, budget_ms + 8.0);
+    const int64_t budget_ns = (int64_t)(use_ms * 1000000);
+
+    // Cross-thread commit (parallel replay): the old static counters raced and reset mid-frame, so ~200
+    // ASTC uploads passed a 16–48 ms budget in one present.
+    uint64_t seen = frame_commit_at.load(std::memory_order_relaxed);
+    if (seen != frame_no && frame_commit_at.compare_exchange_strong(seen, frame_no, std::memory_order_relaxed)) {
+        frame_commit_ns.store(0, std::memory_order_relaxed);
+        frame_oversized.store(0, std::memory_order_relaxed);
+    }
+
+    const int64_t spent = frame_upload_ns.load(std::memory_order_relaxed);
+    const int64_t committed = frame_commit_ns.load(std::memory_order_relaxed);
+    const int64_t used_ns = spent + committed;
+    if (used_ns >= budget_ns) {
+        st_deferred.fetch_add(1, std::memory_order_relaxed), st_deferred_frame.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    // Cost: BC3-from-SSD ≈ 2.2 ms/MB (214 MB → 477 ms). ASTC GPU encode ≈ 3 ms/MB of guest.
+    const uint64_t cost_mb = bc3_ready_ssd ? (bc3_nb >> 20) : (tex.guest_size >> 20);
+    const double ms_per_mb = bc3_ready_ssd ? 2.2 : 3.0;
+    const int64_t est_ns = std::max<int64_t>((int64_t)(cost_mb * ms_per_mb * 1000000.0), 500000);
+    const int64_t remaining = budget_ns - used_ns;
+    static const uint64_t large_bytes =
+        (uint64_t)(getenv("RX_VK_UPLOAD_LARGE_MB") ? std::max(1, atoi(getenv("RX_VK_UPLOAD_LARGE_MB"))) : (low_vram ? 2 : 4))
+        << 20;
+    static const int starve_frames =
+        getenv("RX_VK_UPLOAD_STARVE") ? std::max(1, atoi(getenv("RX_VK_UPLOAD_STARVE"))) : (low_vram ? 2 : 3);
+    const int starve_now = driver_over || cache_pressure
+                               ? starve_frames + 3
+                               : (bursting ? std::max(1, starve_frames - 1) : starve_frames);
+    const bool huge_bc3 = bc3_ready_ssd && bc3_nb >= (32ull << 20);
+    // Under driver overcommit: no oversized escapes except one huge BC3 during a load barrier.
+    const int oversized_cap =
+        driver_over ? (loading && huge_bc3 ? 1 : 0) : ((huge_bc3 || cache_pressure) ? 1 : (bursting ? 2 : 1));
+    const uint64_t size_for_large = bc3_ready_ssd ? bc3_nb : tex.guest_size;
+
+    static std::unordered_map<uint32_t, int> deferred_times;
+
+    auto defer_now = [&] {
+        deferred_times[tex.id]++;
+        st_deferred.fetch_add(1, std::memory_order_relaxed), st_deferred_frame.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    };
+
+    // First-time ASTC encode during a busy present: serialize so camera turns don't stack 5×20 ms hitches.
+    // BC3-from-SSD stays on the normal path (cheap sequential read).
+    if (!bc3_ready_ssd && !loading && !bursting && !driver_over && size_for_large >= (256ull << 10) &&
+        committed > 0 && used_ns > budget_ns / 3)
+        return defer_now();
+
+    if (est_ns > remaining) {
+        const int times = deferred_times[tex.id];
+        if (times >= starve_now && frame_oversized.load(std::memory_order_relaxed) < oversized_cap &&
+            remaining > budget_ns / 5) {
+            frame_oversized.fetch_add(1, std::memory_order_relaxed);
+            frame_commit_ns.fetch_add(est_ns, std::memory_order_relaxed);
+            deferred_times.erase(tex.id);
+            return false;
+        }
+        return defer_now();
+    }
+    if (size_for_large >= large_bytes && frame_oversized.load(std::memory_order_relaxed) >= oversized_cap &&
+        est_ns > budget_ns / 3)
+        return defer_now();
+
+    frame_commit_ns.fetch_add(est_ns, std::memory_order_relaxed);
+    deferred_times.erase(tex.id);
+    return false;
 }
 }  // namespace
 Texture* texture_touch(Texture* tex, bool for_sampling) {
     tex->last_frame = frame_no;
     tex->last_value = rec_value;
+    // Keep huge-array pins alive only while sampled — idle terrains must age out so the next area
+    // does not start already holding ~430 MB (future overcommit on every outdoor enter).
+    if (for_sampling && tex->layers >= 32 && tex->bytes >= (32ull << 20)) huge_bc3_pin_hit(*tex, tex->bytes);
     if (!for_sampling) return tex;
     if (upload_defer(*tex)) return nullptr;
     // contents: from guest memory unless the GPU wrote the image (then it is the content, unless the texture was
@@ -2860,6 +3611,208 @@ bool readback_submit_wait() {
     }
     return vkWaitForFences(dev.device, 1, &rb_fence, VK_TRUE, 5000000000ull) == VK_SUCCESS;
 }
+
+/// Bake queued BC3 images to the SSD (skips ASTC on future remakes). Heavy dumps prefer area-load barriers.
+/// Pump often: the 30 GB SSD tier only helps if GPU-ready BC3 lands before the next menu/camera remake.
+/// Prebake drains every present (no idle gate) so gameplay unlocks only with GPU-ready bytes on disk.
+void bc3_dump_pump(uint64_t completed) {
+    if (!bc3_disk_on()) return;
+    const bool load = area_load_barrier();
+    const bool baking = prebake_on.load(std::memory_order_relaxed);
+    const int passes = baking ? 12 : load ? 4 : (frame_no % 4 == 0 ? 2 : 0);
+    for (int pass = 0; pass < passes; pass++) {
+        Bc3DumpReq req{};
+        {
+            std::lock_guard lk(bc3_dump_mu);
+            while (!bc3_dump_q.empty() && bc3_dump_q.front().ready > completed) return;
+            if (bc3_dump_q.empty()) return;
+            req = bc3_dump_q.front();
+            bc3_dump_q.pop_front();
+        }
+        if (bc3_disk_exists(req.key, req.bytes)) continue;
+        Texture* tex = nullptr;
+        for (auto& kv : textures) {
+            Texture* t = kv.second.get();
+            if (t->id == req.id && t->gpu == req.gpu && t->bc && t->image) {
+                tex = t;
+                break;
+            }
+        }
+        if (!tex || bc3_linear_bytes(*tex) != req.bytes) continue;
+        // Huge terrain (213 MB BC3): bake during load/prebake, or when draws are light / the array is off-camera
+        // so the next look-around remakes from SSD instead of a 70-110 ms ASTC decode.
+        if (!load && !baking && req.bytes > (12ull << 20)) {
+            const int64_t draws = present_draws_atom.load(std::memory_order_relaxed);
+            const bool idle_enough = draws >= 0 && draws < 500 && frame_no > tex->last_frame + 15;
+            if (!idle_enough) {
+                std::lock_guard lk(bc3_dump_mu);
+                if (bc3_dump_q.size() < 48) bc3_dump_q.push_back(req);
+                continue;
+            }
+        }
+        if (!readback_begin()) return;
+        VkBuffer buf = VK_NULL_HANDLE;
+        VmaAllocation alloc = nullptr;
+        void* map = nullptr;
+        if (!create_buffer_cached(req.bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, buf, alloc, &map) || !map) {
+            if (buf) destroy_buffer(buf, alloc);
+            return;
+        }
+        std::vector<VkBufferImageCopy> copies;
+        uint64_t at = 0;
+        for (uint32_t level = 0; level < tex->levels; level++) {
+            const uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
+            const uint64_t layer_bytes = (uint64_t)((w + 3) / 4) * ((h + 3) / 4) * 16ull;
+            for (uint32_t layer = 0; layer < tex->layers; layer++) {
+                VkBufferImageCopy c{};
+                c.bufferOffset = at;
+                c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
+                c.imageExtent = {w, h, 1};
+                copies.push_back(c);
+                at += layer_bytes;
+            }
+        }
+        vkCmdCopyImageToBuffer(rb_cmd, tex->image, VK_IMAGE_LAYOUT_GENERAL, buf, (uint32_t)copies.size(), copies.data());
+        const bool ok = readback_submit_wait();
+        if (ok) {
+            invalidate_mapped(alloc, req.bytes);
+            // Prebake / small mats: sync so unlock cannot race a half-written file.
+            if (baking || req.bytes <= (16ull << 20))
+                bc3_disk_store_sync(req.key, req.bytes, (const uint8_t*)map);
+            else {
+                std::vector<uint8_t> bytes((uint8_t*)map, (uint8_t*)map + req.bytes);
+                bc3_disk_store_async(req.key, req.bytes, std::move(bytes));
+            }
+            static std::atomic<int> told{0};
+            if (told.fetch_add(1) < 40)
+                logf("vk: BC3 to SSD: #%u %#llx %ux%u x%u (%.1f MB) — remakes skip ASTC decode", tex->id,
+                     (unsigned long long)tex->gpu, tex->width, tex->height, tex->layers, req.bytes / 1048576.0);
+        }
+        destroy_buffer(buf, alloc);
+    }
+}
+
+/// Synchronous BC3→SSD bake used right before an image is destroyed (eviction), so remakes can skip ASTC.
+/// Eviction path always dumps (even huge / high draws) — queuing and returning false left terrain undumped
+/// then refuse-destroy stuck VRAM, or destroy without SSD → ASTC remake (pass 2/5).
+bool bc3_dump_texture_now(Texture& tex) {
+    if (!tex.bc || !tex.image || !bc3_disk_on()) return false;
+    const uint64_t nbytes = bc3_linear_bytes(tex);
+    const uint64_t key = bc3_disk_key(tex);
+    if (nbytes < (64ull << 10) || nbytes > (256ull << 20)) return false;
+    if (bc3_disk_exists(key, nbytes)) return true;
+    if (!readback_begin()) return false;
+    VkBuffer buf = VK_NULL_HANDLE;
+    VmaAllocation alloc = nullptr;
+    void* map = nullptr;
+    if (!create_buffer_cached(nbytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, buf, alloc, &map) || !map) {
+        if (buf) destroy_buffer(buf, alloc);
+        return false;
+    }
+    std::vector<VkBufferImageCopy> copies;
+    uint64_t at = 0;
+    for (uint32_t level = 0; level < tex.levels; level++) {
+        const uint32_t w = std::max(1u, tex.width >> level), h = std::max(1u, tex.height >> level);
+        const uint64_t layer_bytes = (uint64_t)((w + 3) / 4) * ((h + 3) / 4) * 16ull;
+        for (uint32_t layer = 0; layer < tex.layers; layer++) {
+            VkBufferImageCopy c{};
+            c.bufferOffset = at;
+            c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
+            c.imageExtent = {w, h, 1};
+            copies.push_back(c);
+            at += layer_bytes;
+        }
+    }
+    vkCmdCopyImageToBuffer(rb_cmd, tex.image, VK_IMAGE_LAYOUT_GENERAL, buf, (uint32_t)copies.size(), copies.data());
+    const bool ok = readback_submit_wait();
+    bool stored = false;
+    if (ok) {
+        invalidate_mapped(alloc, nbytes);
+        // Sync to SSD before destroy — async left a window where remakes re-decoded ASTC (menu wipe / wrong colours).
+        stored = bc3_disk_store_sync(key, nbytes, (const uint8_t*)map);
+        static std::atomic<int> told{0};
+        if (told.fetch_add(1) < 40)
+            logf("vk: BC3 to SSD (evict): #%u %#llx %.1f MB — remakes skip ASTC decode%s", tex.id,
+                 (unsigned long long)tex.gpu, nbytes / 1048576.0, stored ? "" : " (store failed)");
+    }
+    destroy_buffer(buf, alloc);
+    return ok && stored;
+}
+
+/// After dump pump: unlock gameplay when the current leva's BC3 is on SSD (RX_VK_PREBAKE hold).
+void prebake_tick(uint64_t completed) {
+    if (!prebake_enabled()) return;
+    // Armed load + pending dumps but prebake not yet on → start now (real work, not empty boot UI).
+    if (!prebake_on.load(std::memory_order_relaxed) && prebake_armed.load(std::memory_order_relaxed) &&
+        !prebake_in_cooldown()) {
+        bool work = false;
+        {
+            std::lock_guard lk(bc3_dump_mu);
+            work = !bc3_dump_q.empty();
+        }
+        if (work) prebake_try_begin("dump queue");
+    }
+    if (!prebake_on.load(std::memory_order_relaxed)) return;
+    {
+        std::lock_guard lk(bc3_dump_mu);
+        if (!bc3_dump_q.empty()) {
+            static int hold_log;
+            if (hold_log++ < 8 || hold_log % 120 == 0)
+                logf("vk: SSD prebake holding — dump queue %zu, waiting for GPU-ready BC3 on disk", bc3_dump_q.size());
+            return;
+        }
+    }
+    int ready_n = 0, pending_n = 0, missing_n = 0;
+    uint64_t ready_b = 0;
+    int dumps = 0;
+    for (auto& kv : textures) {
+        Texture* t = kv.second.get();
+        if (!t->bc || !t->uploaded || t->gpu_written || !t->astc) continue;
+        const uint64_t nb = bc3_linear_bytes(*t);
+        if (nb < (64ull << 10) || nb > (256ull << 20)) continue;
+        if (t->upload_value > completed) {
+            pending_n++;
+            continue;
+        }
+        const uint64_t key = bc3_disk_key(*t);
+        if (bc3_disk_exists(key, nb)) {
+            ready_n++;
+            ready_b += nb;
+            continue;
+        }
+        missing_n++;
+        if (dumps < 4 && bc3_dump_texture_now(*t)) {
+            dumps++;
+            ready_n++;
+            ready_b += nb;
+            missing_n--;
+        }
+    }
+    if (pending_n || missing_n) {
+        static int hold_log;
+        if (hold_log++ < 12 || hold_log % 90 == 0)
+            logf("vk: SSD prebake holding — %d pending GPU, %d missing on disk (%d ready, %llu MB)", pending_n,
+                 missing_n, ready_n, (unsigned long long)(ready_b >> 20));
+        return;
+    }
+    prebake_on.store(false, std::memory_order_relaxed);
+    prebake_armed.store(false, std::memory_order_relaxed);
+    // Empty abort (boot/UI): silent + short cooldown. Real bake: log + longer cooldown against re-enter spam.
+    const bool empty = ready_n == 0 && ready_b == 0;
+    prebake_set_cooldown(empty ? 120 : 240);
+    if (load_barrier_on.exchange(false, std::memory_order_relaxed)) {
+        static const int after =
+            getenv("RX_VK_UPLOAD_BURST_FRAMES") ? std::max(0, atoi(getenv("RX_VK_UPLOAD_BURST_FRAMES"))) : 300;
+        if (after)
+            upload_burst_left.store(std::max(upload_burst_left.load(std::memory_order_relaxed), after),
+                                    std::memory_order_relaxed);
+        load_ui_frames_atom.store(0, std::memory_order_relaxed);
+    }
+    if (!empty)
+        logf("vk: SSD prebake complete: %d textures, %llu MB on disk — gameplay unlocked", ready_n,
+             (unsigned long long)(ready_b >> 20));
+}
+
 /// A texture's write-back: its image's levels and layers read back, swizzled as the storage lays them out, and written into
 /// its memory within [clip_lo, clip_hi). The GPU half (flush_record) goes into rb_cmd, the CPU half (flush_finish) runs once
 /// the read-back completed: flush_textures does a batch of them with one submission and one wait. Each wait drains the
@@ -3656,6 +4609,12 @@ uint64_t preset_texture_budget(uint64_t preset_mb, bool preset_applies, bool vra
 void texture_frame(uint64_t completed) {
     upload_frame_report();
     frame_upload_ns.store(0, std::memory_order_relaxed);
+    frame_commit_ns.store(0, std::memory_order_relaxed);
+    frame_oversized.store(0, std::memory_order_relaxed);
+    if (upload_burst_left.load(std::memory_order_relaxed) > 0)
+        upload_burst_left.fetch_sub(1, std::memory_order_relaxed);
+    bc3_dump_pump(completed);   // (SSD BC3 bake when the upload's submission is done; heavy during load barriers)
+    prebake_tick(completed);    // unlock gameplay only when the leva's BC3 is on SSD
     if (const int64_t d = st_deferred_frame.exchange(0, std::memory_order_relaxed)) {
         // (the views and descriptor sets resolved to the placeholder this frame go stale, as when textures go: the next frame
         // looks those textures up again, and uploads them)
@@ -3756,7 +4715,15 @@ void texture_frame(uint64_t completed) {
     // may have (other programs use the GPU too). The least recently used go first, down to 7/8 of it; nothing the
     // last 8 presents used, nothing recorded work may still read.
     static uint64_t own = 0;
-    if (frame_no % 10) return;
+    if (!own && getenv("RX_VK_VRAM_MB")) own = (uint64_t)atoi(getenv("RX_VK_VRAM_MB")) << 20;
+    // Eviction used to run only every 10 frames. On a 1650, an outdoor enter filled 2.7 GB of textures
+    // before the next pass — driver overcommit to 4.4 GB and FPS 8–15 until trim caught up. When the
+    // cache is already past the configured budget, or the driver is already overcommitted, trim every present.
+    const bool cache_over = own && total_bytes > own + (64ull << 20);
+    uint64_t quick_used = 0, quick_allowed = 0;
+    const bool driver_over_quick =
+        vram_usage(&quick_used, &quick_allowed) && quick_allowed && quick_used > quick_allowed;
+    if (frame_no % 10 && !cache_over && !driver_over_quick) return;
     uint64_t used = 0, allowed = 0, block_free = 0;
     const bool known = vram_usage(&used, &allowed, &block_free);
     if (!own)   // (RX_VK_VRAM_MB, else 70% of what the driver allows the process at the first look)
@@ -3827,12 +4794,25 @@ void texture_frame(uint64_t completed) {
     // ratchet. On a 4 GB RX 5500M (3337 MB used of 3337, 1224 MB free in the blocks) a paused game, whose scene draws nothing,
     // lost 1700 MB of textures in seconds, made again on unpausing (the long wait), and the HUD's drawn textures went with them.
     // RX_VK_SQUEEZE_ALWAYS=1: as before
-    static const bool squeeze_always = getenv("RX_VK_SQUEEZE_ALWAYS") != nullptr;
-    const bool room_in_blocks = !squeeze_always && block_free >= allowed / 8;
-    if (known && !by_blocks && used > allowed / 100 * 97 && !room_in_blocks) {
-        const uint64_t over = used - allowed / 100 * 97;
+    // Default squeeze on <=4.5 GB cards: "room in the blocks" previously skipped trim while the driver
+    // already had used > allowed (log: 4.0/3.2 GB, not squeezed) → paging and 50–250 ms memory sync.
+    static const bool squeeze_always = [] {
+        if (const char* e = getenv("RX_VK_SQUEEZE_ALWAYS")) return atoi(e) != 0;
+        uint64_t u = 0, a = 0;
+        return vram_usage(&u, &a) && a && a <= (4608ull << 20);
+    }();
+    const bool driver_over = known && allowed && used > allowed;
+    const bool room_in_blocks = !squeeze_always && !driver_over && block_free >= allowed / 8;
+    const bool low_vram = allowed && allowed <= (4608ull << 20);
+    const bool over_tex_budget = budget && total_bytes > budget + (64ull << 20);
+    if (known && !by_blocks && (used > allowed / 100 * 92 || driver_over) && (!room_in_blocks || over_tex_budget || driver_over)) {
+        const uint64_t lim = allowed / 100 * (driver_over ? 90 : 92);
+        const uint64_t over = used > lim ? used - lim : 0;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
     }
+    // Force the eviction target down to the texture budget on low-VRAM even when the driver's "used" counter
+    // is soft (blocks still look free). Without this, open-world loads climbed to ~2700 MB of textures.
+    if ((low_vram && over_tex_budget && !evict_to) || (driver_over && !evict_to && budget)) evict_to = budget;
     if (budget < evict_to) evict_to = 0;   // (hookshot, RX_VK_COMPACT: the driver's limit asks for more: 7/8 of that, as before)
     if (frame_no % 600 == 0) {
         vma_log_heaps();
@@ -3849,6 +4829,7 @@ void texture_frame(uint64_t completed) {
              (unsigned long long)(block_free >> 20), (unsigned long long)(total_bytes >> 20),
              (unsigned long long)(budget >> 20), textures.size(),
              known && used > allowed / 100 * 97 && room_in_blocks ? " (at the driver's limit, room in the blocks: not squeezed)" : "");
+        tex_disk_log_stats();
         // (what takes it: decoded ASTC, the GPU's images, the rest; the largest)
         uint64_t astc_b = 0, rt_b = 0, other_b = 0, recent_b = 0, baked_b = 0;
         size_t baked_n = 0;
@@ -3918,6 +4899,37 @@ void texture_frame(uint64_t completed) {
              verify_dim().second, checked, changed, missed);
     }
     static const bool no_evict = getenv("RX_VK_NO_EVICT") != nullptr;   // (an experiment: nothing evicted)
+    // (hookshot) Pause/map: pin the scene that was live when the UI opened. CRITICAL: never drop that pin under
+    // driver overcommit — log 07:26 had used>allowed every outdoor menu, `!critical_vram` disabled the pin, the
+    // pause unused-age retired the whole scene, and close remade everything from scratch (regression of the old wipe).
+    // During menu only dead/shifted render targets may go; uploaded ASTC/BC3 scene stays (SSD holds cold tier).
+    // RX_VK_MENU_KEEP=0: off. RX_VK_MENU_PIN_FRAMES=<n>: how far before UI-open counts as hot (240 ≈ lookaround).
+    static const bool menu_keep = !getenv("RX_VK_MENU_KEEP") || atoi(getenv("RX_VK_MENU_KEEP")) != 0;
+    static const uint64_t menu_pin_slack =
+        getenv("RX_VK_MENU_PIN_FRAMES") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_MENU_PIN_FRAMES"))) : 240;
+    const int light_n = light_ui_frames_atom.load(std::memory_order_relaxed);
+    const bool in_menu = menu_keep && light_ui_draw_thresh() > 0 && light_n >= 20;
+    static uint64_t menu_entered_at = 0;
+    if (in_menu) {
+        if (!menu_entered_at) {
+            menu_entered_at = frame_no;
+            static int logged;
+            if (logged++ < 40)
+                logf("vk: menu/map: pinning hot textures from present %llu (%d light UI presents, %lld draws/present, "
+                     "cache %llu MB)", (unsigned long long)menu_entered_at, light_n,
+                     (long long)present_draws_atom.load(std::memory_order_relaxed),
+                     (unsigned long long)(total_bytes >> 20));
+        }
+    } else {
+        menu_entered_at = 0;
+    }
+    // Driver overcommit: used above what it allows pages VRAM out. Trim harder before that (92%) and treat 96%+ as critical.
+    const bool vram_tight = known && allowed && used > allowed / 100 * 92;
+    // Driver overcommit (used > allowed) is always critical — "room in the blocks" used to hide it and
+    // leave the process at 4.0 / 3.2 GB for many seconds (log: not squeezed).
+    const bool critical_vram =
+        known && allowed && (used > allowed || used > allowed / 100 * 96 || (over_tex_budget && used > allowed / 100 * 92));
+    if (critical_vram && evict_to == 0 && budget) evict_to = budget;   // cut to the held target, not a soft 7/8 crawl
     // (hookshot) under the budget, every 600 presents: the render targets drawn over since (below), unused for 120
     const bool sweep = total_bytes <= budget;
     // (hookshot-amd) and every 60 presents for the render targets drawn over by one at another start (below): OoT makes a frame's
@@ -3993,8 +5005,13 @@ void texture_frame(uint64_t completed) {
     // after a while of play (issues 107 and 386). Kept, up to RX_VK_KEEP_FINALIZED_MB (512 by default; 0:
     // evicted as before), the least recently used beyond that going as before. (Not written back into the memory instead: the game
     // may have put other things there since, and a write-back over scene data once crashed it)
-    static const uint64_t keep_finalized_max =
-        (uint64_t)(getenv("RX_VK_KEEP_FINALIZED_MB") ? std::max(0, atoi(getenv("RX_VK_KEEP_FINALIZED_MB"))) : 512) << 20;
+    static const uint64_t keep_finalized_max = []() -> uint64_t {
+        if (const char* e = getenv("RX_VK_KEEP_FINALIZED_MB")) return (uint64_t)std::max(0, atoi(e)) << 20;
+        uint64_t used = 0, allowed = 0;
+        // 4 GB cards cannot spare 512 MB of protected finalized tiles on top of the live cache.
+        if (vram_usage(&used, &allowed) && allowed && allowed <= (4608ull << 20)) return 128ull << 20;
+        return 512ull << 20;
+    }();
     const auto keep_finalized = [&](const Texture* tex) {
         if (!keep_finalized_max || !tex->gpu_written || !tex->released || !tex->first_written ||
             tex->first_written != tex->last_written || tex->bytes > (4ull << 20))
@@ -4024,8 +5041,18 @@ void texture_frame(uint64_t completed) {
         logf("vk: finalized textures the GPU drew once, kept for being made again: %zu (%llu KB):%s", finalized_kept_n,
              (unsigned long long)(finalized_kept >> 10), n ? line : "");
     }
+    const bool over_budget = total_bytes > budget + (64ull << 20);
+    const bool far_over = total_bytes > budget + (256ull << 20);
     const uint64_t need_unused = sweep ? std::max<uint64_t>(120, min_unused) : min_unused;
-    const uint64_t need_dead = dead_targets ? std::min(need_unused, dead_min_unused) : need_unused;
+    // Over budget: the old need_dead (≥60) stopped the whole LRU walk as soon as any "recent" texture appeared,
+    // so a 2.6 GB outdoor set never trimmed while every material was touched within ~1 s — VRAM 4.4 GB, FPS ~10.
+    uint64_t need_dead = dead_targets ? std::min(need_unused, dead_min_unused) : need_unused;
+    if (critical_vram)
+        need_dead = 1;
+    else if (far_over)
+        need_dead = std::min(need_dead, (uint64_t)2);
+    else if (over_budget || vram_tight)
+        need_dead = std::min(need_dead, (uint64_t)8);
     static uint64_t n_dead, b_dead, dead_logged_at;
     // (hookshot) the textures to go are chosen first and destroyed after; the write-backs among them go to the GPU in a few
     // batches (flush_textures), not one submission and one wait each: a sweep of 500 at a scene load stalled for seconds
@@ -4039,7 +5066,73 @@ void texture_frame(uint64_t completed) {
             frame_no - last < need_dead)
             break;
         const bool shifted = drawn_over_shifted(tex);
-        if (frame_no - last < need_unused && !shifted) continue;   // (younger: only a dead transient target goes)
+        // (hookshot) Camera look-around: textures the player just saw must not be ripped out for a 48-frame SSD grace —
+        // the 1365x1365x90 terrain (213 MB) was last-used 35 presents ago, then remade with a 60-117 ms ASTC decode
+        // because only the guest ASTC was on disk, not BC3. Policy:
+        //  - BC3 on SSD: remake is cheap → may leave after LOOKAROUND frames when VRAM is tight
+        //  - no BC3 yet: remake is expensive → keep through LOOKAROUND even if guest ASTC is cached
+        // RX_VK_LOOKAROUND_FRAMES=<n> (300 ≈ 5 s at 60 presents/s). RX_VK_ASTC_MIN_UNUSED=<frames> (240).
+        static const uint64_t astc_min_unused =
+            getenv("RX_VK_ASTC_MIN_UNUSED") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_ASTC_MIN_UNUSED"))) : 240;
+        static const uint64_t lookaround =
+            getenv("RX_VK_LOOKAROUND_FRAMES") ? (uint64_t)std::max(60, atoi(getenv("RX_VK_LOOKAROUND_FRAMES"))) : 300;
+        uint64_t need_this = need_unused;
+        const bool astc_scene = tex->astc && tex->uploaded && !tex->gpu_written;
+        const bool bc3_ready =
+            astc_scene && tex->bc && bc3_disk_on() &&
+            bc3_disk_exists(bc3_disk_key(*tex), bc3_linear_bytes(*tex));
+        const bool huge = tex->bytes >= (32ull << 20);
+        // Prefer dropping many small BC3-ready materials first. Evicting the 213 MB terrain arrays just to remake
+        // them next present (500 ms each) caused the 10 fps thrash after a brief 57 fps recovery.
+        if (huge && bc3_ready && frame_no - last < lookaround * 2) continue;
+        // Anti-thrash (pass 4): SSD refill grace — stricter 120-frame floor is applied below even under critical.
+        // Persist pin across destroy/recreate while still in the look-around window.
+        if (huge && huge_bc3_is_pinned(*tex) && frame_no - last < lookaround * 3) continue;
+        // Under budget the sweep used to leave idle 213 MB arrays resident for thousands of presents
+        // (log: last used 5744 ago, steady 886–956 MB). Retire them so the next area starts clean.
+        if (sweep && huge && bc3_ready && frame_no - last >= 600) {
+            need_this = std::min(need_this, (uint64_t)600);
+        }
+        uint64_t keep_for = huge ? lookaround * 2 : lookaround;
+        if (over_budget || vram_tight) {
+            if (bc3_ready && !huge)
+                // 45 was too short: a camera turn remade hundreds of 0.5–1.3 MB tiles (ASTC if SSD miss /
+                // create-skip) and FPS fell to ~8–12. Keep ~2 s so look-back hits resident BC3.
+                keep_for = std::min(keep_for, (uint64_t)120);
+            else if (bc3_ready && huge)
+                keep_for = critical_vram ? 0 : lookaround;
+            else
+                keep_for = std::min(keep_for, lookaround);
+        }
+        // Menu (pass 1): pin the hot scene always. Cold BC3-ready from a prior area may leave (SSD remake is
+        // cheap) so a long pause does not freeze 2 GB forever. Never drop hot / pinned / not-yet-on-SSD.
+        if (in_menu && astc_scene && !shifted) {
+            const bool hot = menu_entered_at && last + menu_pin_slack >= menu_entered_at;
+            const bool pinned_huge = huge && huge_bc3_is_pinned(*tex);
+            if (hot || pinned_huge || !bc3_ready) continue;
+        }
+        // Pass 5: no SSD BC3 yet → do not select for eviction (pending_bytes would lie; remake = ASTC/wrong colours).
+        // Only under critical/far_over attempt a sync dump so VRAM can recover without a wipe race.
+        if (astc_scene && tex->bc && !bc3_ready) {
+            if (!(critical_vram || far_over)) continue;
+            if (!bc3_dump_texture_now(*tex)) continue;
+        }
+        if (astc_scene && keep_for && frame_no - last < keep_for && !critical_vram && !far_over)
+            continue;
+        // Pass 4: after a BC3-from-SSD hit, keep resident briefly even under critical (was ripped in 8 frames).
+        if (bc3_ready && tex->bc3_hit_frame && frame_no - tex->bc3_hit_frame < 120) continue;
+        if (astc_scene && bc3_ready && (vram_tight || critical_vram || over_budget) && !in_menu) {
+            uint64_t hard = 90;
+            if (critical_vram)
+                hard = huge ? 30 : 60;   // was 8/15 — menu/camera thrash (pass 1/4)
+            else if (far_over)
+                hard = huge ? lookaround : 30;
+            else if (over_budget || vram_tight)
+                hard = huge ? lookaround : 90;
+            need_this = std::min(need_this, hard);
+        } else if (astc_scene && !vram_tight && !critical_vram && total_bytes <= budget + (128ull << 20))
+            need_this = std::max(need_this, astc_min_unused);
+        if (frame_no - last < need_this && !shifted) continue;   // (younger: only a dead transient target goes)
         if (tex->last_value > completed) continue;
         // (nor what the GPU wrote and the game still has: the image is its only copy, and one made again over that
         // storage started empty or from stale memory: a sky or course texture drawn once, garbage from then on.
@@ -4126,6 +5219,22 @@ void texture_frame(uint64_t completed) {
         Texture* tex = e.tex;
         if (e.shifted) n_dead++, b_dead += tex->bytes;
         watch_tex(tex, "evicted");
+        tex_disk_evict_save(*tex);   // (SSD ASTC blob before the image goes; remake can staging-fill from it)
+        // GPU-ready BC3 must be on SSD before destroy. If dump fails, skip destroy — remaking without the
+        // cache re-translates ASTC (stutter) and often samples stale guest bytes (wrong clothing/scene colours).
+        if (tex->bc && tex->uploaded && !tex->gpu_written) {
+            const uint64_t nb = bc3_linear_bytes(*tex);
+            const uint64_t key = bc3_disk_key(*tex);
+            if (!bc3_disk_exists(key, nb) && !bc3_dump_texture_now(*tex)) {
+                static int skipped;
+                if (skipped++ < 30)
+                    logf("vk: keep #%u %#llx — BC3 not on SSD yet (refuse wipe without GPU-ready cache)", tex->id,
+                         (unsigned long long)tex->gpu);
+                continue;
+            }
+        } else if (tex->bc && tex->uploaded) {
+            bc3_dump_texture_now(*tex);
+        }
         if (!tex->gpu_written && tex->uploaded && !remade_skip_old()) {   // (above: made again, it is uploaded from memory)
             std::lock_guard lk(from_memory_mu);
             if (evicted_from_memory.size() > 50000) evicted_from_memory.clear();   // (a bound)

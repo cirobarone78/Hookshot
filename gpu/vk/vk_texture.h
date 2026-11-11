@@ -73,6 +73,7 @@ struct Texture {
     uint64_t upload_value = 0;   // (the submission its last upload was recorded in, and the parallel replay's segment
     uint64_t upload_seg = 0;     // that recorded it: one before it in the stream uploads it again)
     uint64_t last_frame = 0;  // the present it was last used in (the cache's age)
+    uint64_t bc3_hit_frame = 0;  // last present filled from SSD BC3 (anti-thrash: do not re-evict immediately)
     uint64_t first_render_frame = 0;   // the present it was first rendered into in (0: never)
     uint64_t last_value = 0;  // the timeline value of the last submission that used it
     uint64_t bytes = 0;       // device memory it holds (the texels', or a sparse image's chunks)
@@ -172,6 +173,8 @@ void release_texel_buffer_views(VkBuffer buffer);
 Texture* texture_for_present(const nvn_tex* t);
 /// Ages the cache by one present; images nothing used for a while go, after the work that last read them
 void texture_frame(uint64_t completed_value);
+/// Draws in the present just submitted (replay): menus/map sit far below open-world counts so the cache can stay warm
+void texture_note_present_draws(int64_t draws_this_present);
 void texture_released(const nvn_tex* t);
 /// (diagnostics: what guest memory holds of a texture's storage now, level by level, logged)
 void texture_log_guest(const Texture* t);

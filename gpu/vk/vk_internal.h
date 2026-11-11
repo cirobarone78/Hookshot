@@ -255,6 +255,8 @@ bool vma_init(PFN_vkGetInstanceProcAddr gipa);
 /// (textures: from the textures' own pool, the one image_compact_* moves allocations in: vk_texture.cpp's compaction)
 bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated = false, bool target = false,
                   bool textures = false);
+/// (vk_texture.cpp) destroy every idle pooled render-target image; used when VRAM alloc fails before system-memory spill
+size_t pool_empty();
 // (hookshot) the textures' pool compacted: VMA's defragmentation, a pass at a time (vk_texture.cpp's compact_step)
 struct ImageMove {
     VmaAllocation src;   // (the allocation to move: it stays the texture's, and points at the new place once the pass ends)
