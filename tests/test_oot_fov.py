@@ -51,7 +51,7 @@ class InstallTests(unittest.TestCase):
         api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
         options = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
         replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
-        self.assertIn("HOS_OPT_FOV = 49", api)
+        self.assertIn("HOS_OPT_FOV = 51", api)
         option_ids = {name: int(value) for name, value in re.findall(r"(HOS_OPT_FOV|HOS_OPT_PROMPTS|HOS_OPT_CAMERA_SPEED)\s*=\s*(\d+)", api)}
         self.assertEqual(len(option_ids), 3)
         self.assertEqual(len(set(option_ids.values())), 3, "FOV must not alias prompts or camera speed")
@@ -74,7 +74,7 @@ HEAD = r'''
 #include <math.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 typedef struct { uint64_t x[32]; unsigned char vreg[32][16]; } Ctx;
-enum { HOS_OPT_FOV = 49 };
+enum { HOS_OPT_FOV = 51 };
 static unsigned char objects[0x10000], globals[0x20000];
 static int menu = 100, reads;
 static void *ptr(uint64_t a, unsigned n) {

@@ -41,7 +41,8 @@ enum { HOS_OPT_CAMERA_SPEED = 48 };
 /* (HOS_OPT_PROMPTS, 46: the Button prompts row, host/prompts.c: 0 Auto, else HOS_PROMPT_* + 1; a change shows at once) */
 enum { HOS_OPT_PROMPTS = 46 };
 /* Gameplay's vertical field of view, percent of the game's current angle; 100 is unchanged. */
-enum { HOS_OPT_FOV = 49 };
+/* 49 and 50 are reserved for Walk mode and Walk speed (#2345). */
+enum { HOS_OPT_FOV = 51 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
