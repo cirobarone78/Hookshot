@@ -239,10 +239,11 @@ String? runningRoot() {
 /// bin/hookshot under the launcher, or hookshot in a pre-launcher folder.
 String? gameExe(String? folder) {
   if (folder == null || folder.isEmpty) return null;
-  final nested = '$folder/bin/hookshot';
-  if (File(nested).existsSync() && File('$folder/image.bin').existsSync()) return nested;
-  final flat = '$folder/hookshot';
-  if (File(flat).existsSync() && File('$folder/image.bin').existsSync()) return flat;
+  // (Windows' executable is hookshot.exe; Linux's is hookshot)
+  final name = Platform.isWindows ? 'hookshot.exe' : 'hookshot';
+  for (final path in ['$folder/bin/$name', '$folder/$name']) {
+    if (File(path).existsSync() && File('$folder/image.bin').existsSync()) return path;
+  }
   return null;
 }
 
