@@ -160,14 +160,16 @@ double? freeGb(String folder) {
   try {
     if (Platform.isWindows) {
       const script =
-          r'''$path=$args[0]; while(-not [IO.Directory]::Exists($path)) { $parent=[IO.Directory]::GetParent($path); if($null -eq $parent) { break }; $path=$parent.FullName }; $root=[IO.Path]::GetPathRoot($path); [long]([IO.DriveInfo]::new($root).AvailableFreeSpace)''';
+          r'''$path=$env:HOOKSHOT_FREE_PATH; while(-not [IO.Directory]::Exists($path)) { $parent=[IO.Directory]::GetParent($path); if($null -eq $parent) { break }; $path=$parent.FullName }; $root=[IO.Path]::GetPathRoot($path); [long]([IO.DriveInfo]::new($root).AvailableFreeSpace)''';
       final result = Process.runSync('powershell.exe', [
         '-NoProfile',
         '-NonInteractive',
         '-Command',
         script,
-        folder.isEmpty ? _home : folder,
-      ]);
+      ], environment: {
+        ...Platform.environment,
+        'HOOKSHOT_FREE_PATH': folder.isEmpty ? _home : folder
+      });
       if (result.exitCode != 0) return null;
       return int.parse((result.stdout as String).trim()) / (1 << 30);
     }
