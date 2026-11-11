@@ -260,7 +260,7 @@ The same keys close it; with every Menu shortcut, <kbd>Esc</kbd> goes back a pag
 <kbd>F1</kbd> always works. **Controls → Menu shortcut** can leave <kbd>Insert</kbd> free for another overlay (F1 only).
 With Insert or F1, or with F1 only, <kbd>Esc</kbd> does not open the menu: it only lets the mouse go. Options saved by
 an older version on Insert or F1, the default then, move to Insert, F1 or Esc; F1 only stays.
-The menu has five tabs, Graphics, Audio, Gameplay, Controls and Debug:
+The menu has six tabs, Graphics, Display, Audio, Gameplay, Controls and Debug:
 <kbd>Q</kbd> and <kbd>E</kbd> (or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch between them, LB and RB on
 a controller (or the triggers). <kbd>Up</kbd> and <kbd>Down</kbd> choose a row, <kbd>Left</kbd> and <kbd>Right</kbd>
 change it (<kbd>Enter</kbd> changes it too); beside the rows, the help says what the row is and, on a line of its own,
@@ -277,7 +277,7 @@ drawn. It is never copied anywhere, and Hookshot does not include it. Without it
 Libertinus, which Hookshot includes.
 
 The rows marked "after a restart" below are read when the game starts. While one is changed, it is tagged "After
-restart" and the help on the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
+restart" and the help on the Graphics, Display and Debug tabs lists it; closing the menu then asks whether to restart now. **Later** keeps
 the change for the next start (and is not asked again until you change one of those rows); **Restart now** saves your
 choices and starts the game again, so progress since your last save is lost.
 
@@ -285,8 +285,10 @@ A row for something this PC cannot use is not shown: NVIDIA Reflex and AMD Anti-
 have them, the DLSS model where DLSS does not run. HDR paper white and
 HDR peak brightness show only while HDR is on, the HDR tone mapper only with HDR set to Native.
 
-The Graphics tab groups its rows under section titles: Resolution and upscaling, Frame generation and latency, Screen,
-HDR, Detail, and GPU and memory (last: the rows to change when something is wrong). The table lists them in that order.
+The Graphics tab is how the picture is made, its rows under section titles: Resolution and upscaling, Frame generation
+and latency, Detail, and GPU and memory (last: the rows to change when something is wrong). The Display tab is how the
+finished picture gets to the screen and what is drawn over it: Screen, HDR and Overlays. The table lists them in that
+order.
 
 | Tab | Option | Choices | Default |
 |---|---|---|---|
@@ -303,7 +305,10 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Game frame rate cap | 60, 90, 120, 144, 165, 240 FPS, Uncapped (after a restart) | 60 FPS |
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | AMD Anti-Lag 2 | Off, On (shown only on AMD GPUs with `VK_AMD_anti_lag`) | Off |
-| | Fullscreen | Off, On (the same as <kbd>F11</kbd>) | Off |
+| | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
+| | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
+| | VRAM budget | Auto, 3.6, 4.8, 6, 7.5, 9, 11 GB (2.2 GB only from the Minimum (4GB) preset); a quality preset sets it | Auto |
+| Display | Fullscreen | Off, On (the same as <kbd>F11</kbd>) | Off |
 | | V-Sync | Auto, On, Off | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
 | | Aspect ratio | 16:9, Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | Monitor's shape |
@@ -312,16 +317,13 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | HDR peak brightness | 400 to 4000 nits (while HDR is on) | 1000 nits |
 | | HDR contrast | 50% to 200% around mid grey (while HDR is on) | 100% |
 | | HDR tone mapper | Vanilla (the game's curve), PsychoV35 (RenoDX's; with HDR set to Native. DLSS, FSR and TAAU do not take its scene yet: the game's own upscale runs) | Vanilla |
-| | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
-| | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
-| | VRAM budget | Auto, 3.6, 4.8, 6, 7.5, 9, 11 GB (2.2 GB only from the Minimum (4GB) preset); a quality preset sets it | Auto |
+| | FPS counter | Off, FPS, Frame time, Graph, Breakdown | Off |
+| | FPS counter position | Top right, Top left, Bottom right, Bottom left | Top right |
+| | Menu size | Small, Medium, Large | Medium |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
-| Gameplay | FPS counter | Off, FPS, Frame time, Graph, Breakdown | Off |
-| | FPS counter position | Top right, Top left, Bottom right, Bottom left | Top right |
-| | Menu size | Small, Medium, Large | Medium |
-| | Game speed | Per frame, Real time | Real time |
+| Gameplay | Game speed | Per frame, Real time | Real time |
 | | Field of view | 50% to 150%, in steps of 5; applies immediately during gameplay | 100% (original) |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
