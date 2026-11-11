@@ -270,6 +270,10 @@ own menu font, read into memory from your game files (the romfs folder the game 
 drawn. It is never copied anywhere, and Hookshot does not include it. Without it, or if it has no Latin letters, they use
 Libertinus, which Hookshot includes.
 
+The Gameplay tab also has a local **Achievements** page with notifications on unlock. Progress is stored separately from
+game saves. The numbered entries use placeholders while original descriptions and verified game-event triggers are
+prepared. See [`docs/achievements.md`](docs/achievements.md) for the tracker status and controls.
+
 The rows marked "after a restart" below are read when the game starts. While one is changed, it is tagged "After
 restart" and the help on the Graphics tab lists it; closing the menu then asks whether to restart now. **Later** keeps
 the change for the next start (and is not asked again until you change one of those rows); **Restart now** saves your

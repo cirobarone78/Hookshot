@@ -1,4 +1,4 @@
-"""The overlays (the start-up screen, the menu, the FPS counter) over the window's image: menu_record draws them with Dear ImGui
+"""The overlays (the start-up screen, the menu, the FPS counter, the achievement toast) over the window's image: menu_record draws them with Dear ImGui
 in one frame and one recording, the start-up screen under the menu and the counter over both; nothing at all (no ImGui frame,
 no render pass, only ui::idle letting old textures go) while none shows (but one frame that bakes the glyphs after a resize), and no "0 FPS" over the start-up screen.
 
@@ -38,7 +38,7 @@ def main():
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
 using VkCommandBuffer = int;
 struct { bool show_fps = false; } opts;
-std::atomic<bool> open_now{false}, startup_on{false};
+std::atomic<bool> open_now{false}, startup_on{false}, achievement_toast_visible{false};
 std::string calls;
 bool can_draw = true;
 float ease_step = 0;
@@ -60,16 +60,19 @@ bool prebake_needed(uint32_t, uint32_t) { return resized; }
 void draw_startup(ui::Ctx&) { calls += "s"; }
 void draw_menu(ui::Ctx&) { calls += "m"; }
 void draw_fps(ui::Ctx&, bool under_banner) { calls += under_banner ? "F" : "f"; }
+void draw_achievement_toast(ui::Ctx&) { calls += "t"; }
 ''' + fn + r'''
 int main() {
-    for (bool startup : {false, true}) for (bool fps : {false, true}) for (bool menu : {false, true}) for (bool can : {true, false}) {
+    for (bool startup : {false, true}) for (bool fps : {false, true}) for (bool menu : {false, true})
+    for (bool toast : {false, true}) for (bool can : {true, false}) {
         opts.show_fps = fps;
         open_now = menu;
         startup_on = startup;
+        achievement_toast_visible = toast;
         can_draw = can;
         calls.clear();
         menu_record(1, 2, 640, 360);
-        if (!startup && !fps && !menu) {   // (nothing shows: no ImGui frame at all, only the reaping; after a resize, one bake)
+        if (!startup && !fps && !menu && !toast) {   // (nothing shows: no ImGui frame at all, only the reaping; after a resize, one bake)
             CHECK(calls == "i");
             calls.clear(), resized = true;
             menu_record(1, 2, 640, 360);
@@ -82,10 +85,11 @@ int main() {
         if (startup) want += "s";
         if (menu) want += "m";
         if (fps && !startup) want += menu ? "F" : "f";
+        if (toast) want += "t";
         want += "dr";   // (the recorder boundary right before the recording)
         CHECK(calls == want);
     }
-    std::printf("PASS: one ImGui frame and recording for whatever shows, in order, nothing while nothing shows\n");
+    std::printf("PASS: one ImGui frame and recording for whatever shows, including a toast by itself, nothing while nothing shows\n");
 }
 '''
     with tempfile.TemporaryDirectory(prefix="fps-overlay-") as tmp:

@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <deque>
 #include <utility>
 #include <cstdio>
 #include <cstring>
@@ -33,6 +34,7 @@
 #include "vk_fps.h"    // (the FPS counter's levels and numbers)
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "oot_cheat_items.h"
+#include "oot_achievements.h"
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
@@ -862,6 +864,8 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
+    {TAB_GAMEPLAY, "Achievements", nullptr, 0, 0, 0, nullptr,
+     "View locally tracked Ocarina of Time achievements and their unlock progress."},
 
     // Controls (12 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
@@ -1102,9 +1106,31 @@ int inventory_columns = 1, inventory_capacity = 1;   // (as last drawn: the card
 int inventory_filter = 0;   // (All, then the item sections)
 int inventory_page = 0;     // (the page shown: the choice's, or another the wheel turned to)
 bool inventory_amount = false;   // (Left and Right change the chosen item's amount)
+constexpr const char* kAchievementDescription = "Unlock condition pending verified game-event support.";
+void achievement_title(int id, char* text, size_t size) {
+    snprintf(text, size, "Local Achievement %02d", id + 1);
+}
+std::atomic<bool> achievement_unlocked[OOT_LOCAL_ACHIEVEMENT_COUNT]{};
+std::once_flag achievement_load_once;
+std::mutex achievement_file_mu, achievement_toast_mu;
+std::deque<int> achievement_toast_queue;
+std::atomic<bool> achievement_toast_visible{false};
+std::atomic<int> achievement_toast_id{-1};
+std::chrono::steady_clock::time_point achievement_toast_deadline{};
+int achievement_selected = 0, achievement_scroll = 0, achievement_lines = 9;
+std::string ini_path();
+extern bool menu_refresh;
+std::string achievement_path() { return ini_path() + ".achievements"; }
 int inventory_begin() { return inventory_filter ? item_sections.s[inventory_filter - 1].first : 0; }
 int inventory_end() { return inventory_filter && inventory_filter < kItemSections ? item_sections.s[inventory_filter].first : kItems; }
 void inventory_reveal() { inventory_page = (item_choice - inventory_begin()) / std::max(1, inventory_capacity); }
+void achievement_reveal() {
+    achievement_lines = std::clamp(achievement_lines, 1, OOT_LOCAL_ACHIEVEMENT_COUNT);
+    if (achievement_selected < achievement_scroll) achievement_scroll = achievement_selected;
+    if (achievement_selected >= achievement_scroll + achievement_lines)
+        achievement_scroll = achievement_selected - achievement_lines + 1;
+    achievement_scroll = std::max(0, std::min(achievement_scroll, OOT_LOCAL_ACHIEVEMENT_COUNT - achievement_lines));
+}
 void choose_inventory_filter(int filter) {
     inventory_filter = filter;
     item_choice = inventory_begin();
@@ -1284,6 +1310,57 @@ std::string ini_path() {
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string dir(exe, n);
     return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_options.ini";
+}
+void achievement_save() {
+    std::lock_guard lock(achievement_file_mu);
+    const std::string path = achievement_path(), temp = path + ".tmp";
+    FILE* f = fopen(temp.c_str(), "wb");
+    if (!f) return;
+    fwrite("HSA1", 1, 4, f);
+    for (int i = 0; i < OOT_LOCAL_ACHIEVEMENT_COUNT; i++) {
+        const uint8_t unlocked = achievement_unlocked[i].load(std::memory_order_relaxed) ? 1 : 0;
+        fwrite(&unlocked, 1, 1, f);
+    }
+    const bool ok = fclose(f) == 0;
+    if (!ok) { remove(temp.c_str()); return; }
+#ifdef _WIN32
+    if (!MoveFileExA(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) remove(temp.c_str());
+#else
+    if (rename(temp.c_str(), path.c_str()) != 0) remove(temp.c_str());
+#endif
+}
+void achievement_load() {
+    std::call_once(achievement_load_once, [] {
+        std::lock_guard lock(achievement_file_mu);
+        FILE* f = fopen(achievement_path().c_str(), "rb");
+        if (!f) return;
+        char magic[4];
+        if (fread(magic, 1, sizeof magic, f) == sizeof magic && !memcmp(magic, "HSA1", 4)) {
+            for (int i = 0; i < OOT_LOCAL_ACHIEVEMENT_COUNT; i++) {
+                uint8_t unlocked = 0;
+                if (fread(&unlocked, 1, 1, f) != 1) break;
+                achievement_unlocked[i].store(unlocked != 0, std::memory_order_relaxed);
+            }
+        }
+        fclose(f);
+    });
+}
+void achievement_unlock(int id) {
+    if ((unsigned)id >= OOT_LOCAL_ACHIEVEMENT_COUNT) return;
+    achievement_load();
+    if (!achievement_unlocked[id].exchange(true, std::memory_order_relaxed)) {
+        achievement_save();
+        menu_refresh = true;
+        {
+            std::lock_guard lock(achievement_toast_mu);
+            achievement_toast_queue.push_back(id);
+        }
+        if (host && host->log) {
+            char title[32];
+            achievement_title(id, title, sizeof title);
+            host->log((std::string("Local achievement unlocked: ") + title).c_str());
+        }
+    }
 }
 const char* ini_key(const Row& r) {
     if (r.value == &opts.output_res) return "output_res";   // (host/nn_applet.c reads it at the start)
@@ -2352,6 +2429,24 @@ float card_tag(ui::Ctx& c, float x, float y, const char* tag, bool draw = true) 
     return tw;
 }
 
+void draw_achievement_icon(ui::Ctx& c, int id, bool unlocked, ImVec2 a, float size) {
+    if ((unsigned)id >= OOT_LOCAL_ACHIEVEMENT_COUNT) return;
+    const float s = size / 40.0f;
+    const ImVec2 center = a + ImVec2(size * 0.5f, size * 0.5f);
+    const ImU32 edge = unlocked ? ui::rgba(236, 194, 89) : ui::rgba(119, 124, 125);
+    const ImU32 face = unlocked ? ui::rgba(44, 111, 89) : ui::rgba(71, 75, 76);
+    const ImU32 mark = unlocked ? ui::rgba(255, 226, 151) : ui::rgba(166, 170, 170);
+    c.d->AddCircleFilled(center, size * 0.47f, face, 32);
+    c.d->AddCircle(center, size * 0.43f, edge, 32, std::max(1.0f, s * 1.6f));
+    c.d->AddCircleFilled(center, size * 0.29f, unlocked ? ui::rgba(38, 83, 70) : ui::rgba(58, 62, 63), 24);
+    if (unlocked) {
+        c.d->AddLine(center + ImVec2(-7 * s, 0), center + ImVec2(-2 * s, 5 * s), mark, std::max(1.5f, 2.3f * s));
+        c.d->AddLine(center + ImVec2(-2 * s, 5 * s), center + ImVec2(8 * s, -6 * s), mark, std::max(1.5f, 2.3f * s));
+    } else {
+        c.d->AddCircleFilled(center, size * 0.07f, mark, 16);
+    }
+}
+
 void draw_inventory(ui::Ctx& c) {
     const float s = c.s;
     const int begin = inventory_begin(), end = inventory_end();
@@ -2489,6 +2584,84 @@ void draw_inventory(ui::Ctx& c) {
         }
     }
     ui::prompt_bar(c, prompts, prompts_n);   // (the prompts, on top of the help and the cards)
+}
+
+void draw_achievements(ui::Ctx& c) {
+    const float s = c.s;
+    int unlocked_count = 0;
+    achievement_load();
+    for (int i = 0; i < OOT_LOCAL_ACHIEVEMENT_COUNT; i++)
+        unlocked_count += achievement_unlocked[i].load(std::memory_order_relaxed) ? 1 : 0;
+    char count[48];
+    snprintf(count, sizeof count, "%d / %d unlocked", unlocked_count, OOT_LOCAL_ACHIEVEMENT_COUNT);
+    const float hh = title_banner(c, "Achievements", count);
+    float cx0, cx1, hx0, hx1;
+    bool narrow;
+    columns(c, &cx0, &cx1, &hx0, &hx1, &narrow);
+    column(c, cx0, cx1, hh);
+    const float top = hh + 18 * s, bottom = ui::prompt_bar_top(c) - 10 * s, pitch = 56 * s, row_h = 52 * s;
+    const float left = cx0 + 24 * s, right = cx1 - 24 * s;
+    const int visible = std::clamp((int)((bottom - top) / pitch), 1, OOT_LOCAL_ACHIEVEMENT_COUNT);
+    achievement_lines = visible;
+    achievement_scroll = std::clamp(achievement_scroll, 0, OOT_LOCAL_ACHIEVEMENT_COUNT - visible);
+    if (achievement_selected < achievement_scroll) achievement_selected = achievement_scroll;
+    if (achievement_selected >= achievement_scroll + visible) achievement_selected = achievement_scroll + visible - 1;
+    scroll_bar(c, cx0 + 12 * s, top, top + visible * pitch - (pitch - row_h), OOT_LOCAL_ACHIEVEMENT_COUNT, visible,
+               (float)achievement_scroll);
+    c.d->PushClipRect(ImVec2(left - 12 * s, top - 8 * s), ImVec2(right + 12 * s, bottom + 8 * s), true);
+    for (int row = achievement_scroll; row < std::min(OOT_LOCAL_ACHIEVEMENT_COUNT, achievement_scroll + visible); row++) {
+        const int id = row;
+        const bool unlocked = achievement_unlocked[id].load(std::memory_order_relaxed), selected = row == achievement_selected;
+        const ImVec2 a(left, top + (row - achievement_scroll) * pitch), b(right, a.y + row_h);
+        c.d->AddRectFilled(a, b, selected ? ui::kCellNameSel : ui::kCellName, 4 * s);
+        c.d->AddRect(a, b, unlocked ? ui::alpha(ui::kAccent, 0.85f) : ui::alpha(ui::kEdge, 0.8f), 4 * s,
+                     std::max(1.0f, s));
+        if (selected) c.d->AddRectFilled(a, ImVec2(a.x + 3 * s, b.y), ui::kGoldHi);
+        const float icon_size = 40 * s;
+        draw_achievement_icon(c, id, unlocked, ImVec2(a.x + 9 * s, (a.y + b.y - icon_size) * 0.5f), icon_size);
+        const float status_room = unlocked ? 104 * s : 78 * s;
+        const float text_right = b.x - status_room;
+        char title[32];
+        achievement_title(id, title, sizeof title);
+        c.d->PushClipRect(ImVec2(a.x + 58 * s, a.y), ImVec2(text_right - 6 * s, b.y), true);
+        ui::text_mid(c, c.f.strong, 16.5f * s, a.x + 60 * s, a.y + 19 * s,
+                     selected ? ui::kInkBright : ui::kInk, title);
+        ui::text_mid(c, c.f.body, 13.5f * s, a.x + 60 * s, a.y + 39 * s,
+                     unlocked ? ui::kSoft : ui::kDim, kAchievementDescription);
+        c.d->PopClipRect();
+        if (unlocked) card_tag(c, b.x - 10 * s, (a.y + b.y) * 0.5f, "UNLOCKED");
+        else ui::text_mid_right(c, c.f.body, 12 * s, b.x - 12 * s, (a.y + b.y) * 0.5f, ui::kDim, "LOCKED");
+        if (selected) ui::glow(c, a, b);
+        hits.add(a.x, std::max(a.y, top), b.x, std::min(b.y, bottom), menu_hit::kListLine, row);
+    }
+    c.d->PopClipRect();
+    const ui::Prompt prompts[] = {{ui::kUpDown, "Move"}, {ui::kLeftRight, "Select"}, {ui::kKey, "Page", "PgUp/PgDn"},
+                                  {ui::kBack, "Back"}};
+    ui::prompt_bar(c, prompts, 4);
+}
+
+void draw_achievement_toast(ui::Ctx& c) {
+    if (!achievement_toast_visible.load(std::memory_order_acquire)) return;
+    const int id = achievement_toast_id.load(std::memory_order_relaxed);
+    if ((unsigned)id >= OOT_LOCAL_ACHIEVEMENT_COUNT) return;
+    const float s = c.s, w = std::max(1.0f, std::min(500 * s, c.w - 2 * c.safe)), h = 86 * s;
+    const ImVec2 a((c.w - w) * 0.5f, c.safe + (open_now.load(std::memory_order_relaxed) ? banner_h(c) + 8 * s : 8 * s));
+    const ImVec2 b = a + ImVec2(w, h);
+    ui::shadow(c, a, b, 16 * s, 0.85f, 5 * s);
+    c.d->AddRectFilled(a, b, ui::rgba(24, 34, 28, 250), 8 * s);
+    c.d->AddRect(a, b, ui::rgba(108, 136, 97, 230), 8 * s, std::max(1.0f, s));
+    c.d->AddRectFilled(a + ImVec2(3 * s, 10 * s), ImVec2(a.x + 7 * s, b.y - 10 * s), ui::rgba(224, 190, 88));
+    draw_achievement_icon(c, id, true, a + ImVec2(17 * s, 20 * s), 46 * s);
+    const float text_x = a.x + 78 * s, text_right = b.x - 14 * s;
+    ui::text_mid(c, c.f.strong, 12 * s, text_x, a.y + 20 * s, ui::rgba(232, 199, 105), "ACHIEVEMENT UNLOCKED");
+    char title[32];
+    achievement_title(id, title, sizeof title);
+    c.d->PushClipRect(ImVec2(text_x, a.y + 24 * s), ImVec2(text_right, a.y + 55 * s), true);
+    ui::text_mid(c, c.f.strong, 17 * s, text_x, a.y + 42 * s, ui::kInkBright, title);
+    c.d->PopClipRect();
+    c.d->PushClipRect(ImVec2(text_x, a.y + 55 * s), ImVec2(text_right, b.y - 4 * s), true);
+    ui::text_mid(c, c.f.body, 12.5f * s, text_x, a.y + 69 * s, ui::kSoft, kAchievementDescription);
+    c.d->PopClipRect();
 }
 
 void draw_teleport(ui::Ctx& c) {
@@ -2687,6 +2860,7 @@ void draw_menu(ui::Ctx& c) {
     const int vtx0 = c.d->VtxBuffer.Size, cmd0 = c.d->CmdBuffer.Size;
     hits.clear(0, 0, k.w, k.h);
     if (page == 5) draw_ask(k);
+    else if (page == 6) draw_achievements(k);
     else if (page == 1) draw_controls(k);
     else if (page == 3) draw_teleport(k);
     else if (page == 4) draw_inventory(k);
@@ -3055,6 +3229,7 @@ void menu_init() {
     static bool done;
     if (done) return;
     done = true;
+    achievement_load();
     for (auto& count : item_counts) count.store(-1, std::memory_order_relaxed);
     bool has_options = false;
     bool has_vram_budget = false;   // (hookshot: a file from before the VRAM budget row: its preset's, memory_budget's)
@@ -3278,6 +3453,10 @@ bool fps_take(int64_t now, int64_t shown, int64_t game, int64_t* next, int64_t* 
 // inside menu_tick's frame on the same thread does not lock itself out
 std::recursive_mutex menu_mu;
 void menu_option_set(int id, int value) {
+    if (id >= HOS_OPT_ACHIEVEMENT_BASE && id < HOS_OPT_ACHIEVEMENT_BASE + OOT_LOCAL_ACHIEVEMENT_COUNT) {
+        if (value) achievement_unlock(id - HOS_OPT_ACHIEVEMENT_BASE);
+        return;
+    }
     if (id == OOT_CHEAT_AGE_ID) {   // (Link's age: the Switch age row shows it)
         if (link_age.exchange(value, std::memory_order_relaxed) != value && page == 0 && cur_tab == TAB_DEBUG) menu_refresh = true;
         return;
@@ -3391,6 +3570,34 @@ void teleport_mouse(const MkwVkPointer& ptr, int mx, int my, bool* press, bool& 
     if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
     if (ptr.wheel) teleport_wheel += ptr.wheel, teleport_follow = false, changed = true;
 }
+void achievement_mouse(const MkwVkPointer& ptr, int mx, int my, bool* press, bool& changed) {
+    const menu_hit::Hit hit = hits.at((float)mx, (float)my);
+    if ((ptr.pressed & HOS_MOUSE_LEFT) && hit.part == menu_hit::kListLine && hit.index >= 0 &&
+        hit.index < OOT_LOCAL_ACHIEVEMENT_COUNT && achievement_selected != hit.index)
+        achievement_selected = hit.index, changed = true;
+    if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
+    if (ptr.wheel) {
+        achievement_scroll = std::clamp(achievement_scroll - ptr.wheel * std::max(1, achievement_lines / 2), 0,
+                                        OOT_LOCAL_ACHIEVEMENT_COUNT - achievement_lines);
+        achievement_selected = std::clamp(achievement_selected, achievement_scroll,
+                                          std::min(OOT_LOCAL_ACHIEVEMENT_COUNT - 1, achievement_scroll + achievement_lines - 1));
+        changed = true;
+    }
+}
+void achievement_toast_tick() {
+    const auto now = std::chrono::steady_clock::now();
+    if (achievement_toast_visible.load(std::memory_order_relaxed) && now >= achievement_toast_deadline)
+        achievement_toast_visible.store(false, std::memory_order_relaxed);
+    if (!achievement_toast_visible.load(std::memory_order_relaxed)) {
+        std::lock_guard lock(achievement_toast_mu);
+        if (!achievement_toast_queue.empty()) {
+            achievement_toast_id.store(achievement_toast_queue.front(), std::memory_order_relaxed);
+            achievement_toast_queue.pop_front();
+            achievement_toast_deadline = now + std::chrono::seconds(4);
+            achievement_toast_visible.store(true, std::memory_order_release);
+        }
+    }
+}
 /// A debug tool's row on the Debug tab (Row::cheat i): Left and Right, and confirm (press[7]: A, Enter, a click). Teleport and
 /// Inventory open their pages; back from them comes to the Debug tab, the row still selected
 void cheat_press(int i, const bool* press, bool& changed) {
@@ -3445,6 +3652,7 @@ void cheat_press(int i, const bool* press, bool& changed) {
 void menu_tick() {
     std::lock_guard lk(menu_mu);   // (the control bridge's settings: menu_setting_set)
     fullscreen_tick();
+    achievement_toast_tick();
     enum { K_N = 17 };
     static bool held[K_N];
     static const int keys[K_N] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1,   // (F1: for keyboards without Insert)
@@ -3692,6 +3900,17 @@ void menu_tick() {
                 }
             }
         }
+    } else if (open_now.load() && page == 6) {   // the local achievement list
+        if (mouse) achievement_mouse(ptr, mx, my, press, changed);
+        if (press[5]) page = 0, changed = true;
+        else {
+            const int step = (int)press[2] - (int)press[1] + ((int)press[14] - (int)press[13]) * achievement_lines +
+                             (int)press[4] - (int)press[3];
+            if (press[15]) achievement_selected = 0, changed = true;
+            else if (press[16]) achievement_selected = OOT_LOCAL_ACHIEVEMENT_COUNT - 1, changed = true;
+            else if (step) achievement_selected = std::clamp(achievement_selected + step, 0, OOT_LOCAL_ACHIEVEMENT_COUNT - 1), changed = true;
+            if (changed) achievement_reveal();
+        }
     } else if (open_now.load() && page == 4) {   // the inventory
         const int chosen = item_choice;   // (the page follows the choice when it moves; the wheel's page stays otherwise)
         if (mouse) inventory_mouse(ptr, mx, my, press, changed);
@@ -3847,6 +4066,8 @@ void menu_tick() {
             }
         } else if (r.cheat >= 0) cheat_press(r.cheat, press, changed);   // (a debug tool: on the Debug tab itself)
         else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
+        else if (press[7] && !r.value && !strcmp(r.name, "Achievements"))
+            page = 6, achievement_selected = achievement_scroll = 0, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
             if (press[7]) press[4] = true;
@@ -3897,7 +4118,8 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     const bool start = startup_on.load(std::memory_order_acquire);
     const bool fps = opts.show_fps && !start;   // (no game frames yet: not "0 FPS" over the start-up screen)
     const bool open = open_now.load(std::memory_order_relaxed);
-    if (!start && !fps && !open) {   // (nothing shows: no ImGui frame, no render pass)
+    const bool toast = achievement_toast_visible.load(std::memory_order_relaxed);
+    if (!start && !fps && !open && !toast) {   // (nothing shows: no ImGui frame, no render pass)
         // (but a new window size or Menu size since the last bake: one frame with nothing drawn that bakes the menu's glyphs
         // and measures its page for the new size, so the next open has no hitch whatever was resized while nothing showed)
         if (prebake_needed(w, h) && ui::begin(w, h)) {
@@ -3922,6 +4144,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     if (start) draw_startup(c);   // (under the menu)
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
+    if (toast) draw_achievement_toast(c);
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
     ui::record(cmd, index, w, h);
 }
@@ -3929,11 +4152,13 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
 void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {
     const bool open = open_now.load(std::memory_order_relaxed);
     const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire);
-    if (!open && !fps) return;
+    const bool toast = achievement_toast_visible.load(std::memory_order_relaxed);
+    if (!open && !fps && !toast) return;
     if (!ui::begin(w, h)) return;
     ui::Ctx c = ui_ctx(w, h);
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
+    if (toast) draw_achievement_toast(c);
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
     ui::record_to(cmd, image, view, w, h);
 }

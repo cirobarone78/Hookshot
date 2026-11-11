@@ -102,7 +102,8 @@
     "Item_Sword_Kokiri", "Item_Sword_Giant", "Item_Sword_Biggoron", "Item_Shield_Mirror", "Item_Range_Bow", \
     "Item_Range_SlingShot", "Weapon_Range_Hookshot", "Weapon_Range_Longshot", "Weapon_Boomerang", "Weapon_Hammer", \
     "Item_HeavyBoot", "Item_HoverBoot", "Item_Mask_Keaton", "Item_Gauntlet_Silver", "Armor_GlassTruth", "Armor_Child_GlassTruth", "Armor_Adult_GlassTruth", \
-    "Armor_Child_Gauntlet_Goron", "Item_Wallet_Small"
+    "Armor_Child_Gauntlet_Goron", "Item_Wallet_Small", "Item_Bottle_Milk", "Item_Letter_Zelda", "Item_Chick", \
+    "Item_RoyalLetter"
 
 #define OOT_CHEAT_ITEM_BASE 4096   /* rx_option_set(OOT_CHEAT_ITEM_BASE + i, count) from the game side; -1 unknown */
 #define OOT_CHEAT_AGE_ID 4090      /* rx_option_set(OOT_CHEAT_AGE_ID, age) from the game side: 0 child, 1 adult, -1 unknown */

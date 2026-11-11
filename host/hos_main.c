@@ -590,6 +590,7 @@ static const unsigned char oot_item_kinds[] = {OOT_CHEAT_ITEMS(OOT_NO_SECTION, O
 
 static int oot_item_count(Ctx *c, const char *name);
 static int oot_gamedata_bool(Ctx *c, uint32_t hash, int *value);
+static int oot_gamedata_string(Ctx *c, uint32_t hash, char *buf, size_t size);
 
 static void oot_inventory_refresh(Ctx *c, int64_t now) {
     void rx_option_set(int id, int value);
