@@ -48,6 +48,9 @@ import subprocess
 import sys
 import tempfile
 
+# (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/hookshot_env.h)
+ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "hookshot_env.h")
+
 RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,8 +64,10 @@ UNWRAPPED_OK = {
 # can be held then: RX_VK_RECORDER=defer drains only through vk_work.h's macros and the replay lock)
 BOUNDARY_OK = {
     "vk_coopmat.cpp": "the start-up probe: before any replay, its own vkCmd* direct (nothing held)",
-    "vk_main.cpp": "create_swapchain: after device_wait_idle_locked() (vkDeviceWaitIdle through vk_work.h in vk_replay.cpp: drained)",
-    "vk_shader.cpp": "program_cache_borrow's and a dropped try's own modules and layouts, which no recorded command uses",
+    "vk_main.cpp": "retire_swapchain drains through device_wait_idle_locked before destroying views, semaphores and the chain. "
+                   "Surface destruction follows retirement, or discards an unpublished surface without a chain.",
+    "vk_shader.cpp": "a dropped try's own modules, and those of a program already made, which no recorded command uses",
+    "vk_progcache.cpp": "program_cache_borrow's and a partial record's own modules and layouts, which no recorded command uses",
     "vk_imgui.cpp": "its own font/logo texture views, which only its direct recordings use",
 }
 # (the names a boundary has: a new one in a vk_work.h file must be in RX_REC_BOUNDARIES)
@@ -88,7 +93,7 @@ B_DIRECT_STMT = "::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);"
 
 C_COMMENT_OR_STRING = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'', re.S)
 UI_RECORD_CALL = re.compile(r"\bui\s*::\s*record(?:_to)?\s*\(")
-NGX_RECORD_CALL = re.compile(r"\bNGX_VULKAN_\w+_EXT\s*\(")   # (NVIDIA NGX's create/evaluate: its own commands into cmd)
+NGX_RECORD_CALL = re.compile(r"\bNGX_(?:VULKAN_\w+_EXT|VK_\w+_DLSSG)\s*\(")   # (NVIDIA NGX's create/evaluate, DLSS's and frame generation's: its own commands into cmd)
 FFX_RECORD_CALL = re.compile(r"\bl\s*\.\s*dispatch\s*\(")   # (AMD FidelityFX's ffxDispatch, through its loaded pointer: its own commands into cmd)
 OPAQUE_RECORD_CALL = re.compile(UI_RECORD_CALL.pattern + "|" + NGX_RECORD_CALL.pattern + "|" + FFX_RECORD_CALL.pattern)
 B_DIRECT_BEFORE = re.compile(r"::\s*mkwvk\s*::\s*rec\s*::\s*boundary\s*\(\s*::\s*mkwvk\s*::\s*rec\s*::\s*B_DIRECT\s*\)\s*;\Z")
@@ -259,7 +264,7 @@ def build(cxx, headers, out, recorder_text, name, extra=(), work_text=None):
     (d / "vk_work.h").write_text(work_text or (VK / "vk_work.h").read_text(encoding="utf-8"), encoding="utf-8")
     (d / "vk_recorder.h").write_text(recorder_text, encoding="utf-8")
     exe = d / "recorder_sync_test.exe"
-    cmd = [cxx, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-missing-field-initializers", "-DVK_NO_PROTOTYPES",
+    cmd = [cxx, "-std=c++20", "-include", ENV_ON_H, "-O2", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-missing-field-initializers", "-DVK_NO_PROTOTYPES",
            "-D_CRT_SECURE_NO_WARNINGS",
            *extra, "-I" + str(d), "-I" + str(headers), str(ROOT / "tests" / "recorder_sync_test.cpp"), "-o", str(exe)]
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -345,7 +350,7 @@ def exit_test(cxx, headers, out, recorder_text, name):
     (d / "vk_work.h").write_text((VK / "vk_work.h").read_text(encoding="utf-8"), encoding="utf-8")
     (d / "vk_recorder.h").write_text(recorder_text, encoding="utf-8")
     src = str(ROOT / "tests" / "recorder_exit_test.cpp")
-    flags = ["-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror", "-DVK_NO_PROTOTYPES", "-D_CRT_SECURE_NO_WARNINGS"]
+    flags = ["-std=c++20", "-include", ENV_ON_H, "-O2", "-Wall", "-Wextra", "-Werror", "-DVK_NO_PROTOTYPES", "-D_CRT_SECURE_NO_WARNINGS"]
     for cmd in ([cxx, *flags, "-shared", "-DRX_EXIT_DLL", "-I" + str(d), "-I" + str(headers), src, "-o", str(d / "rx_exit.dll")],
                 [cxx, *flags, src, "-o", str(d / "rx_exit.exe")]):
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

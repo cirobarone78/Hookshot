@@ -34,7 +34,7 @@ def main():
     replay = (vk / "vk_replay.cpp").read_text(encoding="utf-8")
     main_cpp = (vk / "vk_main.cpp").read_text(encoding="utf-8")
 
-    out = block(replay, "static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {")
+    out = block(replay, "static bool present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {")
     hand = out[: out.index("present_hand_off(")]
     need("present_copy_done && !pi.pNext && present_thread_on()" in hand,
          "a present is handed over from frame generation or with Reflex on")
@@ -75,6 +75,15 @@ def main():
     need("on_presenter && (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR)" in finish and "swap_resize" in finish,
          "an out-of-date present on the presenter does not ask for a new swapchain")
 
+    need("on_presenter && res == VK_ERROR_SURFACE_LOST_KHR" in finish and "presenter_surface_lost.store(true" in finish,
+         "a surface lost at the presenter's present is not handed to the next present_image")
+    lost = image[image.index("if (presenter_surface_lost.exchange(false"):]
+    need(lost.index("present_thread_drain();") < lost.index("std::lock_guard qk(dev.present_mu);") <
+         lost.index("invalidate_lost_surface(VK_ERROR_SURFACE_LOST_KHR);") < lost.index("return;"),
+         "a surface the presenter found lost is dropped without the presenter idle first, or outside the queue's lock")
+    acq = image[image.index("    if (res == VK_ERROR_SURFACE_LOST_KHR) {"):]
+    need(acq.index("present_thread_drain();") < acq.index("invalidate_lost_surface(res);"),
+         "the acquire's lost surface is dropped with a present still out on the presenter")
     make = block(main_cpp, "bool create_swapchain(uint32_t width, uint32_t height) {")
     need(make[make.index("{") + 1:].lstrip().startswith("present_thread_drain();"),
          "create_swapchain does not wait for the presenter first")

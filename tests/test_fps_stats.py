@@ -65,7 +65,7 @@ def main():
     need("fps_wait(fps_stats::kPace" in body(replay, "void present_image("), "the swapchain's acquire is not the pacing's")
     # (a present that returned only once the frame's copy, not done when it was called, was done waited for the GPU, not vsync:
     # NVIDIA on Linux; read with two fence reads, nothing waited for)
-    out = body(replay, "static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {")
+    out = body(replay, "static bool present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {")
     need("copy_was_done" in out and "waited_gpu ? fps_stats::kGpuWait : fps_stats::kPace" in out,
          "the present's wait is not split into the GPU's (the copy not done before, done after) and the pacing's")
     need("(::vkx::vkWaitForFences)(dev.device, 1, &copy, VK_TRUE, 0)" in out and out.count("vkWaitForFences") == 1,

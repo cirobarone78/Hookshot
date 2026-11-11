@@ -1,7 +1,7 @@
-/* The Vulkan back end (mkw_vk.dll) and the game executable: what each gives the other.
+/* The Vulkan back end (hookshot_vk.dll, hookshot_vk.so on Linux) and the game executable: what each gives the other.
 
    The executable records the game's NVN command buffers (host/nvn_native.c) and calls a renderer through the rx_*
-   functions (gpu/render/rx_nvn.h). With RX_BACKEND=vulkan host/rx_backend.c loads mkw_vk.dll, hands it the host
+   functions (gpu/render/rx_nvn.h). Unless RX_BACKEND names another, host/rx_backend.c loads it, hands it the host
    functions below and routes the rx_* calls to the table it returns; otherwise they go to the WebGPU renderer in
    the executable. The DLL carries Eden's shader recompiler (gpu/vk/eden, SPIR-V back end) and sirit: their C++
    namespaces are the same as those of the WebGPU renderer's suyu copy, so the two live in different binaries. */
@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 15
+#define MKWVK_API_VERSION 17
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -35,6 +35,11 @@ enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE, HOS_OPT_DIS
 /* (HOS_OPT_DISABLE_CAMERA_CENTERING, 45: Controls' movement-follow yaw, host/mouse_native.c: 0 stock, 1 disabled;
    44 is reserved for HOS_OPT_SKIP_TITLE) */
 enum { HOS_OPT_DISABLE_CAMERA_CENTERING = 45 };
+/* (hookshot) the Insert menu's Camera speed: the right stick's camera turn in percent of the game's, 50 to 400 (host/nn_vi.c
+   hos_camera_scale, nx2/oot_patches.py). 48: after the HDR and Discord rows' 40 to 43, Skip title's 44 and camera centering's 45 */
+enum { HOS_OPT_CAMERA_SPEED = 48 };
+/* (HOS_OPT_PROMPTS, 46: the Button prompts row, host/prompts.c: 0 Auto, else HOS_PROMPT_* + 1; a change shows at once) */
+enum { HOS_OPT_PROMPTS = 46 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
@@ -51,6 +56,10 @@ enum { HOS_BIND_PAD, HOS_BIND_KEY };
 /* (hookshot) the controller faces of the button prompts (host/prompts.c): the Switch, then nx2/prompt_faces.py FACES' order;
    the Button prompts row's value is one more (0 Auto) */
 enum { HOS_PROMPT_SWITCH, HOS_PROMPT_XBOX, HOS_PROMPT_PS4, HOS_PROMPT_PS5, HOS_PROMPT_STEAMDECK, HOS_PROMPT_N };
+/* (hookshot) what of the button prompts follows a new face or new controls at once (MkwVkHost.prompts_live, a bit each):
+   the textures (the ocarina's notes, the Talk ring's letters, the System page's controller), the layouts (the Talk ring's
+   places, the ocarina hint's spacing), the icons in texts; the rest at the next start */
+enum { HOS_PROMPTS_LIVE_TEXTURES = 1, HOS_PROMPTS_LIVE_LAYOUTS = 2, HOS_PROMPTS_LIVE_TEXTS = 4, HOS_PROMPTS_LIVE_ALL = 7 };
 /* keys only (HOS_BIND_KEY), after the Switch's buttons: the left stick's and the camera's directions */
 enum { HOS_KEY_MOVE_UP = HOS_SW_N, HOS_KEY_MOVE_DOWN, HOS_KEY_MOVE_LEFT, HOS_KEY_MOVE_RIGHT, HOS_KEY_CAM_UP,
        HOS_KEY_CAM_DOWN, HOS_KEY_CAM_LEFT, HOS_KEY_CAM_RIGHT, HOS_KEY_N };
@@ -65,6 +74,14 @@ typedef struct MkwVkPointer {
     uint32_t held, pressed;
     int32_t wheel;
 } MkwVkPointer;
+
+/* (hookshot) one of the Insert menu's settings, for the control bridge (MkwVkRenderer setting): key is its line in
+   hookshot_options.ini, name the row's, text how the menu shows the value */
+typedef struct MkwVkSetting {
+    char key[32], name[48], text[64], tab[16];
+    int value, lo, hi, step;
+    int restart, fixed;   /* the change applies at the next start; nothing to choose on this PC (the menu shows it greyed) */
+} MkwVkSetting;
 
 /* what the executable gives the back end */
 typedef struct MkwVkHost {
@@ -103,7 +120,7 @@ typedef struct MkwVkHost {
     /// The soft write watch's marks within [ranges[i][0], ranges[i][1]) only, read and cleared (free with free_pages)
     int64_t (*collect_written_in)(const uint64_t (*ranges)[2], int n, uint32_t **pages);
     /// Zeroed guest memory of the renderer's own (address space above the heap, never freed; 0 when none is left):
-    /// what the NVN driver keeps in GPU memory of its own, such as its constant banks (mkw_eden.dll)
+    /// what the NVN driver keeps in GPU memory of its own, such as its constant banks
     uint64_t (*guest_alloc)(uint64_t size);
     /// (debugging) CPU writes to [guest, guest + size) logged with the writer's guest call stack (a page watch)
     void (*watch_guest_writes)(uint64_t guest, uint64_t size);
@@ -152,6 +169,9 @@ typedef struct MkwVkHost {
     void (*slept_ns)(int64_t out[2]);
     /* (version 15, hookshot) whether the host times those sleeps: 1 while the Breakdown shows, 0 (the default) costs nothing */
     void (*fps_timing)(int on);
+    /* (version 17, hookshot) what of the button prompts a change of face or controls reaches at once (host/prompts.c):
+       HOS_PROMPTS_LIVE_* bits; 0 none (a mod's files, built without the prompts, or not loaded yet) */
+    int (*prompts_live)(void);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */
@@ -198,7 +218,8 @@ typedef struct MkwVkRenderer {
                                 7: the mouse's sensitivity in percent, 8: its up and down swapped (host/nn_hid.c),
                                 18 to 23: the Motion page (HOS_OPT_GYRO*: motion controls from a pad's gyroscope, host/pad_sdl.c;
                                 the horizontal and vertical sensitivity in percent, each turned around, the deadzone),
-                                27: the volume in percent, 28: no sound while another window has the focus (host/nn_audio.c) */
+                                27: the volume in percent, 28: no sound while another window has the focus (host/nn_audio.c),
+                                48: the camera's turn speed in percent of the game's (host/nn_vi.c) */
     /* a submit with its queue */
     void (*nvn_submit_q)(const uint64_t *handles, int n, uint64_t queue);
     /* (hookshot) a fence of one queue: the value its own last submission signals (nvnQueueFenceSync) */
@@ -208,6 +229,20 @@ typedef struct MkwVkRenderer {
     void (*option_set)(int id, int value);
     /* (version 14) one coherent camera-jitter sample, without per-axis queries */
     void (*jitter_sample)(MkwVkJitter *out);
+    /* (version 16, hookshot) the control bridge (host/control.c, docs/control.md) */
+    /* the presents replayed so far, the draws recorded since the start, and the picture's size (the window's swapchain, or
+       the offscreen image's) */
+    void (*frame_info)(int64_t *presents, int64_t *draws, int *width, int *height);
+    /* a PNG of the first present replayed after present `after` (-1: the next one), RX_VK_SHOTS' size, written to
+       path on a thread of its own, which then calls done(ctx, the present, 1 when the file was written). 0: not taken
+       (too many waiting) */
+    int (*shot)(const char *path, int64_t after, void (*done)(void *ctx, int64_t present, int ok), void *ctx);
+    /* the Insert menu's settings rows (shown on this PC; not the headings or the debug tools): the index-th, to list them (0:
+       past the last; an index is no name, rows come and go), and the one whose hookshot_options.ini key is key set to value
+       as the menu's Left and Right set it, kept in the options file, out the row after it (1 set, 0 no such row, -1 nothing
+       to choose on this PC) */
+    int (*setting)(int index, MkwVkSetting *out);
+    int (*setting_set)(const char *key, int value, MkwVkSetting *out);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */

@@ -22,6 +22,9 @@
 #endif
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 
 #define RESULT_NO_OUTPUT 0x2a1ca   /* (a failure: "no picture yet"; the library polls again) */
 #define POOL_MAGIC 0x4c4f4f50u     /* 'POOL' */
@@ -32,7 +35,7 @@
 
 static int video_log(void) {   /* HOS_VIDEO_LOG=1: submissions and acquisitions */
     static int on = -1;
-    if (on < 0) on = getenv("HOS_VIDEO_LOG") != NULL;
+    if (on < 0) on = env_on("HOS_VIDEO_LOG");
     return on;
 }
 
@@ -297,7 +300,7 @@ static void dec_init_sized(Ctx *c, enum AVCodecID id, const char *what, int w, i
         static volatile LONG told;
         if (!InterlockedExchange(&told, 1)) {
             hos_log("video: no AV1 decoder: install Microsoft's free AV1 Video Extension for the movies");
-            if (!getenv("HOS_HEADLESS") && !getenv("HOOKSHOT_NO_AV1_NOTICE"))
+            if (!env_on("HOS_HEADLESS") && !env_on("HOOKSHOT_NO_AV1_NOTICE"))
                 CreateThread(NULL, 0, av1_notice, NULL, 0, NULL);
         }
     }
@@ -582,6 +585,11 @@ static void dec_acquire(Ctx *c) {
     if (!d) { RET(RESULT_NO_OUTPUT); return; }
     /* (the library aborts on any failure here: the hardware call waits for a picture. Up to ~100 ms for one decoded
        by another thread's submission; then a free buffer as it was, so the caller is never refused) */
+    /* (hookshot, #1929) and no virtual core held through it: the decoding blocks (dav1d waits for its own frame
+       threads), and with the core held the movie thread kept it 100-270 ms on Linux while a thread waiting for that core
+       ran without one. It is taken again only once d->lock is let go, as in hos_cv_sleep: waiting for a core while
+       holding the lock could stall a thread that holds a core and waits for the lock (dec_submit) */
+    const int away = hos_vcore_away();
     AcquireSRWLockExclusive(&d->lock);
     decode_pending(d);
     for (int tries = 0; !d->qn && !d->eos && tries < 50; tries++) {
@@ -595,6 +603,7 @@ static void dec_acquire(Ctx *c) {
         if (d->slots[i] && !d->busy[i] && host_of(d->slots[i], POOL_MAGIC)) slot = i;
     if (slot < 0) {
         ReleaseSRWLockExclusive(&d->lock);
+        if (away) hos_vcore_back();
         RET(RESULT_NO_OUTPUT);
         return;
     }
@@ -610,6 +619,7 @@ static void dec_acquire(Ctx *c) {
         else if (d->acquires == 1 && !d->eos)   /* (the start: the frame shows the buffer as it was, black since the pool's fill) */
             hos_log("video: the first buffer went out before the first picture was decoded (shown black)");
         ReleaseSRWLockExclusive(&d->lock);
+        if (away) hos_vcore_back();
         if (ARG(0)) G32(ARG(0)) = (uint32_t)slot;
         RET(0);
         return;
@@ -618,7 +628,7 @@ static void dec_acquire(Ctx *c) {
            sound (the intro "slow motion, audio ahead", issues 146 and 179). Pictures behind the movie's clock are skipped:
            the next ones decoded, as the whole movie is submitted at once. HOS_VIDEO_NO_CATCHUP=1: as before */
         static int off = -1;
-        if (off < 0) off = getenv("HOS_VIDEO_NO_CATCHUP") != NULL;
+        if (off < 0) off = env_on("HOS_VIDEO_NO_CATCHUP");
         const int64_t now = hos_now_ns(), late = 25000000;   /* (a frame and a half at 60 fps) */
         Picture *h = &d->queue[d->qhead];
         if (!d->clock_set || h->pts < d->clock_pts) d->clock_set = 1, d->clock_ns = now, d->clock_pts = h->pts;   /* (a start, a loop) */
@@ -692,6 +702,7 @@ static void dec_acquire(Ctx *c) {
     picture_free(p);
     d->qhead = (d->qhead + 1) % MAX_QUEUE, d->qn--;
     ReleaseSRWLockExclusive(&d->lock);
+    if (away) hos_vcore_back();
     if (ARG(0)) G32(ARG(0)) = (uint32_t)slot;
     RET(0);
 }
