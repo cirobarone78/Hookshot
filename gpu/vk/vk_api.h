@@ -47,6 +47,10 @@ enum { HOS_OPT_HDR_TONEMAP = 47 };
 /* Gameplay's vertical field of view, percent of the game's current angle; 100 is unchanged. */
 /* 49 and 50 are reserved for Walk mode and Walk speed (#2345). */
 enum { HOS_OPT_FOV = 51 };
+/* (HOS_OPT_KEYBOARD, 54: the Controls page's Keyboard row, host/nn_hid.c: 0 Auto, 1 On, 2 Off. Auto counts the keyboard's
+   bindings only while no controller is connected: Steam Input's Desktop layout sends a pad's stick and buttons to a focused
+   window as key presses, which reached the game's camera and Plus on a Steam Deck in Desktop Mode) */
+enum { HOS_OPT_KEYBOARD = 54 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position (the bottom face button first:

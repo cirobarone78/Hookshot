@@ -51,8 +51,20 @@ static XInputGetStateFn xinput_get;
 static int64_t sampling;
 
 int rx_option(int id, int otherwise);
+static volatile LONG pad_count_now;   /* (the controllers connected at the last read: pads_read) */
+/* (hookshot) Whether the keyboard's bindings count: the Insert menu's Keyboard row (HOS_OPT_KEYBOARD), 0 Auto (they count
+   only while no controller is connected), 1 On, 2 Off. Steam Input's Desktop layout sends a pad's stick and buttons to the
+   window in front as key presses (the left stick the arrow keys, A Enter, View Tab, Menu Esc), and those reached the game's
+   camera and Plus when they were read as the keyboard's: walking moved the camera, and View and Menu both opened the pause
+   menu, on a Steam Deck in Desktop Mode with the game started outside Steam. A mouse button is the mouse's, not the
+   keyboard's: only the keyboard's keys go through the row. The Insert menu's own keys do not come through here. */
+static int keyboard_counts(int vk) {
+    if (vk >= 0x01 && vk <= 0x06 && vk != 0x03) return 1;   /* (VK_LBUTTON to VK_XBUTTON2 but VK_CANCEL: the mouse's buttons) */
+    const int mode = rx_option(HOS_OPT_KEYBOARD, 0);
+    return mode == 1 ? 1 : mode == 2 ? 0 : pad_count_now == 0;
+}
 /* (the Insert menu takes the keyboard while it is open) */
-static int key(int vk) { return !rx_option(1, 0) && (GetAsyncKeyState(vk) & 0x8000) != 0; }
+static int key(int vk) { return !rx_option(1, 0) && keyboard_counts(vk) && (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
 int hos_mouse_take(int32_t *dx, int32_t *dy);   /* display.c */
 
@@ -688,6 +700,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
     uint64_t raw = 0;   /* (by position: 1 << HOS_PAD_*) */
     int32_t s[4] = {0};
     int sdl_pads = 0;
+    int controlled = 0;   /* (the pads connected this read: the Keyboard row's Auto counts the keyboard's keys only at 0) */
     {   /* every controller SDL knows (DualSense, DualShock 4, Switch Pro, ...: hos/pad_sdl.c) */
         int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]);
         static int was;
@@ -695,6 +708,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
         if (n != was) hos_log("hid: %d controller%s through SDL", n, n == 1 ? "" : "s");
         was = n;
         sdl_pads = n;
+        controlled = n;
     }
 #ifdef __EMSCRIPTEN__
     xinput_get = XInputGetState;
@@ -738,6 +752,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
             }
             if (!was_connected[p]) hos_log("hid: controller %d connected", p);
             was_connected[p] = 1;
+            controlled++;
             const WORD w = xs.Gamepad.wButtons;
             for (unsigned i = 0; i < sizeof map / sizeof *map; i++)
                 if (w & map[i].x) raw |= 1ULL << map[i].b;
@@ -754,6 +769,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
         }
     }
     InterlockedExchange(&pad_raw_now, (LONG)raw);
+    InterlockedExchange(&pad_count_now, (LONG)controlled);
     /* Back and Start together open the Insert menu (gpu/vk/vk_menu.cpp, for pads whose Home button the system
        keeps): they reach the game only one at a time */
     const uint64_t chord = 1ULL << HOS_PAD_BACK | 1ULL << HOS_PAD_START;

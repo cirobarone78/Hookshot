@@ -117,6 +117,11 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+// (hookshot) the Keyboard row: Auto counts the keyboard's controls only while no controller is connected
+const char* tx_keyboard(int v) {
+    static const char* const t[] = {"Auto", "On", "Off"};
+    return t[v < 0 ? 0 : v > 2 ? 2 : v];
+}
 const char* tx_fps_level(int v) { return fps_stats::level_name(v); }
 const char* tx_fps_corner(int v) { return fps_stats::corner_name(v); }   // (the FPS counter row: Off, FPS, Frame time, Graph, Breakdown)
 const char* tx_profile(int v) { return v ? "Handheld" : "Docked"; }   // (opts.handheld: the Profile row)
@@ -893,9 +898,13 @@ Row rows[] = {
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
 
-    // Controls (12 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
+    // Controls (13 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background, false, true},
+    {TAB_CONTROLS, "Keyboard", &opts.keyboard, 0, 2, 1, tx_keyboard,
+     "Whether the keyboard's controls count. Auto: only while no controller is connected, so a controller that sends key "
+     "presses cannot reach the game's controls (Steam Input's Desktop layout on a Steam Deck sends the stick and the face "
+     "buttons as the arrow keys, Enter, Esc and Tab). The Insert menu's own keys always count.", nullptr, false, true},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
      hn_mousecam, false, true},
     {TAB_CONTROLS, "Disable camera centering", &opts.disable_camera_centering, 0, 1, 1, tx_onoff,
