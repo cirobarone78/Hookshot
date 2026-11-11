@@ -295,6 +295,7 @@ Id EmitFPUnordGreaterThanEqual32(EmitContext& ctx, Id lhs, Id rhs);
 Id EmitFPUnordGreaterThanEqual64(EmitContext& ctx, Id lhs, Id rhs);
 Id EmitFPIsNan16(EmitContext& ctx, Id value);
 Id EmitFPIsNan32(EmitContext& ctx, Id value);
+Id IsNan(EmitContext& ctx, Id value, u32 bits);   // (hookshot: OpIsNan, or a test of the bits: mma_layout.h nan_bits)
 Id EmitFPIsNan64(EmitContext& ctx, Id value);
 Id EmitIAdd32(EmitContext& ctx, IR::Inst* inst, Id a, Id b);
 Id EmitIAdd64(EmitContext& ctx, Id a, Id b);
