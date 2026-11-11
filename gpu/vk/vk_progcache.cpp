@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "shader_recompiler/shader_info.h"
+#include "hookshot_env.h"
 #include "vk_paths.h"
 #include "vk_internal.h"
 #include "vk_progcache.h"
@@ -117,7 +118,7 @@ void idx_write(const std::string& path, uint64_t stamp, const std::vector<std::p
 void disk_init() {
     static std::once_flag once;
     std::call_once(once, [] {
-        if (getenv("RX_VK_NO_PROGRAM_CACHE")) return;
+        if (env_on("RX_VK_NO_PROGRAM_CACHE")) return;
         char exe[MAX_PATH];
         const DWORD n = game_module_path(exe, MAX_PATH);
         std::string path(exe, n);

@@ -31,8 +31,9 @@ def main():
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     main_cpp = (ROOT / "gpu/vk/vk_main.cpp").read_text(encoding="utf-8")
     predict = body(draw, "void predict_run(void (*progress)(size_t done, size_t total)) {")
-    if "predicted_sample_write(predicted)" not in predict or "!prepare_stopped()" not in predict[predict.index("predicted_sample_write") - 80:]:
-        raise SystemExit("FAIL: predict_run does not keep a sample of what it built (or keeps one when it was stopped)")
+    at = predict.find("predicted_sample_write(pre->predicted)")
+    if at < 0 or "!prepare_stopped()" not in predict[at - 80:at] or "!gone_on" not in predict[at - 80:at]:
+        raise SystemExit("FAIL: predict_run does not keep a sample of what it built (or keeps one when it was stopped or gave up)")
     write = body(draw, "void predicted_sample_write(const std::vector<std::unique_ptr<PipeNote>>& predicted) {")
     if "predicted_this_run = true" not in write or "program_cache_stamp()" not in write:
         raise SystemExit("FAIL: the sample is not stamped, or the building process would check itself")
@@ -40,7 +41,7 @@ def main():
     for need, why in (("predicted_this_run", "the process that built them asks the driver, which answers from memory"),
                       ("if (!dev.vk13.pipelineCreationCacheControl) return;",
                        "the check asks under FAIL_ON_PIPELINE_COMPILE_REQUIRED on a device without pipelineCreationCacheControl"),
-                      ('if (getenv("HOOKSHOT_PREPARE_ONLY")) return;',
+                      ('if (env_on("HOOKSHOT_PREPARE_ONLY")) return;',
                        "a --prepare-shaders run starts the check on a thread that would race its exit"),
                       ("head[0] == program_cache_stamp()", "a sample of another translator or cache format is asked"),
                       ("std::thread(", "the check holds up the start"),
