@@ -25,7 +25,7 @@ Stages:
                 seed coverage (partial banks are expected).
 
 What this does NOT do (exact stop-line, needs a Vulkan GPU on the target rig):
-  - VkShaderModule creation (make_module needs dev.device, :542-549).
+  - VkShaderModule creation (StageModule needs dev.device, gpu/vk/vk_stage_code.cpp).
   - Driver pipeline builds (build_graphics, gpu/vk/vk_draw.cpp:1046).
   Every emitted combo keeps pipelines PENDING_GPU; translation is now real
   (step 3) instead of assumed. prepare_run/precompile_run on a Vulkan machine
@@ -255,7 +255,7 @@ def bake_seed(seed_path: str, bank_dir: str, max_pipelines: int = 8,
                 "combos": old_combos + combos, "done_programs": sorted(done),
                 "status": "PENDING_GPU",
                 "stop_line": "SPIR-V translation + pipeline builds need a "
-                             "Vulkan device (make_module/build_graphics); "
+                             "Vulkan device (StageModule/build_graphics); "
                              "rerun prepare_run/precompile_run on target GPU."}
     tmp = manifest_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

@@ -17,12 +17,39 @@
 
 namespace mkwvk {
 
+/// (hookshot) A stage's SPIR-V as its program keeps it: packed with zstd (vk_stage_code.cpp), and made a shader module only while
+/// a pipeline is made with it (StageModule). Kept as modules, the ~12,000 programs a start keeps (their pipelines precompiled
+/// from the state lists) were ~20,000 modules, for which NVIDIA's driver held ~99 KB each, ~2 GB of the game's memory, and a
+/// module destroyed later gave none of it back. The same SPIR-V packed is about a quarter of its size (~0.43 GB for those),
+/// and a module made and destroyed for each pipeline leaves the driver nothing lasting (+8 MB for 20,400 made that way)
+struct StageCode {
+    std::vector<uint8_t> packed;   // (a zstd frame of the SPIR-V's words)
+    uint32_t words = 0;            // (the SPIR-V's length; 0: none)
+    explicit operator bool() const { return words != 0; }
+};
+
 struct Stage {
     int nvn_stage = 0;   // 0 vertex, 1 fragment, 5 compute (what its banks are read for)
     VkShaderStageFlagBits vk_stage = VK_SHADER_STAGE_VERTEX_BIT;
-    VkShaderModule module = VK_NULL_HANDLE;
+    StageCode code;
     Shader::Info info;
     std::vector<uint8_t> c1;   // its c1 constants (the code area's tail)
+};
+
+/// The SPIR-V packed into c; false when it could not be (c is then empty)
+bool stage_code(StageCode& c, const std::vector<uint32_t>& spirv);
+/// A stage's shader module, made from its packed SPIR-V now and destroyed with this object: for the one pipeline being made
+/// with it. Converts to VK_NULL_HANDLE when it could not be made (the pipeline is then not made either)
+class StageModule {
+public:
+    explicit StageModule(const Stage& st);
+    ~StageModule();
+    StageModule(const StageModule&) = delete;
+    StageModule& operator=(const StageModule&) = delete;
+    operator VkShaderModule() const { return module_; }
+
+private:
+    VkShaderModule module_ = VK_NULL_HANDLE;
 };
 
 /// A texture handle the stage reads from a storage buffer: its handle program (Shader::Info::handle_programs, Eden's
@@ -95,7 +122,7 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
 size_t seed_open();
 std::string seed_path();   // (hookshot_shaders.bin, beside the game)
 void seed_close();
-/// Program i of the seed, translated and kept for the default state (null: kept already, or it does not translate); its modules are yours
+/// Program i of the seed, translated and kept for the default state (null: kept already, or it does not translate)
 std::unique_ptr<Program> seed_program(size_t i, int inputs = 0);
 bool seed_is_compute(size_t i);
 /// (hookshot) Seed program i, a compute program, kept in hookshot_programs.bin with every texture variant its questions can make (up

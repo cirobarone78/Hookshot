@@ -1,4 +1,4 @@
-"""Exercise seed_variant_of module ownership without a GPU or game."""
+"""Exercise what seed_variant_of keeps (a variant's stages and their packed code) without a GPU or game."""
 import argparse
 from pathlib import Path
 import shutil
@@ -32,7 +32,7 @@ class SeedVariantCleanupTests(unittest.TestCase):
         cls.addClassCleanup(cls.temporary.cleanup)
         directory = Path(cls.temporary.name).resolve()
         header = (ROOT / 'gpu/vk/vk_shader.h').read_text(encoding='utf-8')
-        structs = '\n'.join(block(header, marker) + ';' for marker in ('struct Stage {', 'struct Program {'))
+        structs = '\n'.join(block(header, marker) + ';' for marker in ('struct StageCode {', 'struct Stage {', 'struct Program {'))
         (directory / 'seed_types.inc').write_text(structs, encoding='utf-8')
         function = block(SOURCE.read_text(encoding='utf-8'), 'const Program* seed_variant_of(')
         (directory / 'seed_function.inc').write_text(function, encoding='utf-8')
@@ -52,19 +52,19 @@ class SeedVariantCleanupTests(unittest.TestCase):
         result = subprocess.run([str(self.executable), name], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_partial_graphics_failure_releases_modules(self):
+    def test_partial_graphics_failure_keeps_nothing(self):
         self.run_case('graphics_failure')
 
-    def test_partial_mesh_failure_releases_modules(self):
+    def test_partial_mesh_failure_keeps_nothing(self):
         self.run_case('mesh_failure')
 
-    def test_failure_with_only_null_modules(self):
+    def test_failure_with_no_stage_code(self):
         self.run_case('null_failure')
 
-    def test_success_retains_modules_in_cache(self):
+    def test_success_keeps_its_stage_code_in_cache(self):
         self.run_case('success')
 
-    def test_duplicate_destroys_only_temporary_modules(self):
+    def test_duplicate_returns_the_kept_variant(self):
         self.run_case('duplicate')
 
 

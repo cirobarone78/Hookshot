@@ -231,15 +231,28 @@ def vk_sources():
     return sorted(out)
 
 
-def zstd_jobs(cc, flags, obj_dir, prefix):
+def zstd_headers(encoder=False):
+    """zstd's headers: its API's and its decoder's, and with encoder its encoder's (what its objects and their users depend on)"""
+    dirs = [ZSTD, os.path.join(ZSTD, "common"), os.path.join(ZSTD, "decompress")] + ([os.path.join(ZSTD, "compress")] if encoder else [])
+    return b"".join(open(os.path.join(d, f), "rb").read() for d in dirs for f in sorted(os.listdir(d)) if f.endswith(".h"))
+
+
+def zstd_jobs(cc, flags, obj_dir, prefix, encoder=False):
     """zstd's decoder (third_party/zstd, plain C) as compile jobs, objects <prefix><name>.o: in the Vulkan back end (the game's
-    fonts, vk_imgui.cpp) and in the runtime (a mod's resource size table, host/prompts.c)"""
-    deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (ZSTD, os.path.join(ZSTD, "common"), os.path.join(ZSTD, "decompress"))
-                    for f in sorted(os.listdir(d)) if f.endswith(".h"))
+    fonts, vk_imgui.cpp) and in the runtime (a mod's resource size table, host/prompts.c). encoder: its encoder too (the program
+    stages' SPIR-V kept packed, vk_stage_code.cpp), single-threaded: flags without ZSTD_MULTITHREAD, which zstd tests with #ifdef
+    (defined as 0 it is on, and the encoder would call zstdmt_compress.c, which is not built)"""
+    deps = zstd_headers(encoder)
+    srcs = ["common/debug.c", "common/entropy_common.c", "common/error_private.c", "common/fse_decompress.c",
+            "common/xxhash.c", "common/zstd_common.c", "decompress/huf_decompress.c", "decompress/zstd_ddict.c",
+            "decompress/zstd_decompress.c", "decompress/zstd_decompress_block.c"]
+    if encoder:
+        srcs += ["compress/fse_compress.c", "compress/hist.c", "compress/huf_compress.c", "compress/zstd_compress.c",
+                 "compress/zstd_compress_literals.c", "compress/zstd_compress_sequences.c", "compress/zstd_compress_superblock.c",
+                 "compress/zstd_double_fast.c", "compress/zstd_fast.c", "compress/zstd_lazy.c", "compress/zstd_ldm.c",
+                 "compress/zstd_opt.c", "compress/zstd_preSplit.c"]
     return [(cc, os.path.join(ZSTD, *f.split("/")), os.path.join(obj_dir, prefix + os.path.basename(f)[:-2] + ".o"), flags, deps)
-            for f in ("common/debug.c", "common/entropy_common.c", "common/error_private.c", "common/fse_decompress.c",
-                      "common/xxhash.c", "common/zstd_common.c", "decompress/huf_decompress.c", "decompress/zstd_ddict.c",
-                      "decompress/zstd_decompress.c", "decompress/zstd_decompress_block.c")]
+            for f in srcs]
 
 
 def cpm_dirs():
@@ -972,10 +985,14 @@ def main():
         for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "backends/imgui_impl_vulkan.cpp"):
             vk_jobs.append((cxx, os.path.join(imgui, *f.split("/")),
                             os.path.join(obj_dir, "vk_imgui_" + os.path.basename(f)[:-4] + ".o"), vflags + imgui_flags, imgui_deps))
-        # (zstd's decoder, third_party/zstd, plain C)
+        # (zstd, third_party/zstd, plain C: the decoder (the game's font files) and the encoder (the program stages' SPIR-V kept
+        # packed, vk_stage_code.cpp). Single-threaded, as zstd is with ZSTD_MULTITHREAD not defined (it tests #ifdef: defined as 0 it
+        # was on, and the encoder would call zstdmt_compress.c, which is not built)
         zflags = target() + CPU + (["-fPIC"] if LINUX else []) + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-fvisibility=hidden",
-                                                                 "-DZSTD_DISABLE_ASM", "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"]
-        vk_jobs += zstd_jobs(cc, zflags, obj_dir, "vk_zstd_")
+                                                                 "-DZSTD_DISABLE_ASM", "-DZSTD_LEGACY_SUPPORT=0"]
+        vk_jobs += zstd_jobs(cc, zflags, obj_dir, "vk_zstd_", encoder=True)
+        zdeps = zstd_headers(encoder=True)   # (vk_stage_code.cpp's: the encoder's and decoder's API, zstd.h)
+        zstd_users = ("vk_stage_code.cpp",)
         # (the bundled fonts, compiled in: nx2/ui_fonts.py's file of the build's own)
         vk_jobs.append((cxx, fonts_cpp, os.path.join(obj_dir, "vk_ui_fonts.o"), target() + (["-fPIC"] if LINUX else []) + ["-O0", "-g0", "-w"],
                         b""))
@@ -987,10 +1004,12 @@ def main():
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
                             (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
+                            (["-I" + zstd] if os.path.basename(src) in zstd_users else []) +
                             (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []),
                             vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
                             (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
-                            (imgui_deps if os.path.basename(src) in imgui_users else b"")))
+                            (imgui_deps if os.path.basename(src) in imgui_users else b"") +
+                            (zdeps if os.path.basename(src) in zstd_users else b"")))
         if NGX_SDK and not LINUX and toolchain.mingw():
             # (llvm-mingw: NVIDIA's static library was built with Microsoft's compiler for its static runtime (/MT). What it asks
             # of that runtime: the C parts as for the static FFmpeg (host/mingw_msvc_shims.c), the C++ ones in vk_ngx_msvc_rt.cpp)

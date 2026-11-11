@@ -646,15 +646,6 @@ std::unique_ptr<Translation> translate(Env& env, bool graphics, bool one_exit = 
 
 } // namespace
 
-VkShaderModule make_module(const std::vector<uint32_t>& spirv) {
-    VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    ci.codeSize = spirv.size() * 4;
-    ci.pCode = spirv.data();
-    VkShaderModule m = VK_NULL_HANDLE;
-    vkCreateShaderModule(dev.device, &ci, nullptr, &m);
-    return m;
-}
-
 /// A word of a stage's constant bank: c0 / c2 the driver's banks, c1 its own constants, c3.. its uniform buffers
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset) {
     if (index == 1) {
@@ -1248,7 +1239,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             Stage st;
             st.nvn_stage = 5;
             st.info = t->program.info;
-            st.module = make_module(spirv);
+            stage_code(st.code, spirv);
             kept.push_back(spirv);
             st.vk_stage = VK_SHADER_STAGE_COMPUTE_BIT;
             st.c1 = csc->c1;
@@ -1284,7 +1275,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                          bi ? " base instance" : "", di ? " draw index" : "");
             }
             v.info = vs->program.info;
-            v.module = make_module(vspirv);
+            stage_code(v.code, vspirv);
             kept.push_back(vspirv);
             v.vk_stage = VK_SHADER_STAGE_VERTEX_BIT;
             v.c1 = vsc->c1;
@@ -1307,7 +1298,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                 Stage f;
                 f.nvn_stage = 1;
                 f.info = fs->program.info;
-                f.module = make_module(fspirv);
+                stage_code(f.code, fspirv);
                 kept.push_back(fspirv);
                 f.vk_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
                 f.c1 = fsc->c1;
@@ -1315,7 +1306,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             }
         }
         for (const Stage& st : p.stages)
-            if (!st.module) throw Shader::LogicError("vkCreateShaderModule failed");
+            if (!st.code) throw Shader::LogicError("a stage's SPIR-V could not be kept");
         if (questions || answers_in) record_answers(p, s);
         st_translated++;
         ptr_diag_log(p.key, csc ? "compute" : fsc ? "graphics" : "vertex");
@@ -1406,7 +1397,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             Stage st;
             st.nvn_stage = bank_stage(*task);
             st.info = task_t->program.info;
-            st.module = make_module(spirv);
+            stage_code(st.code, spirv);
             st.vk_stage = fallback ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_TASK_BIT_EXT;
             st.c1 = task->c1;
             p.stages.push_back(std::move(st));
@@ -1442,7 +1433,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
         Stage ms;
         ms.nvn_stage = bank_stage(mesh);
         ms.info = mesh_t->program.info;
-        ms.module = make_module(mspirv);
+        stage_code(ms.code, mspirv);
         ms.vk_stage = fallback ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_MESH_BIT_EXT;
         ms.c1 = mesh.c1;
         p.stages.push_back(std::move(ms));
@@ -1473,7 +1464,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             Stage v;
             v.nvn_stage = 0;
             v.vk_stage = VK_SHADER_STAGE_VERTEX_BIT;
-            v.module = make_module(vspirv);
+            stage_code(v.code, vspirv);
             v.c1 = mesh.c1;
             p.stages.push_back(std::move(v));
             const u32 topo{mesh.topology == 3 ? 4u : mesh.topology == 1 ? 0u : mesh.topology};
@@ -1517,7 +1508,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             Stage f;
             f.nvn_stage = 1;
             f.info = fs->program.info;
-            f.module = make_module(fspirv);
+            stage_code(f.code, fspirv);
             f.vk_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
             f.c1 = fsc->c1;
             p.stages.push_back(std::move(f));
@@ -1541,7 +1532,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
             }
         }
         for (const Stage& st : p.stages)
-            if (!st.module) throw Shader::LogicError("vkCreateShaderModule failed");
+            if (!st.code) throw Shader::LogicError("a stage's SPIR-V could not be kept");
         record_answers(p, s);   // (task questions not counted: kept conservative)
         (void)questions;
         ptr_diag_log(p.key, task ? "task+mesh" : "mesh");
@@ -2099,7 +2090,7 @@ bool seed_is_compute(size_t i) {
 // textures bound (Program::answers), which nothing before the game knows; the questions themselves are few, so each is tried with every
 // answer it can get, and an answer that changes the SPIR-V makes a variant. Variants of two answers and more are taken fewest first, up
 // to cap: one of them is the variant play makes, which still_valid then finds kept. All go to hookshot_programs.bin, as play keeps them,
-// and each new one is given to made (its modules live until it returns)
+// and each new one is given to made
 SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program&)>& made) {
     static const uint8_t no_types[8]{};
     SeedVariants r;
@@ -2154,13 +2145,9 @@ SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program
         t.asked = f.asked;
         return t;
     };
-    const auto drop = [](Try& t) {
-        for (Stage& st : t.p->stages)
-            if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr), st.module = VK_NULL_HANDLE;
-    };
     std::vector<Try> kept;
     kept.push_back(run({}));
-    if (kept[0].p->failed) return drop(kept[0]), r.failed = true, r;
+    if (kept[0].p->failed) return r.failed = true, r;
     const auto base_asked = kept[0].asked;
     const auto base_spirv = kept[0].spirv;
     r.questions = base_asked.size();
@@ -2174,8 +2161,6 @@ SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program
             if (!t.p->failed && t.asked == base_asked && t.spirv != base_spirv && kept.size() < cap) {
                 options[q].push_back(a);
                 kept.push_back(std::move(t));
-            } else {
-                drop(t);
             }
         }
     }
@@ -2194,7 +2179,6 @@ SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program
                 for (size_t k = 0; k < n; k++) want[base_asked[open[pick[k]]]] = options[open[pick[k]]][choice[k]];
                 Try t = run(std::move(want));
                 if (!t.p->failed && t.asked == base_asked) kept.push_back(std::move(t));
-                else drop(t);
                 size_t k = 0;
                 while (k < n && ++choice[k] == options[open[pick[k]]].size()) choice[k++] = 0;
                 if (k == n) break;
@@ -2213,7 +2197,6 @@ SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program
             program_cache_save(*t.p, t.spirv), r.variants++;
             if (made) made(*t.p);
         }
-        drop(t);
     }
     r.kept = had && !r.variants;
     return r;
@@ -2272,20 +2255,13 @@ const Program* seed_variant_of(const uint64_t code[3], bool mesh, const uint32_t
     struct Reset { ~Reset() { questions_in = nullptr, answers_in = nullptr; } } reset;
     if (mesh) translate_mesh_into(*p, *blank, by_stage[6] ? &code_of[6] : nullptr, code_of[7], nullptr, fs, color_types);
     else translate_into(*p, *blank, &code_of[0], fs, nullptr, color_types);
-    if (p->failed) {
-        for (Stage& st : p->stages)
-            if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
-        return nullptr;
-    }
+    if (p->failed) return nullptr;
     std::lock_guard lk(shader_mu);
     auto& variants = programs[p->key];
     for (auto& v : variants)
         if (v->variant == p->variant && v->mesh == p->mesh && v->fallback == p->fallback && v->ready.load(std::memory_order_acquire) &&
-            !v->failed) {
-            for (Stage& st : p->stages)
-                if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
+            !v->failed)
             return v.get();
-        }
     variants.push_back(std::move(p));
     return variants.back().get();
 }

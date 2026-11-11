@@ -1,5 +1,5 @@
-// Execute the complete production function and actual owners. Only translation
-// (which needs the recompiler) and Vulkan calls are replaced with synthetic data.
+// Execute the complete production function and actual owners. Only translation (which needs the recompiler) is replaced
+// with synthetic data: each stage's packed code (vk_shader.h StageCode) a marker of the translation that made it.
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -14,7 +14,6 @@
 #include <vector>
 
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
-using VkShaderModule = uintptr_t;
 using VkDescriptorSetLayout = uintptr_t;
 using VkPipelineLayout = uintptr_t;
 using VkPipeline = uintptr_t;
@@ -33,19 +32,12 @@ struct {
     bool mesh_shader = true, mesh_fallback = false;
     bool uses_mesh_fallback(bool) const { return false; }
 } dev;
-std::map<VkShaderModule, unsigned> destroyed;
-unsigned created = 0, releases = 0;
-VkShaderModule make_test_module() {
-    const VkShaderModule module = ++created;
-    CHECK(destroyed.emplace(module, 0).second);
-    return module;
-}
-void vkDestroyShaderModule(uintptr_t device, VkShaderModule module, const void* allocator) {
-    CHECK(device == dev.device && allocator == nullptr && module != VK_NULL_HANDLE);
-    auto it = destroyed.find(module);
-    CHECK(it != destroyed.end() && it->second == 0);
-    ++it->second;
-    ++releases;
+unsigned created = 0;
+StageCode make_test_code() {   // (a stage's code, numbered in the order made)
+    StageCode c;
+    c.words = ++created;
+    c.packed.assign(4, (uint8_t)created);
+    return c;
 }
 struct NvnState { uint32_t nvattr = 0, vattr[16]{}; };
 struct Code { bool ok = true; };
@@ -69,10 +61,10 @@ void synthetic_translation(Program& p, const NvnState& s, unsigned modules) {
     CHECK(questions_at == 0);
     for (unsigned i = 0; i < modules; ++i) {
         Stage stage;
-        if (!null_only) stage.module = make_test_module();
+        if (!null_only) stage.code = make_test_code();
         p.stages.push_back(std::move(stage));
     }
-    // Failed translation can also leave a stage with no module.
+    // Failed translation can also leave a stage with no code.
     p.stages.emplace_back();
     p.variant = 99;
     p.failed = translation_fails;
@@ -111,23 +103,21 @@ int main(int argc, char** argv) {
     if (translation_fails) {
         CHECK(result == nullptr && programs.empty());
         CHECK(created == (null_only ? 0u : mesh ? 2u : 1u));
-        std::printf("failed seed variant: created=%u destroyed=%u cached=%zu\n", created, releases, programs.size());
-        CHECK(releases == created);
+        std::printf("failed seed variant: made=%u cached=%zu\n", created, programs.size());
     } else {
         CHECK(result && programs.size() == 1 && programs.at(31).size() == 1);
         CHECK(result == programs.at(31).front().get());
-        CHECK(result->stages[0].module == 1 && created == 1 && releases == 0);
+        CHECK(result->stages[0].code && result->stages[0].code.words == 1 && created == 1);
+        CHECK(result->stages[0].code.packed == std::vector<uint8_t>(4, 1));
         CHECK(result->codes[0] == 42 && result->codes[1] == 43);
         if (name == "duplicate") {
             const auto* duplicate = seed_variant_of(code, false, attributes, color_types, questions, answers);
             CHECK(duplicate == result && programs.at(31).size() == 1);
-            CHECK(created == 2 && releases == 1);
-            CHECK(destroyed.at(1) == 0 && destroyed.at(2) == 1);
+            CHECK(created == 2);   // (translated again, then let go: the kept variant keeps its own code)
+            CHECK(result->stages[0].code.words == 1 && result->stages[0].code.packed == std::vector<uint8_t>(4, 1));
             CHECK(questions_in == nullptr && answers_in == nullptr);
         } else CHECK(name == "success");
     }
-    // The process owns the synthetic retained handles until exit; clearing the
-    // cache must not supply the cleanup under test or hide premature destruction.
     programs.clear();
-    std::puts("seed variant module ownership passed");
+    std::puts("seed variant ownership passed");
 }

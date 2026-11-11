@@ -1,9 +1,9 @@
-"""Count module lifetimes through the production cache loader, without a GPU or game.
+"""Which program cache records are taken, and what their stages keep, through the production cache loader, without a GPU
+or game.
 
 Auto-discovered by tests/run_all.py. Optional local checks:
   python -I -B tests/test_program_cache_cleanup.py --cxx cl --sanitize
   python -I -B tests/test_program_cache_cleanup.py --cxx g++ --sanitize
-Use --source with an older vk_shader.cpp for the negative control.
 """
 import argparse
 from pathlib import Path
@@ -37,7 +37,7 @@ def block(text, marker):
     return text[start:end]
 
 
-class CacheModuleCleanupTests(unittest.TestCase):
+class CacheRecordTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         compiler = COMPILER or shutil.which('g++') or shutil.which('clang++') or shutil.which('cl')
@@ -48,10 +48,10 @@ class CacheModuleCleanupTests(unittest.TestCase):
         directory = Path(cls.temporary.name).resolve()
         source = _with_cache(SOURCE)
         header = (ROOT / 'gpu/vk/vk_shader.h').read_text(encoding='utf-8')
-        structs = '\n'.join(block(header, marker) + ';' for marker in ('struct Stage {', 'struct Program {'))
+        structs = '\n'.join(block(header, marker) + ';' for marker in ('struct StageCode {', 'struct Stage {', 'struct Program {'))
         structs += '\n' + block(source, 'struct DiskRecord {') + ';'
         functions = '\n'.join(block(source, marker) for marker in (
-            'VkShaderModule make_module(', 'uint64_t answers_hash(', 'bool answers_fit(', 'void idx_put('))
+            'uint64_t answers_hash(', 'bool answers_fit(', 'void idx_put('))
         serialization = source[source.index('void put_bytes('):source.index('void program_cache_save(')]
         if 'struct Reader {' not in serialization:   # (the Reader is vk_progcache.h's, shared with vk_shader.cpp)
             serialization = block(source, 'struct Reader {') + ';\n' + serialization
@@ -81,10 +81,10 @@ class CacheModuleCleanupTests(unittest.TestCase):
         result = subprocess.run([str(self.executable), name], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_second_module_failure(self):
+    def test_second_stage_not_kept(self):
         self.run_case('second')
 
-    def test_first_module_failure(self):
+    def test_first_stage_not_kept(self):
         self.run_case('first')
 
     def test_truncated_second_stage(self):
@@ -93,7 +93,7 @@ class CacheModuleCleanupTests(unittest.TestCase):
     def test_empty_second_shader(self):
         self.run_case('empty')
 
-    def test_valid_record_retains_modules(self):
+    def test_valid_record_keeps_its_stages(self):
         self.run_case('valid')
 
     def test_independent_records_continue(self):

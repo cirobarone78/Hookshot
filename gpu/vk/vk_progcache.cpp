@@ -424,19 +424,11 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
                 ok = false;
                 break;
             }
-            st.module = make_module(spirv);
-            ok = ok && st.module;
+            ok = ok && stage_code(st.code, spirv);
         }
         ok = ok && answers_fit(*p, p->answers);   // (hookshot: an answer past the stages or their slots: not this record)
         if (!ok) {
             static std::atomic<int> logged{0};
-            // Program owns the stage containers, but their Vulkan handles are not RAII-managed.
-            for (Stage& st : p->stages) {
-                if (st.module) {
-                    vkDestroyShaderModule(dev.device, st.module, nullptr);
-                    st.module = VK_NULL_HANDLE;
-                }
-            }
             if (r.bad && logged++ < 20)
                 logf("vk: program cache: the record of program %016llx at %lld (%zu bytes) is not whole: left out, translated again",
                      (unsigned long long)key, (long long)d.at, d.size);
@@ -528,14 +520,12 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
     return n;
 }
 
-/// (hookshot) Program key's kept variants made for fn, then let go (modules and layouts): the records stay for play
+/// (hookshot) Program key's kept variants made for fn, then let go (with their layouts): the records stay for play
 void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn) {
     std::vector<std::unique_ptr<Program>> variants;
     program_cache_load(key, variants, true);
     for (auto& p : variants) {
         fn(*p);
-        for (Stage& st : p->stages)
-            if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
         if (p->layout) vkDestroyPipelineLayout(dev.device, p->layout, nullptr);
         if (p->set_layout) vkDestroyDescriptorSetLayout(dev.device, p->set_layout, nullptr);
     }

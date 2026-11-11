@@ -46,7 +46,11 @@ struct VkComputePipelineCreateInfo {
 };
 struct {uintptr_t device=0x1234;}dev;
 VkPipelineCache pcache=0x5678;
-struct Program {struct Stage{uintptr_t module;};std::vector<Stage>stages{{0x2468}};unsigned workgroup[3]{32,1,1};uintptr_t layout=0x1357;VkPipeline compute_pipeline=0xbeef;};
+struct Program {struct Stage{uintptr_t code;};std::vector<Stage>stages{{0x2468}};unsigned workgroup[3]{32,1,1};uintptr_t layout=0x1357;VkPipeline compute_pipeline=0xbeef;};
+// (vk_shader.h StageModule: the stage's module made for the one pipeline and destroyed after it)
+int modules_live=0;
+struct StageModule {explicit StageModule(const Program::Stage&st):m(st.code){++modules_live;} ~StageModule(){--modules_live;}
+ StageModule(const StageModule&)=delete; operator uintptr_t()const{return m;} uintptr_t m;};
 struct Pre {std::mutex mu;bool abandoned=false;};
 int mode=0,calls=0,destroys=0,logged=0; bool completed=false;
 void logf(const char*,...){++logged;}
@@ -57,6 +61,7 @@ void pin_subgroup(decltype(VkComputePipelineCreateInfo::stage)&stage,unsigned x)
 VkResult vkCreateComputePipelines(uintptr_t device,VkPipelineCache cache,unsigned count,const VkComputePipelineCreateInfo*ci,const void*allocator,VkPipeline*out){
  CHECK(device==dev.device&&cache==pcache&&count==1&&allocator==nullptr&&out);
  CHECK(ci&&ci->sType==10&&ci->stage.sType==11&&ci->stage.stage==12&&ci->stage.module==0x2468&&ci->layout==0x1357);
+ CHECK(modules_live==1);   // (the module the pipeline is made from is alive while it is made)
  CHECK(ci->stage.pName&&std::string(ci->stage.pName)=="main");
  if(expected_ci)CHECK(ci==expected_ci); if(expected_out)CHECK(out==expected_out);
  ++calls;
@@ -101,13 +106,13 @@ int main(int argc,char**argv){
  SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX);
  CHECK(argc==2);int which=std::atoi(argv[1]);Program program;Pre pre;
  if(which==4){
-  mode=1;VkComputePipelineCreateInfo ci{10};ci.stage={11,12,0x2468,"main"};ci.layout=0x1357;VkPipeline out=0;
+  mode=1;const StageModule module(program.stages[0]);VkComputePipelineCreateInfo ci{10};ci.stage={11,12,0x2468,"main"};ci.layout=0x1357;VkPipeline out=0;
   expected_ci=&ci;expected_out=&out;
   CHECK(guarded_compute(pcache,&ci,&out)==-77);CHECK(calls==1&&out==0&&logged==1&&faults_noted==1);return 0;
  }
  mode=which==1?1:which==2?2:0;pre.abandoned=which==3;
  std::thread worker([&]{actual_arm(program,&pre);});worker.join();
- CHECK(completed&&calls==1);
+ CHECK(completed&&calls==1&&modules_live==0);
  if(which==0)CHECK(program.compute_pipeline==0xcafe&&destroys==0);
  if(which==1||which==2)CHECK(program.compute_pipeline==0&&destroys==0);
  if(which==3)CHECK(program.compute_pipeline==0xbeef&&destroys==1);

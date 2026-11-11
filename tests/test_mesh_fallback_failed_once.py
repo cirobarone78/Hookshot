@@ -34,7 +34,7 @@ def main():
     create = body.index("cached_compute(")   # (the compile: guarded_compute, through the play caches)
     if check < 0 or not lock < check < create:
         raise SystemExit("a program that failed is compiled again: the check must come under the lock, before the compile")
-    failure = block(body, "&made[i]); r != VK_SUCCESS) {")
+    failure = block(body[create:], "r != VK_SUCCESS) {")   # (the compile's failure, or its module's: vk_shader.h StageModule)
     if "failed.insert({p.key, p.variant});" not in failure:
         raise SystemExit("a failed compute pipeline is not remembered")
     if failure.index("failed.insert") > failure.index("return false;"):

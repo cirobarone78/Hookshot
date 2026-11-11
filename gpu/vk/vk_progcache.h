@@ -65,7 +65,6 @@ void program_cache_load(uint64_t key, std::vector<std::unique_ptr<Program>>& var
 
 // (vk_shader.cpp's, for the cache)
 uint64_t translator_stamp();   // (the translator and what it is told: HOOKSHOT_SHADER_STAMP, the GPU, the environment)
-VkShaderModule make_module(const std::vector<uint32_t>& spirv);
 uint64_t answers_hash(const Program& p);
 bool answers_fit(const Program& p, const std::vector<Program::Answer>& answers);
 extern std::mutex shader_mu;

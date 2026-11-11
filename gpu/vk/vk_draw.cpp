@@ -1674,11 +1674,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
             // made in play)
             if (!r.code[3]) p = seed_program_of(r.code, r.mesh != 0, r.vattr, r.color_types, &want[i].key);
             if (!want[i].key) missing++;
-            if (p) {
-                if (!p->failed) made++;
-                for (Stage& st : p->stages)
-                    if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
-            }
+            if (p && !p->failed) made++;
             report_done();
         }
     };
@@ -2009,15 +2005,21 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     const Shader::Info& vs = *vertex_info(p);
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<VkPipelineShaderStageCreateInfo> stages;
+    std::vector<std::unique_ptr<StageModule>> modules;   // (made for this pipeline, destroyed with it: vk_shader.h StageModule)
     for (const Stage& st : p.stages) {
         // (hookshot: the fallback's dispatches are not graphics stages. Only a fallback program's: with native mesh shaders
         // the task and mesh stages are the pipeline's own, and a mesh program built without them was a fragment stage
         // alone, which drew none of its geometry and then lost the device, issue 640)
         if (p.fallback && (st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)))
             continue;
+        // (a library part only with the stages it takes, below: the vertex input and fragment output parts none)
+        if (part == 0 || part == 3 || (part == 1 && st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) ||
+            (part == 2 && st.vk_stage != VK_SHADER_STAGE_FRAGMENT_BIT))
+            continue;
         VkPipelineShaderStageCreateInfo si{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         si.stage = st.vk_stage;
-        si.module = st.module;
+        si.module = *modules.emplace_back(std::make_unique<StageModule>(st));
+        if (!si.module) return VK_NULL_HANDLE;
         si.pName = "main";
         pin_subgroup(si);
         stages.push_back(si);
@@ -5923,9 +5925,10 @@ bool fallback_compute_pipelines(Program& p) {
         const Stage& st = p.stages[i];
         if (st.vk_stage != VK_SHADER_STAGE_COMPUTE_BIT) continue;
         any = true;
+        const StageModule module(st);   // (made for this pipeline, destroyed with it: vk_shader.h StageModule)
         VkPipelineShaderStageCreateInfo si{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         si.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        si.module = st.module;
+        si.module = module;
         si.pName = "main";
         pin_subgroup(si);
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
@@ -5933,7 +5936,7 @@ bool fallback_compute_pipelines(Program& p) {
         ci.layout = p.layout;
         if (dev.task_mesh_fallback || env_on("RX_VK_NOOPT"))
             ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
-        if (const VkResult r = cached_compute(&ci, &made[i]); r != VK_SUCCESS) {
+        if (const VkResult r = module ? cached_compute(&ci, &made[i]) : VK_ERROR_INITIALIZATION_FAILED; r != VK_SUCCESS) {
             {
                 std::lock_guard lk(mu);
                 failed.insert({p.key, p.variant});   // (#1317: not compiled again at every draw)
@@ -7828,11 +7831,13 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     // them, seconds each for the culling programs (53caac5f: 6.5 s, 41 s inlined), which looked like a hang
     const auto warm_compute = [&](Program& p) {
         if (!warm_cs || taau_key(p.key)) return;
+        const StageModule module(p.stages[0]);   // (made for this pipeline, destroyed with it: vk_shader.h StageModule)
+        if (!module) return;
         ensure_layout(p);
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        ci.stage.module = p.stages[0].module;
+        ci.stage.module = module;
         ci.stage.pName = "main";
         pin_subgroup(ci.stage, p.workgroup[0]);
         ci.layout = p.layout;
@@ -7878,11 +7883,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
                          (unsigned long long)(seeded ? seeded->key : 0), (int)(i % 3), ms,
                          seeded && seeded->fallback ? " (mesh fallback)" : "", seeded && seeded->failed ? " (failed)" : "");
             }
-            if (std::unique_ptr<Program> p = std::move(seeded)) {
-                if (!p->failed) made++;
-                for (Stage& st : p->stages)
-                    if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
-            }
+            if (seeded && !seeded->failed) made++;
             done++;
         }
     };
@@ -8033,12 +8034,13 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
                 VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
                 ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
                 ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-                ci.stage.module = p.stages[0].module;
+                const StageModule module(p.stages[0]);   // (made for this pipeline, destroyed with it: vk_shader.h StageModule)
+                ci.stage.module = module;
                 ci.stage.pName = "main";
                 pin_subgroup(ci.stage, p.workgroup[0]);
                 ci.layout = p.layout;
                 VkPipeline made = VK_NULL_HANDLE;
-                if (cached_compute(&ci, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;
+                if (!module || cached_compute(&ci, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;
                 std::lock_guard lk(pre->mu);
                 if (!pre->abandoned) p.compute_pipeline = made;
                 else if (made) vkDestroyPipeline(dev.device, made, nullptr);   // (the game went on: it builds its own)
@@ -8551,7 +8553,6 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
                 ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
                 ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-                ci.stage.module = q.stages[0].module;
                 ci.stage.pName = "main";
                 pin_subgroup(ci.stage, q.workgroup[0]);
                 ci.layout = q.layout;
@@ -8564,13 +8565,19 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             VkComputePipelineCreateInfo asked = info(p);
             asked.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
             VkPipeline cached = VK_NULL_HANDLE;
-            if (dev.vk13.pipelineCreationCacheControl && cached_compute(&asked, &cached) != VK_SUCCESS) cached = VK_NULL_HANDLE;
+            if (dev.vk13.pipelineCreationCacheControl) {
+                const StageModule module(p.stages[0]);   // (made for the ask, destroyed with it: vk_shader.h StageModule)
+                asked.stage.module = module;
+                if (!module || cached_compute(&asked, &cached) != VK_SUCCESS) cached = VK_NULL_HANDLE;
+            }
             auto build = [job, info] {
                 Program& q = const_cast<Program&>(*job);
                 VkComputePipelineCreateInfo ci = info(q);
                 const auto t0 = std::chrono::steady_clock::now();
+                const StageModule module(q.stages[0]);   // (made for this pipeline, destroyed with it: vk_shader.h StageModule)
+                ci.stage.module = module;
                 VkPipeline made = VK_NULL_HANDLE;
-                if (const VkResult r = cached_compute(&ci, &made); r != VK_SUCCESS || !made) {
+                if (const VkResult r = module ? cached_compute(&ci, &made) : VK_ERROR_INITIALIZATION_FAILED; r != VK_SUCCESS || !made) {
                     static std::atomic<int> told{0};
                     if (told++ < 20) logf("vk: compute pipeline of %016llx not made (%d)", (unsigned long long)q.key, (int)r);
                     q.failed = true;
@@ -8616,10 +8623,11 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     ParLock plk(!p.compute_pipeline);
     if (!p.compute_pipeline && !taau_key(p.key)) {   // (a stood-in network is never compiled)
         pcache_init();
+        const StageModule module(p.stages[0]);   // (made for this pipeline, destroyed with it: vk_shader.h StageModule)
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        ci.stage.module = p.stages[0].module;
+        ci.stage.module = module;
         ci.stage.pName = "main";
         pin_subgroup(ci.stage, p.workgroup[0]);
         ci.layout = p.layout;
@@ -8632,7 +8640,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             static std::atomic<int> told{0};
             if (told++ < 400) logf("vk: compute pipeline of %016llx: compiling", (unsigned long long)p.key);
         }
-        if (const VkResult made = cached_compute(&ci, &p.compute_pipeline); made != VK_SUCCESS) {
+        if (const VkResult made = module ? cached_compute(&ci, &p.compute_pipeline) : VK_ERROR_INITIALIZATION_FAILED; made != VK_SUCCESS) {
             static std::atomic<int> told{0};
             if (told++ < 20) logf("vk: compute pipeline of %016llx not made (%d)", (unsigned long long)p.key, (int)made);
             p.compute_pipeline = VK_NULL_HANDLE;
