@@ -941,15 +941,31 @@ static void oot_teleport_followup(Ctx *c) {
    file's "!cheat 1000+<index>" ask for it: taken at the next update of the player, in play */
 static SRWLOCK oot_map_lock = SRWLOCK_INIT;
 static char oot_map[80];
+static int oot_flags = -1;   /* (1 an event playing, 2 a map loading, 4 the child; -1 not read yet) */
 static void oot_map_refresh(Ctx *c, int64_t now) {
     static int64_t next;
     if (now < next) return;
     next = now + 250000000LL;
     char map[80];
     if (!oot_gamedata_string(c, 0x1d6189dau, map, sizeof map) || !map[0]) return;   /* Sequence_CurrentBanc */
+    int loading = 0, child = 1;
+    oot_gamedata_bool(c, 0xef2b60c2u, &loading);   /* Sequence_IsLoadingBanc */
+    oot_gamedata_bool(c, 0xcea220d3u, &child);     /* Sequence_IsChildhood */
+    const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
+    const int flags = (events && recomp_load64(c, events + 104) ? 1 : 0) | (loading ? 2 : 0) | (child ? 4 : 0);
     AcquireSRWLockExclusive(&oot_map_lock);
     memcpy(oot_map, map, sizeof oot_map);
+    oot_flags = flags;
     ReleaseSRWLockExclusive(&oot_map_lock);
+}
+/* (with the map) whether an event (a cutscene, a map change's) is playing, a map is loading, Link is the child: 0 before any */
+int hos_oot_state(int *event, int *loading, int *child) {
+    AcquireSRWLockShared(&oot_map_lock);
+    const int f = oot_flags;
+    ReleaseSRWLockShared(&oot_map_lock);
+    if (f < 0) return 0;
+    *event = f & 1, *loading = (f >> 1) & 1, *child = (f >> 2) & 1;
+    return 1;
 }
 int hos_oot_current_map(char *out, size_t cap) {
     AcquireSRWLockShared(&oot_map_lock);

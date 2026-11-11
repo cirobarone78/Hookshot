@@ -358,6 +358,7 @@ static struct {
     int64_t replayed;   /* the renderer's presents (shots count in these) */
     char map[80];       /* the map the game is in, the last one known ("" before any); map_changes: how often it changed */
     int map_changes;
+    int have_oot, oot_event, oot_loading, oot_child;   /* (with the map: hos_oot_state) */
     /* log lines for subscribers (any thread writes; the bridge's thread reads) */
     ctl_mutex log_mu;
     char log_ring[CTL_LOG_RING][400];
@@ -486,6 +487,7 @@ static void stats_tick(int64_t now) {
         memcpy(G.map, map, sizeof G.map);
         G.map_changes++;
     }
+    G.have_oot = G.game->oot_state && G.game->oot_state(&G.oot_event, &G.oot_loading, &G.oot_child);
     const int at = G.sample_at;
     G.samples[at].t = now, G.samples[at].frame = frame, G.samples[at].replayed = replayed, G.samples[at].draws = draws;
     G.sample_at = (at + 1) % 16;
@@ -867,6 +869,10 @@ static void cmd_status(int ci, const char *id) {
     buf_puts(&b, ",\"map\":");
     if (G.map[0]) buf_str(&b, G.map);
     else buf_puts(&b, "null");
+    if (G.have_oot)
+        buf_printf(&b, ",\"game\":{\"event\":%s,\"loading\":%s,\"age\":\"%s\"}", G.oot_event ? "true" : "false",
+                   G.oot_loading ? "true" : "false", G.oot_child ? "child" : "adult");
+    else buf_puts(&b, ",\"game\":null");
     buf_puts(&b, ",\"version\":");
     buf_str(&b, G.game->version ? G.game->version : "unknown");
     const char *r = G.game->renderer ? G.game->renderer() : NULL;
@@ -2135,9 +2141,11 @@ static const char *game_renderer(void) { return rx_describe(); }
 int hos_oot_current_map(char *out, size_t cap);                              /* (hos_main.c) */
 int hos_oot_destination(int index, const char **child, const char **adult);
 int hos_oot_teleport_ask(int index);
+int hos_oot_state(int *event, int *loading, int *child);
 static HosControlGame game = {game_frame, rx_control_frame_info, rx_control_shot, rx_control_setting, rx_control_setting_set,
                               game_mem_region, game_mem_read, game_mem_write, game_save_root, game_log, game_quit,
-                              game_renderer, NULL, hos_oot_current_map, hos_oot_destination, hos_oot_teleport_ask};
+                              game_renderer, NULL, hos_oot_current_map, hos_oot_destination, hos_oot_teleport_ask,
+                              hos_oot_state};
 
 void hos_control_start(const char *version) {
     const char *path = getenv("HOS_CONTROL");

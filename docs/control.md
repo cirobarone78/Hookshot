@@ -134,7 +134,10 @@ version.
 ```
 
 `map` is the game's own name for the map (`Sequence_CurrentBanc`), read on the game's thread with the player's update
-every 250 ms: the last one known, so it stays through loads and menus, and it is `null` until Link was first seen.
+every 250 ms: the last one known, so it stays through loads and menus, and it is `null` until Link was first seen. `game`
+(OoT, read with it) says whether an event is playing (a cutscene, a map change's), whether a map is loading
+(`Sequence_IsLoadingBanc`) and Link's age: `{"event":false,"loading":false,"age":"child"}`, `null` until then. A script
+that steps through places waits for `event` and `loading` to be false before its next step, instead of a log line.
 
 `state` is a guess from the draws a frame, the way test scripts read the log:
 

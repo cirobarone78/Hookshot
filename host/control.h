@@ -55,6 +55,8 @@ typedef struct HosControlGame {
        none), 0 past the last; and a teleport there asked for (taken at the player's next update, in play), 0: no such */
     int (*destination)(int index, const char **child, const char **adult);
     int (*teleport)(int index);
+    /* (OoT) with the map: an event playing (a cutscene, a map change's), a map loading, Link the child. 0 before any */
+    int (*oot_state)(int *event, int *loading, int *child);
 } HosControlGame;
 
 /* Listens on path and serves on a thread of its own. 0 when it could not (logged) */

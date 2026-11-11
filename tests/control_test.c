@@ -177,6 +177,11 @@ static int fake_destination(int i, const char **child, const char **adult) {
     *child = dest_child[i], *adult = dest_adult[i];
     return 1;
 }
+static int fake_state(int *event, int *loading, int *child) {
+    if (!fake_map(NULL, 0)) return 0;
+    *event = 0, *loading = 1, *child = 1;
+    return 1;
+}
 static int fake_teleport(int i) {
     if (i < 0 || i >= 3) return 0;
     __atomic_store_n(&teleport_asked, i, __ATOMIC_RELAXED);
@@ -184,7 +189,8 @@ static int fake_teleport(int i) {
 }
 static HosControlGame game = {fake_frame, fake_frame_info, fake_shot, fake_setting, fake_setting_set,
                               fake_mem_region, fake_mem_read, fake_mem_write, fake_save_root, fake_log, fake_quit,
-                              fake_renderer, "test", fake_map, fake_destination, fake_teleport};
+                              fake_renderer, "test", fake_map, fake_destination, fake_teleport,
+                              fake_state};
 
 static void *game_thread(void *unused) {
     (void)unused;
@@ -798,7 +804,7 @@ int main(int argc, char **argv) {
     /* (OoT) the map and the teleport */
     {
         ask(c, "{\"id\":70,\"cmd\":\"status\"}\n", "70", line, sizeof line, 2000);
-        CHECK(strstr(line, "\"map\":null"));
+        CHECK(strstr(line, "\"map\":null") && strstr(line, "\"game\":null"));
         ask(c, "{\"id\":71,\"cmd\":\"teleport\"}\n", "71", line, sizeof line, 2000);
         CHECK(strstr(line, "\"destinations\":[{\"index\":0,\"child\":\"KokiriForest_Child\"") &&
               strstr(line, "{\"index\":2,\"child\":null,\"adult\":\"GerudoFortress_Adult\"}]"));
@@ -822,7 +828,8 @@ int main(int argc, char **argv) {
               strstr(line, "\"map\":\"KokiriForest_Child\""));
         CHECK(hear(sub, line, sizeof line, 2000) && strstr(line, "\"from\":\"HyruleField_Child\""));
         ask(c, "{\"id\":78,\"cmd\":\"status\"}\n", "78", line, sizeof line, 2000);
-        CHECK(strstr(line, "\"map\":\"KokiriForest_Child\""));
+        CHECK(strstr(line, "\"map\":\"KokiriForest_Child\"") &&
+              strstr(line, "\"game\":{\"event\":false,\"loading\":true,\"age\":\"child\"}"));
         hangup(sub);
         puts("PASS: (OoT) the map in status, events and waits; the teleport by index or map, and its list");
     }
