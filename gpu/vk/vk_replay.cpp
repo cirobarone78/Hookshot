@@ -270,9 +270,15 @@ void vk_timeline_wait(uint64_t v) {   // (at most 250 ms: a submission held back
     wi.semaphoreCount = 1;
     wi.pSemaphores = &timeline;
     wi.pValues = &v;
-    if (vkWaitSemaphores(dev.device, &wi, 250000000ull) == VK_TIMEOUT) {
-        static std::atomic<int> logged{0};
-        if (logged++ < 8) logf("vk: a capture's wait for write-back %llu timed out (done %llu)", (unsigned long long)v, (unsigned long long)completed());
+    // (hookshot) 8 ms, not 250. The wait is for a page the GPU writes back that the CPU wrote too (the exposure meter's): with the
+    // GPU a frame or more behind (video memory at the driver's limit in Hyrule Castle Town's market) it was 40-60 ms of the
+    // game's main thread or the presenting one a submit, frame after frame for seconds. Past the 8 ms the page is copied as it is,
+    // as with no wait: at worst the exposure steps for a frame, where the frame was a stall
+    if (vkWaitSemaphores(dev.device, &wi, 8000000ull) == VK_TIMEOUT) {
+        static std::atomic<int64_t> n{0};
+        if (const int64_t k = ++n; k == 1 || k % 100 == 0)
+            logf("vk: a capture's wait for write-back %llu went on without it after 8 ms (done %llu): %lld so far", (unsigned long long)v,
+                 (unsigned long long)completed(), (long long)k);
     }
 }
 namespace {
