@@ -58,6 +58,7 @@ int hos_binding(int set, int button, int slot);
 int hos_mic_count(void);            /* nn_audio_in.c: the microphones, for the Insert menu */
 const char *hos_mic_name(int index);
 void hos_mic_select(int mode, const char *name, int index);
+int hos_mic_test(int on, float *level, float *hz, int *channel, int *channels);
 void hos_bind(int set, int button, int slot, int code);
 int hos_prompts_face(void);         /* prompts.c */
 int hos_prompts_live_parts(void);   /* prompts.c */
@@ -186,7 +187,7 @@ static const MkwVkHost vk_host = {
     hos_gpu_maps_generation, nvn_vmap_generation, hos_reserved_cpus, host_collect_in, host_guest_alloc,
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
     hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, hos_prompts_face,
-    host_romfs_dir, host_wide_menus, host_slept_ns, host_fps_timing, hos_prompts_live_parts,
+    host_romfs_dir, host_wide_menus, host_slept_ns, host_fps_timing, hos_prompts_live_parts, hos_mic_test,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */

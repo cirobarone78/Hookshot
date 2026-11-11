@@ -305,13 +305,16 @@ HDR peak brightness show only while HDR is on.
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
+| | Microphone | Off, Default, or each microphone by name | Default |
+| | Microphone volume | 0 to 400%, in steps of 10 | 100% |
+| | Microphone channel | Auto, Channel 1 to 8 | Auto |
+| | Test microphone | Start / Stop: a level meter and the note it hears | |
 | Gameplay | FPS counter | Off, FPS, Frame time, Graph, Breakdown | Off |
 | | FPS counter position | Top right, Top left, Bottom right, Bottom left | Top right |
 | | Menu size | Small, Medium, Large | Medium |
 | | Game speed | Per frame, Real time | Real time |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
-| | Microphone | Off, Default, or each microphone by name | Default |
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
 | | Disable camera centering | Off, On | Off |
@@ -433,6 +436,17 @@ HDR peak brightness show only while HDR is on.
   once. A chosen microphone that is unplugged stays chosen (shown as not connected): Default stands in until it is
   back. On Linux (SDL2) two microphones with the same name cannot be told apart: the first is used. Windows must allow desktop apps to use the microphone
   (Settings, Privacy & security, Microphone). `HOS_MIC_LOG=1` logs what the game reads, a line a second.
+  **Microphone volume** scales what the microphone gives before the game hears it (loud sounds clip past full scale):
+  raise it when the ocarina misses a quiet hum or a soft instrument. **Test microphone** listens to the chosen
+  microphone at that volume while the Audio tab shows, without starting a song: a level meter (dim while quiet, green
+  where the ocarina hears it well, red where it clips) and the note it hears. A hum, a whistle or an instrument held on
+  one note should show the meter in the green and a note that holds still.
+  **Microphone channel** is for audio interfaces (a Focusrite Scarlett, a Behringer, a MOTU...), which send each input
+  on a channel of its own: the game hears one channel, not a mix of them. Auto takes the louder of the first two (the
+  inputs; the loopbacks of what the PC plays come after them and are left out). Test microphone shows which channel it
+  hears ("ch 2/4"): if your sound is on another one, choose it here. On Windows the microphone is read raw, without
+  Windows' capture effects (noise suppression can take a hum or an instrument for noise); `HOS_MIC_RAW=0` turns that
+  off.
 - **Controller in background:** On keeps the controller working while another window has the focus. The keyboard and
   mouse still need the game's window.
 - **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in

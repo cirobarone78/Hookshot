@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 17
+#define MKWVK_API_VERSION 18
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -28,6 +28,12 @@ enum { HOS_OPT_DLSS_JITTER_W = 24, HOS_OPT_DLSS_JITTER_H, HOS_OPT_DLSS_JITTER_PH
 /* (hookshot) the Audio tab's rows (host/nn_audio.c reads them every 100 ms): the volume in percent, and no sound while
    another window has the focus */
 enum { HOS_OPT_VOLUME = 27, HOS_OPT_MUTE_BACKGROUND };
+/* (hookshot) the Audio tab's Microphone volume (host/nn_audio_in.c reads it as it gives the game what the microphone
+   recorded, OPT_MIC_GAIN there): in percent, 0 to 400, 100 as it comes */
+enum { HOS_OPT_MIC_GAIN = 29 };
+/* (hookshot) the Audio tab's Microphone channel (host/nn_audio_in.c OPT_MIC_CHANNEL): which of a microphone's channels the
+   game hears, 0 Auto (the louder of the first two), 1 to 8 that one */
+enum { HOS_OPT_MIC_CHANNEL = 30 };
 /* (hookshot) the Insert menu's HDR set to Native (host/nn_vi.c QueryDisplayHdrStatus and QueryDisplayHdrPaperWhite): whether
    the game is told its display is HDR10 (the swapchain is one), and the peak and paper white it is told, in nits */
 /* (HOS_OPT_DISCORD, 43: the Insert menu's Discord status row, host/discord_rpc.c: 1 on) */
@@ -172,6 +178,12 @@ typedef struct MkwVkHost {
     /* (version 17, hookshot) what of the button prompts a change of face or controls reaches at once (host/prompts.c):
        HOS_PROMPTS_LIVE_* bits; 0 none (a mod's files, built without the prompts, or not loaded yet) */
     int (*prompts_live)(void);
+    /* (version 18, hookshot) the Audio tab's Test microphone (host/nn_audio_in.c): on 1 listens to the Microphone row's
+       choice on its own (opened at the first call, again when the choice changes; called each frame the test shows), 0
+       closes it. *level: the loudest of late at the Microphone volume, 0 to 1; *hz: the steady pitch heard, 0 none;
+       *channel: the device's channel heard (the game's: the Microphone channel row's, or Auto's), from 1, of *channels.
+       Returns 1 listening, 0 the microphone is off, -1 it did not open, -2 the chosen one is not plugged in */
+    int (*mic_test)(int on, float *level, float *hz, int *channel, int *channels);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */

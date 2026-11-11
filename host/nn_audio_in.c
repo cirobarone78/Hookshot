@@ -17,7 +17,18 @@
    under another id), after 3 s, then twice as long each time up to a minute; once it gives sound again the waits start
    over. Off, or no SDL: silence at the stream's rate, so the game's reads go on as they
    would. A change in the menu takes effect at the next read. HOS_MIC_LOG=1: a line a second while a stream runs (its
-   frames and level). */
+   frames and level).
+
+   (hookshot) The menu's Microphone volume (HOS_OPT_MIC_GAIN, 0 to 400 %) scales what the microphone gives before the game
+   reads it, clipped at full scale: a quiet hum or a soft instrument the ocarina missed reaches it louder. Its Test
+   microphone (hos_mic_test) opens the chosen microphone on its own while the menu shows the test, at that volume, and
+   tells the menu its level and the pitch it hears: the player sees what the ocarina would get without starting a song.
+
+   (hookshot) One channel, not a mix: for the game's mono streams the microphone is opened with the device's own channels
+   (host/hos_sdl.c hos_sdl_mic_channels, Windows' raw stream) and one of them is given to the game, the menu's Microphone
+   channel, or on Auto the louder of the first two (an audio interface's inputs; the loopbacks of what the PC plays come
+   after them). SDL's mix of a Focusrite Scarlett Solo's four channels to mono was its silent first one and a quarter of
+   the microphone on its second: the ocarina heard nothing. */
 #include "hos.h"
 #include "hos_sdl.h"
 #include <stdio.h>
@@ -37,12 +48,27 @@
 #define RETRY_MAX_NS 60000000000LL   /* twice as long each time up to this */
 #define CHECK_NS 5000000000LL   /* an open microphone looked for in a list made now this often (one pulled out may go on
                                    sending zeros: SDL3 on Windows) */
+#define OPT_MIC_GAIN 29         /* HOS_OPT_MIC_GAIN (gpu/vk/vk_api.h): the menu's Microphone volume, in percent */
+#define OPT_MIC_CHANNEL 30      /* HOS_OPT_MIC_CHANNEL: the menu's Microphone channel, 0 Auto, 1.. that one */
+#define MAX_MIC_CH 8
+#define GAIN_MAX 400
+#define TEST_RATE 48000         /* the test's format: the game's (48 kHz, mono, 16-bit) */
+#define TEST_WINDOW 2048        /* the newest samples the test's pitch is found in (43 ms) */
+int rx_option(int id, int otherwise);   /* (host/rx_backend.c: the renderer's menu answers) */
 enum { STATE_STOPPED = 1, STATE_STARTED = 2 };   /* (the game starts a stream whose state is not 2, stops one whose is) */
 /* nn::audio::SampleFormat */
 enum { FMT_PCM8 = 1, FMT_PCM16 = 2, FMT_PCM24 = 3, FMT_PCM32 = 4, FMT_FLOAT = 5 };
 
+/* the channel given to the game, of a microphone opened with several */
+typedef struct {
+    int ch;                      /* the channels it was opened with (1: as the stream asks, nothing to pick) */
+    int picked;                  /* the one given now, from 0 */
+    float energy[MAX_MIC_CH];    /* (each one's loudness of late: Auto's) */
+} Pick;
+
 typedef struct {
     int used, users;             /* (users: the started streams reading it) */
+    Pick pick;                   /* (the microphone's channels, and the one the game gets) */
     int format, channels, rate, frame_bytes;
     long gen;                    /* the menu's choice it follows (sel_gen) */
     int mode;                    /* 0 off, 1 the system's default, 2 the microphone named want */
@@ -110,6 +136,105 @@ static uint16_t sdl_format(int f) {   /* (SDL_AudioFormat: little-endian, signed
 }
 static int sample_bytes(int f) { return f == FMT_PCM8 ? 1 : f == FMT_PCM16 ? 2 : f == FMT_PCM24 ? 3 : 4; }
 
+/* the menu's Microphone volume now, in percent (no menu: 100, as it comes) */
+static int gain_percent(void) {
+    const int g = rx_option(OPT_MIC_GAIN, 100);
+    return g < 0 ? 0 : g > GAIN_MAX ? GAIN_MAX : g;
+}
+/* bytes of samples in format f scaled by percent, clipped at full scale (100: left as they are) */
+static void amplify(uint8_t *p, int bytes, int f, int percent) {
+    if (percent == 100) return;
+    if (f == FMT_PCM8)
+        for (int i = 0; i < bytes; i++) {
+            const int v = ((int8_t *)p)[i] * percent / 100;
+            ((int8_t *)p)[i] = (int8_t)(v > 127 ? 127 : v < -128 ? -128 : v);
+        }
+    else if (f == FMT_PCM16)
+        for (int i = 0; i < bytes / 2; i++) {
+            int16_t s;
+            memcpy(&s, p + 2 * i, 2);
+            const int v = s * percent / 100;
+            s = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+            memcpy(p + 2 * i, &s, 2);
+        }
+    else if (f == FMT_PCM32)
+        for (int i = 0; i < bytes / 4; i++) {
+            int32_t s;
+            memcpy(&s, p + 4 * i, 4);
+            const int64_t v = (int64_t)s * percent / 100;
+            s = (int32_t)(v > INT32_MAX ? INT32_MAX : v < INT32_MIN ? INT32_MIN : v);
+            memcpy(p + 4 * i, &s, 4);
+        }
+    else if (f == FMT_FLOAT)
+        for (int i = 0; i < bytes / 4; i++) {
+            float s;
+            memcpy(&s, p + 4 * i, 4);
+            s = s * (float)percent / 100.0f;
+            s = s > 1.0f ? 1.0f : s < -1.0f ? -1.0f : s;
+            memcpy(p + 4 * i, &s, 4);
+        }
+}
+
+/* a sample of format f as -1 to 1 (for the loudness alone) */
+static float sample_value(const uint8_t *p, int f) {
+    if (f == FMT_PCM8) return (int8_t)p[0] / 128.0f;
+    if (f == FMT_FLOAT) {
+        float v;
+        memcpy(&v, p, 4);
+        return v;
+    }
+    if (f == FMT_PCM32) {
+        int32_t v;
+        memcpy(&v, p, 4);
+        return (float)v / 2147483648.0f;
+    }
+    int16_t v;
+    memcpy(&v, p, 2);
+    return v / 32768.0f;
+}
+/* the menu's Microphone channel now: 0 Auto, 1.. that one */
+static int channel_choice(void) {
+    const int c = rx_option(OPT_MIC_CHANNEL, 0);
+    return c < 0 || c > MAX_MIC_CH ? 0 : c;
+}
+/* frames of in (p->ch channels of format f) to out, one channel: the one chosen (choice 1..), or on Auto (0, or one past
+   the device's) the louder of the first two, kept until the other is twice as loud over the last reads (no flipping on
+   noise). Returns out's bytes */
+static int pick_channel(Pick *p, int choice, const uint8_t *in, int frames, int f, uint8_t *out) {
+    const int sb = sample_bytes(f);
+    if (p->ch <= 1) {   /* (one channel: as it is) */
+        p->picked = 0;
+        memcpy(out, in, (size_t)frames * sb);
+        return frames * sb;
+    }
+    for (int c = 0; c < p->ch && frames > 0; c++) {
+        float sum = 0;
+        for (int i = 0; i < frames; i++) {
+            const float v = sample_value(in + ((size_t)i * p->ch + c) * sb, f);
+            sum += v * v;
+        }
+        p->energy[c] = p->energy[c] * 0.7f + sum / frames * 0.3f;
+    }
+    int c = p->picked;
+    if (choice >= 1 && choice <= p->ch) {
+        c = choice - 1;
+    } else {
+        const int first = p->ch < 2 ? p->ch : 2;
+        if (c >= first) c = 0;
+        for (int k = 0; k < first; k++)
+            if (p->energy[k] > 2 * p->energy[c]) c = k;
+    }
+    p->picked = c;
+    for (int i = 0; i < frames; i++) memcpy(out + (size_t)i * sb, in + ((size_t)i * p->ch + c) * sb, (size_t)sb);
+    return frames * sb;
+}
+/* the channels to open a microphone with for a stream of `channels`: a mono one gets the device's own (one picked) */
+static void pick_reset(Pick *p, int channels, uint32_t id) {
+    const int n = channels == 1 ? hos_sdl_mic_channels(id) : channels;
+    memset(p, 0, sizeof *p);
+    p->ch = channels == 1 && n > 1 && n <= MAX_MIC_CH ? n : 1;
+}
+
 static void push(InStream *s, const uint8_t *in, int n) {   /* (into the stream's ring: the oldest dropped when full) */
     const int cap = s->capacity * s->frame_bytes;
     if (n > cap) {   /* (the newest capacity's worth) */
@@ -174,9 +299,17 @@ static void missed(Source *src, int64_t now, const char *why) {
     src->retry_ns = now + src->retry_wait;
     src->retry_wait = src->retry_wait * 2 < RETRY_MAX_NS ? src->retry_wait * 2 : RETRY_MAX_NS;
 }
+/* microphone id for the source's streams: a mono stream's with the device's own channels (src->pick, once it opens) */
+static void *open_mic(Source *src, uint32_t id) {
+    Pick pick;
+    pick_reset(&pick, src->channels, id);
+    void *mic = hos_sdl_mic_open(id, src->rate, pick.ch > 1 ? pick.ch : src->channels, sdl_format(src->format));
+    if (mic) src->pick = pick;
+    return mic;
+}
 static void stand_in(Source *src, int64_t now) {   /* (the default, while the wanted one cannot be had) */
     if (src->standin) return;
-    void *standin = hos_sdl_mic_open(0, src->rate, src->channels, sdl_format(src->format));
+    void *standin = open_mic(src, 0);
     if (standin) use(src, standin, 1, now);
     else close_mic(src, now);
 }
@@ -196,10 +329,14 @@ static void connect(Source *src) {
     uint32_t id = 0;   /* (the system's default) */
     void *mic = NULL;
     const int found = src->mode == 1 || find_device(src, &id);
-    if (found) mic = hos_sdl_mic_open(id, src->rate, src->channels, sdl_format(src->format));
+    if (found) mic = open_mic(src, id);
     if (mic) {
-        if (!src->failures) hos_log("audio in: %s open (%d Hz, %d channel%s)", wanted(src), src->rate, src->channels,
-                                    src->channels == 1 ? "" : "s");
+        if (!src->failures && src->pick.ch > 1)
+            hos_log("audio in: %s open (%d Hz, its %d channels, one given to the game: %s)", wanted(src), src->rate,
+                    src->pick.ch, channel_choice() ? "the menu's" : "Auto, the louder of the first two");
+        else if (!src->failures)
+            hos_log("audio in: %s open (%d Hz, %d channel%s)", wanted(src), src->rate, src->channels,
+                    src->channels == 1 ? "" : "s");
         use(src, mic, 0, now);
         if (src->mode == 2) src->want_id = id;   /* (under the id it has now: the menu's next word of it is the same choice) */
         src->check_ns = now + CHECK_NS;
@@ -250,19 +387,26 @@ static void pump(Source *src) {
                 const int bytes = streams[i].capacity * streams[i].frame_bytes;
                 if (bytes > most) most = bytes;
             }
-        uint8_t buf[4096];
-        const int chunk = (int)sizeof buf - (int)sizeof buf % src->frame_bytes;
+        /* (fb: the microphone's frame, all its channels when one is picked of several; the streams get one) */
+        const int fb = src->pick.ch > 1 ? sample_bytes(src->format) * src->pick.ch : src->frame_bytes;
+        most = most / src->frame_bytes * fb;
+        uint8_t buf[4096], one[4096];
+        const int chunk = (int)sizeof buf - (int)sizeof buf % fb, gain = gain_percent(), choice = channel_choice();
         int heard = 0, avail = hos_sdl_mic_available(src->mic);
         for (int drop = avail - most; drop > 0;) {   /* (the game stopped reading a while) */
-            const int got = hos_sdl_mic_read(src->mic, buf, drop < chunk ? drop - drop % src->frame_bytes : chunk);
+            const int got = hos_sdl_mic_read(src->mic, buf, drop < chunk ? drop - drop % fb : chunk);
             if (got <= 0) break;
             drop -= got, avail -= got, heard = 1;
         }
         while (avail > 0) {
-            const int got = hos_sdl_mic_read(src->mic, buf, avail < chunk ? avail - avail % src->frame_bytes : chunk);
+            const int got = hos_sdl_mic_read(src->mic, buf, avail < chunk ? avail - avail % fb : chunk);
             if (got <= 0) break;
-            push_all(src, buf, got), heard = 1;
-            avail -= got;
+            avail -= got, heard = 1;
+            uint8_t *out = buf;
+            int n = got;
+            if (src->pick.ch > 1) n = pick_channel(&src->pick, choice, buf, got / fb, src->format, one), out = one;
+            amplify(out, n, src->format, gain);   /* (the menu's Microphone volume) */
+            push_all(src, out, n);
         }
         if (heard) {
             src->heard_ns = now;
@@ -292,6 +436,143 @@ static void pump_all(void) {
             choose(&sources[i]);
             pump(&sources[i]);
         }
+}
+
+/* ---- (hookshot) the menu's Test microphone: the chosen microphone opened on its own, in the game's format, at the
+   Microphone volume; its level and the pitch it hears for the menu (gpu/vk/vk_api.h: MkwVkHost mic_test) ---- */
+static struct {
+    void *mic;
+    long gen;            /* the menu's choice it was opened for (sel_gen; 0 none) */
+    int state;           /* what hos_mic_test says for that choice: 1 listening, 0 off, -1 did not open, -2 not plugged in */
+    Pick pick;           /* (its channels, and the one listened to: as the game's streams get them) */
+    int16_t win[TEST_WINDOW];   /* the newest samples, at the volume: the pitch is found in them */
+    int win_len;
+    float level, hz;
+    int64_t level_ns, pitch_ns;
+} test;
+static SRWLOCK test_lock = SRWLOCK_INIT;
+
+/* the pitch of x (n samples at rate) in Hz, 0 when there is no steady note: the normalized square difference (McLeod's
+   method), its first peak past the first dip that comes near its highest, for periods of 1500 Hz down to 60 Hz. A hum, a
+   whistle, a recorder or an ocarina is a steady note there; speech and noise are not */
+float hos_mic_pitch(const int16_t *x, int n, int rate) {
+    static float nsdf[TEST_WINDOW / 2 + 2];
+    const int lo = rate / 1500 > 2 ? rate / 1500 : 2;
+    int hi = rate / 60;
+    if (n > TEST_WINDOW) x += n - TEST_WINDOW, n = TEST_WINDOW;
+    if (hi > n / 2) hi = n / 2;
+    if (hi <= lo + 2) return 0;
+    float best = 0;
+    int dipped = 0;
+    for (int lag = 1; lag <= hi + 1 && lag < n; lag++) {
+        double r = 0, m = 0;
+        for (int i = 0; i + lag < n; i++) {
+            const double a = x[i], b = x[i + lag];
+            r += a * b, m += a * a + b * b;
+        }
+        nsdf[lag] = m > 0 ? (float)(2 * r / m) : 0;
+        if (nsdf[lag] < 0) dipped = 1;
+        if (dipped && lag >= lo && lag <= hi && nsdf[lag] > best) best = nsdf[lag];
+    }
+    if (best < 0.6f) return 0;
+    dipped = 0;
+    for (int lag = 2; lag <= hi; lag++) {
+        if (nsdf[lag] < 0) dipped = 1;
+        if (!dipped || lag < lo || nsdf[lag] < 0.9f * best || nsdf[lag] < nsdf[lag - 1] || nsdf[lag] < nsdf[lag + 1]) continue;
+        const float a = nsdf[lag - 1], b = nsdf[lag], c = nsdf[lag + 1], d = a - 2 * b + c;
+        const float shift = d < 0 ? 0.5f * (a - c) / d : 0;   /* (the parabola's top through the three) */
+        return (float)rate / ((float)lag + shift);
+    }
+    return 0;
+}
+
+static void test_close(void) {
+    if (test.mic) hos_sdl_mic_close(test.mic);
+    test.mic = NULL, test.win_len = 0, test.level = test.hz = 0;
+}
+/* the menu's choice now, opened for the test (a choice that did not open: tried again only once it changes) */
+static void test_open(void) {
+    Source want;   /* (find_device's: the wanted name, and its id while the menu's list has it) */
+    memset(&want, 0, sizeof want);
+    AcquireSRWLockShared(&list_lock);
+    const long gen = sel_gen;
+    const int mode = sel_mode, listed = mode == 2 && sel_index >= 0 && sel_index < dev_count && same_name(dev_names[sel_index], sel_name);
+    snprintf(want.want, sizeof want.want, "%s", listed ? dev_names[sel_index] : sel_name);
+    want.want_id = listed ? dev_ids[sel_index] : 0;
+    ReleaseSRWLockShared(&list_lock);
+    if (gen == test.gen) return;
+    test_close();
+    test.gen = gen;
+    if (mode <= 0) {
+        test.state = 0;
+        return;
+    }
+    uint32_t id = 0;   /* (the system's default) */
+    if (mode == 2 && !find_device(&want, &id)) {
+        test.state = -2;
+        return;
+    }
+    pick_reset(&test.pick, 1, id);
+    test.mic = hos_sdl_mic_open(id, TEST_RATE, test.pick.ch, sdl_format(FMT_PCM16));
+    test.state = test.mic ? 1 : -1;
+    test.level_ns = test.pitch_ns = hos_now_ns();
+    if (test.mic) hos_log("audio in: the menu's test listens to %s", mode == 2 ? want.want : "the default microphone");
+    else hos_log("audio in: the menu's test: %s did not open (%s)", mode == 2 ? want.want : "the default microphone",
+                 hos_sdl_error());
+}
+/* on: the test listens (opened at the first call, again when the menu's choice changes), and says its level (0 to 1, the
+   loudest of late, falling back over half a second) and pitch (Hz, 0 none) at the Microphone volume, of the channel the
+   game would get (*channel, from 1, of *channels); off: closed. Returns 1 listening, 0 the microphone is off in the menu,
+   -1 it did not open, -2 the chosen one is not plugged in */
+int hos_mic_test(int on, float *level, float *hz, int *channel, int *channels) {
+    AcquireSRWLockExclusive(&test_lock);
+    if (!on) {
+        test_close();
+        test.gen = 0, test.state = 0;
+    } else {
+        test_open();
+    }
+    if (test.mic) {
+        const int gain = gain_percent();
+        const int64_t now = hos_now_ns();
+        int16_t all[4096], buf[4096];   /* (what it recorded, every channel; the one picked) */
+        const int fb = 2 * test.pick.ch, chunk = (int)sizeof all - (int)sizeof all % fb, choice = channel_choice();
+        int peak = 0, avail = hos_sdl_mic_available(test.mic);
+        while (avail >= fb) {
+            const int got = hos_sdl_mic_read(test.mic, all, avail < chunk ? avail - avail % fb : chunk);
+            if (got < fb) break;
+            avail -= got;
+            const int bytes = pick_channel(&test.pick, choice, (const uint8_t *)all, got / fb, FMT_PCM16, (uint8_t *)buf);
+            amplify((uint8_t *)buf, bytes, FMT_PCM16, gain);
+            const int n = bytes / 2;
+            for (int i = 0; i < n; i++) {
+                const int v = buf[i] < 0 ? -buf[i] : buf[i];
+                if (v > peak) peak = v;
+            }
+            if (n >= TEST_WINDOW) {
+                memcpy(test.win, buf + n - TEST_WINDOW, sizeof test.win), test.win_len = TEST_WINDOW;
+            } else {
+                const int keep = test.win_len + n > TEST_WINDOW ? TEST_WINDOW - n : test.win_len;
+                memmove(test.win, test.win + test.win_len - keep, (size_t)keep * 2);
+                memcpy(test.win + keep, buf, (size_t)n * 2), test.win_len = keep + n;
+            }
+        }
+        const float fall = (float)(now - test.level_ns) / 5e8f;   /* (full scale to none in half a second) */
+        test.level = test.level - fall > 0 ? test.level - fall : 0;
+        if (peak / 32767.0f > test.level) test.level = peak / 32767.0f;
+        test.level_ns = now;
+        if (now - test.pitch_ns >= 50000000LL) {   /* (twenty times a second at most) */
+            test.pitch_ns = now;
+            test.hz = test.win_len == TEST_WINDOW && test.level > 0.02f ? hos_mic_pitch(test.win, TEST_WINDOW, TEST_RATE) : 0;
+        }
+    }
+    if (level) *level = test.level;
+    if (hz) *hz = test.mic ? test.hz : 0;
+    if (channel) *channel = test.mic ? test.pick.picked + 1 : 0;
+    if (channels) *channels = test.mic ? test.pick.ch : 0;
+    const int state = test.state;
+    ReleaseSRWLockExclusive(&test_lock);
+    return state;
 }
 
 /* ---- the streams ---- */

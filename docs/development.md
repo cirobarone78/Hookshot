@@ -261,6 +261,8 @@ number is not the obvious one:
 | `game_speed` | 0 Per frame, 1 Real time |
 | `text_speed` | 0 Normal, 1 2x, 2 4x, 3 Instant |
 | `microphone` | 0 Off, 1 Default, 2 and up a microphone (the name in `microphone_device` decides which) |
+| `microphone_volume` | percent, 0 to 400 (100: as the microphone gives it) |
+| `microphone_channel` | 0 Auto (the louder of the first two), 1 to 8 that channel of the microphone |
 | `mouse_camera` | 0 As the stick, 1 Native |
 | `layout_preset` | 0 Nintendo, 1 Xbox / PC, 2 Swap Face, 3 Custom |
 

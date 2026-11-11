@@ -3,7 +3,10 @@ the game's format and started (state 2), silence at their rate with the micropho
 streams and its samples given to each, the newest kept past a stream's capacity, a microphone that stops sending or does
 not open (silence, tries again after 3 s, then twice as long each time, said once), a named one by its id (of two with one
 name, the one chosen), the default standing in for an unplugged one until it is back under another id, purge, stop and
-close; and the menu's row keeping its choice by name. SDL, the menu and the clock are stand-ins. No GPU or game files.
+close; the Microphone volume (every sample format scaled and clipped, and the game's samples through a stream), the menu's
+Test microphone (its states, its level at the volume, let go) and the pitch it finds (tones, a hum's harmonics, noise,
+silence); a device of several channels (an audio interface's) opened with them all, one given to the game (Auto's of the
+first two, the loopbacks left out, or the menu's); and the menu's row keeping its choice by name. SDL, the menu and the clock are stand-ins. No GPU or game files.
 python -I -B tests/test_audio_in.py [--cc gcc] [--cxx g++]
 """
 import argparse
@@ -46,9 +49,17 @@ static inline void AcquireSRWLockShared(SRWLOCK *l) { (void)l; }
 static inline void ReleaseSRWLockShared(SRWLOCK *l) { (void)l; }
 '''
 FIXTURE = r'''
+#include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include "nn_audio_in.c"
+
+/* the menu's Microphone volume (HOS_OPT_MIC_GAIN), in percent */
+static int gain = 100, chan_opt = 0;   /* (and the Microphone channel, 0 Auto) */
+int rx_option(int id, int otherwise) { return id == OPT_MIC_GAIN ? gain : id == OPT_MIC_CHANNEL ? chan_opt : otherwise; }
+/* the device's own channels; with several, the samples on loud_ch alone (the others silent) */
+static int dev_channels = 1, loud_ch = 0;
+int hos_sdl_mic_channels(uint32_t id) { (void)id; return dev_channels; }
 
 static int64_t clock_ns = 1000000000;
 int64_t hos_now_ns(void) { return clock_ns; }
@@ -76,7 +87,8 @@ int hos_sdl_mic_available(void *mic) { return mic ? mic_bytes : 0; }
 int hos_sdl_mic_read(void *mic, void *dst, int bytes) {
     (void)mic;
     if (bytes > mic_bytes) bytes = mic_bytes;
-    for (int i = 0; i < bytes / 2; i++) ((int16_t *)dst)[i] = (int16_t)(next_sample++);
+    for (int i = 0; i < bytes / 2; i++)
+        ((int16_t *)dst)[i] = last_channels > 1 && i % last_channels != loud_ch ? 0 : (int16_t)(next_sample++);
     mic_bytes -= bytes;
     return bytes;
 }
@@ -290,8 +302,123 @@ int main(void) {
     for (int k = 0; k < 12; k++) MS(1000), (void)FILLED(big);   /* (silence comes a second at most a poll) */
     if (FILLED(big) != 480000) FAIL(42, "a huge frame count: %d frames held, not 10 s", FILLED(big));
     cases += 2;
+    CALL(imp__ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE, U(big));
+
+    /* (hookshot) the Microphone volume: every format scaled and clipped at full scale; 100 leaves them as they come */
+    {
+        int16_t s16[4] = {1000, -1000, 20000, -20000}, same[1] = {1234};
+        amplify((uint8_t *)s16, (int)sizeof s16, FMT_PCM16, 250);
+        if (s16[0] != 2500 || s16[1] != -2500 || s16[2] != 32767 || s16[3] != -32768)
+            FAIL(50, "16-bit at 250 %%: %d %d %d %d", s16[0], s16[1], s16[2], s16[3]);
+        amplify((uint8_t *)same, (int)sizeof same, FMT_PCM16, 100);
+        if (same[0] != 1234) FAIL(51, "100 %%: as it comes");
+        amplify((uint8_t *)same, (int)sizeof same, FMT_PCM16, 0);
+        if (same[0] != 0) FAIL(52, "0 %%: silence");
+        int8_t s8[2] = {10, -100};
+        amplify((uint8_t *)s8, (int)sizeof s8, FMT_PCM8, 200);
+        int32_t s32[2] = {0x40000000, -0x40000000};
+        amplify((uint8_t *)s32, (int)sizeof s32, FMT_PCM32, 300);
+        float f32[2] = {0.25f, -0.75f};
+        amplify((uint8_t *)f32, (int)sizeof f32, FMT_FLOAT, 200);
+        if (s8[0] != 20 || s8[1] != -128 || s32[0] != INT32_MAX || s32[1] != INT32_MIN || f32[0] != 0.5f || f32[1] != -1.0f)
+            FAIL(53, "8-bit, 32-bit and float scaled and clipped");
+    }
+    /* and the game's samples, through a stream: twice as loud at 200 % */
+    hos_mic_select(1, "", -1);
+    if (OPEN(stream, names[0]) != 0 || START(stream) != 0) FAIL(54, "a stream for the volume");
+    (void)FILLED(stream);
+    PURGE(stream);
+    gain = 200, next_sample = 100, mic_bytes = 8;
+    if (READ(stream, buf, 4) != 4 || buf[0] != 200 || buf[3] != 206) FAIL(55, "200 %%: %d .. %d", buf[0], buf[3]);
+    gain = 100, next_sample = 100, mic_bytes = 8;
+    if (READ(stream, buf, 4) != 4 || buf[0] != 100 || buf[3] != 103) FAIL(56, "100 %%: %d .. %d", buf[0], buf[3]);
+    CALL(imp__ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE, U(stream));
+    cases += 7;
+
+    /* (hookshot) the menu's Test microphone: the choice opened on its own in the game's format, its level at the volume,
+       falling back once it is quiet; let go when the menu stops asking */
+    {
+        float level = -1, hz = -1;
+        hos_mic_select(0, "", -1);
+        if (hos_mic_test(1, &level, &hz, NULL, NULL) != 0 || level != 0 || hz != 0) FAIL(60, "the test with the microphone Off");
+        listed = 1, id_base = 7, hos_mic_count();
+        hos_mic_select(2, "Absent", -1);
+        if (hos_mic_test(1, &level, &hz, NULL, NULL) != -2) FAIL(61, "the test of one not plugged in");
+        const int test_opens = opened;
+        hos_mic_select(2, "Test microphone", 0);
+        gain = 200, next_sample = 1000, mic_bytes = 20;
+        if (hos_mic_test(1, &level, &hz, NULL, NULL) != 1 || opened != test_opens + 1 || last_id != 7 || last_rate != 48000 ||
+            last_channels != 1 || last_format != 0x8010)
+            FAIL(62, "the test opened the chosen one, 48 kHz mono S16 (id %u)", last_id);
+        if (level < 0.0615f || level > 0.0617f) FAIL(63, "its level at 200 %%: %f, not 2018 of 32767", level);
+        if (hos_mic_test(1, &level, &hz, NULL, NULL) != 1 || opened != test_opens + 1) FAIL(64, "asked again: not opened again");
+        MS(250);
+        hos_mic_test(1, &level, &hz, NULL, NULL);
+        if (level != 0) FAIL(65, "a quarter second quiet: the level fell back (%f)", level);
+        no_default = 1, hos_mic_select(1, "", -1);
+        if (hos_mic_test(1, &level, &hz, NULL, NULL) != -1) FAIL(66, "another choice that does not open: said so");
+        no_default = 0, hos_mic_select(1, "", -1);
+        if (hos_mic_test(1, &level, &hz, NULL, NULL) != 1 || last_id != 0) FAIL(67, "the default, chosen since: listened to");
+        const int test_closes = closed;
+        if (hos_mic_test(0, &level, &hz, NULL, NULL) != 0 || closed != test_closes + 1 || level != 0) FAIL(68, "let go: closed");
+        gain = 100;
+        /* a device of 4 channels, the microphone on the second: the test hears that one, and says so */
+        dev_channels = 4, loud_ch = 1, hos_mic_select(1, "", -1);
+        next_sample = 1000, mic_bytes = 4 * 2 * 64;
+        int ch = 0, chs = 0;
+        if (hos_mic_test(1, &level, &hz, &ch, &chs) != 1 || last_channels != 4 || ch != 2 || chs != 4 || level < 0.032f)
+            FAIL(69, "the test of a 4-channel device: opened with %d, channel %d of %d, level %f", last_channels, ch, chs, level);
+        hos_mic_test(0, &level, &hz, NULL, NULL);
+        dev_channels = 1, loud_ch = 0;
+    }
+    cases += 10;
+
+    /* (hookshot) an audio interface's 4 channels (a Scarlett Solo: the microphone on its second, loopbacks on 3 and 4):
+       opened with them all, one given to the game's mono stream */
+    {
+        dev_channels = 4, loud_ch = 1, hos_mic_select(1, "", -1);
+        if (OPEN(stream, names[0]) != 0 || START(stream) != 0) FAIL(80, "a stream for the 4 channels");
+        (void)FILLED(stream);
+        if (last_channels != 4 || last_format != 0x8010) FAIL(81, "opened with the device's 4 channels (%d)", last_channels);
+        PURGE(stream);
+        next_sample = 1000, mic_bytes = 4 * 2 * 64;   /* (64 frames) */
+        if (FILLED(stream) != 64) FAIL(82, "64 frames of 4 channels: 64 mono frames, not %d", FILLED(stream));
+        if (READ(stream, buf, 64) != 64 || buf[0] != 1000 || buf[63] != 1063) FAIL(83, "Auto: the second channel (%d)", buf[0]);
+        loud_ch = 2, next_sample = 1000, mic_bytes = 4 * 2 * 256;   /* (a loopback loud: Auto leaves it out) */
+        if (READ(stream, buf, 256) != 256 || buf[0] || buf[255]) FAIL(84, "Auto: a loopback (channel 3) left out (%d)", buf[255]);
+        chan_opt = 3, next_sample = 1000, mic_bytes = 4 * 2 * 64;   /* (the menu's Channel 3) */
+        if (READ(stream, buf, 64) != 64 || buf[0] != 1000) FAIL(85, "the menu's channel 3 (%d)", buf[0]);
+        chan_opt = 9, loud_ch = 0, next_sample = 1000, mic_bytes = 4 * 2 * 256;   /* (past its channels: as Auto) */
+        if (READ(stream, buf, 256) != 256 || buf[255] != 1255) FAIL(86, "a channel past the device's: Auto (%d)", buf[255]);
+        CALL(imp__ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE, U(stream));
+        chan_opt = 0, dev_channels = 1, loud_ch = 0;
+    }
+    cases += 7;
+
+    /* the pitch: a tone, a hum's harmonics, at 48 kHz; noise and silence have none */
+    {
+        static int16_t tone[TEST_WINDOW];
+        static const double hzs[] = {110, 220, 293.66, 440, 587.33, 880, 1200};
+        for (int k = 0; k < (int)(sizeof hzs / sizeof hzs[0]); k++) {
+            for (int i = 0; i < TEST_WINDOW; i++) tone[i] = (int16_t)(8000 * sin(2 * M_PI * hzs[k] * i / 48000));
+            const float got = hos_mic_pitch(tone, TEST_WINDOW, 48000);
+            if (fabs(got - hzs[k]) > hzs[k] * 0.01) FAIL(70, "a %.2f Hz tone: %.2f Hz", hzs[k], got);
+        }
+        for (int i = 0; i < TEST_WINDOW; i++) {
+            const double w = 2 * M_PI * 196 * i / 48000;
+            tone[i] = (int16_t)(6000 * sin(w) + 4500 * sin(2 * w + 0.3) + 2500 * sin(3 * w + 1.1));
+        }
+        const float hum = hos_mic_pitch(tone, TEST_WINDOW, 48000);
+        if (fabs(hum - 196) > 2) FAIL(71, "a hum with its harmonics: %.2f Hz, not 196 (an octave off?)", hum);
+        unsigned seed = 1;
+        for (int i = 0; i < TEST_WINDOW; i++) seed = seed * 1103515245u + 12345u, tone[i] = (int16_t)((int)(seed >> 16 & 0x7fff) - 16384);
+        if (hos_mic_pitch(tone, TEST_WINDOW, 48000) != 0) FAIL(72, "noise: no note");
+        memset(tone, 0, sizeof tone);
+        if (hos_mic_pitch(tone, TEST_WINDOW, 48000) != 0) FAIL(73, "silence: no note");
+    }
+    cases += 4;
     printf("PASS: %d input stream cases (device list, open, start, silence, a shared microphone, capacity, a lost one and its"
-           " retries, a quiet one, named ones, a stand-in, stop, close)\n", cases);
+           " retries, a quiet one, named ones, a stand-in, stop, close, the volume, the test, the pitch)\n", cases);
     return 0;
 }
 '''
@@ -352,6 +479,24 @@ int main() {
 }
 """
 
+NOTE_FIXTURE = r"""#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); return 1; } } while (0)
+@NOTE@
+@METER@
+int main() {
+    CHECK(note_name(440) == "A4  440 Hz" && note_name(261.63f) == "C4  262 Hz" && note_name(293.7f) == "D4  294 Hz");
+    CHECK(note_name(587.3f) == "D5  587 Hz" && note_name(110) == "A2  110 Hz" && note_name(452) == "A4  452 Hz");
+    CHECK(mic_meter(0) == 0 && mic_meter(1) == 1 && mic_meter(2) == 1 && mic_meter(0.001f) == 0);
+    CHECK(std::fabs(mic_meter(0.0631f) - 0.5f) < 0.01f);   /* (-24 dB: half way) */
+    std::puts("PASS: the Test microphone's notes and meter");
+    return 0;
+}
+"""
+
 
 def block(text, start, end):
     i = text.index(start)
@@ -390,6 +535,36 @@ def main():
           'the menu is not given the microphones')
     check('if (!mic_want.empty()) refresh_mics();' in (ROOT / 'gpu' / 'vk' / 'vk_menu.cpp').read_text(encoding='utf-8'),
           'the start lists the microphones (and starts SDL audio) even with none chosen')
+    # (the Microphone volume reaches the host under one id on both sides; the test is in the host's table)
+    api = (ROOT / 'gpu' / 'vk' / 'vk_api.h').read_text(encoding='utf-8')
+    menu_src = (ROOT / 'gpu' / 'vk' / 'vk_menu.cpp').read_text(encoding='utf-8')
+    api_id = re.search(r'HOS_OPT_MIC_GAIN = (\d+)', api)
+    host_id = re.search(r'#define OPT_MIC_GAIN (\d+)', source)
+    check(api_id and host_id and api_id.group(1) == host_id.group(1),
+          'nn_audio_in.c reads the Microphone volume under another id than vk_api.h HOS_OPT_MIC_GAIN')
+    chan_api, chan_host = re.search(r'HOS_OPT_MIC_CHANNEL = (\d+)', api), re.search(r'#define OPT_MIC_CHANNEL (\d+)', source)
+    check(chan_api and chan_host and chan_api.group(1) == chan_host.group(1),
+          'nn_audio_in.c reads the Microphone channel under another id than vk_api.h HOS_OPT_MIC_CHANNEL')
+    check('{TAB_AUDIO, "Microphone channel", &opts.mic_channel, 0, 8, 1, tx_mic_channel,' in menu_src,
+          'the Audio tab has no Microphone channel row')
+    # (Windows: the microphone through WASAPI's raw stream, every channel, before SDL's own recording, which opens the
+    # processed one whatever SDL_AUDIO_DEVICE_RAW_STREAM says: a Scarlett Solo's microphone, on its second channel, was lost)
+    sdl_src = (ROOT / 'host' / 'hos_sdl.c').read_text(encoding='utf-8')
+    mic_open = sdl_src[sdl_src.index('void *hos_sdl_mic_open('):]
+    check('props.Options = AUDCLNT_STREAMOPTIONS_RAW' in sdl_src and 'was_channels(id)' in sdl_src and
+          0 <= mic_open.find('was_open(id, freq, channels, sdl_format)') < mic_open.find('OpenAudioDeviceStream'),
+          'hos_sdl.c no longer opens a Windows microphone raw, with all its channels, before SDL\'s processed stream')
+    check(re.search(r'id == HOS_OPT_MIC_GAIN\) return std::clamp\(opts\.mic_gain, 0, 400\)',
+                    (ROOT / 'gpu' / 'vk' / 'vk_replay.cpp').read_text(encoding='utf-8')),
+          'the renderer does not answer the Microphone volume')
+    check(re.search(r'\{TAB_AUDIO, "Microphone volume", &opts\.mic_gain, 0, 400, 10, tx_percent,', menu_src),
+          'the Audio tab has no Microphone volume row from 0 to 400 %')
+    check('{TAB_AUDIO, "Test microphone", nullptr,' in menu_src and 'int (*mic_test)(int on, float *level, float *hz, int *channel, int *channels);' in api,
+          'the Audio tab has no Test microphone row, or the host no mic_test')
+    check(re.search(r'hos_prompts_live_parts,\s*hos_mic_test,', (ROOT / 'host' / 'rx_backend.c').read_text(encoding='utf-8')),
+          'the host table does not give the menu hos_mic_test (in MkwVkHost order, after prompts_live)')
+    check('mic_test_tick(open_now.load() && page == 0 && cur_tab == TAB_AUDIO);' in menu_src,
+          'the menu does not let the microphone test go when it closes or leaves the Audio tab')
     with tempfile.TemporaryDirectory(prefix='audio-in-') as t:
         folder = Path(t)
         for name, text in (('hos.h', HOS_H), ('windows.h', WINDOWS_H), ('hos_sdl.h', sdl_h), ('nn_audio_in.c', source),
@@ -397,7 +572,7 @@ def main():
             (folder / name).write_text(text, encoding='utf-8')
         exe = folder / 'fixture'
         subprocess.run([a.cc, '-std=gnu11', '-include', ENV_ON_H, '-Wall', '-Wextra', '-Werror', '-I', str(folder), str(folder / 'fixture.c'),
-                        '-o', str(exe)], check=True)
+                        '-o', str(exe), '-lm'], check=True)
         subprocess.run([str(exe)], check=True)
         # (the menu's side: the row's choice by name, gpu/vk/vk_menu.cpp)
         menu = (ROOT / 'gpu' / 'vk' / 'vk_menu.cpp').read_text(encoding='utf-8')
@@ -408,6 +583,13 @@ def main():
         subprocess.run([a.cxx, '-std=c++17', '-include', ENV_ON_H, '-Wall', '-Wextra', '-Werror', str(folder / 'menu.cpp'), '-o', str(menu_exe)],
                        check=True)
         subprocess.run([str(menu_exe)], check=True)
+        # (the Test microphone's note names and meter, gpu/vk/vk_menu.cpp)
+        note = NOTE_FIXTURE.replace('@NOTE@', through_function(menu, 'std::string note_name(', 'std::string note_name('))
+        note = note.replace('@METER@', re.search(r'^float mic_meter\(.*\}$', menu, re.M).group(0))
+        (folder / 'note.cpp').write_text(note, encoding='utf-8')
+        subprocess.run([a.cxx, '-std=c++17', '-Wall', '-Wextra', '-Werror', str(folder / 'note.cpp'), '-o', str(folder / 'note')],
+                       check=True)
+        subprocess.run([str(folder / 'note')], check=True)
 
 
 if __name__ == '__main__':

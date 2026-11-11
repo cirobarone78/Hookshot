@@ -56,6 +56,7 @@ int hos_sdl_audio_channels(void);   /* the default output's channels (6 for 5.1)
    (host/nn_audio_in.c). The device's sound comes out converted to the format asked for (SDL resamples and mixes the
    channels down) ---- */
 int hos_sdl_mic_list(uint32_t *ids, char (*names)[128], int max);   /* the recording devices now: their count */
+int hos_sdl_mic_channels(uint32_t id);   /* (hookshot) the device's own channels (id 0: the default), 1 to 8; 1 on SDL2 */
 void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t sdl_format);   /* id 0: the system's default; NULL
                                                                                     (nothing logged): hos_sdl_error */
 int hos_sdl_mic_available(void *mic);                    /* bytes ready */

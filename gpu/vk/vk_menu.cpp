@@ -536,6 +536,28 @@ const char* hn_mic(int v, int variant) {
     if (variant > 1) return nullptr;
     return missing ? "Not plugged in: Default stands in until it is back." : "This microphone, by its name. A change applies at once.";
 }
+/// (hookshot) The Microphone volume row: none, quieter, as it comes, or louder (where a loud sound clips)
+const char* hn_mic_gain(int v, int variant) {
+    static const char* const t[] = {"The game hears silence.", "Quieter than the microphone gives it.",
+                                    "As the microphone gives it.", "Louder than the microphone gives it: a loud sound clips."};
+    if (variant >= 0) return variant < 4 ? t[variant] : nullptr;
+    return t[v <= 0 ? 0 : v < 100 ? 1 : v == 100 ? 2 : 3];
+}
+/// (hookshot) The Microphone channel row: Auto, or one of the device's channels
+const char* tx_mic_channel(int v) {
+    static char b[16];
+    if (v <= 0) return "Auto";
+    snprintf(b, sizeof b, "Channel %d", v);
+    return b;
+}
+const char* hn_mic_channel(int v, int variant) {
+    static const char* const t[] = {
+        "The louder of the first two: an audio interface's inputs. Its loopback channels, what the PC plays, come after "
+        "them and are left out.",
+        "This channel alone. Test microphone shows where your sound comes in."};
+    if (variant >= 0) return variant < 2 ? t[variant] : nullptr;
+    return t[v <= 0 ? 0 : 1];
+}
 const char* tx_rumble(int v) { return v ? tx_percent(v) : "Off"; }
 // (hookshot) Menu size: how large the overlays are drawn (vk_ui.h unit), Medium unless the player chooses Small or Large. It
 // was Auto by default, Large in fullscreen at 1080 lines and up while a controller opened the menu: the menu changed size with
@@ -856,9 +878,21 @@ Row rows[] = {
      "How fast the letters of dialogue and other messages appear.", hn_text_speed, false, true},
     {TAB_GAMEPLAY, "Text size", &opts.text_size, 0, 4, 1, tx_text_size,
      "How large the text of dialogue, Navi and signs is drawn.", hn_text_size, false, true},
-    {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
+    // (hookshot) the microphone, for the ocarina's "play with your voice / an instrument" option: which one, how loud it
+    // reaches the game, and a test that shows what it hears (host/nn_audio_in.c)
+    {TAB_AUDIO, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
+    {TAB_AUDIO, "Microphone volume", &opts.mic_gain, 0, 400, 10, tx_percent,
+     "How loud the microphone reaches the game. Raise it when the ocarina misses a quiet hum or a soft instrument; lower "
+     "it when the meter of Test microphone stays in the red. Changes at once.", hn_mic_gain, false, true},
+    {TAB_AUDIO, "Microphone channel", &opts.mic_channel, 0, 8, 1, tx_mic_channel,
+     "Which of the microphone's channels the game hears. An audio interface (a Focusrite Scarlett, a Behringer, a "
+     "MOTU...) sends each input on a channel of its own. Changes at once.", hn_mic_channel, false, true},
+    {TAB_AUDIO, "Test microphone", nullptr, 0, 0, 0, nullptr,
+     "Listens to the chosen microphone at its volume while this menu is open, and shows its level and the note it hears. "
+     "Hum, whistle or play one steady note: the meter in the green and a note that holds still is what the ocarina "
+     "needs. Enter or A starts and stops it."},
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
@@ -1232,9 +1266,9 @@ constexpr int64_t kMarqueeStep = 150000000LL, kMarqueeRest = 1200000000LL;   // 
 int hover_tab = -1;
 int drag_row = -1;
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
-bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed; }
+bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed || r.value == &opts.mic_gain; }
 /// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
-bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed; }
+bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed || r.value == &opts.mic_gain; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
 int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
 // (hookshot) A run's environment over a saved row (RX_VK_PACE=1, HOS_OUTPUT_RES=...): for that run only. save() writes the
@@ -1445,6 +1479,35 @@ void prompts_at_once(const Row& r) {
         (host->prompts_live() & HOS_PROMPTS_LIVE_ALL) == HOS_PROMPTS_LIVE_ALL)
         restart_state.restart_value(restart_slot_of(r), *r.value);
 }
+// ---- (hookshot) the Test microphone row: the host listens to the Microphone row's choice at the Microphone volume while
+// the player has the test on and the Audio tab shows (host->mic_test, each tick), and the row shows its level and note ----
+bool mic_test_on = false;    // (the player's: Enter or A on the row; off again when the menu closes or another tab shows)
+int mic_test_state = 0;      // (the host's: 1 listening, 0 the microphone is Off, -1 it did not open, -2 not plugged in)
+float mic_test_level = 0, mic_test_hz = 0;
+int mic_test_channel = 0, mic_test_channels = 0;   // (the channel heard, from 1, of the device's)
+bool can_mic_test() { return host && host->mic_test; }
+bool is_mic_test_row(const Row& r) { return !r.value && r.tab == TAB_AUDIO && !strcmp(r.name, "Test microphone"); }
+void mic_test_tick(bool shown) {
+    static bool listening = false;
+    if (!shown || !can_mic_test()) mic_test_on = false;
+    if (mic_test_on) {
+        mic_test_state = host->mic_test(1, &mic_test_level, &mic_test_hz, &mic_test_channel, &mic_test_channels);
+        listening = true;
+    } else if (listening) {   // (the microphone let go)
+        host->mic_test(0, nullptr, nullptr, nullptr, nullptr), listening = false;
+        mic_test_state = 0, mic_test_level = mic_test_hz = 0, mic_test_channel = mic_test_channels = 0;
+    }
+}
+/// A pitch as its nearest note and its frequency: "A4  440 Hz"
+std::string note_name(float hz) {
+    static const char* const names[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    const int n = (int)std::lround(12 * std::log2(hz / 440.0f)) + 69;   // (MIDI's numbers: 69 is A4)
+    char b[32];
+    snprintf(b, sizeof b, "%s%d  %.0f Hz", names[(n % 12 + 12) % 12], n / 12 - 1, hz);
+    return b;
+}
+/// The level meter's fill for a level (0 to 1, full scale): on a scale of decibels, -48 dB to none, so a quiet hum shows
+float mic_meter(float level) { return level <= 0 ? 0 : std::clamp(1 + 20 * std::log10(level) / 48, 0.0f, 1.0f); }
 
 /// A row's new value v, as the arrows set it (dir: 1 up, -1 down, for the rows that skip or wrap), saved unless !keep
 /// (a slider's drag: saved once it is let go)
@@ -1863,6 +1926,39 @@ void slider_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* value, int permille
     if (sel) ui::glow(c, a, b);
     *t0 = x0, *t1 = x1;
 }
+/// (hookshot) The Test microphone row's value cell: Start while the test is off; listening, the note it hears over a level
+/// meter along the cell's foot (dim while quiet, green where the ocarina hears it well, red near full scale, where it
+/// clips); otherwise why it cannot listen
+void mic_test_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, bool sel) {
+    if (!mic_test_on || mic_test_state != 1) {
+        const char* say = !can_mic_test() ? "Not available"
+                        : !mic_test_on ? "Start"
+                        : mic_test_state == 0 ? "The Microphone row is Off"
+                        : mic_test_state == -2 ? "Not plugged in" : "Did not open: see the log";
+        choice_cell(c, a, b, say, sel, false, false, !can_mic_test());
+        return;
+    }
+    const float s = c.s, mid = (a.y + b.y) * 0.5f, in = 4 * s, px = 18 * s;
+    c.d->AddRectFilled(a, b, ui::kCellDark);
+    c.d->AddRect(a, b, ui::kEdge, 0, std::max(1.0f, s));
+    const float x0 = a.x + in + 10 * s, x1 = b.x - in - 10 * s, y0 = b.y - in - 8 * s, y1 = b.y - in - 3 * s;
+    const float fill = mic_meter(mic_test_level), xv = x0 + (x1 - x0) * fill;
+    const ImU32 bar = fill > 0.92f ? ui::rgba(222, 74, 56) : fill > 0.45f ? ui::rgba(104, 190, 96) : ui::kDim;
+    c.d->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), ui::rgba(255, 255, 255, 30), 2 * s);
+    if (xv > x0) c.d->AddRectFilled(ImVec2(x0, y0), ImVec2(xv, y1), bar, 2 * s);
+    for (const float mark : {0.45f, 0.92f})   // (where the green and the red start)
+        c.d->AddLine(ImVec2(x0 + (x1 - x0) * mark, y0 - 2 * s), ImVec2(x0 + (x1 - x0) * mark, y1 + 2 * s), ui::kEdge, s);
+    const std::string say = mic_test_hz > 0 ? note_name(mic_test_hz) : fill > 0.45f ? "No steady note" : "Listening: make a sound";
+    ImFont* f = mic_test_hz > 0 ? c.f.strong : c.f.body;
+    ui::text_mid_centre(c, f, px, (a.x + b.x) * 0.5f, mid - 4 * s, mic_test_hz > 0 ? ui::kInkBright : ui::kSoft, say.c_str());
+    if (mic_test_channels > 1) {   // (which of the device's channels: where to point the Microphone channel row)
+        char ch[16];
+        snprintf(ch, sizeof ch, "ch %d/%d", mic_test_channel, mic_test_channels);
+        const float w = ui::size_of(c.f.body, 13 * s, ch).x;
+        ui::text_mid(c, c.f.body, 13 * s, b.x - in - 6 * s - w, a.y + in + 8 * s, ui::kDim, ch);
+    }
+    if (sel) ui::glow(c, a, b);
+}
 /// "Restart needed: " and the pending rows, on one line of width: the last ones as "and N more" when they do not fit
 std::string restart_line(ui::Ctx& c, float px, float width) {
     const unsigned all = restart_pending();
@@ -2035,6 +2131,8 @@ void row_value_cell(ui::Ctx& c, const Row& r, ImVec2 va, ImVec2 vb, bool selecte
         choice_cell(c, va, vb, tool, selected, cheat_chooses(r.cheat), cheat_chooses(r.cheat));
     } else if (r.cheat >= 0 && *cheat_button_text(r.cheat)) {
         choice_cell(c, va, vb, cheat_button_text(r.cheat), selected, false, false, r.cheat == 9);
+    } else if (is_mic_test_row(r)) {   // (hookshot: Start, or what the microphone hears)
+        mic_test_cell(c, va, vb, selected);
     } else if (!r.value) {
         if (pending == &r) choice_cell(c, va, vb, "Press again to confirm", selected, false, false);
         else {
@@ -2125,7 +2223,8 @@ void draw_options(ui::Ctx& c) {
         if (const char* says = cheat_confirm(selr.cheat)) prompt_list[prompts_n++] = {ui::kConfirm, says};
         prompt_list[prompts_n++] = {ui::kCompact, "Compact", compact_key_name};
     } else {
-        prompt_list[prompts_n++] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : "Open"};
+        prompt_list[prompts_n++] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name)
+                                                  : is_mic_test_row(selr) ? (mic_test_on ? "Stop" : "Start") : "Open"};
     }
     if (cur_tab == TAB_MOTION) prompt_list[prompts_n++] = {ui::kBack, "Back"};   // (Esc: to Controls)
     else {
@@ -3847,6 +3946,7 @@ void menu_tick() {
             }
         } else if (r.cheat >= 0) cheat_press(r.cheat, press, changed);   // (a debug tool: on the Debug tab itself)
         else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
+        else if (press[7] && is_mic_test_row(r)) mic_test_on = !mic_test_on && can_mic_test(), press[7] = false, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
             if (press[7]) press[4] = true;
@@ -3863,6 +3963,8 @@ void menu_tick() {
             changed = true;
         }
     }
+    // (hookshot) the microphone test: listening while the Audio tab shows it, let go otherwise
+    mic_test_tick(open_now.load() && page == 0 && cur_tab == TAB_AUDIO);
     {   // (hookshot) the window lets the mouse go while the menu is open, and takes it back after (host/display.c)
         static bool told = false;
         const bool now_open = open_now.load();

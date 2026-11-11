@@ -410,7 +410,8 @@ int hos_sdl_audio_channels(void) {
 /* ---- (hookshot) microphones: SDL3's recording devices, or SDL2's capture devices (the Linux AppImage carries SDL2): a
    stream each opened, in the format asked for, read as the game asks ---- */
 static struct {
-    void *GetDevices, *DeviceName, *Available, *GetData, *Clear, *Destroy;   /* (SDL3) */
+    void *GetDevices, *DeviceName, *Available, *GetData, *Clear, *Destroy, *DeviceFormat;   /* (SDL3) */
+    void *CreateStream, *Put;   /* (SDL3: the Windows raw path's conversion, below) */
     void *NumDevices, *DeviceName2, *CloseDevice, *LockDevice, *UnlockDevice;   /* (SDL2) */
     int tried, ok;
 } rec;
@@ -424,6 +425,8 @@ static int rec_ready(void) {
             REC_GET(GetDevices, "SDL_GetAudioRecordingDevices"), REC_GET(DeviceName, "SDL_GetAudioDeviceName");
             REC_GET(Available, "SDL_GetAudioStreamAvailable"), REC_GET(GetData, "SDL_GetAudioStreamData");
             REC_GET(Clear, "SDL_ClearAudioStream"), REC_GET(Destroy, "SDL_DestroyAudioStream");
+            REC_GET(DeviceFormat, "SDL_GetAudioDeviceFormat");   /* (optional: the device's own channels) */
+            REC_GET(CreateStream, "SDL_CreateAudioStream"), REC_GET(Put, "SDL_PutAudioStreamData");   /* (optional) */
             rec.ok = rec.GetDevices && rec.DeviceName && rec.Available && rec.GetData && rec.Clear && rec.Destroy;
         } else if (m) {
             REC_GET(NumDevices, "SDL_GetNumAudioDevices"), REC_GET(DeviceName2, "SDL_GetAudioDeviceName");
@@ -476,6 +479,255 @@ int hos_sdl_mic_list(uint32_t *ids, char (*names)[128], int max) {
     if (all) CALL(void (*)(void *), Free)(all);
     return n;
 }
+/* ---- (hookshot) Windows: the microphone through WASAPI's raw stream (AUDCLNT_STREAMOPTIONS_RAW: every channel of the
+   device, no capture effects), its sound converted by an SDL audio stream to the format asked for. SDL's own recording
+   opens the processed stream, whatever SDL_AUDIO_DEVICE_RAW_STREAM says (SDL 3.4.20: a Focusrite Scarlett Solo opened as
+   2 channels at 48 kHz, both its first, silent input, while the microphone was on its second: the ocarina heard nothing).
+   A thread a microphone reads the device into the stream; the caller reads the stream as it reads SDL's. Found by the
+   name SDL lists it under (the endpoint's friendly name); one that cannot be had this way, HOS_MIC_RAW=0, or SDL2: SDL's
+   own, as before ---- */
+#ifdef _WIN32
+#include <objbase.h>
+#include <mmreg.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
+
+static const GUID was_clsid_enum = {0xbcde0395, 0xe52f, 0x467c, {0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e}};
+static const GUID was_iid_enum = {0xa95664d2, 0x9614, 0x4f35, {0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6}};
+static const GUID was_iid_client2 = {0x726778cd, 0xf60a, 0x4eda, {0x82, 0xde, 0xe4, 0x76, 0x10, 0xcd, 0x78, 0xaa}};
+static const GUID was_iid_capture = {0xc8adbd64, 0xe71e, 0x48a0, {0xa4, 0xde, 0x18, 0x5c, 0x39, 0x5c, 0xd3, 0x17}};
+static const GUID was_float = {0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+static const PROPERTYKEY was_name_key = {{0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};
+
+static int was_wanted(void) {   /* (SDL3, with the conversion it needs, and not HOS_MIC_RAW=0) */
+    static int raw = -1;
+    if (raw < 0) raw = !getenv("HOS_MIC_RAW") || strcmp(getenv("HOS_MIC_RAW"), "0");
+    return raw && version == 3 && rec.CreateStream && rec.Put && rec.DeviceName;
+}
+/* the endpoint of SDL's recording device id (0: the default), by the name SDL gives it; NULL none */
+static IMMDevice *was_device(IMMDeviceEnumerator *e, uint32_t id) {
+    IMMDevice *d = NULL;
+    if (!id) {
+        if (FAILED(e->lpVtbl->GetDefaultAudioEndpoint(e, eCapture, eConsole, &d))) d = NULL;
+        return d;
+    }
+    const char *want = ((const char *(*)(uint32_t))rec.DeviceName)(id);
+    IMMDeviceCollection *all = NULL;
+    UINT n = 0;
+    if (!want || FAILED(e->lpVtbl->EnumAudioEndpoints(e, eCapture, DEVICE_STATE_ACTIVE, &all)) || !all) return NULL;
+    all->lpVtbl->GetCount(all, &n);
+    for (UINT i = 0; i < n && !d; i++) {
+        IMMDevice *x = NULL;
+        if (FAILED(all->lpVtbl->Item(all, i, &x)) || !x) continue;
+        char name[256] = "";
+        IPropertyStore *ps = NULL;
+        if (SUCCEEDED(x->lpVtbl->OpenPropertyStore(x, STGM_READ, &ps)) && ps) {
+            PROPVARIANT v;
+            memset(&v, 0, sizeof v);
+            if (SUCCEEDED(ps->lpVtbl->GetValue(ps, &was_name_key, &v)) && v.vt == VT_LPWSTR && v.pwszVal)
+                WideCharToMultiByte(CP_UTF8, 0, v.pwszVal, -1, name, (int)sizeof name, NULL, NULL);
+            PropVariantClear(&v);
+            ps->lpVtbl->Release(ps);
+        }
+        if (!strcmp(name, want)) d = x;   /* (of two with one name: the first) */
+        else x->lpVtbl->Release(x);
+    }
+    all->lpVtbl->Release(all);
+    return d;
+}
+/* the device's client, asked for the raw stream (refused: the processed one), and its format then */
+static IAudioClient2 *was_client(IMMDevice *d, WAVEFORMATEX **mix) {
+    IAudioClient2 *a = NULL;
+    *mix = NULL;
+    if (FAILED(d->lpVtbl->Activate(d, &was_iid_client2, CLSCTX_ALL, NULL, (void **)&a)) || !a) return NULL;
+    AudioClientProperties props;
+    memset(&props, 0, sizeof props);
+    props.cbSize = sizeof props, props.eCategory = AudioCategory_Other, props.Options = AUDCLNT_STREAMOPTIONS_RAW;
+    a->lpVtbl->SetClientProperties(a, &props);
+    if (FAILED(a->lpVtbl->GetMixFormat(a, mix)) || !*mix) {
+        a->lpVtbl->Release(a);
+        return NULL;
+    }
+    return a;
+}
+/* the SDL_AudioFormat of a WASAPI format (0: not one this takes); *packed24: 3-byte samples, given to SDL as 32-bit */
+static uint32_t was_format(const WAVEFORMATEX *m, int *packed24) {
+    const int is_float = m->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
+                         (m->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+                          !memcmp(&((const WAVEFORMATEXTENSIBLE *)m)->SubFormat, &was_float, sizeof(GUID)));
+    *packed24 = 0;
+    if (is_float) return m->wBitsPerSample == 32 ? 0x8120 : 0;
+    if (m->wBitsPerSample == 16) return 0x8010;
+    if (m->wBitsPerSample == 32) return 0x8020;
+    if (m->wBitsPerSample == 24) return *packed24 = 1, 0x8020;
+    return 0;
+}
+/* the raw stream's channels, 1 to 8 (0: not to be had this way) */
+static int was_channels(uint32_t id) {
+    const HRESULT com = CoInitializeEx(NULL, COINIT_MULTITHREADED);   /* (a thread in another apartment keeps it) */
+    int n = 0;
+    IMMDeviceEnumerator *e = NULL;
+    if (SUCCEEDED(CoCreateInstance(&was_clsid_enum, NULL, CLSCTX_ALL, &was_iid_enum, (void **)&e)) && e) {
+        IMMDevice *d = was_device(e, id);
+        if (d) {
+            WAVEFORMATEX *mix = NULL;
+            IAudioClient2 *a = was_client(d, &mix);
+            int packed24;
+            if (a && was_format(mix, &packed24)) n = mix->nChannels >= 1 && mix->nChannels <= 8 ? mix->nChannels : 0;
+            if (mix) CoTaskMemFree(mix);
+            if (a) a->lpVtbl->Release(a);
+            d->lpVtbl->Release(d);
+        }
+        e->lpVtbl->Release(e);
+    }
+    if (SUCCEEDED(com)) CoUninitialize();
+    return n;
+}
+
+typedef struct {
+    void *stream;                /* the SDL_AudioStream the caller reads: the device's format in, the asked one out */
+    uint32_t id;                 /* (what was asked: SDL's id, the format) */
+    int freq, channels;
+    uint16_t format;
+    HANDLE thread, ready;
+    volatile LONG stop;
+    volatile LONG ok;            /* (the thread's word: started) */
+} WasMic;
+#define WAS_MAX 8
+static WasMic *was_mics[WAS_MAX];
+static SRWLOCK was_lock = SRWLOCK_INIT;
+static WasMic *was_of(void *mic) {
+    WasMic *w = NULL;
+    AcquireSRWLockShared(&was_lock);
+    for (int i = 0; i < WAS_MAX && !w; i++)
+        if (was_mics[i] && was_mics[i] == mic) w = was_mics[i];
+    ReleaseSRWLockShared(&was_lock);
+    return w;
+}
+/* the thread of a microphone: opened, then what it records put into the stream every 5 ms until stopped (the device gone:
+   nothing more comes, and host/nn_audio_in.c takes it as stopped sending) */
+static DWORD WINAPI was_run(void *arg) {
+    WasMic *w = (WasMic *)arg;
+    const HRESULT com = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    IMMDeviceEnumerator *e = NULL;
+    IMMDevice *d = NULL;
+    IAudioClient2 *a = NULL;
+    IAudioCaptureClient *cap = NULL;
+    WAVEFORMATEX *mix = NULL;
+    int packed24 = 0;
+    uint32_t fmt = 0;
+    if (SUCCEEDED(CoCreateInstance(&was_clsid_enum, NULL, CLSCTX_ALL, &was_iid_enum, (void **)&e)) && e) d = was_device(e, w->id);
+    if (d) a = was_client(d, &mix);
+    if (a) fmt = was_format(mix, &packed24);
+    if (fmt && SUCCEEDED(a->lpVtbl->Initialize(a, AUDCLNT_SHAREMODE_SHARED, 0, 10000000 /* 1 s */, 0, mix, NULL)) &&
+        SUCCEEDED(a->lpVtbl->GetService(a, &was_iid_capture, (void **)&cap)) && cap) {
+        const struct { uint32_t format; int channels, freq; } src = {fmt, mix->nChannels, (int)mix->nSamplesPerSec},
+                                                             dst = {w->format, w->channels, w->freq};
+        w->stream = ((void *(*)(const void *, const void *))rec.CreateStream)(&src, &dst);
+        if (w->stream && SUCCEEDED(a->lpVtbl->Start(a))) InterlockedExchange(&w->ok, 1);
+    }
+    SetEvent(w->ready);
+    const int block = mix ? mix->nBlockAlign : 0;
+    static const uint8_t zeros[4096];
+    while (w->ok && !w->stop) {
+        Sleep(5);
+        UINT32 frames = 0;
+        BYTE *data = NULL;
+        DWORD flags = 0;
+        HRESULT hr;
+        while (SUCCEEDED(hr = cap->lpVtbl->GetBuffer(cap, &data, &frames, &flags, NULL, NULL)) && frames) {
+            int bytes = (int)frames * block;
+            if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {   /* (silence: its frames as zeros) */
+                const int out = packed24 ? bytes / 3 * 4 : bytes;
+                for (int done = 0; done < out;) {
+                    const int n = out - done < (int)sizeof zeros ? out - done : (int)sizeof zeros;
+                    ((_Bool (*)(void *, const void *, int))rec.Put)(w->stream, zeros, n), done += n;
+                }
+            } else if (packed24) {   /* (3-byte samples to 32-bit ones, a piece at a time) */
+                int32_t wide[1024];
+                for (int at = 0; at + 3 <= bytes;) {
+                    int k = 0;
+                    for (; k < 1024 && at + 3 <= bytes; k++, at += 3)
+                        wide[k] = (int32_t)((uint32_t)data[at] << 8 | (uint32_t)data[at + 1] << 16 | (uint32_t)data[at + 2] << 24);
+                    ((_Bool (*)(void *, const void *, int))rec.Put)(w->stream, wide, k * 4);
+                }
+            } else {
+                ((_Bool (*)(void *, const void *, int))rec.Put)(w->stream, data, bytes);
+            }
+            cap->lpVtbl->ReleaseBuffer(cap, frames);
+        }
+        if (FAILED(hr)) break;   /* (the device gone, or another format: no more sound) */
+    }
+    if (a && w->ok) a->lpVtbl->Stop(a);
+    if (cap) cap->lpVtbl->Release(cap);
+    if (a) a->lpVtbl->Release(a);
+    if (mix) CoTaskMemFree(mix);
+    if (d) d->lpVtbl->Release(d);
+    if (e) e->lpVtbl->Release(e);
+    if (SUCCEEDED(com)) CoUninitialize();
+    return 0;
+}
+static void was_close(WasMic *w) {
+    AcquireSRWLockExclusive(&was_lock);
+    for (int i = 0; i < WAS_MAX; i++)
+        if (was_mics[i] == w) was_mics[i] = NULL;
+    ReleaseSRWLockExclusive(&was_lock);
+    InterlockedExchange(&w->stop, 1);
+    WaitForSingleObject(w->thread, INFINITE);   /* (it sleeps 5 ms at a time) */
+    CloseHandle(w->thread), CloseHandle(w->ready);
+    if (w->stream) ((void (*)(void *))rec.Destroy)(w->stream);
+    free(w);
+}
+/* microphone id opened raw, its sound in format (SDL_AudioFormat), channels, freq; NULL: not to be had this way */
+static void *was_open(uint32_t id, int freq, int channels, uint16_t format) {
+    if (!was_wanted()) return NULL;
+    WasMic *w = (WasMic *)calloc(1, sizeof *w);
+    if (!w) return NULL;
+    w->id = id, w->freq = freq, w->channels = channels, w->format = format;
+    w->ready = CreateEventA(NULL, TRUE, FALSE, NULL);
+    w->thread = w->ready ? CreateThread(NULL, 0, was_run, w, 0, NULL) : NULL;
+    if (!w->thread) {
+        if (w->ready) CloseHandle(w->ready);
+        free(w);
+        return NULL;
+    }
+    if (WaitForSingleObject(w->ready, 5000) != WAIT_OBJECT_0) {   /* (a driver that hangs: let go of it, the thread kept) */
+        InterlockedExchange(&w->stop, 1);
+        return NULL;
+    }
+    int slot = -1;
+    AcquireSRWLockExclusive(&was_lock);
+    for (int i = 0; i < WAS_MAX && slot < 0; i++)
+        if (!was_mics[i]) slot = i;
+    if (slot >= 0 && w->ok) was_mics[slot] = w;
+    ReleaseSRWLockExclusive(&was_lock);
+    if (slot < 0 || !w->ok) {
+        was_close(w);
+        return NULL;
+    }
+    return w;
+}
+#else
+static void *was_of(void *mic) { (void)mic; return NULL; }
+#endif
+
+/* (hookshot) the recording device's own channel count (id 0: the default), 1 to 8; 1 when SDL cannot say, and on SDL2 (its
+   capture is opened mono, as before). An audio interface has several: its inputs, then often loopbacks of what the PC plays
+   (a Focusrite Scarlett Solo: 4, its microphone on the second) */
+int hos_sdl_mic_channels(uint32_t id) {
+    if (!rec_ready() || version != 3) return 1;
+#ifdef _WIN32
+    if (was_wanted()) {   /* (Windows: the raw stream's, as was_open opens it) */
+        const int n = was_channels(id);
+        if (n) return n;
+    }
+#endif
+    if (!rec.DeviceFormat) return 1;
+    struct { uint32_t format; int channels, freq; } spec = {0, 0, 0};
+    int frames = 0;
+    if (!((_Bool (*)(uint32_t, void *, int *))rec.DeviceFormat)(id ? id : 0xFFFFFFFEu, &spec, &frames)) return 1;
+    return spec.channels >= 1 && spec.channels <= 8 ? spec.channels : 1;
+}
 void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t sdl_format) {
     if (!rec_ready()) return NULL;
     if (version == 2) {
@@ -511,6 +763,10 @@ void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t sdl_format)
         return m;
     }
     const struct { uint32_t format; int channels, freq; } spec = {sdl_format, channels, freq};
+#ifdef _WIN32
+    void *raw = was_open(id, freq, channels, sdl_format);   /* (hookshot: Windows' raw stream, above) */
+    if (raw) return raw;
+#endif
     void *s = CALL(void *(*)(uint32_t, const void *, void *, void *), OpenAudioDeviceStream)(
         id ? id : 0xFFFFFFFEu /* SDL_AUDIO_DEVICE_DEFAULT_RECORDING */, &spec, NULL, NULL);
     if (s && !CALL(_Bool (*)(void *), ResumeAudioStreamDevice)(s)) {   /* (one that does not start did not open) */
@@ -528,7 +784,8 @@ int hos_sdl_mic_available(void *mic) {
         mic2_lock(m, 0);
         return n;
     }
-    return ((int (*)(void *))rec.Available)(mic);
+    void *w = was_of(mic);
+    return ((int (*)(void *))rec.Available)(w ? *(void **)w /* (its stream: WasMic's first) */ : mic);
 }
 int hos_sdl_mic_read(void *mic, void *dst, int bytes) {
     if (!mic || !rec.ok || bytes <= 0) return 0;
@@ -542,7 +799,8 @@ int hos_sdl_mic_read(void *mic, void *dst, int bytes) {
         mic2_lock(m, 0);
         return n;
     }
-    const int n = ((int (*)(void *, void *, int))rec.GetData)(mic, dst, bytes);
+    void *w = was_of(mic);
+    const int n = ((int (*)(void *, void *, int))rec.GetData)(w ? *(void **)w /* (its stream: WasMic's first) */ : mic, dst, bytes);
     return n > 0 ? n : 0;
 }
 void hos_sdl_mic_clear(void *mic) {
@@ -554,7 +812,8 @@ void hos_sdl_mic_clear(void *mic) {
         mic2_lock(m, 0);
         return;
     }
-    ((_Bool (*)(void *))rec.Clear)(mic);
+    void *w = was_of(mic);
+    ((_Bool (*)(void *))rec.Clear)(w ? *(void **)w /* (its stream: WasMic's first) */ : mic);
 }
 void hos_sdl_mic_close(void *mic) {
     if (!mic || !rec.ok) return;
@@ -564,6 +823,12 @@ void hos_sdl_mic_close(void *mic) {
         free(m->ring), free(m);
         return;
     }
+#ifdef _WIN32
+    if (was_of(mic)) {
+        was_close((WasMic *)mic);
+        return;
+    }
+#endif
     ((void (*)(void *))rec.Destroy)(mic);
 }
 

@@ -4491,6 +4491,8 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_DISCORD) return opts.discord != 0;
         if (id == HOS_OPT_VOLUME) return opts.volume;
         if (id == HOS_OPT_MUTE_BACKGROUND) return opts.mute_background;
+        if (id == HOS_OPT_MIC_GAIN) return std::clamp(opts.mic_gain, 0, 400);
+        if (id == HOS_OPT_MIC_CHANNEL) return std::clamp(opts.mic_channel, 0, 8);
         if (id == HOS_OPT_DISABLE_CAMERA_CENTERING) return opts.disable_camera_centering;
         if (id == HOS_OPT_TEXT_SIZE) return opts.text_size;
         if (id == HOS_OPT_CAMERA_SPEED) return opts.camera_speed;
