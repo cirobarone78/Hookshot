@@ -285,7 +285,11 @@ bool compact_on() {   // (hookshot: the textures in a pool of their own, compact
     return v;
 }
 uint64_t pool_cap() {
-    static const uint64_t mb = getenv("RX_VK_TARGET_POOL_MB") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_TARGET_POOL_MB"))) : 256;
+    static const uint64_t mb = []() -> uint64_t {
+        uint64_t used = 0, allowed = 0;
+        const uint64_t def = (vram_usage(&used, &allowed) && allowed <= (6ull << 30) + (512ull << 20)) ? 128 : 256;
+        return getenv("RX_VK_TARGET_POOL_MB") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_TARGET_POOL_MB"))) : def;
+    }();
     return mb << 20;
 }
 uint64_t pool_key_of(const VkImageCreateInfo& ci) {
@@ -2584,7 +2588,8 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
         if (tex->uploaded) {
             static int logged;
             static std::unordered_map<uint64_t, int> big;
-            if (logged++ < 20 || (tex->guest_size > (4u << 20) && big[tex->gpu]++ < 3)) {
+            static const bool log_big = env_on("RX_VK_LOG_PARTIAL");
+            if (logged++ < 20 || (log_big && tex->guest_size > (4u << 20) && big[tex->gpu]++ < 3)) {
                 uint64_t part = 0, nz = 0, readable = 0;
                 for (const auto& r : dirty) part += r.second - r.first;
                 if (partial) {   // (what the CPU wrote: how much of it is not zero, and in which levels)
@@ -3867,7 +3872,7 @@ void texture_frame(uint64_t completed) {
     // may have (other programs use the GPU too). The least recently used go first, down to 7/8 of it; nothing the
     // last 8 presents used, nothing recorded work may still read.
     static uint64_t own = 0;
-    if (frame_no % 10) return;
+    if (frame_no % 10 && (!own || total_bytes <= own + (own >> 3))) return;
     uint64_t used = 0, allowed = 0, block_free = 0;
     const bool known = vram_usage(&used, &allowed, &block_free);
     if (!own)   // (RX_VK_VRAM_MB, else 70% of what the driver allows the process at the first look)
@@ -4120,8 +4125,12 @@ void texture_frame(uint64_t completed) {
     // after a while of play (issues 107 and 386). Kept, up to RX_VK_KEEP_FINALIZED_MB (512 by default; 0:
     // evicted as before), the least recently used beyond that going as before. (Not written back into the memory instead: the game
     // may have put other things there since, and a write-back over scene data once crashed it)
-    static const uint64_t keep_finalized_max =
-        (uint64_t)(getenv("RX_VK_KEEP_FINALIZED_MB") ? std::max(0, atoi(getenv("RX_VK_KEEP_FINALIZED_MB"))) : 512) << 20;
+    static const uint64_t keep_finalized_max = []() -> uint64_t {
+        if (const char* e = getenv("RX_VK_KEEP_FINALIZED_MB")) return (uint64_t)std::max(0, atoi(e)) << 20;
+        uint64_t u = 0, a = 0;
+        if (vram_usage(&u, &a) && a <= (6ull << 30) + (512ull << 20)) return 192ull << 20;
+        return 512ull << 20;
+    }();
     const auto keep_finalized = [&](const Texture* tex) {
         if (!keep_finalized_max || !tex->gpu_written || !tex->released || !tex->first_written ||
             tex->first_written != tex->last_written || tex->bytes > (4ull << 20))
@@ -4247,6 +4256,17 @@ void texture_frame(uint64_t completed) {
         evict.push_back({tex, !no_flush && !overwritten && tex->gpu_written && !tex->released && flushable(*tex), shifted, overwritten});
         pending_bytes += tex->bytes + tex->pad;
         if (by_hold && !overwritten) hold_live += tex->bytes + tex->pad;
+    }
+    if (!sweep && pending_bytes < total_bytes &&
+        (total_bytes - pending_bytes > budget + (budget >> 3) || (pool_pressed && total_bytes - pending_bytes > budget))) {
+        const uint64_t relief_to = evict_to ? evict_to : budget;
+        for (auto& [last, tex] : order) {
+            if (pending_bytes >= total_bytes || total_bytes - pending_bytes <= relief_to || frame_no - last < 8) break;
+            if (frame_no - last >= need_unused) continue;
+            if (tex->gpu_written || tex->last_value > completed) continue;
+            evict.push_back({tex, false, false, false});
+            pending_bytes += tex->bytes + tex->pad;
+        }
     }
     evict_reason::Tally tally;                     // (why each one goes: the retired line below)
     std::unordered_set<const Texture*> flushed_ok;   // (the write-backs that worked)
