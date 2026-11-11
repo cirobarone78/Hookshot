@@ -1203,6 +1203,56 @@ def shader_census_cmd(romfs, out):
     return PY + [os.path.join(HERE, "shader_census.py"), long_path(romfs), "--out", out]
 
 
+SHADER_LIST_NOTE = "shader_list.txt"   # (in <work>: what the game folder's hookshot_shaders.bin was made from)
+CENSUS_READS = ("Shader", "Layout2Shader", "Lib", "Movie", "Effect", os.path.join("Pack", "ZsDic.pack.zs"))   # (shader_census.py)
+
+
+def shader_list_key(romfs):
+    """What shader_census.py's list depends on: the script, the Python running it, and the game files it reads (CENSUS_READS: their
+    names, sizes and times)"""
+    h = hashlib.sha1(sys.version.encode(), usedforsecurity=False)
+    with open(os.path.join(HERE, "shader_census.py"), "rb") as f:
+        h.update(f.read())
+    for top in CENSUS_READS:
+        p = os.path.join(romfs, top)
+        if os.path.isfile(p):
+            files = [p]
+        else:
+            files = []
+            for d, dirs, names in os.walk(p):
+                dirs.sort()
+                files += [os.path.join(d, n) for n in sorted(names)]
+        for f in files:
+            st = os.stat(f)
+            h.update(("%s %d %d\n" % (os.path.relpath(f, romfs).replace(os.sep, "/"), st.st_size, st.st_mtime_ns)).encode())
+    return h.hexdigest()
+
+
+def shader_list_note(romfs, out):
+    try:
+        st = os.stat(out)
+    except OSError:
+        return None
+    return "%s %s %d %d" % (shader_list_key(romfs), os.path.normcase(os.path.abspath(out)), st.st_size, st.st_mtime_ns)
+
+
+def shader_list_current(work, romfs, out):
+    """out (the game folder's hookshot_shaders.bin) is the list the last build made in this work folder from the same files and tools"""
+    try:
+        with open(os.path.join(work, SHADER_LIST_NOTE), encoding="utf-8") as f:
+            had = f.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return bool(had) and had == shader_list_note(romfs, out)
+
+
+def note_shader_list(work, romfs, out):
+    note = shader_list_note(romfs, out)
+    if note:
+        with open(os.path.join(work, SHADER_LIST_NOTE), "w", encoding="utf-8") as f:
+            f.write(note + "\n")
+
+
 LIFT_KEY = ".lift_key"   # (in <work>/sa/gen: what the lifted C there was made from)
 
 
@@ -1885,8 +1935,13 @@ def main(a=None):
         place_fsr_runtime(out)
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
-    if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
+    # (made again only when the game's shader files, the census or the list itself changed: 4 s and 514 MB written at every update)
+    if shader_list_current(work, romfs, os.path.join(out, "hookshot_shaders.bin")):
+        print("the shader list is the one the last build made from the same files: not made again", flush=True)
+    elif run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
+    else:
+        note_shader_list(work, romfs, os.path.join(out, "hookshot_shaders.bin"))
     # (hookshot) the button prompts of other controllers (host/prompts.c): the game's icon font redrawn per controller, with fontTools.
     # Without it the game shows its own icons
     prompts = os.path.join(out, "prompts")
