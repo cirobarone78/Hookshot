@@ -265,7 +265,7 @@ const char* tx_percent(int v) {
     snprintf(b, sizeof b, "%d%%", v);
     return b;
 }
-/// The main screen's size, as host/hos_main.c takes its shape at the start (the Ultrawide row): false where it
+/// The main screen's size, as host/hos_main.c takes its shape at the start (the Aspect ratio row): false where it
 /// is not known (Linux: the sizes are shown as the 16:9 outputs)
 bool screen_size(uint32_t* w, uint32_t* h) {
 #ifdef _WIN32
@@ -320,7 +320,7 @@ int step_output_choice(int id, int dir) {
     const int at = (int)(std::find(order, order + n, output_choice(id)) - order);
     return order[std::clamp(at + dir, 0, n - 1)];
 }
-/// The picture an Output resolution choice makes: with Ultrawide on, at the screen's
+/// The picture an Output resolution choice makes: with the Aspect ratio at the monitor's shape, at the screen's
 /// shape and at most hos_wide_max_px() pixels, as host/hos_main.c works it out at the start (host/hos_wide_size.h); else the
 /// 16:9 output. The game's own choice (0) as it is (its size comes from the game's graphics scale). *native: the screen's own size
 Out picture_for(int v, bool* native = nullptr) {
@@ -414,7 +414,7 @@ bool row_fixed(const int* value) {
 const char* tx_output_res(int v) {
     static char b[40];
     v = output_choice(v);
-    // (the picture this choice makes (picture_for: at the monitor's shape with Ultrawide on), "(native)"
+    // (the picture this choice makes (picture_for: at the monitor's shape when the Aspect ratio takes it), "(native)"
     // when it is the screen's own size; the game's own choice (0) keeps its name)
     bool native = false;
     const Out o = picture_for(v, &native);
@@ -437,7 +437,7 @@ const char* tx_text_size(int v) {
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];
     return t[v];
 }
-const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }
+const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }   // (the Aspect ratio row)
 const char* tx_prompts(int v) {
     static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
     return t[std::min(std::max(v, 0), (int)HOS_PROMPT_N)];
@@ -723,11 +723,12 @@ Row rows[] = {
      "little GPU time. Game's is the console's own (1x or 2x).", nullptr},
     {TAB_GRAPHICS, "Profile", &opts.handheld, 0, 1, 1, tx_profile,
      "Runs the game as the console docked or handheld. Applies after a restart.", hn_handheld, true},
-    {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
-     "The camera's shape on a screen wider or narrower than 16:9 (4:3, 16:10). Applies after a restart.", hn_ultrawide, true},
+    {TAB_GRAPHICS, "Aspect ratio", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
+     "The picture's shape: your monitor's (the default: wider on an ultrawide, narrower on 4:3 or 16:10), or the game's 16:9. "
+     "Applies after a restart.", hn_ultrawide, true},
     {TAB_GRAPHICS, "Ultrawide menus", &opts.wide_menus, 0, 2, 1, tx_wide_menus,
-     "With Ultrawide: the pause, item and map menus, and what shows beside them. Loading screens and pre-rendered movies, "
-     "which draw no world either, get the same sides. Changes at once.", hn_wide_menus},
+     "With the Aspect ratio at the monitor's shape: the pause, item and map menus, and what shows beside them. Loading "
+     "screens and pre-rendered movies, which draw no world either, get the same sides. Changes at once.", hn_wide_menus},
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
      "restart.", hn_robust, true},
@@ -1131,6 +1132,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
     if (r.value == &opts.handheld) return "handheld_profile";   // (the Profile row; host/nn_applet.c reads it at the start)
+    if (r.value == &opts.ultrawide) return "ultrawide";   // (the Aspect ratio row; host/hos_main.c reads it at the start)
     if (r.value == &opts.mesh_mode) return "mesh_shaders";   // (gpu/vk/vk_main.cpp reads it as the device is made)
     static char k[32];
     size_t n = 0;
