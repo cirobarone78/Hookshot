@@ -7778,6 +7778,22 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     }, all_computes, true);
     logf("vk: precompile: compute programs: %s (%zu keys listed as dispatched in play)",
          all_computes ? "every kept one" : (which && !strcmp(which, "none")) ? "none" : "those play dispatched", used.size());
+    // (hookshot) Where no shader stage can be pinned to 32 lanes and waves are wider (GCN: RX 400/500, Vega), the notes' graphics
+    // pipelines are left to play. Made here, an RX 580 (RADV) drew from them with characters black or glowing white, the
+    // level's walls and trees missing and the light jumping from frame to frame, for as long as it played; made at their
+    // first draw, the same pipelines drew right. Kokiri Forest on a Phenom II with an RX 580, the mean change between
+    // consecutive frames of a still camera: 13 to 69 with them made here, 1.4 with the compute and mesh fallback pipelines
+    // made here and the graphics ones in play (2026-11-11). Why the precompile's differ is not known yet. The compute and
+    // fallback pipelines, the slow builds, are still made before play. RX_VK_PRECOMPILE_GRAPHICS=1 or 0 chooses
+    const bool graphics_here = [] {
+        if (const char* e = getenv("RX_VK_PRECOMPILE_GRAPHICS")) return atoi(e) != 0;
+        return !(dev.sg32_stages == 0 && dev.subgroup_size > 32);
+    }();
+    if (!graphics_here && !notes.empty()) {
+        logf("vk: precompile: the %zu graphics pipelines the notes name are made in play on this GPU (GCN; "
+             "RX_VK_PRECOMPILE_GRAPHICS=1: here)", notes.size());
+        notes.clear();
+    }
     const double read_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     const size_t total = notes.size() + computes.size() + fallbacks.size();
     // (the workers' state on the heap: a start whose last pipelines never finish (two of 4926 on an RX 5700 XT, "stuck at
