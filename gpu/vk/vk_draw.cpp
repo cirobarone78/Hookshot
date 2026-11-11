@@ -3281,6 +3281,11 @@ VkResult shared_compute_pipeline(const VkComputePipelineCreateInfo* ci, VkPipeli
 /// (hookshot) The driver faults the pipeline compiles caught so far (guarded_graphics, guarded_compute): the preparation's
 /// watchdog says so (vk_main.cpp). Outside the unnamed namespace: vk_main.cpp links to it
 int driver_faults() { return st_driver_faults.load(std::memory_order_relaxed); }
+/// (hookshot) Whether predict_run or precompile_run went on and left workers inside the driver: the pipeline cache's save can wait
+/// on them, and so can exit() unloading the driver (vk_main.cpp, the --prepare-shaders run)
+std::atomic<bool> st_left_workers{false};
+void prepare_left_workers_note() { st_left_workers.store(true); }
+bool prepare_left_workers() { return st_left_workers.load(); }
 void draw_skip_report(double frames) { skip_report_impl(frames), fine_report(frames); }
 void descriptors_disturbed() {
     pushed()[0].cmd = pushed()[1].cmd = VK_NULL_HANDLE;
@@ -7865,6 +7870,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
             std::lock_guard lk(pre->mu);
             pre->abandoned = true;
             gone_on = true;
+            prepare_left_workers_note();
             logf("vk: precompile: %zu of %zu done, nothing finished for %d s: the game starts, the rest go on behind it", done.load(),
                  total, stall_s);
             break;
@@ -7963,7 +7969,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
             program_cache_borrow(pre->keys[i], [&](Program& p) {
                 ensure_layout(p);
                 for (const PipeNote* n : list)
-                    if (n->variant == p.variant) {
+                    if (n->variant == p.variant && !pre->abandoned.load()) {   // (gone on without it: no more of its list)
                         // (the first graphics pipeline alone, the rest in parallel, as in precompile_run: after the library warm,
                         // NVIDIA's driver (621.14, RTX 4070 Ti Super) faulted when all the workers began theirs at once, and the
                         // start hung on the lock it held then. This runs before precompile_run, so its first pipeline is the first)
@@ -7986,11 +7992,15 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
     for (unsigned i = 0; i < std::min(cpus, 64u); i++) threads.emplace_back(worker);
-    // (hookshot) Nothing finished for this long, on any worker (each pipeline counts as it finishes): the driver is stuck in the
-    // pipelines they are building. The preparation goes on, the stuck workers left in the driver, the rest of the predicted
-    // pipelines built in play when first drawn. Before, it waited for ever: the builder's bar stopped until make_game.py, after 15
-    // minutes with no line, stopped the game (PREPARE_SILENCE). RX_VK_PREDICT_STALL_S=<s>, 0: wait for all
+    // (hookshot) Nothing finished for this long, on any worker (each pipeline counts as it finishes): the run goes on, the stuck
+    // workers left in the driver, the rest of the predicted pipelines built in play when first drawn. When:
+    // - the driver faulted in this run (driver_faults: caught, and a driver can stop answering after one): wherever the run is;
+    // - otherwise only once every program has been handed out, as precompile_run's guard: the last stragglers, never the bulk. A
+    //   slow driver that still works can sit up to 30 s on one pipeline (#2107), and what is given up here is built in play, at the
+    //   game's own start too, where no watchdog is; a real hang before then is the --prepare-shaders watchdog's (vk_main.cpp).
+    // Before, it waited for ever. RX_VK_PREDICT_STALL_S=<s>, 0: wait for all
     static const int stall_s = getenv("RX_VK_PREDICT_STALL_S") ? atoi(getenv("RX_VK_PREDICT_STALL_S")) : 30;
+    const int faults_before = driver_faults();
     size_t last_done = 0;
     auto last_change = std::chrono::steady_clock::now();
     bool gone_on = false;
@@ -7999,11 +8009,13 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
         Sleep(100);
         const auto now = std::chrono::steady_clock::now();
         if (done.load() != last_done) last_done = done.load(), last_change = now;
-        else if (stall_s > 0 && now - last_change > std::chrono::seconds(stall_s)) {
+        else if (const bool faulted = driver_faults() > faults_before;
+                 stall_s > 0 && (faulted || next.load() >= pre->keys.size()) && now - last_change > std::chrono::seconds(stall_s)) {
             pre->abandoned = true;
             gone_on = true;
-            logf("vk: predicted pipelines: %zu of %zu done, nothing finished for %d s (the driver stuck in a pipeline): the rest are "
-                 "built in play", done.load(), predicted_n, stall_s);
+            prepare_left_workers_note();
+            logf("vk: predicted pipelines: %zu of %zu done, nothing finished for %d s (%s): the rest are built in play", done.load(),
+                 predicted_n, stall_s, faulted ? "the driver faulted, and is stuck since" : "the last ones stuck in the driver");
             break;
         }
     }
