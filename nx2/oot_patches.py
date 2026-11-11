@@ -447,6 +447,84 @@ def patch_whole_frames(s):
     return s, done
 
 
+# Above a Frame rate cap of 60, two places that need whole 60 fps frames (host/oot_high_fps.h has why and the logic; at a cap of
+# 60 the host hands back what the game computed):
+# - the sound manager's job, f_80435300 (phase in w2; phase 0 loads the game step, [[slot]]+0x10, and hands it to the sound
+#   engine): its head asks hos_oot_sound_gate whether to run now (60 Hz above 60 fps, the other phases following phase 0), and
+#   the step it loads goes through hos_oot_sound_step (a whole one while the gate holds the job). After zortos293/Lichii PR #1289
+#   (auz466), which does the same as a code patch for the emulator.
+# - the physics solver's step count, set each update from the frame step in f_838ceb80 and f_838cfc10 (the same code in both):
+#   hos_oot_solver_steps rounds it up instead of down, at least 1, so Link stays on moving platforms (issue 1798).
+SOUND_HEAD = "void f_80435300(Ctx *__restrict A64_NOESC c) {\n"
+SOUND_SLOT = "g_module_base + 0x80435000ULL + (int64_t)75927552"   # (the page of the step's pointer, whose +2192 holds it)
+SOUND_OLD = ("    c->x[8]=" + SOUND_SLOT + ";\n"
+             "    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[19] = _r; }\n"
+             "    c->x[8]=recomp_load64(c,c->x[8] + 2192);\n"
+             "    c->x[8]=recomp_load64(c,c->x[8] + 0);\n"
+             "    { { uint64_t _v=recomp_load32(c,(c->x[8]+16ULL)); a64_vset64(c->vreg[0],_v); } }\n")
+SOUND_NEW = SOUND_OLD.replace("uint64_t _v=recomp_load32(c,(c->x[8]+16ULL));",
+                              "uint64_t _v=hos_oot_sound_step((uint32_t)recomp_load32(c,(c->x[8]+16ULL)));")
+SOUND_GATE = ("    if (!hos_oot_sound_gate(c, (uint32_t)c->x[2], " + SOUND_SLOT + " + 2192)) return;"
+              "   /* (nx2/oot_patches.py: the sound job at 60 Hz above 60 fps) */\n")
+SOUND_DECL = "extern int hos_oot_sound_gate(Ctx *c, uint32_t phase, uint64_t slot);\nextern uint32_t hos_oot_sound_step(uint32_t step_bits);\n"
+SOLVER_HEADS = ("void f_838ceb80(Ctx *__restrict A64_NOESC c) {\n", "void f_838cfc10(Ctx *__restrict A64_NOESC c) {\n")
+# (the cut of frame step * steps a frame + 0.001, then its store into the solver: vreg 0 the float cut, vreg 1 the steps a frame)
+SOLVER_OLD = ("    c->x[1]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
+              "    recomp_store32(c,c->x[0] + 712,c->x[1]);\n")
+SOLVER_NEW = SOLVER_OLD.replace(
+    "    recomp_store32(", "    c->x[1]=hos_oot_solver_steps((uint32_t)c->x[1], (uint32_t)c->vreg[0][0], (uint32_t)c->vreg[1][0]);"
+    "   /* (nx2/oot_patches.py: solver steps rounded up above 60 fps) */\n    recomp_store32(", 1)
+SOLVER_DECL = "extern uint32_t hos_oot_solver_steps(uint32_t game, uint32_t scaled_bits, uint32_t per_frame_bits);\n"
+
+
+def _function(s, head_text):
+    """(start, end) of the function whose head is head_text, or None"""
+    head = s.find(head_text)
+    if head < 0:
+        return None
+    end = s.find("\nvoid f_", head + len(head_text))
+    return head, end if end >= 0 else len(s)
+
+
+def patch_sound_job(s):
+    """The sound job's gate and step: (s, 1) when the job is in s with them (made now or before), (s, 0) when it is not here or
+    its code differs (another game version: left as it is)"""
+    at = _function(s, SOUND_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(SOUND_NEW) == 1 and body.count(SOUND_GATE) == 1:
+        return s, 1
+    if body.count(SOUND_OLD) != 1 or SOUND_GATE in body:
+        return s, 0
+    body = body.replace(SOUND_OLD, SOUND_NEW, 1)
+    body = SOUND_HEAD + SOUND_GATE + body[len(SOUND_HEAD):]
+    s = s[:head] + body + s[end:]
+    if SOUND_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SOUND_DECL, 1)
+    return s, 1
+
+
+def patch_solver_steps(s):
+    """The solver step count's two places: (s, how many of them are in s with the hook, made now or before)"""
+    done = 0
+    for head_text in SOLVER_HEADS:
+        at = _function(s, head_text)
+        if at is None:
+            continue
+        head, end = at
+        body = s[head:end]
+        if body.count(SOLVER_NEW) == 1:
+            done += 1
+        elif body.count(SOLVER_OLD) == 1:
+            s = s[:head] + body.replace(SOLVER_OLD, SOLVER_NEW, 1) + s[end:]
+            done += 1
+    if done and SOLVER_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SOLVER_DECL, 1)
+    return s, done
+
+
 def patch_text_speed(s):
     """The scale at the head of the letters' block of f_80b1e140 (Text speed), and the call to hos_oot_text_pane after it
     (Text size: host/oot_text_size.c); None when the file has no such function, s unchanged when the
@@ -524,6 +602,7 @@ def apply(gen, *, protect_hearts=False, required=False):
     camera_speed = 0   # (the turn-speed functions that scale by hos_camera_scale: patch_camera_speed)
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
     whole_sites = 0   # (the counters of WHOLE_SITES with the whole frames: patch_whole_frames)
+    sound_jobs = solver_sites = 0   # (patch_sound_job, patch_solver_steps: made now or before)
     for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
@@ -626,6 +705,14 @@ def apply(gen, *, protect_hearts=False, required=False):
         whole_sites += out.count(WHOLE_MARK)   # (made now, or by an earlier run over this file)
         if whole:
             print("oot_patches: %d frame counter(s) with the step's whole frames in %s" % (whole, os.path.basename(path)))
+        sound, n = patch_sound_job(out)
+        if sound != out:
+            print("oot_patches: the sound job at 60 Hz above 60 fps in", os.path.basename(path))
+        out, sound_jobs = sound, sound_jobs + n
+        solver, n = patch_solver_steps(out)
+        if solver != out:
+            print("oot_patches: the solver steps rounded up above 60 fps in", os.path.basename(path))
+        out, solver_sites = solver, solver_sites + n
         if out != s:
             whole_write.write_whole(path, out, newline="")
     for what, n in done.items():
@@ -648,6 +735,10 @@ def apply(gen, *, protect_hearts=False, required=False):
     elif whole_sites != len(WHOLE_SITES):   # (the frames' own time without them: the pick-up indicator stays above 60 fps)
         print("oot_patches: WARNING: %d of %d frame counters found for the step's whole frames (above 60 fps a counter can stop: "
               "the pick-up indicator)" % (whole_sites, len(WHOLE_SITES)))
+    if sound_jobs != 1:   # (without it, above 60 fps sounds and then the music can stop after a few loading zones)
+        print("oot_patches: WARNING: the sound job was found %d times, not once" % sound_jobs)
+    if solver_sites != len(SOLVER_HEADS):   # (without them, above 60 fps moving platforms can drop Link)
+        print("oot_patches: WARNING: the solver step count was found at %d of %d places" % (solver_sites, len(SOLVER_HEADS)))
     apply_output_size(gen, required=required)
 
 

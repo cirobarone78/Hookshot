@@ -3,8 +3,8 @@
 The engine's rate is a whole number of display intervals, 60 at most, and it puts 60 back over a higher one: with only the
 rate raised, every frame above 60 fps still stepped 1/60 s. nx2/oot_patches.py puts the host's measured frame time
 (hos_frame_seconds_bits) at the engine's two step divides, and host/nn_vi.c realtime_step publishes it while the cap is above
-60 and the hook is in the build; Uncapped (frame_rate_cap=6) is a cap of 1000, whose frames step by their own time down to
-1 ms, so the game keeps real time past 240 fps. At a cap of 60 the bits stay 0 and the lifted code runs as shipped; a game version whose
+60 and the hook is in the build; Uncapped (frame_rate_cap=6), and a HOS_FPS_MAX over 240, hold the game to 240 frames a
+second (far above that its quick menu crashes), stepped by their own time down to a 240th. At a cap of 60 the bits stay 0 and the lifted code runs as shipped; a game version whose
 code differs keeps its own code and the build goes on with a warning.
 
 python -I -B tests/test_frame_rate_cap_step.py [--cc gcc]
@@ -106,11 +106,11 @@ int main(int argc, char **argv) {
         CHECK(near(frames(10, 1.0 / 40), 1.0 / 40) && *rate == 40 && near(lifted_step(60.0f, (float)*rate), 1.5));
         CHECK(near(frames(10, 1.0 / 1000), 1.0 / 240));   /* (the shortest step) */
         CHECK(near(frames(10, 0.2), 4.0 / 60));           /* (the longest, as the rate's 15) */
-    } else if (!strcmp(mode, "uncapped")) {   /* (frame_rate_cap=6, or HOS_FPS_MAX=1000: the frames' own time down to 1 ms) */
-        CHECK(near(frames(10, 1.0 / 120), 1.0 / 120) && *rate == 60 && *limit == 1000);
-        CHECK(near(frames(10, 1.0 / 500), 1.0 / 500));    /* (500 fps: a 500th of game time each, not a 240th) */
-        CHECK(near(lifted_step(60.0f, (float)*rate), 0.12));   /* (60 * a 500th: real time) */
-        CHECK(near(frames(10, 1.0 / 5000), 1.0 / 1000));  /* (the shortest step, the pacing's 1 ms) */
+    } else if (!strcmp(mode, "uncapped")) {   /* (frame_rate_cap=6, or HOS_FPS_MAX=1000: the game held to 240, its quick menu
+                                                 crashes far above that) */
+        CHECK(near(frames(10, 1.0 / 120), 1.0 / 120) && *rate == 60 && *limit == 240);
+        CHECK(near(frames(10, 1.0 / 240), 1.0 / 240) && near(lifted_step(60.0f, (float)*rate), 0.25));   /* (60 * a 240th) */
+        CHECK(near(frames(10, 1.0 / 5000), 1.0 / 240));   /* (the shortest step) */
     } else if (!strcmp(mode, "unknown index")) {   /* (frame_rate_cap= a later build's value: 60, as on the console) */
         CHECK(frames(10, 1.0 / 120) == 0.0f && *limit == 60);
     } else if (!strcmp(mode, "cap 60")) {
@@ -201,7 +201,7 @@ def main():
         c.write_text(fixture, encoding="utf-8")
         subprocess.run([a.cc, "-std=c11", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
         for mode, cap, step, index in (("cap 120", "120", None, None), ("cap 60", None, None, None), ("step off", "120", "0", None),
-                                       ("no hook", "120", None, None), ("uncapped", None, None, "6"), ("uncapped", "1000", None, None),
+                                       ("no hook", "120", None, None), ("uncapped", None, None, "6"), ("uncapped", "1000", None, None), ("uncapped", "500", None, None),
                                        ("unknown index", None, None, "7"), ("cap 120", None, None, "2")):
             env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_") and k != "T_CAP_INDEX"}
             if cap:
