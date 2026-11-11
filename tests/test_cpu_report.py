@@ -164,6 +164,15 @@ def main():
         cps, secs = rep.hle_calls(t, blocks=1)
         if secs != 5.0 or cps.get("_ZN2nn2os9LockMutexEPNS0_9MutexTypeE") != 10.0 or cps.get("nvnQueueSubmitCommands") != 2.0:
             failures.append("hle_calls should read the last block only: %r %r" % (secs, cps))
+    with tempfile.TemporaryDirectory(prefix="cpu-gpu-") as t:   # (two GPUs: the report names the one the renderer chose)
+        (Path(t) / "game.log").write_text(
+            "[hos host] vk: device 0: Integrated GPU, Vulkan 1.3, driver 0x1, type 1\n"
+            "[hos host] vk: device 1: Discrete GPU, Vulkan 1.4, driver 0x2, type 2\n"
+            "[hos host] vk: Discrete GPU, Vulkan 1.4, driver 0x2; mesh shaders yes, host memory import yes, pipeline libraries yes\n",
+            encoding="utf-8")
+        gpu = rep.machine(t).get("gpu", "")
+        if not gpu.startswith("Discrete GPU"):
+            failures.append("machine() should name the chosen GPU, not device 0: %r" % gpu)
     if rep.calls_key("imp__ZN2nn2os9LockMutexEPNS0_9MutexTypeE") != "_ZN2nn2os9LockMutexEPNS0_9MutexTypeE" or \
             rep.calls_key("n_nvnQueueSubmitCommands") != "nvnQueueSubmitCommands":
         failures.append("calls_key does not map frame keys to the counter's names")

@@ -400,7 +400,8 @@ def machine(folder):
         for line in open(log, encoding="utf-8", errors="replace"):
             if "hookshot v" in line and "version" not in info:
                 info["version"] = line.split("hookshot ", 1)[1].strip()
-            m = re.search(r"vk: device \d+: (.+?), type", line)
+            # (the device the renderer chose, logged with its features; "vk: device N:" lines list every device)
+            m = re.search(r"vk: ([^;]+?, Vulkan \d+\.\d+, driver \w+); mesh shaders", line)
             if m and "gpu" not in info:
                 info["gpu"] = m.group(1)
             if len(info) == 2:
@@ -704,6 +705,9 @@ def main():
 
     total = med([sum(r["c"]["owner_fn"].values()) for r in runs]) or 1
     cps, csecs = hle_calls(a.calls) if a.calls else ({}, None)
+    if a.calls and not cps:
+        raise SystemExit("--calls %s: no 'hle:' summaries in its game.log (HOS_HLE_STATS=1 needs a build with the HLE call "
+                         "counters, see docs/cpu-profile.md)" % a.calls)
     cfps = window_of(a.calls)[0] if a.calls else None
     if cps:
         w("Call counts come from `%s`, a run of the same scene with the HLE call counters on (`HOS_HLE_STATS=1`), %d s of "
