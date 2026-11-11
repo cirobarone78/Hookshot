@@ -391,7 +391,8 @@ HDR peak brightness show only while HDR is on.
   RX_VK_FSR set for a run go over it, as over the row's other choices.
 - **Texture detail with DLSS, FSR 3.1 or FSR 4:** below 75% Render resolution, the world's textures are sampled one finer
   mip step for each halving of the 3D (the game already does so for its own 75%), so the upscaled picture keeps their
-  detail. `RX_VK_UPSCALE_LOD_BIAS=0` turns it off.
+  detail. At Auto the same holds for the size the game's dynamic resolution draws, in quarter steps.
+  `RX_VK_UPSCALE_LOD_BIAS=0` turns it off.
 - **NVIDIA Reflex** Off is the game as without it. `RX_VK_REFLEX_LOG=1` logs the driver's latency timings every 300
   frames while it is on.
 - **AMD Anti-Lag 2** Off is the game as without it. Like Reflex, it is not used while Frame generation is on.

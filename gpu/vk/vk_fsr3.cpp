@@ -805,6 +805,7 @@ bool fsr3_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     }
     full_barrier(cmd);
     fsr3_inputs::upscaled(f.width, f.height, ow, oh);
+    upscale_lod_drew(f.width, ow);   // (the textures' LOD bias at Auto: vk_draw.cpp upscale_lod_bias)
     // (every 600 frames: that it still draws, and the jitter it was given, which says the host's jitter is on)
     if (++o.drawn % 600 == 0)
         logf("vk: fsr3: %llu frames drawn, %ux%u -> %ux%u, this one's jitter %+.3f %+.3f px of %u phases", (unsigned long long)o.drawn,

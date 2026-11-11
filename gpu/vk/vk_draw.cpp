@@ -36,6 +36,7 @@
 #include "vk_draw.h"
 #include "vk_menu.h"          // (opts.anisotropy: the Anisotropic filtering row; resolution_scale)
 #include "upscaler_rows.h"    // (upscale_lod_bias: which upscalers draw the 3D smaller)
+#include "upscale_lod_bias.h" // (its steps at Auto, from the size the upscaler drew from)
 #include "dlss_actor.h"
 #include "vk_temporal.h"
 #include "vk_fsr3.h"          // (AMD FSR 3.1 in the gameplay upscale's place)
@@ -2300,16 +2301,35 @@ uint32_t aniso_override() {
 // -0.5 for that (sampler_make's log line). DLSS, FSR 3.1 and FSR 4 at a smaller fixed Render resolution scale up from less, so
 // those samplers (the ones the game biases below 0) get log2(share / 0.75) more: the mips the output's size wants, as NVIDIA's
 // DLSS guide asks (log2(render / display)). DLSS Quality (67%) -0.17, Balanced -0.37, Performance -0.58, Ultra Performance
-// -1.17. 0 with the game's own upscale, DLAA and FSR 4's native AA, at Auto, and from 75% up. RX_VK_UPSCALE_LOD_BIAS=0: off.
-// Part of every sampler's key; the menu's Upscaler, Render resolution and Quality preset rows move the samplers' generation
+// -1.17. 0 with the game's own upscale, DLAA and FSR 4's native AA, and from 75% up. RX_VK_UPSCALE_LOD_BIAS=0: off.
+// At Auto the 3D's size is the game's dynamic resolution's, which the menu does not know: the bias is then the same
+// log2(share / 0.75) of the size the upscaler last drew from (upscale_lod_drew), in quarter levels (upscale_lod_bias.h), so
+// a scene the game shrank below its 3/4 keeps its textures' detail too.
+// Part of every sampler's key; the menu's Upscaler, Render resolution and Quality preset rows move the samplers' generation,
+// and so does another measured step at Auto
+std::atomic<int> upscale_lod_auto_steps{0};   // (upscale_lod_bias.h's steps for the size the upscaler last drew from)
 float upscale_lod_bias() {
     static const bool off = getenv("RX_VK_UPSCALE_LOD_BIAS") && atoi(getenv("RX_VK_UPSCALE_LOD_BIAS")) == 0;
     if (off) return 0.0f;
     const int up = fsr3_wanted() ? (int)upscaler_rows::FSR3 : temporal_mode();
     const int share = resolution_scale();   // (in 1/10000 of the output; 0: Auto)
-    if (!upscaler_rows::scales_by_mode(up) || share <= 0) return 0.0f;
+    if (!upscaler_rows::scales_by_mode(up)) return 0.0f;
+    if (share <= 0) return upscale_lod::bias(upscale_lod_auto_steps.load());   // (Auto: what was measured)
     return std::min(0.0f, std::log2((float)share / 7500.0f));
 }
+}  // namespace (upscale_lod_drew is vk_draw.h's: vk_temporal.cpp and vk_fsr3.cpp call it, so it is not in the anonymous one)
+void upscale_lod_drew(uint32_t scene_width, uint32_t picture_width) {
+    // (from the steps it has: a size at the edge of two steps keeps the one it has, upscale_lod_bias.h)
+    const int steps = upscale_lod::steps(scene_width, picture_width, upscale_lod_auto_steps.load());
+    if (upscale_lod_auto_steps.exchange(steps) == steps) return;
+    // (after the steps are stored: a sampler made between the two is made anew, never kept with the bias from before)
+    samplers_changed();
+    static std::atomic<int> told{0};
+    if (resolution_scale() <= 0 && told++ < 16)
+        logf("vk: upscaler LOD bias at Auto: %+.2f mip levels on the game's own (the 3D %u wide, scaled to %u)",
+             (double)upscale_lod::bias(steps), scene_width, picture_width);
+}
+namespace {
 /// compare: the shader reads depth with a reference (a sampler without one cannot compare)
 VkSampler sampler_make(int id, bool compare);
 // (each texture of each draw found its sampler through reg_mu, a copy of the registration, a hash of it and a map lookup:

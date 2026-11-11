@@ -1038,6 +1038,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
 
     std::memcpy(s.last_vp, cam.current, sizeof s.last_vp);
     s.jitter.publish(rw, rh, (uint32_t)dlss_jitter_phases(rw, rh, dw, dh), now);
+    upscale_lod_drew(rw, dw);   // (the textures' LOD bias at Auto: vk_draw.cpp upscale_lod_bias)
     if (s.reason) logf("vk: %s draws the upscale again (frame %llu)", engine.e->name, (unsigned long long)now);
     s.reason = nullptr;
     // (RX_VK_DLSS_DEBUG=alternate, a test's reference: every other frame the game's own upscale over the engine's, which still

@@ -11,6 +11,11 @@ namespace mkwvk {
 /// Something other than the draw path pushed or bound descriptors in the recording (its next push is whole)
 void descriptors_disturbed();
 
+/// (hookshot) A temporal upscaler (vk_temporal.cpp's chain, vk_fsr3.cpp) scaled a 3D of this width up to a picture of that
+/// one: what the upscalers' texture LOD bias is at Auto, where the game's dynamic resolution sets the 3D's size
+/// (vk_draw.cpp upscale_lod_bias). Another step of it makes the samplers anew
+void upscale_lod_drew(uint32_t scene_width, uint32_t picture_width);
+
 /// A graphics pipeline as hookshot_pipelines.bin keeps it (the precompile's notes): what built it
 struct PipeNote {
     uint64_t key, prog, variant;
