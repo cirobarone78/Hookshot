@@ -7921,8 +7921,9 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     const double decide_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     const size_t notes_n = notes.size(), predicted_n = predicted.size();
     // (the workers' state on the heap, as precompile_run's: a pipeline the driver never finishes (builds stuck after "vertex format
-    // NVN 0xe -> vk 17" on Radeon and GeForce RTX 40 cards, #2107) holds its worker for good, and the preparation goes on without
-    // it once nothing has finished for RX_VK_PREDICT_STALL_S. The state is let go then, never freed: that worker still uses it)
+    // NVN 0xe -> vk 17" on players' cards of all kinds, AMD and NVIDIA, #2107) holds its worker for good, and the preparation goes
+    // on without it once nothing has finished for RX_VK_PREDICT_STALL_S. The state is let go then, never freed: that worker still
+    // uses it)
     struct Pre {
         std::vector<std::unique_ptr<PipeNote>> notes, predicted;
         std::unordered_map<uint64_t, std::vector<const PipeNote*>> by_program;

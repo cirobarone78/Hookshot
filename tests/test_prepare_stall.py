@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A shader preparation the GPU driver stops answering in goes on or ends, and says why (#2107).
 
-Builds on Radeon and GeForce RTX 40 cards stopped for good in the predicted pipelines, the Builder's details showing the last line
-written ("vertex format NVN 0xe -> vk 17"). The driver had faulted in a pipeline compile (caught: "the driver faulted compiling") and
+Builds on players' cards of all kinds, AMD and NVIDIA, stopped for good in the predicted pipelines, the Builder's details showing
+the last line written ("vertex format NVN 0xe -> vk 17"). The driver had faulted in a pipeline compile (caught: "the driver faulted compiling") and
 was left holding a lock of its own. Compiled from the real source, with stand-ins for the driver and the files:
 
 - predict_run (gpu/vk/vk_draw.cpp): builds every predicted pipeline; its first one alone; a pipeline the driver never finishes
