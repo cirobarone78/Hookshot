@@ -170,6 +170,27 @@ def check_paths():
     if "kShotW, kShotH,\n" not in shot[:shot.index(";")] or "present_native_pq.load(" not in shot[:shot.index(";")]:
         sys.exit("FAIL: the RX_VK_SHOT_FX shot scales Native HDR's picture as SDR")
     check_dlss()
+    check_fsr4()
+
+
+def check_fsr4():
+    # (AMD FSR 4 the same way: while the game presents PQ its context is made HDR, linear, with AMD's auto exposure, and again
+    # when that changes; the dispatch then says linear colour, not sRGB, and the engine tells the chain it takes HDR colour)
+    fsr4 = (VK / "vk_fsr4.cpp").read_text(encoding="utf-8")
+    prepare = function(fsr4, "int prepare(")
+    if "const bool hdr = hdr_allowed && present_native_pq.load(std::memory_order_relaxed);" not in prepare or \
+            'env_switch("RX_VK_FSR4_HDR")' not in prepare or "opts.hdr" in prepare or \
+            "s.context->hdr != hdr" not in prepare or "make_context(ow, oh, hdr)" not in prepare:
+        sys.exit("FAIL: FSR 4's context is not made for HDR colour while the game presents PQ (and again when that changes)")
+    make = function(fsr4, "std::shared_ptr<Context> make_context(")
+    if "FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE" not in make or \
+            "FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE" not in make:
+        sys.exit("FAIL: FSR 4's HDR context is not linear HDR with AMD's exposure (or its LDR one is not non-linear)")
+    evaluate = function(fsr4, "bool evaluate(")
+    if "d.flags = s.context->hdr ? 0u : (uint32_t)FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;" not in evaluate:
+        sys.exit("FAIL: FSR 4's dispatch calls HDR colour sRGB (it is linear light there)")
+    if "start, prepare, evaluate, release, memory, hdr}" not in fsr4:
+        sys.exit("FAIL: vk_fsr4.cpp's engine does not tell the chain it takes HDR colour")
 
 
 def check_dlss():
