@@ -101,6 +101,23 @@ def main():
             raise SystemExit("FAIL: %s is in vk_shader.cpp, inside the translator stamp" % fn.rstrip("("))
         if not re.search(re.escape(fn) + r"[^;]*\)\s*\{", cache):
             raise SystemExit("FAIL: %s is not defined in vk_progcache.cpp" % fn.rstrip("("))
+    # (what a record writes as it lies in memory from vk_shader.h, which the translator stamp does not hash: each named in a
+    # static_assert beside kProgramCacheFormat, so a layout change stops the build until the format is raised)
+    fmt = cache.index("constexpr uint32_t kProgramCacheFormat")
+    asserts = cache[fmt:cache.index("\nuint64_t program_cache_stamp()", fmt)]
+    written = set(re.findall(r"put(?:_list)?\(o, p\.(\w+)\)", body(cache, "void put_head(")))
+    save = body(cache, "void program_cache_save(")
+    stage = set(re.findall(r"put(?:_list)?\(o, st\.(\w+)\)", save))
+    if not written or not stage:
+        raise SystemExit("FAIL: put_head or program_cache_save no longer writes as this test reads it")
+    for member in sorted(written):
+        if "Program::" + member not in asserts:
+            raise SystemExit("FAIL: put_head writes Program::%s as it lies, and no static_assert holds its layout" % member)
+    for member in sorted(stage - {"info"}):   # (Shader::Info: the recompiler's, in the translator stamp)
+        if "Stage::" + member not in asserts:
+            raise SystemExit("FAIL: program_cache_save writes Stage::%s as it lies, and no static_assert holds its layout" % member)
+    if "sizeof(Program::Answer) ==" not in asserts or "offsetof(Program::Answer" not in asserts:
+        raise SystemExit("FAIL: Program::Answer (the answers, written whole) has no size and offset asserts")
     print("PASS: the program cache survives edits to its own reads, and goes with the translator or its format")
     return 0
 

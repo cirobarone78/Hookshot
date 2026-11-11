@@ -5,15 +5,20 @@
 // folders): a change here keeps every player's translated programs. What the cache is good for is program_cache_stamp: the
 // translator's stamp (translator_stamp, vk_shader.cpp) and kProgramCacheFormat below. A change to what a record holds or how it is
 // laid out (put_head/get_head, put_info/get_info, program_cache_save/program_cache_read, the file and index heads) must raise
-// kProgramCacheFormat: a cache of the old format is then not read, and the next start prepares again. The pipeline notes, the
-// state lists' notes and hookshot_prepared.bin are stamped with program_cache_stamp too, so they go with it
+// kProgramCacheFormat: a cache of the old format is then not read, and the next start prepares again. That includes the types
+// written as they lie in memory: Program::Answer, the questions, Stage::c1 and the head's words (vk_shader.h, which the translator
+// stamp does not cover); the static_asserts beside kProgramCacheFormat stop a build whose layout of those changed, so that it is
+// raised. (Shader::Info, also written as it lies, is the recompiler's: its folders are in the translator stamp.) The pipeline notes,
+// the state lists' notes and hookshot_prepared.bin are stamped with program_cache_stamp too, so they go with it
 #ifndef _WIN32
 #include <fcntl.h>
 #include <sys/file.h>
 #endif
 #include <io.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -21,6 +26,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -34,6 +40,21 @@ namespace mkwvk {
 
 /// (hookshot) The cache's own format: raise it with any change to what a record holds or how the file or its index is laid out
 constexpr uint32_t kProgramCacheFormat = 1;
+// (what a record holds as it lies in memory, as format 1 has it: a build that changes one stops here. Raise kProgramCacheFormat, then
+// change these to the new layout)
+static_assert(sizeof(Program::Answer) == 6 && offsetof(Program::Answer, stage) == 0 && offsetof(Program::Answer, desc) == 2 &&
+              offsetof(Program::Answer, type) == 4 && offsetof(Program::Answer, image) == 5 &&
+              std::is_trivially_copyable_v<Program::Answer>, "Program::Answer's layout is in the program cache's records");
+static_assert(std::is_same_v<decltype(Program::answers), std::vector<Program::Answer>>, "the answers are written whole");
+static_assert(std::is_same_v<decltype(Program::questions), std::vector<uint8_t>>, "the questions are written as bytes");
+static_assert(std::is_same_v<decltype(Stage::c1), std::vector<uint8_t>>, "Stage::c1 is written as bytes");
+static_assert(std::is_same_v<decltype(Stage::nvn_stage), int> && sizeof(Stage::vk_stage) == 4, "a stage's two words");
+static_assert(std::is_same_v<decltype(Program::workgroup), std::array<uint32_t, 3>> &&
+              std::is_same_v<decltype(Program::shared_memory), uint32_t> &&
+              std::is_same_v<decltype(Program::fallback_vertices_per_workgroup), uint32_t> &&
+              std::is_same_v<decltype(Program::fallback_record_words), uint32_t> &&
+              std::is_same_v<decltype(Program::fallback_payload_words), uint32_t> &&
+              std::is_same_v<decltype(Program::fallback_task_threads), uint32_t>, "the record head's words (put_head)");
 
 uint64_t program_cache_stamp() {
     static const uint64_t stamp = [] {
