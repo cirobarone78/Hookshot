@@ -1166,6 +1166,22 @@ static void oot_bridge_teleport_done(int ticket, int sent) {
     ReleaseSRWLockExclusive(&oot_map_lock);
 }
 
+/* (hookshot, experimental: the shaders prepared while playing) the map shown and the one reserved for the next load, to the Vulkan
+   back end four times a second while Link is about: it builds that area's pipelines first and learns what each area needs
+   (gpu/vk/vk_prepare_play.cpp). Only while the back end prepares in play (rx_area_wanted): nothing is read from the game otherwise */
+int rx_area_wanted(void);
+void rx_area_state(const char *current, const char *next);
+static void oot_area_report(Ctx *c, int64_t now) {
+    static int64_t next_at;
+    if (now < next_at) return;
+    next_at = now + 250000000LL;
+    if (!rx_area_wanted()) return;
+    char current[80], next[80];
+    oot_gamedata_string(c, 0x1d6189dau, current, sizeof current);   /* Sequence_CurrentBanc */
+    oot_gamedata_string(c, 0xee27bf71u, next, sizeof next);         /* Sequence_ReservedNextBanc */
+    rx_area_state(current, next);
+}
+
 static uint64_t oot_gameplay_view(Ctx *c) {
     const uint64_t singleton = recomp_load64(c, 0x84ca6bc0ULL);
     const uint64_t manager = singleton ? recomp_load64(c, singleton) : 0;
@@ -1250,6 +1266,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     }
     oot_teleport_followup(c);
     oot_inventory_refresh(c, now);
+    oot_area_report(c, now);
     oot_player_speed(c, components);
     oot_map_refresh(c, now);
     if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {

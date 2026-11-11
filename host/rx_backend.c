@@ -312,6 +312,26 @@ void rx_close_asked(void) {
     void (*close_asked)(void) = (void (*)(void))(void *)GetProcAddress(vk_module, "mkwvk_close_asked");
     if (close_asked) close_asked();
 }
+/* (hookshot, experimental: the shaders prepared while playing, gpu/vk/vk_prepare_play.cpp) the game's area now and the one reserved
+   for its next load, by name: that area's pipelines are built first. A back end without the export does nothing with them */
+static void (*area_state)(const char *, const char *);
+static int (*area_wanted)(void);
+static void area_look(void) {
+    static int looked;
+    if (looked || !vk_module) return;
+    looked = 1;
+    area_state = (void (*)(const char *, const char *))(void *)GetProcAddress(vk_module, "mkwvk_area_state");
+    area_wanted = (int (*)(void))(void *)GetProcAddress(vk_module, "mkwvk_area_wanted");
+}
+/* (whether the back end wants them now: it prepares in play. Nothing is read from the game otherwise) */
+int rx_area_wanted(void) {
+    area_look();
+    return area_wanted && area_state && area_wanted();
+}
+void rx_area_state(const char *current, const char *next) {
+    area_look();
+    if (area_state) area_state(current, next);
+}
 void rx_resize(int width, int height) { vk ? vk->resize(width, height) : wgr_resize(width, height); }
 const char *rx_describe(void) { return vk ? vk->describe() : wgr_describe(); }
 void rx_stats(int64_t *draws, int64_t *skipped, int64_t *pipelines) {

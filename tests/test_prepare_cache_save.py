@@ -41,6 +41,8 @@ void logf(const char*,...){std::exit(9);}
 bool warm_libraries(void(*)(size_t,size_t)){std::exit(10);}
 struct PreparedFor {int warmed=1;};
 void prepared_write(const std::string&, PreparedFor){std::exit(11);}
+const char* prep_record_suffix(){return "";}
+void prep_driver_changed(){}
 bool fresh_seed=true;
 bool reuse_seed(void(*progress)(size_t,size_t),bool background,bool refresh_states){
  const PreparedFor already{};
@@ -57,6 +59,11 @@ bool prepare_run(void(*progress)(size_t,size_t),bool background=false,bool refre
 }
 void predict_run(void(*)(size_t,size_t)){calls.push_back(5);}
 bool predict_pending(){return false;}   // (no prediction left unfinished by a last start)
+// (Compile shaders on All here: the prediction as before; vk_main.cpp predict_before_play, tests/test_prepare_play.py for the others)
+bool predict_before_play(bool prepared){return prepared||predict_pending();}
+void rest_before_play(void(*)(size_t,size_t)){}
+bool prepare_stopped(){return false;}
+void prep_all_done(){}
 void precompile_run(void(*progress)(size_t,size_t)){calls.push_back(2);progress(1,2);}
 void pipeline_cache_save(bool force){if(!force)std::exit(2);calls.push_back(3);}
 std::string skipped_path(){return "sentinel";}

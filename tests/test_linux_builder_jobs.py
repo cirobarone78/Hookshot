@@ -24,6 +24,14 @@ builder = next(node for node in ast.parse(SOURCE.read_text(encoding="utf-8")).bo
                if isinstance(node, ast.ClassDef) and node.name == "Builder")
 build = next(node for node in builder.body if isinstance(node, ast.FunctionDef) and node.name == "build")
 BUILD = compile(ast.Module(body=[build], type_ignores=[]), str(SOURCE), "exec")
+# (the module's own helper for the experimental "Prepare shaders while playing" tick, as the method calls it)
+_module = ast.parse(SOURCE.read_text(encoding="utf-8")).body
+in_play = [node for node in _module
+           if (isinstance(node, ast.FunctionDef) and node.name == "compile_shaders_args") or
+           (isinstance(node, ast.Assign) and any(getattr(t, "id", "") in ("COMPILE_LEVELS", "COMPILE_NAMES") for t in node.targets))]
+compile_level = next(node for node in builder.body if isinstance(node, ast.FunctionDef) and node.name == "compile_level")
+IN_PLAY = compile(ast.Module(body=in_play, type_ignores=[]), str(SOURCE), "exec")
+LEVEL = compile(ast.Module(body=[compile_level], type_ignores=[]), str(SOURCE), "exec")
 
 
 def value(text):
@@ -43,6 +51,7 @@ class BuildHarness:
         self.gui = SimpleNamespace(
             out=value(str(folder / "out")), kind=value(kind), nup=value(str(nup)),
             romfs=value(str(romfs)), exefs=value(str(exefs)), language=value("English (US)"), prepare=value(True),
+            compile_shaders=value("Most"),
             cfg={"previous": "kept"}, show_progress=lambda: self.events.append(("progress",)), read=lambda proc: None,
             tick=lambda: self.events.append(("tick",)))
 
@@ -69,8 +78,11 @@ class BuildHarness:
             "subprocess": SimpleNamespace(Popen=start_process, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
             "threading": SimpleNamespace(Thread=thread),
         }
+        exec(IN_PLAY, namespace)
+        exec(LEVEL, namespace)
         exec(BUILD, namespace)
         self.build = namespace["build"]
+        self.gui.compile_level = lambda: namespace["compile_level"](self.gui)
 
     def run(self):
         self.build(self.gui)
@@ -87,7 +99,8 @@ class BuilderBuildJobsTests(unittest.TestCase):
         gui = harness.gui
         source = ["--nup", gui.nup.get()] if gui.kind.get() == "nup" else ["--romfs", gui.romfs.get(), "--exefs", gui.exefs.get()]
         expected = [sys.executable, "-I", str(ROOT / "nx2" / "make_game.py")] + source + [
-            "--out", gui.out.get(), "--language", "en-US"] + ([] if jobs is None else ["--jobs", str(jobs)])
+            "--out", gui.out.get(), "--language", "en-US"] + ([] if jobs is None else ["--jobs", str(jobs)]) + [
+            ]
         self.assertEqual(len(harness.processes), 1)
         command, options = harness.processes[0]
         self.assertEqual(command, expected)
@@ -109,8 +122,18 @@ class BuilderBuildJobsTests(unittest.TestCase):
         harness.gui.prepare = value(False)
         harness.run()
         command, _ = harness.processes[0]
-        self.assertEqual(command[-1], "--no-prepare-shaders")
+        self.assertEqual(command[-1], "--no-prepare-shaders")   # (Compile shaders never chosen here: not passed)
         self.assertEqual(harness.events[0][1]["prepare"], "0")
+
+    def test_compile_shaders_is_passed_on_and_saved(self):
+        for name, level in (("All", "all"), ("Later", "later")):
+            harness = BuildHarness(self.folder, {})
+            harness.gui.compile_shaders = value(name)
+            harness.gui.compile_chosen = True
+            harness.run()
+            command, _ = harness.processes[0]
+            self.assertEqual(command[-2:], ["--compile-shaders", level])
+            self.assertEqual(harness.events[0][1]["compile_shaders"], level)
 
     def test_zero_falls_back_to_rx_jobs_for_extracted_folders(self):
         harness = BuildHarness(self.folder, {"HOOKSHOT_JOBS": "0", "RX_JOBS": "2"}, kind="folders")

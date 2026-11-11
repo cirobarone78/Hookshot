@@ -12,6 +12,7 @@ sealed class BuilderSettings
     public bool Fsr { get; set; }    // (AMD FSR 4 ticked)
     public bool FsrLicense { get; set; }   // (AMD's license accepted when it was ticked: a tick saved before it was asked has not)
     public bool PrepareLater { get; set; }   // ("Prepare shaders now" unticked)
+    public string? CompileShaders { get; set; }   // ("Compile shaders": all, most or later, ShaderStep.Levels; null: never chosen here)
     public int? MemoryGb { get; set; }
     public string? Track { get; set; }   // (the update track chosen, Updater.cs: release, rc or nightly; null: these tools' own)   // (Build memory; null: Automatic. The updates use it too, as they show no menu)
 
@@ -24,4 +25,5 @@ sealed class BuilderSettings
     /// (the updates, from the launcher's Update and from the --update start after a self-update, begin before ApplySettings sets
     /// the tick from these settings: they read the saved choice itself. None saved: prepared, as the tick's default)
     public static bool PrepareNow(string path) => Load(path)?.PrepareLater != true;
+    public static string? CompileShadersLevel(string path) => Load(path)?.CompileShaders is { } l ? ShaderStep.Level(l) : null;
 }

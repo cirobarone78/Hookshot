@@ -60,6 +60,9 @@ bool prebake_needed(uint32_t, uint32_t) { return resized; }
 void draw_startup(ui::Ctx&) { calls += "s"; }
 void draw_menu(ui::Ctx&) { calls += "m"; }
 void draw_fps(ui::Ctx&, bool under_banner) { calls += under_banner ? "F" : "f"; }
+// (the preparation in play's overlay, gpu/vk/vk_prepare_play.cpp: not running here)
+bool prep_overlay_text(char*, size_t) { return false; }
+void draw_prep(ui::Ctx&, const char*) { calls += "P"; }
 ''' + fn + r'''
 int main() {
     for (bool startup : {false, true}) for (bool fps : {false, true}) for (bool menu : {false, true}) for (bool can : {true, false}) {

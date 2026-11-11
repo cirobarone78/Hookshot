@@ -45,7 +45,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice,VkImageView,const VkAlloc
 void present_image(VkImage,uint32_t,uint32_t,const int*,VkImageView) { presented++; }
 void tick() {
     VkImage src=reinterpret_cast<VkImage>(uintptr_t(0xff)); const char* shots="test";
-    uint32_t sw=1720,sh=720; const int* crop=nullptr; VkImageView direct_view{}; bool interpolated=false;
+    uint32_t sw=1720,sh=720; const int* crop=nullptr; VkImageView direct_view{}; bool interpolated=false, hidden=false;   // (hidden: a frame the preparation in play holds back)
     /* GATE */ { capture_entries++; }
     /* PRESENT_TAIL */
 }

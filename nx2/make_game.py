@@ -1179,6 +1179,35 @@ def seed_pipelines(out):
     print("the shipped pipeline list: %d KB, built before the first title" % (os.path.getsize(seed) >> 10), flush=True)
 
 
+COMPUTES_MAGIC = b"HKCOMP1\0"
+
+
+def ship_computes_list(out):
+    """The compute programs play is known to dispatch (assets/computes_dispatched.txt: program hashes only, a hex key a line), as the
+    folder's hookshot_computes_shipped.bin, in the format of the game's own hookshot_computes.bin. With Compile shaders on Most or
+    Later these get all their texture variants before play and the others their base variant, the rest built while playing
+    (gpu/vk/prepare_play.h). Optional: a list that does not read is left out with a line saying so"""
+    src = os.path.join(ROOT, "assets", "computes_dispatched.txt")
+    dst = os.path.join(out, "hookshot_computes_shipped.bin")
+    try:
+        with open(src, encoding="ascii") as f:
+            keys = sorted({int(line, 16) for line in f if line.strip()})
+    except (OSError, ValueError) as e:
+        if os.path.exists(src):
+            print("the shipped list of dispatched compute programs was left out: %s" % e, flush=True)
+        return
+    data = COMPUTES_MAGIC + b"".join(k.to_bytes(8, "little") for k in keys)
+    try:
+        with open(dst, "rb") as f:
+            same = f.read() == data
+    except OSError:
+        same = False
+    if not same:
+        with open(dst + ".new", "wb") as f:
+            f.write(data)
+        os.replace(dst + ".new", dst)
+
+
 def ship_state_list(out):
     """The pipeline state list made from play of the game (assets/pipeline_states/: the pipeline tour's list and the contributed
     ones, merged by nx2/pipeline_states.py, each pipeline once; hashes, formats and draw state only, no game code), written as the
@@ -1239,6 +1268,8 @@ def not_prepared(why):
 def prepare_skipped(a, environ=None):
     """Why the build leaves the shaders to the first start, or None: it prepares them"""
     environ = os.environ if environ is None else environ
+    if getattr(a, "compile_shaders", None) == "later":
+        return '"Compile shaders" is Later: the game prepares them while it is played'
     if a.no_prepare_shaders:
         return '"Prepare shaders now" is unticked'
     if environ.get("HOOKSHOT_NO_PREPARE", "0") != "0":   # (set and not 0, as the game reads HOOKSHOT_NO_UPDATE_CHECK)
@@ -1246,6 +1277,35 @@ def prepare_skipped(a, environ=None):
     if CROSS:   # (hookshot.exe can't run here, and under Wine it would prepare for this PC's GPU, not the one that plays it)
         return "a Windows game built on Linux prepares them on the PC it runs on"
     return None
+
+
+OPTIONS = "hookshot_options.ini"
+
+
+COMPILE_SHADERS = ("all", "most", "later")
+
+
+def set_compile_shaders(out, choice):
+    """The builders' "Compile shaders" choice (All, Most, Later: gpu/vk/prepare_play.h) into the game folder's hookshot_options.ini as
+    compile_shaders=<0, 1 or 2>, which the game reads at its start and its Insert menu shows. choice: one of COMPILE_SHADERS, or None
+    (the file left as it is: a build from the command line keeps what the menu chose). The file's other lines are kept as they are"""
+    if choice not in COMPILE_SHADERS:
+        return
+    path = os.path.join(out, OPTIONS)
+    try:
+        with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:
+            lines = f.read().splitlines(True)
+    except FileNotFoundError:
+        lines = []
+    line = "compile_shaders=%d\n" % COMPILE_SHADERS.index(choice)
+    lines = [line if l.startswith("compile_shaders=") else l for l in lines]
+    if line not in lines:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(line)
+    with open(path + ".new", "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
+        f.writelines(lines)
+    os.replace(path + ".new", path)
 
 
 def show_prepared(line):
@@ -1865,6 +1925,10 @@ def parse_args():
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
     p.add_argument("--no-prepare-shaders", action="store_true",
                    help="leave the shaders' preparation to the game's first start (the builder's \"Prepare shaders now\" unticked)")
+    p.add_argument("--compile-shaders", choices=COMPILE_SHADERS,
+                   help="what of the shaders' preparation runs before play (the builders' \"Compile shaders\"): all, most (the rest "
+                        "while playing) or later (all of it while playing, and the build prepares nothing); written to the folder's "
+                        "hookshot_options.ini. Not given: left as it is (the game's default is most)")
     p.add_argument("--log", metavar="FILE", help="also save build output to a UTF-8 file (replaces the file if it exists)")
     # (NVIDIA DLSS, off unless asked: NVIDIA's SDK into HOOKSHOT_NGX_SDK first, under NVIDIA's license. scripts/ngx_sdk.py)
     p.add_argument("--fetch-ngx-sdk", action="store_true", help="download NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build")
@@ -2329,6 +2393,7 @@ def main(a=None):
         copy_writable(icon, os.path.join(out, "hookshot.png"))   # (a second build overwrites the first's)
     seed_pipelines(out)
     ship_state_list(out)
+    ship_computes_list(out)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:
         f.write("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n%s\n\n" % a.language)
@@ -2381,6 +2446,7 @@ def main(a=None):
                                                     "" if previous is None else " (the last one %s)" % clock(previous)), flush=True)
     say("times", "%.0f" % total_seconds, "%.0f" % compile_seconds, "-1" if previous is None else "%.0f" % previous)
     # (after the times: they stay comparable from build to build, without a GPU's minutes that can be switched off)
+    set_compile_shaders(out, a.compile_shaders)
     skipped = prepare_skipped(a)
     if skipped:
         not_prepared(skipped)

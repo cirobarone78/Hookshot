@@ -375,6 +375,14 @@ static void live_input(void) {
                     hos_bind(HOS_BIND_PAD, bind_b, 0, bind_pad);
                 extern volatile int hos_prompts_row;   /* host/prompts.c: "!prompts <0 Auto, HOS_PROMPT_* + 1>", as the row */
                 if (!strncmp(line, "!prompts ", 9)) __atomic_store_n(&hos_prompts_row, atoi(line + 9), __ATOMIC_RELAXED);
+                /* "!close": as the window's close button (a run with no window has none): the back end keeps what it was preparing */
+                void rx_close_asked(void);       /* host/rx_backend.c */
+                void hos_window_closed_exit(void);   /* host/hos_relaunch.c */
+                if (!strncmp(line, "!close", 6)) {
+                    hos_log("hid: live command: close");
+                    rx_close_asked();
+                    hos_window_closed_exit();
+                }
                 hos_log("hid: live command at %.1f s: %.*s", at / 1000.0, (int)(n > 1 ? n - 1 : 0), line);
                 continue;
             }

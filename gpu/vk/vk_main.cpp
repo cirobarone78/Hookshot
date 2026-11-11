@@ -22,6 +22,7 @@
 static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCompute == VK_QUEUE_COMPUTE_BIT);
 #include "gpu_choice.h"
 #include "vk_menu.h"
+#include "vk_prepare_play.h"   // (experimental: the shaders prepared while playing)
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
 #include "vk_reflex.h"
@@ -1052,6 +1053,18 @@ void window_size(uint32_t* w, uint32_t* h) {
     if (width > 0 && height > 0) *w = (uint32_t)width, *h = (uint32_t)height;
 #endif
 }
+// (hookshot) Compile shaders (prepare_play.h, vk_prepare_play.cpp): what of the preparation runs before the game. The predicted
+// pipelines only on All: Most and Later build them behind the game. On All, for a first prepare, after a start that did not finish
+// them (predict_pending), or when an earlier start on Most or Later left them (and the compute programs' other variants, first)
+bool predict_before_play(bool prepared) {
+    if (prepare_level() != prepare_play::Level::All) return false;
+    const int left = prep_recorded();
+    return prepared || predict_pending() || (left >= 0 && left < prepare_play::kDone);
+}
+void rest_before_play(void (*progress)(size_t done, size_t total)) {
+    const int left = prep_recorded();
+    if (prepare_level() == prepare_play::Level::All && left >= 0 && left <= prepare_play::kComputeRest) compute_rest_run(progress);
+}
 void prepare_with_screen() {
     prep_ended = CreateEventA(nullptr, TRUE, FALSE, nullptr);
     prep_running.store(true);
@@ -1065,11 +1078,14 @@ void prepare_with_screen() {
         if (update) prep_skip[0].store(true), prep_skip[1].store(true);
         const bool prepared = !update && prepare_run(prep_progress, false);
         if (!prepared) prep_skip[0].store(true);
-        // (a first start, or one after a start that did not finish them: the pipelines the notes predict, into the driver's cache)
-        if ((prepared || (!update && predict_pending())) && !prepare_stopped()) {
+        if (!update && !prepare_stopped()) rest_before_play(prep_progress);   // (All, after Most or Later: the compute variants left)
+        // (a first start, or one after a start that did not finish them: the pipelines the notes predict, into the driver's cache.
+        // On All only: Compile shaders on Most and Later build them behind the game)
+        if (!update && predict_before_play(prepared) && !prepare_stopped()) {
             prep_done.store(0), prep_total.store(0);
             prep_stage.store(1);
             predict_run(prep_progress);
+            if (!prepare_stopped()) prep_all_done();
         } else {
             prep_skip[1].store(true);
         }
@@ -1202,7 +1218,9 @@ bool started_up() {
         }
         part = 0;
         const bool prepared = prepare_run(progress, false, true);
-        const bool predict = prepared || predict_pending();   // (or the last run did not finish the prediction)
+        rest_before_play(progress);   // (All, after Most or Later: the compute variants they left)
+        // (or the last run did not finish the prediction; on All only: Most and Later build them behind the game)
+        const bool predict = predict_before_play(prepared);
         if (!prepared) {
             if (!bar.counted[0]) bar.skip(0);   // (an already prepared seed can still import pipeline states)
             if (!predict) bar.skip(1);
@@ -1210,6 +1228,7 @@ bool started_up() {
         part = 1;
         prepare_moved(1, 0, 0);
         if (predict) predict_run(progress);
+        if (predict && !prepare_stopped()) prep_all_done();
         part = 2;
         prepare_moved(2, 0, 0);
         bar.reach(2);
@@ -1230,8 +1249,12 @@ bool started_up() {
         return true;
     }
     if (precompile_wanted()) {   // (a release build, before the game: nothing to build during play)
+        // (hookshot) Compile shaders on Later: nothing before the game, all of it behind it (vk_prepare_play.cpp). A folder with nothing
+        // left to prepare goes on below as a prepared folder does. On Most the part before the game runs below, the rest behind it
+        if (prepare_level() == prepare_play::Level::Later && prepare_play_begin()) return true;
         if (!dev.offscreen && screen_wanted()) {
             prepare_with_screen();
+            if (!prepare_stopped()) prepare_play_begin();
             return true;
         }
         // (a console while it lasts: there is no window yet, and a long wait with nothing on screen looks like a hang)
@@ -1274,11 +1297,19 @@ bool started_up() {
             WriteFile(console, line, (DWORD)n, &wrote, nullptr);
         };
         const bool update = prepare_is_update();   // (an update: what the notes name now, the rest in play)
-        if (!update && (prepare_run(progress, false) || predict_pending())) predict_run(progress);
+        if (!update) {
+            const bool prepared = prepare_run(progress, false);
+            rest_before_play(progress);
+            if (predict_before_play(prepared)) {
+                predict_run(progress);
+                if (!prepare_stopped()) prep_all_done();
+            }
+        }
         if (update) state_list_run();
         precompile_run(progress);
         if (update) prepare_background();
         if (console) CloseHandle(console), console = nullptr, FreeConsole();
+        if (!update && !prepare_stopped()) prepare_play_begin();
     }
     return true;
 }
@@ -1400,6 +1431,8 @@ __attribute__((visibility("default")))
 #endif
 void mkwvk_close_asked(void) {
     using namespace mkwvk;
+    // (Compile shaders on Most or Later: the work behind the game stopped, what it made and where it got to kept)
+    const bool stopped = prepare_play_close();
     pipeline_cache_close();   // (in play: the pipelines made since the last save, kept for the next start)
     if (prep_running.load() && !prepare_stopped()) {
         logf("vk: the window was closed while the shaders were prepared: stopping, what is done is kept");
@@ -1407,6 +1440,16 @@ void mkwvk_close_asked(void) {
         if (WaitForSingleObject(prep_ended, 10000) != WAIT_OBJECT_0) logf("vk: the preparation did not stop within 10 s: closing anyway");
     }
     dlss_fg_close();   // (NVIDIA DLSS Frame Generation through NGX: its feature let go before the process exits, vk_dlss.cpp)
+    // (a worker behind the game still in a driver call: the device and the driver are not torn down under it, the process ends here,
+    // as a --prepare-shaders run that left workers in the driver does (prepare_end))
+    if (!stopped) {
+        if (host && host->log_flush) host->log_flush();
+        std::fflush(stdout), std::fflush(stderr);
+#ifdef _WIN32
+        TerminateProcess(GetCurrentProcess(), 0);
+#endif
+        std::_Exit(0);
+    }
 }
 
 extern "C"

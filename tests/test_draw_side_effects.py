@@ -78,6 +78,14 @@ void jobs_wait(const std::atomic<bool>& ready) {
     else { ++pipeline_waits; pipe_entry.ready.store(true, std::memory_order_release); }
 }
 bool targets_persistent(const Targets& at) { return at.persistent; }
+// When a shader isn't ready (prepare_play.h decide): modelled as Skip, or Wait briefly with the frame's budget spent; what may not
+// be left out waits under every choice
+namespace prepare_play { enum class Act { Wait, Bounded, LeaveOut }; }
+void prep_note_miss() {}
+prepare_play::Act prep_miss_act(bool skippable, bool = true) { return skippable ? prepare_play::Act::LeaveOut : prepare_play::Act::Wait; }
+long long prep_miss_budget_left() { std::abort(); }
+void prep_miss_spend(long long) { std::abort(); }
+bool jobs_wait_for(const std::atomic<bool>&, long long) { std::abort(); }
 bool exposure_log_on() { return false; }
 void exposure_note(NvnState&, const Program&) {}
 void ensure_layout(Program&) {}

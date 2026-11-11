@@ -89,6 +89,8 @@ VkResult vkCreatePipelineCache(int, const VkPipelineCacheCreateInfo* ci, const v
     *out = c;
     return VK_SUCCESS;
 }
+// (the preparation in play's threads build into the start's cache: gpu/vk/vk_prepare_play.cpp. Not here)
+bool prep_direct_cache() { return false; }
 void vkDestroyPipelineCache(int, VkPipelineCache c, const void*) {
     ++destroys;
     delete c;

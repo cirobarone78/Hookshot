@@ -68,6 +68,20 @@ PREDICT_HEAD = r'''
 #define CHECK(c) do { if (!(c)) { std::fprintf(stderr, "CHECK failed line %d: %s\n", __LINE__, #c); std::_Exit(7); } } while (0)
 using VkPipeline = uintptr_t;
 using VkPrimitiveTopology = int;
+// (Compile shaders: the work behind the game, vk_prepare_play.cpp; not running here: what each does before the game)
+namespace prepare_play {
+enum Part { kPrograms = 0, kComputeRest = 1, kPredicted = 2, kNoted = 3 };
+inline uint64_t list_hash(const uint64_t*, size_t) { return 0; }
+}
+std::atomic<bool> predict_gave_up_flag{false};
+constexpr int THREAD_PRIORITY_NORMAL = 0;
+bool prepare_play_running() { return false; }
+void prep_phase_items(int, size_t, uint64_t = 0) {}
+void prep_thread_begin(int) {}
+void prep_gate() {}
+bool prep_item_skip(int, size_t) { return false; }
+void prep_item_done(int, size_t) {}
+unsigned prep_threads(unsigned n) { return n; }
 struct NvnState { int unused = 0; };
 struct Targets {};
 struct PipeNote { uint64_t key, prog, variant; uint32_t topo; NvnState s; };

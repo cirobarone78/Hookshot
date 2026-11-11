@@ -156,7 +156,7 @@ int main(int argc, char** argv) {
     if prepare.count("prepared_for.warmed = warmed;\n") != 2 or prepare.count("prepared_for.warmed = 0;\n") != 1:
         raise SystemExit("prepare_run: wanted the warmed stamp set on its two ways out, and cleared before the libraries are made")
     cleared = prepare.index("prepared_for.warmed = 0;\n")
-    if prepare.index("prepared_write(path, prepared_for);", cleared) > prepare.index("if (!warm_libraries(progress)) {", cleared):
+    if prepare.index("prepared_write(path + prep_record_suffix(), prepared_for);", cleared) > prepare.index("if (!warm_libraries(progress)) {", cleared):
         raise SystemExit("prepare_run: the translation is not written down before the libraries are made")
     stamp = block(draw, "uint64_t warmed_stamp(")
     for part in ("program_cache_stamp()", "pipelineCacheUUID", "driverVersion", "libraries", "kWarmRecipe"):

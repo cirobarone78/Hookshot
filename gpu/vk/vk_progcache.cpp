@@ -36,6 +36,7 @@
 #include "vk_paths.h"
 #include "vk_internal.h"
 #include "vk_progcache.h"
+#include "vk_prepare_play.h"   // (the shaders prepared while playing: its threads)
 
 namespace mkwvk {
 
@@ -502,6 +503,7 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
     std::vector<std::vector<std::unique_ptr<Program>>> made(work.size());
     std::atomic<size_t> next{0};
     const auto worker = [&] {
+        prep_thread_begin(THREAD_PRIORITY_NORMAL);   // (in play: idle, vk_prepare_play.cpp)
         FILE* in = fopen(disk_path.c_str(), "rb");
         for (;;) {
             const size_t i = next++;
@@ -514,7 +516,7 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
     {
         const unsigned cpus = usable_cpus();
         std::vector<std::thread> threads;
-        for (unsigned i = 1; i < std::min({cpus, 16u, (unsigned)work.size()}); i++) threads.emplace_back(worker);
+        for (unsigned i = 1; i < std::min({prep_threads(cpus), 16u, (unsigned)work.size()}); i++) threads.emplace_back(worker);
         worker();
         for (std::thread& t : threads) t.join();
     }
@@ -526,6 +528,21 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
         for (auto& p : variants) n++, fn(*p);
     }
     return n;
+}
+
+/// (hookshot, the preparation in play: vk_draw.cpp precompile_into_cache) the keys of the kept programs whose records are of kind
+/// (1 compute, 2 mesh, 4 mesh fallback), sorted; those play has read in already are not listed
+std::vector<uint64_t> program_cache_kind_keys(uint32_t kind) {
+    disk_init();
+    std::vector<uint64_t> keys;
+    if (!disk_on) return keys;
+    {
+        std::lock_guard lk(disk_mu);
+        for (const auto& kv : disk_records)
+            if (!kv.second.empty() && (kv.second[0].kind & kind)) keys.push_back(kv.first);
+    }
+    std::sort(keys.begin(), keys.end());
+    return keys;
 }
 
 /// (hookshot) Program key's kept variants made for fn, then let go (modules and layouts): the records stay for play

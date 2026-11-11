@@ -237,6 +237,11 @@ def state_list(tools):
     shutil.rmtree(dst, ignore_errors=True)
     shutil.copytree(src, dst)
     print("the pipeline state list: %s" % states.describe(recs))
+    # (and the list of compute programs play dispatches, assets/computes_dispatched.txt: make_game.py ships it beside the game for
+    # Compile shaders on Most and Later. Optional: without it every compute program gets its base variant before play)
+    computes = os.path.join(ROOT, "assets", "computes_dispatched.txt")
+    if os.path.isfile(computes):
+        shutil.copy2(computes, os.path.join(os.path.dirname(dst), "computes_dispatched.txt"))
     return 0
 
 

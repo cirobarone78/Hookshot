@@ -29,6 +29,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "vk_prepare_play.h"   // (experimental: the shaders prepared while playing)
 #include "vk_temporal.h"
 #include "vk_fsr3_inputs.h"   // (the camera jitter while AMD FSR 3.1 upscales)
 #include "status_line.h"
@@ -56,6 +57,9 @@
 #endif
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
+namespace mkwvk {
+double menu_frame_target_ms();   // (vk_menu.cpp: the frame time the fps cap asks for, 0 none)
+}
 namespace mkwvk {
 extern std::atomic<bool> movie_networks_slow;   // (vk_draw.cpp: the movie networks left out, issue 109)
 int64_t presents_now;   // (the presents so far, for SlowWatch)
@@ -3198,7 +3202,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
     VkImage src = VK_NULL_HANDLE;
     VkImageView direct_view = VK_NULL_HANDLE;
     uint32_t sw = 0, sh = 0;
-    bool shot = false, interpolated = false;
+    bool shot = false, interpolated = false, hidden = false;
     VkImage made_src = VK_NULL_HANDLE;
     {
         std::lock_guard lk(replay_mu);
@@ -3261,6 +3265,13 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         full_barrier(r.cmd);
         presents++;
         presents_now = presents;
+        // (hookshot, experimental: preparing in play, vk_prepare_play.cpp: an area's first frames after its load are rendered but not
+        // shown until the pipelines they ask for are built; the last picture stays. Not with frame generation, whose thread shows them)
+        if (prepare_play_running()) {
+            int64_t d = 0, sk = 0, di = 0, pl = 0;
+            draw_stats(&d, &sk, &di, &pl);
+            hidden = prep_present_hidden(d, framegen_on());
+        }
         wide_sides_tick();
         if (presents == 1) hang_watch_start(), gpu_hang_watch_start();
         {   // (EvilBoyce, diagnostics) RX_VK_WATCH_CPU=<present>:<gpu address>[,...] (hex addresses): from that present on, the
@@ -3289,10 +3300,10 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             // (RX_VK_SHOT_FROM / _TO: every present in that range too)
             static const int64_t shot_from = getenv("RX_VK_SHOT_FROM") ? atoll(getenv("RX_VK_SHOT_FROM")) : -1;
             static const int64_t shot_to = getenv("RX_VK_SHOT_TO") ? atoll(getenv("RX_VK_SHOT_TO")) : -1;
-            shot = shots && (presents % shot_every == 0 || (presents >= shot_from && presents <= shot_to));
+            shot = shots && !hidden && (presents % shot_every == 0 || (presents >= shot_from && presents <= shot_to));
             // (RX_VK_SHOT_GO=<file>: every present while that file is there too, a test's run of frames)
             static const char* shot_go = getenv("RX_VK_SHOT_GO");
-            if (shots && shot_go && !shot) {
+            if (shots && shot_go && !shot && !hidden) {
                 struct stat sb;
                 shot = stat(shot_go, &sb) == 0;
             }
@@ -3568,7 +3579,17 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         log_frame_stats();
     }
     if (dev.offscreen) frame_log_present();   // (no window: the copy into the offscreen image above is its present)
-    if (dev.offscreen || interpolated) return;
+    if (hidden && !dev.offscreen) {
+        // (a held frame is not presented, so nothing paces it: Uncapped or a vsync'd present would let the loop run as fast as the
+        // CPU can for the hold's seconds. Paced here at the cap's frame time, 60 fps when there is none)
+        double ms = menu_frame_target_ms();
+        if (ms <= 0) ms = 1000.0 / 60.0;
+        static std::chrono::steady_clock::time_point next{};
+        const auto now = std::chrono::steady_clock::now();
+        if (next > now && next - now < std::chrono::milliseconds(100)) std::this_thread::sleep_until(next);
+        next = std::max(now, next) + std::chrono::microseconds((int64_t)(ms * 1000));
+    }
+    if (dev.offscreen || interpolated || hidden) return;
     present_image(src, sw, sh, crop, direct_view);
 }
 

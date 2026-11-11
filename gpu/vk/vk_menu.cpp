@@ -47,6 +47,7 @@
 #include "vk_antilag.h"
 #include "upscaler_rows.h"
 #include "menu_restart.h"
+#include "vk_prepare_play.h"   // (experimental: the shaders prepared while playing, its overlay)
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
@@ -580,6 +581,14 @@ const char* tx_robust(int v) {
     static const char* t[] = {"Auto", "Off", "On"};
     return (unsigned)v < 3 ? t[v] : t[0];
 }
+const char* tx_compile_shaders(int v) {
+    static const char* t[] = {"All", "Most", "Later"};
+    return t[std::min(std::max(v, 0), 2)];
+}
+const char* tx_shader_miss(int v) {
+    static const char* t[] = {"Wait", "Wait briefly, then skip", "Skip"};
+    return t[std::min(std::max(v, 0), 2)];
+}
 const char* tx_mesh_mode(int v) {
     static const char* t[] = {"Automatic", "Native", "Compute"};
     return (unsigned)v < 3 ? t[v] : t[0];
@@ -745,6 +754,16 @@ MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA car
 MENU_HINTS(hn_mesh_mode, 0, "The GPU's own mesh shaders where it has them, the compute path where it has not.",
            "The GPU's own mesh shaders for every draw. A GPU without them still uses the compute path.",
            "The compute path on every GPU: try it if your card crashes or leaves objects out. Usually a little slower.")
+MENU_HINTS(hn_compile_shaders, 0,
+           "Everything before the game starts: the longest first start (several minutes), nothing built while you play.",
+           "What the game is known to use before it starts; the rest is built behind you while you play, and then the game has all of "
+           "it, as with All. A small \"Shaders\" counter shows how far that is.",
+           "The game starts at once; all of it is built behind you while you play. Until that is done, some objects may appear a "
+           "moment late, and the first frames of a new area wait for theirs.")
+MENU_HINTS(hn_shader_miss, 0,
+           "Every draw waits for its shader: nothing is missing, but the game can stop for a moment where an area is new.",
+           "A draw waits up to 15% of a frame (2.5 ms at 60 fps) in all; past that it is left out for a frame or two. The default.",
+           "A draw whose shader is not ready is left out at once, until it is: the smoothest, and the most objects that appear late.")
 MENU_HINTS(hn_fps, 0, nullptr, "The frame rate. With frame generation on, the game's own rate too.",
            "And the game's frame time, with its 1% low: the rate of its slowest 1% of frames over the last 10 seconds.",
            "And a graph of the last 4 seconds' frame times, with a line at the Game frame rate cap's.",
@@ -860,6 +879,13 @@ Row rows[] = {
     {TAB_GRAPHICS, "Mesh shaders", &opts.mesh_mode, 0, 2, 1, tx_mesh_mode,
      "How the game's mesh programs (much of the scenery) run: on the GPU's own mesh shaders, or as compute shaders, which "
      "every GPU has. Applies after a restart.", hn_mesh_mode, true, true},
+    // (hookshot: vk_prepare_play.cpp; the builders write the same compile_shaders=)
+    {TAB_GRAPHICS, "Compile shaders", &opts.compile_shaders, 0, 2, 1, tx_compile_shaders,
+     "When the game's shaders are made ready: all before the game starts, most before and the rest while you play, or all while you "
+     "play. Applies after a restart.", hn_compile_shaders, true, true},
+    {TAB_GRAPHICS, "When a shader isn't ready", &opts.shader_miss, 0, 2, 1, tx_shader_miss,
+     "What a draw does when its shader is still being made. A draw that writes the game's memory, or draws into a picture made this "
+     "frame, always waits: left out, it would leave the game wrong or the picture empty. Changes at once.", hn_shader_miss, false, true},
 
     // Audio
     {TAB_AUDIO, "Volume", &opts.volume, 0, 100, 5, tx_percent,
@@ -1332,6 +1358,8 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.handheld) return "handheld_profile";   // (the Profile row; host/nn_applet.c reads it at the start)
     if (r.value == &opts.ultrawide) return "ultrawide";   // (the Aspect ratio row; host/hos_main.c reads it at the start)
     if (r.value == &opts.mesh_mode) return "mesh_shaders";   // (gpu/vk/vk_main.cpp reads it as the device is made)
+    if (r.value == &opts.compile_shaders) return "compile_shaders";   // (vk_prepare_play.cpp reads it at the start; the builders write it)
+    if (r.value == &opts.shader_miss) return "shader_miss";
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -3210,6 +3238,18 @@ struct Tab {
 /// 4 s, a thin line over a soft fill, one column a frame span with its slowest frame (a stutter never falls between two), a
 /// faint dashed line at the cap's frame time, red ticks over frames past twice it; the Breakdown's bar of where the time
 /// goes, its legend with the values, the GPU's time and the stutters' causes (their columns get a red tick too).
+/// (hookshot: the work behind the game, vk_prepare_play.cpp) "Shaders: NN%" in small outlined letters, as the FPS
+/// counter's, in a bottom corner (the left one; the right when the counter is there), no plate under it
+void draw_prep(ui::Ctx& c, const char* text) {
+    const float s = c.s, px = 13 * s, o = std::max(1.0f, s);
+    const ImVec2 size = ui::size_of(c.f.strong, px, text);
+    const bool right = std::clamp(opts.fps_corner, 0, 3) == 3;
+    const float x = right ? c.w - c.safe - size.x : c.safe, y = c.h - c.safe - size.y;
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++)
+            if (dx || dy) c.d->AddText(c.f.strong, px, ImVec2(x + dx * o, y + dy * o), ui::rgba(0, 0, 0, 230), text);
+    c.d->AddText(c.f.strong, px, ImVec2(x, y), ui::rgba(235, 235, 235, 220), text);
+}
 void draw_fps(ui::Ctx& c, bool under_banner) {
     namespace fs = fps_stats;
     int level = fs::level_of(opts.show_fps);
@@ -3513,6 +3553,7 @@ void menu_init() {
     }
     if (FILE* f = fopen(ini_path().c_str(), "r")) {
         has_options = true;
+        bool has_shader_miss = false;   // (When a shader isn't ready never chosen: its default follows Compile shaders)
         char line[80];
         bool has_resolution = false;
         bool v2 = false;
@@ -3535,6 +3576,7 @@ void menu_init() {
             if (!strcmp(line, "menu_size") && atoi(eq + 1) == 0) menu_auto = true;
             if (!strcmp(line, "memory_budget")) opts.budget = std::min(std::max(atoi(eq + 1), 0), 5), has_memory_budget = true;
             has_vram_budget |= !strcmp(line, "vram_budget");
+            has_shader_miss |= !strcmp(line, "shader_miss");
             if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone, by its name)
                 mic_want = mic_key(eq + 1);
                 while (!mic_want.empty() && (mic_want.back() == '\n' || mic_want.back() == '\r')) mic_want.pop_back();
@@ -3549,6 +3591,9 @@ void menu_init() {
             mic_tell_host();
         }
         if (!has_resolution && old_dynres >= 0) opts.resolution = old_dynres ? 0 : 1;
+        // (When a shader isn't ready, never chosen, on Compile shaders All: Skip, what main did; Wait briefly is the default of Most
+        // and Later, whose first hours build what All builds before the game)
+        if (!has_shader_miss && opts.compile_shaders == 0) opts.shader_miss = 2;
         if (menu_auto) opts.menu_size = 2;
         opts.rumble = rumble_step(opts.rumble);   // (a hand-edited 60: 50, on the arrows' steps)
         // (Game speed is Real time by default now: Per frame played at half speed at 30 fps, the "slow motion" players
@@ -4404,7 +4449,9 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     const bool start = startup_on.load(std::memory_order_acquire);
     const bool fps = opts.show_fps && !start;   // (no game frames yet: not "0 FPS" over the start-up screen)
     const bool open = open_now.load(std::memory_order_relaxed);
-    if (!start && !fps && !open) {   // (nothing shows: no ImGui frame, no render pass)
+    char prep_text[48];
+    const bool prep = !start && prep_overlay_text(prep_text, sizeof prep_text);   // (preparing in play: its percentage)
+    if (!start && !fps && !open && !prep) {   // (nothing shows: no ImGui frame, no render pass)
         // (but a new window size or Menu size since the last bake: one frame with nothing drawn that bakes the menu's glyphs
         // and measures its page for the new size, so the next open has no hitch whatever was resized while nothing showed)
         if (prebake_needed(w, h) && ui::begin(w, h)) {
@@ -4429,6 +4476,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     if (start) draw_startup(c);   // (under the menu)
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
+    if (prep && !open) draw_prep(c, prep_text);
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
     ui::record(cmd, index, w, h);
 }
@@ -4436,13 +4484,19 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
 void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {
     const bool open = open_now.load(std::memory_order_relaxed);
     const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire);
-    if (!open && !fps) return;
+    char prep_text[48];
+    const bool prep = !startup_on.load(std::memory_order_acquire) && prep_overlay_text(prep_text, sizeof prep_text);
+    if (!open && !fps && !prep) return;
     if (!ui::begin(w, h)) return;
     ui::Ctx c = ui_ctx(w, h);
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
+    if (prep && !open) draw_prep(c, prep_text);
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
     ui::record_to(cmd, image, view, w, h);
 }
+
+/// (vk_prepare_play.cpp) the frame time the game is capped at, ms (0: none): the wait budget's share is of it
+double menu_frame_target_ms() { return fps_target_ms(); }
 
 } // namespace mkwvk

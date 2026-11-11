@@ -117,6 +117,8 @@ void program_cache_each(const std::function<void(const KeptProgram&)>& fn);   //
 void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn);   // (made for fn, then let go; still kept)
 /// (hookshot) Every kept graphics and mesh program's key, in the file's order, no record read; *loaded: the variants in memory already
 std::vector<uint64_t> program_cache_keys(std::vector<Program*>* loaded);
+/// (hookshot) the kept programs' keys whose records are of kind (1 compute, 2 mesh, 4 mesh fallback), sorted (vk_shader.cpp)
+std::vector<uint64_t> program_cache_kind_keys(uint32_t kind);
 const Program* program_find(uint64_t key, uint64_t variant);
 /// (hookshot) The pipeline state list's variants, the same on every GPU: the answers with their stages numbered without the mesh
 /// fallback's generated vertex stage, and their hash (a graphics or native mesh program's: its own); a loaded variant by that hash

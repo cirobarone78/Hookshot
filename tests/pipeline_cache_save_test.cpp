@@ -108,6 +108,9 @@ int save_replace(const char* from, const char* to, unsigned flags) {
 // cache's own part, whatever that did.
 std::atomic<int> play_saves{0};
 void play_cache_save() { ++play_saves; }
+// (the preparation in play builds into the cache: its save waits, gpu/vk/vk_prepare_play.cpp. Not here)
+bool prep_building() { return false; }
+bool prep_cache_save_ok() { return true; }
 std::atomic<bool> in_play{false};
 bool play_cache_in_use() { return in_play.load(); }
 

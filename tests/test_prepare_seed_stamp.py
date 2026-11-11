@@ -228,7 +228,7 @@ int main(int argc, char** argv) {
             raise SystemExit("prepare_check:\n" + got.stdout + got.stderr)
     run = block(src, "bool prepare_run(")
     for need, why in (("prepare_check(path, seed_path(), program_cache_stamp()", "asks prepare_check"),
-                      ("prepared_write(path, prepared_for)", "records what it prepared for"),
+                      ("prepared_write(path + prep_record_suffix(), prepared_for)", "records what it prepared for"),
                       ("why == PrepareWhy::Seed", "says when the seed made it prepare again")):
         if need not in run:
             raise SystemExit("prepare_run no longer " + why)

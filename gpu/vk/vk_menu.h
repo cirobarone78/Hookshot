@@ -76,6 +76,11 @@ struct Options {
     int robust = 0;       // bounds-checked buffer access: 0 Auto (on), 1 Off, 2 On (gpu/vk/vk_main.cpp; RX_VK_ROBUST)
     int mesh_mode = 0;    // task and mesh programs: 0 Automatic, 1 Native, 2 Compute (gpu/vk/vk_main.cpp: mesh_shaders=;
                           // RX_VK_FORCE_MESH_FALLBACK and RX_VK_TASK_MESH_FALLBACK over it)
+    int compile_shaders = 1;   // (hookshot) Compile shaders: 0 All before play, 1 Most (the rest behind the game), 2 Later (all of it
+                               // behind the game); read at the start (gpu/vk/vk_prepare_play.cpp: compile_shaders=; RX_VK_COMPILE_SHADERS
+                               // over it; the builders write it)
+    int shader_miss = 1;  // (hookshot) When a shader isn't ready: 0 Wait, 1 Wait briefly then skip, 2 Skip (gpu/vk/vk_draw.cpp; prepare_play.h
+                          // decide; RX_VK_SHADER_MISS over it). A draw that writes memory always waits
     int descriptor_reuse = 1;  // (on by default since options_version 4) a draw keeps its descriptors through other slots' registrations (gpu/vk/vk_draw.cpp; RX_VK_DESC_REUSE)
     int sampler_cache = 0;     // sampler ids answer their parameters without the registrations' lock (gpu/vk/vk_draw.cpp; RX_VK_SAMPLER_CACHE)
     int astc_rgba8 = 0;   // (hookshot) big ASTC textures kept as decoded RGBA8, not re-encoded to BC3 (gpu/vk/vk_texture.cpp bc_ready;

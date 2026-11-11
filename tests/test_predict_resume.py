@@ -43,10 +43,15 @@ def main():
         raise SystemExit("FAIL: a start that ends in the prediction is not counted before it begins")
     started = body(main_cpp, "bool started_up() {")
     screen = main_cpp[main_cpp.index("void prepare_with_screen() {"):main_cpp.index("bool started_up() {")]
+    # (Compile shaders: the starts ask predict_before_play, which on All asks predict_pending; Most and Later run the prediction
+    # behind the game, vk_prepare_play.cpp)
+    if "predict_pending()" not in body(main_cpp, "bool predict_before_play(bool prepared) {"):
+        raise SystemExit("FAIL: predict_before_play does not finish an unfinished prediction")
+    asks = lambda text: text.count("predict_pending()") + text.count("predict_before_play(")
     for where, text in (("the Builder's run and the console start", started), ("the start-up screen", screen)):
-        if "predict_pending()" not in text:
+        if not asks(text):
             raise SystemExit("FAIL: %s does not finish an unfinished prediction" % where)
-    if started.count("predict_pending()") < 2:
+    if asks(started) < 2:
         raise SystemExit("FAIL: the Builder's run or the console start does not finish an unfinished prediction")
     print("PASS: an unfinished prediction is run again at the next start")
     return 0

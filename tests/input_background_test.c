@@ -94,6 +94,8 @@ void rx_request_frame_dump(void) { commands++; }
 void rx_set_screenshot_ms(int64_t ms) { (void)ms; commands++; }
 void rx_request_rdoc_capture(int frames) { (void)frames; commands++; }
 void rx_flash_dark_arm(void) { commands++; }
+void rx_close_asked(void) { commands++; }   /* (the live "!close") */
+void hos_window_closed_exit(void) { commands++; }
 
 #include "input_actual.inc"
 

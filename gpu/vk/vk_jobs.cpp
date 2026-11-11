@@ -2,6 +2,7 @@
 // virtual cores, and the replay thread is one of the busiest.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <exception>
 #include <condition_variable>
 #include <deque>
@@ -145,6 +146,10 @@ void jobs_wait(const std::atomic<bool>& flag) {
                 break;
             }
     done_cv.wait(lk, [&] { return flag.load(std::memory_order_acquire); });
+}
+bool jobs_wait_for(const std::atomic<bool>& flag, int64_t us) {
+    std::unique_lock lk(mu);
+    return done_cv.wait_for(lk, std::chrono::microseconds(us > 0 ? us : 0), [&] { return flag.load(std::memory_order_acquire); });
 }
 int jobs_pending() {
     return pending.load();
