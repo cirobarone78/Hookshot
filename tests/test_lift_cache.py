@@ -104,17 +104,21 @@ def main():
 
 def check_lift_sources():
     """Every module of nx2/ and a64-kit that loading the lift's two scripts really imports is one lift_sources() hashes (its
-    import walk reads the source; this imports them, capstone stood in for where it is not installed)"""
+    import walk reads the source; this imports them, capstone and lz4 stood in where they are not installed)"""
     import subprocess
     import sys
-    code = ("import os, sys, types\n"
-            "try:\n    import capstone\nexcept ImportError:\n"
-            "    class Stub(types.ModuleType):\n        def __getattr__(self, n):\n            return 0\n"
-            "    sys.modules['capstone'] = Stub('capstone')\n"
+    code = ("import importlib, os, sys, types\n"
+            "class Stub(types.ModuleType):\n    def __getattr__(self, n):\n"
+            "        if n.startswith('__'):\n            raise AttributeError(n)\n        return 0\n"
+            "for name in ('capstone', 'lz4', 'lz4.block'):\n"
+            "    try:\n        importlib.import_module(name)\n    except ImportError:\n"
+            "        sys.modules[name] = Stub(name)\n"
             "sys.path.insert(0, sys.argv[1])\nsys.argv[1:] = []\n"
             "import lift, split_hot\n"
             "print('\\n'.join(os.path.abspath(m.__file__) for m in list(sys.modules.values()) if getattr(m, '__file__', None)))\n")
-    out = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(ROOT / "nx2")], capture_output=True, text=True, check=True).stdout
+    run = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(ROOT / "nx2")], capture_output=True, text=True)
+    check("the lift's scripts import (%s)" % run.stderr.strip()[-2000:], run.returncode == 0)
+    out = run.stdout
     tops = (str(ROOT / "nx2") + os.sep, str(ROOT / "third_party" / "a64-kit") + os.sep)
     loaded = {f for f in out.split() if f.startswith(tops)}
     check("the lift loads its modules (%d)" % len(loaded), len(loaded) > 12 and str(ROOT / "nx2" / "chunks.py") in loaded)

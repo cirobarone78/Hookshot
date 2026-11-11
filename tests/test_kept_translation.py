@@ -28,15 +28,15 @@ def lifted_work(d, key="k1"):
     gen, image, obj = work / "sa" / "gen", work / "sa" / "image", work / "sa" / "build" / "obj"
     for p in (gen, image, obj, work / "objcache"):
         p.mkdir(parents=True)
-    (gen / "code_000.c").write_text("void f(void) {\n}\n")
-    (gen / "code_hot_0.c").write_text("void g(void) {\n}\n")
-    (gen / "a64_table.c").write_text("int t;\n")
-    (gen / "a64_guest.h").write_text("#define X 1\n")
+    (gen / "code_000.c").write_text("void f(void) {\n}\n", newline="\n")
+    (gen / "code_hot_0.c").write_text("void g(void) {\n}\n", newline="\n")
+    (gen / "a64_table.c").write_text("int t;\n", newline="\n")
+    (gen / "a64_guest.h").write_text("#define X 1\n", newline="\n")
     (image / "image.bin").write_bytes(b"\0" * 16)
     (obj / "code_000.o").write_bytes(b"o")
     make_game.write_lift_key(str(work), key)
     # (build.py writes its list after the lift: the lift is still the one its key names)
-    (gen / make_game.KEPT_LIST).write_text("code_000.c %s 17 p\ncode_hot_0.c %s 17 q\n" % ("a" * 40, "b" * 40))
+    (gen / make_game.KEPT_LIST).write_text("code_000.c %s 17 p\ncode_hot_0.c %s 17 q\n" % ("a" * 40, "b" * 40), newline="\n")
     return work
 
 
@@ -62,7 +62,7 @@ class KeptTranslationTests(unittest.TestCase):
             work = lifted_work(d)
             make_game.keep_translation(str(work), "k1")
             (work / "sa" / "build" / "obj").mkdir(parents=True)
-            (work / "sa" / "gen" / make_game.KEPT_LIST).write_text("code_000.c %s 17 p\n" % ("a" * 40))   # (build.py wrote it again)
+            (work / "sa" / "gen" / make_game.KEPT_LIST).write_text("code_000.c %s 17 p\n" % ("a" * 40), newline="\n")   # (build.py wrote it again)
             self.assertTrue(make_game.kept_before(str(work), "k1"))
             self.assertIsNotNone(make_game.keep_translation(str(work), "k1"))
             self.assertTrue(make_game.kept_before(str(work), "k1"))
@@ -81,7 +81,7 @@ class KeptTranslationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             work = lifted_work(d)
             make_game.keep_translation(str(work), "k1")
-            (work / "sa" / "gen" / "code_001.c").write_text("void h(void) {\n}\n")
+            (work / "sa" / "gen" / "code_001.c").write_text("void h(void) {\n}\n", newline="\n")
             self.assertFalse(make_game.kept_before(str(work), "k1"))
 
     def test_build_py_reads_the_list_and_names_kept_objects_by_it(self):
@@ -101,7 +101,7 @@ class KeptTranslationTests(unittest.TestCase):
             gen = os.path.join(d, "gen")
             os.makedirs(gen)
             src = os.path.join(gen, "code_000.c")
-            with open(src, "w") as f:
+            with open(src, "w", newline="\n") as f:   # (17 bytes on Windows too)
                 f.write("void f(void) {\n}\n")
             fl, deps = ["-O1", "-I" + gen], b"header"
             key = build.object_key(src, fl, deps)
