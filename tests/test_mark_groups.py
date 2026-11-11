@@ -299,8 +299,16 @@ def make_gen(d):
     return sorted(glob.glob(os.path.join(d, "code_*.c")))
 
 
+def unsplit(text):
+    """the text as it was before nx2/addr_split.py (the lift's last edit): the _k forms of these tests' accesses undone"""
+    text = re.sub(r"(recomp_\w+?)_k\(c,(c->x\[\d+\]),(\d+)", r"\1(c,\2 + \3", text)
+    text = re.sub(r"(recomp_\w+?)_k\(c,_b,_o\+(\d+)", r"\1(c,(_b+_o)+\2", text)
+    return re.sub(r"(recomp_\w+?)_k\(c,_b,_o(?=[,)])", r"\1(c,(_b+_o)", text)
+
+
 def ungroup(text):
-    """the text as it was before the groups: their marks gone, their stores marked again"""
+    """the text as it was before the groups (and the address split after them): their marks gone, their stores marked again"""
+    text = unsplit(text)
     text = "\n".join(l for l in text.split("\n") if not a64_lift.MG_OWN_MARK.match(l))
     return re.sub(r"recomp_(store8|store16|store32|store64|stp32|stp64)_sp\(c,", r"recomp_\1(c,", text)
 
@@ -321,7 +329,8 @@ class OutputSizeOrderTests(unittest.TestCase):
                 self.assertEqual(ungroup(text).count(new), 1, new)
             # (the output size reaches the window's create arg: x21+20 is a store of x8 just after the patched lines, now in a
             # group with x21+28, whose mark covers it)
-            f0 = read(files[0])
+            self.assertIn("recomp_store64_sp_k(c,_b,_o,c->x[8]); }", read(files[0]))   # (nx2/addr_split.py, last)
+            f0 = unsplit(read(files[0]))
             self.assertIn("    c->x[8] = hos_output_size(0) | ((uint64_t)hos_output_size(1) << 32);\n", f0)
             self.assertIn("{ uint64_t _b=c->x[21]; int64_t _o=20; recomp_store64_sp(c,(_b+_o),c->x[8]); }", f0)
             self.assertIn(mark(21, 20, 12), f0)

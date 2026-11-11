@@ -58,6 +58,7 @@ def main():
         block(posix, "BOOL FindNextFileA(HANDLE h, WIN32_FIND_DATAA *fd) {"),
         block(posix, "BOOL FindClose(HANDLE h) {"),
         block(fs, "static int guest_path_ok(const char *rest) {"),
+        block(fs, "static int is_link(const char *path) {"),
         block(fs, "static void delete_tree(const char *dir) {"),
         block(mods, "static int index_romfs(const char *host_dir, const char *rel, int depth) {"),
     ]
@@ -149,6 +150,7 @@ int main(void) {
     CHECK(!guest_path_ok("COM\xc2\xb9") && !guest_path_ok("lpt\xc2\xb3.x") && guest_path_ok("COM\xc2\xb4"));
     CHECK(!guest_path_ok("NUL .txt") && !guest_path_ok("a/aux  .b") && !guest_path_ok("CLOCK$") && !guest_path_ok("conin$"));
     CHECK(!guest_path_ok("a.") && !guest_path_ok("a ") && guest_path_ok("NUL x"));
+    CHECK(!guest_path_ok(".../x") && !guest_path_ok(". ./x") && !guest_path_ok("a/.. "));   /* (Windows trims these to "..") */
     printf("PASS: Windows device names refused\n");
     return 0;
 }
