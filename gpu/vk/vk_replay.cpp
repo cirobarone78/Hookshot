@@ -3077,7 +3077,10 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                                            sw, sh, crop);
             submit_recording(g, false);
         }
-        if (interpolated) framegen_queue(value);
+        if (interpolated) {   // (NVIDIA Reflex: the game frame's rendering is submitted; the display thread presents it later)
+            reflex_game_submitted();
+            framegen_queue(value);
+        }
         else menu_note_frame(true);   // (the FPS counter's, as frame generation's thread counts what it shows)
         {   // (RX_VK_WAIT_GPU=<frames>: the replay no further ahead of the GPU than that)
             static uint64_t values[8];
@@ -3683,6 +3686,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         present_defer_into->index = index;
         present_defer_into->done = f.done;
         present_defer_into->swapchain = dev.swapchain;
+        present_defer_into->reflex_frame = reflex_present_frame;   // (NVIDIA Reflex: the frame it shows, at its present)
         return;
     }
     present_out(index, qk);
@@ -3693,7 +3697,10 @@ bool present_commit(const PendingPresent& p) {
     std::lock_guard lk(present_image_mu);
     std::unique_lock qk(dev.present_mu);
     if (p.swapchain != dev.swapchain) return false;   // (made again since the copy: that image is gone)
+    const uint64_t was = reflex_present_frame;
+    reflex_present_frame = p.reflex_frame;   // (NVIDIA Reflex: the frame this present shows, as at its copy)
     present_out(p.index, qk);
+    reflex_present_frame = was;
     return true;
 }
 
