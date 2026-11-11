@@ -899,9 +899,12 @@ static void sleep_ns(int64_t ns, int guest) {
             threads = __builtin_popcountll((uint64_t)proc);
 #endif
         const int how = hos_short_sleep_timer(getenv("HOS_SHORT_SLEEP_TIMER"), threads);
+        /* (the line says what was chosen, before any thread has made its timer: where the high-resolution timer cannot
+           be made, Windows before 10 1803, a short sleep falls through to the yield loop at the end and nothing changes) */
         static volatile LONG told;
         if (how && !InterlockedExchange(&told, 1))
-            hos_log("sleep: %s sleeps under a millisecond wait on the timer (%d logical processors; HOS_SHORT_SLEEP_TIMER=0: all yield)",
+            hos_log("sleep: %s sleeps under a millisecond wait on the timer where Windows has the high-resolution one "
+                    "(%d logical processors; HOS_SHORT_SLEEP_TIMER=0: all yield)",
                     how == 2 ? "all" : "the game's", threads);
         short_timer = how;
     }
