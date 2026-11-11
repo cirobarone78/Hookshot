@@ -23,6 +23,10 @@ struct Stage {
     VkShaderModule module = VK_NULL_HANDLE;
     Shader::Info info;
     std::vector<uint8_t> c1;   // its c1 constants (the code area's tail)
+    // (hookshot) its SPIR-V's OpPhi instructions (fallback_size_policy.h), noted where the SPIR-V is written to or read from the
+    // program cache (vk_progcache.cpp), which every translated program passes. Not in vk_shader.cpp, whose bytes are part of
+    // the translator's stamp: a change there translates every player's programs again
+    mutable uint32_t phis = 0;
 };
 
 /// A texture handle the stage reads from a storage buffer: its handle program (Shader::Info::handle_programs, Eden's

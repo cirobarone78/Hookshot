@@ -51,6 +51,7 @@
 #include "movie_upscale_policy.h"
 #include "skip_code.h"
 #include "driver_faults.h"
+#include "fallback_size_policy.h"
 
 #include "shaders/clear_f_frag_spv.h"
 #include "shaders/clear_i_frag_spv.h"
@@ -5916,6 +5917,25 @@ bool fallback_compute_pipelines(Program& p) {
         std::lock_guard lk(mu);
         if (!p.fallback_compute.empty()) return true;
         if (failed.count({p.key, p.variant})) return false;
+    }
+    // (hookshot) none of its stages given to a compiler that would never finish one: RADV on GCN 1-4 grew past 25 GB on the two
+    // biggest mesh programs and kept the memory on its thread (fallback_size_policy.h). Left out, as a refused one is below.
+    // RX_VK_FALLBACK_PHI_LIMIT=<n>: another limit, 0 none
+    static const uint32_t phi_limit = getenv("RX_VK_FALLBACK_PHI_LIMIT") ? (uint32_t)strtoul(getenv("RX_VK_FALLBACK_PHI_LIMIT"), nullptr, 10)
+                                                                         : fallback_size::kRadvGcnPhiLimit;
+    for (size_t i = 0; i < p.stages.size(); i++) {
+        const Stage& st = p.stages[i];
+        if (st.vk_stage != VK_SHADER_STAGE_COMPUTE_BIT || !fallback_size::too_big(dev.radv_gcn, st.phis, phi_limit)) continue;
+        {
+            std::lock_guard lk(mu);
+            failed.insert({p.key, p.variant});
+        }
+        static std::atomic<int> told{0};
+        if (told++ < 8)
+            logf("vk: fallback: the compute pipeline of %016llx (stage %zu of %zu, %u phis, the most %u) is not built: RADV on this GCN "
+                 "card would not finish it (RX_VK_FALLBACK_PHI_LIMIT); its draws are left out",
+                 (unsigned long long)p.key, i, p.stages.size(), st.phis, phi_limit);
+        return false;
     }
     std::vector<VkPipeline> made(p.stages.size(), VK_NULL_HANDLE);
     bool any = false;
