@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A shader preparation the GPU driver stops answering in goes on or ends, and says why (#2107).
 
-Builds on players' cards of all kinds, AMD and NVIDIA, stopped for good in the predicted pipelines, the Builder's details showing
-the last line written ("vertex format NVN 0xe -> vk 17"). The driver had faulted in a pipeline compile (caught: "the driver faulted compiling") and
-was left holding a lock of its own. Compiled from the real source, with stand-ins for the driver and the files:
+Builds on players' cards of all kinds, AMD and NVIDIA, stopped for good in the predicted pipelines, the Builder's details
+showing the last line written ("vertex format NVN 0xe -> vk 17"). In one log the driver had faulted in a pipeline compile
+(caught: "the driver faulted compiling") just before. Compiled from the real source, with stand-ins for the driver and files:
 
-- predict_run (gpu/vk/vk_draw.cpp): builds every predicted pipeline; its first one alone; a pipeline the driver never finishes
-  leaves the run going on once nothing has finished for RX_VK_PREDICT_STALL_S; a slow driver that still finishes pipelines does not.
-- the --prepare-shaders run's watchdog (gpu/vk/vk_main.cpp prepare_watchdog): a status line in the log after a quiet spell, saying
-  what it is waiting on; once nothing has moved for RX_VK_PREPARE_STALL_S, the reason, hookshot_prepare_skipped and exit status 4,
-  never during the pipeline cache's save.
+- predict_run (gpu/vk/vk_draw.cpp): builds every predicted pipeline, its first one alone. Once nothing has finished for
+  RX_VK_PREDICT_STALL_S it goes on, leaving the stuck workers in the driver: anywhere in the run after a fault in the driver, and
+  otherwise only once every program was handed out (the last stragglers). A slow driver that still finishes pipelines, or one
+  stuck early with no fault, is waited for (that is the watchdog's).
+- the --prepare-shaders run's watchdog (gpu/vk/vk_main.cpp prepare_watchdog): a status line after a quiet spell, saying what it
+  works on or waits on; once nothing has moved for RX_VK_PREPARE_STALL_S, the reason, hookshot_prepare_skipped and exit status 4.
+  The pipeline cache's save is stopped the same way only when workers were left in the driver or it faulted; otherwise it is
+  reported, and its lines end so that make_game.py's silence limit still applies.
 - make_game.py says "the GPU driver stopped responding" for exit status 4.
 
 python -I -B tests/test_prepare_stall.py --cxx clang++
@@ -66,11 +69,13 @@ struct PipeNote { uint64_t key, prog, variant; uint32_t topo; NvnState s; };
 struct Program { uint64_t key; uint64_t variant; };
 struct { uintptr_t device = 1; } dev;
 thread_local bool driver_cache_only = false;
-static int mode;              // 0 quick, 1 one pipeline never finishes, 2 each pipeline slow
+// 0 quick; 1 one program's pipelines never finish (the last stragglers); 2 each pipeline slow, every program longer than the
+// stall; 3 the driver faults, then nothing finishes, early in the run; 4 nothing finishes early in the run, no fault
+static int mode;
 static int programs_n = 40, per_program = 3;
 static constexpr uint64_t kStuck = 7;
-static std::atomic<int> built{0}, destroyed{0}, inside{0}, most_inside{0};
-static std::atomic<bool> first_was_alone{true}, first_seen{false};
+static std::atomic<int> built{0}, destroyed{0}, inside{0}, faults{0};
+static std::atomic<bool> first_was_alone{true}, first_seen{false}, left_noted{false};
 static std::string logged;
 static std::mutex log_mu;
 void logf(const char* f, ...) {
@@ -84,6 +89,8 @@ void logf(const char* f, ...) {
     logged += "\n";
 }
 bool prepare_stopped() { return false; }
+int driver_faults() { return faults.load(); }
+void prepare_left_workers_note() { left_noted = true; }
 void ub_thread_off() {}
 void Sleep(unsigned ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 std::vector<std::unique_ptr<PipeNote>> pipe_notes_read() {
@@ -105,19 +112,22 @@ void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn)
 }
 void ensure_layout(Program&) {}
 Targets note_targets(const PipeNote&) { return {}; }
-VkPrimitiveTopology pipeline_topology(const Program&, VkPrimitiveTopology t) { return t; }
 VkPipeline build_graphics(const Program& p, const NvnState&, const Targets&, VkPrimitiveTopology) {
     CHECK(driver_cache_only);
-    const int now = ++inside;
-    for (int m = most_inside.load(); now > m && !most_inside.compare_exchange_weak(m, now);) {}
+    ++inside;
     const bool first = !first_seen.exchange(true);
-    if (mode == 1 && p.key == kStuck && !first)   // (the driver never answers; not the first, which the others wait for)
+    // (the driver never answers; never the first, which the others wait for)
+    const bool stuck = !first && ((mode == 1 && p.key == kStuck) || mode == 3 || mode == 4);
+    if (stuck) {
+        if (mode == 3) faults++;   // (caught in the driver: "the driver faulted compiling")
         for (;;) std::this_thread::sleep_for(std::chrono::hours(1));
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(mode == 2 ? 300 : first ? 200 : 1));
     if (first && inside.load() != 1) first_was_alone = false;   // (another began while the first was being built)
     --inside;
     return (VkPipeline)(0x100 + ++built);
 }
+VkPrimitiveTopology pipeline_topology(const Program&, VkPrimitiveTopology t) { return t; }
 void vkDestroyPipeline(uintptr_t, VkPipeline, const void*) { ++destroyed; }
 static std::atomic<size_t> last_done{0}, last_total{0};
 void progress(size_t done, size_t total) {
@@ -131,23 +141,28 @@ int main(int argc, char** argv) {
     CHECK(argc == 2);
     mode = std::atoi(argv[1]);
     if (mode == 2) programs_n = 6, per_program = 5;   // (each program 1.5 s, past the 1 s stall: only per pipeline counts)
+    if (mode >= 3) programs_n = 400;   // (more programs than workers: the run is stuck before every one is handed out)
     const auto t0 = std::chrono::steady_clock::now();
     predict_run(progress);
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     const int all = programs_n * per_program;
     std::printf("%s", logged.c_str());
-    CHECK(last_total == (size_t)all + 1 && last_done == last_total);   // (the bar full, the stuck pipeline's part included)
+    CHECK(mode != 4);   // (no fault and stuck early: waited for, the watchdog's to end; the test stops it)
+    CHECK(last_total == (size_t)all + 1 && last_done == last_total);   // (the bar full, what was given up included)
     CHECK(first_was_alone);
-    if (mode == 1) {
+    if (mode == 1 || mode == 3) {
         CHECK(logged.find("nothing finished for 1 s") != std::string::npos);
+        CHECK(logged.find(mode == 1 ? "the last ones stuck in the driver" : "the driver faulted, and is stuck since") !=
+              std::string::npos);
         CHECK(logged.find("gone on without the pipelines the driver did not finish") != std::string::npos);
+        CHECK(left_noted);
         CHECK(secs < 20);
-        if (std::thread::hardware_concurrency() > 1)   // (only the stuck program's left: its first, when it was the very first)
+        if (mode == 1 && std::thread::hardware_concurrency() > 1)   // (only the stuck program's left: its first, if it was first)
             CHECK(built >= all - per_program && built <= all - per_program + 1);
         std::fflush(stdout);
-        std::_Exit(0);   // (its worker is still in the "driver")
+        std::_Exit(0);   // (its workers are still in the "driver")
     }
-    CHECK(logged.find("nothing finished") == std::string::npos);
+    CHECK(logged.find("nothing finished") == std::string::npos && !left_noted);
     CHECK(built == all && destroyed == all);
     return 0;
 }
@@ -162,6 +177,7 @@ WATCH_HEAD = r'''
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 #ifdef _WIN32
@@ -177,7 +193,9 @@ static void host_flush() { std::fflush(stdout); }
 static const MkwVkHost host_v{host_log, host_flush};
 const MkwVkHost* host = &host_v;
 static int faults;
+static bool left;
 int driver_faults() { return faults; }
+bool prepare_left_workers() { return left; }
 std::string skipped_path() { return std::getenv("FIXTURE_SKIPPED"); }
 '''
 
@@ -186,6 +204,7 @@ int main(int argc, char** argv) {
     if (argc != 2) return 9;
     const std::string c = argv[1];
     if (c == "fault") faults = 1;
+    if (c == "save-left") left = true;
     prepare_watchdog();
     if (c == "stuck" || c == "fault") {
         prepare_moved(1, 5, 10);
@@ -196,11 +215,17 @@ int main(int argc, char** argv) {
         for (size_t i = 1; i <= 15; i++) prepare_moved(0, i, 100), Sleep(300);
         return 0;
     }
-    if (c == "save") {
+    if (c == "save") {   // (a long save, nothing left in the driver: reported, then silent, never stopped)
         prepare_moved(3, 0, 0);
-        Sleep(4000);
+        Sleep(7000);
         return 0;
     }
+    if (c == "save-left") {   // (workers were left in the driver: the save waits on them, and is stopped)
+        prepare_moved(3, 0, 0);
+        Sleep(20000);
+        return 8;
+    }
+    if (c == "end") prepare_end(0);   // (a run that left workers: done, ended at once)
     return 9;
 }
 '''
@@ -210,7 +235,10 @@ def compile_run(cxx, name, code, tmp):
     src = Path(tmp) / (name + ".cpp")
     exe = Path(tmp) / (name + (".exe" if os.name == "nt" else ""))
     src.write_text(code, encoding="utf-8")
-    cmd = [cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", str(src), "-o", str(exe)]
+    # (-D_CRT_SECURE_NO_WARNINGS: a clang that targets MSVC's C library, CI's, calls getenv and fopen deprecated, as the game's
+    # own build says too: toolchain.native_target)
+    cmd = [cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-D_CRT_SECURE_NO_WARNINGS", str(src),
+           "-o", str(exe)]
     if os.name != "nt":
         cmd.insert(1, "-pthread")
     subprocess.run(cmd, check=True, timeout=180)
@@ -220,28 +248,39 @@ def compile_run(cxx, name, code, tmp):
 def check_predict(cxx, tmp):
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     exe = compile_run(cxx, "predict", PREDICT_HEAD + block(draw, "void predict_run(") + PREDICT_MAIN, tmp)
+    env = dict(os.environ, RX_VK_PREDICT_STALL_S="1")
     for case, what in (("0", "every predicted pipeline built, the first alone"),
-                       ("1", "a pipeline the driver never finishes: the run goes on"),
-                       ("2", "a slow driver that still finishes pipelines: no stop")):
-        env = dict(os.environ, RX_VK_PREDICT_STALL_S="1")
+                       ("1", "the last pipelines never finish: the run goes on without them"),
+                       ("2", "a slow driver that still finishes pipelines: no stop"),
+                       ("3", "the driver faulted, then nothing finishes: the run goes on")):
         r = subprocess.run([str(exe), case], env=env, capture_output=True, text=True, timeout=60)
         if r.returncode:
             raise SystemExit("predict_run, %s: exit %d\n%s%s" % (what, r.returncode, r.stdout, r.stderr))
         print("PASS predict_run:", what, flush=True)
+    # (stuck early with no fault: the bulk is not given up here; it waits, as before, and the watchdog ends a real hang)
+    try:
+        r = subprocess.run([str(exe), "4"], env=env, capture_output=True, text=True, timeout=6)
+        raise SystemExit("predict_run gave up the bulk of the run with no fault in the driver: exit %d\n%s%s"
+                         % (r.returncode, r.stdout, r.stderr))
+    except subprocess.TimeoutExpired:
+        print("PASS predict_run: stuck early with no fault: waited for", flush=True)
 
 
 def check_watchdog(cxx, tmp):
     main = (ROOT / "gpu/vk/vk_main.cpp").read_text(encoding="utf-8")
+    watch = main[main.index("struct PrepareSeen {"):]
+    watch = watch[:watch.index(block(watch, "void prepare_watchdog() {")) + len(block(watch, "void prepare_watchdog() {"))]
     pieces = [block(main, "int64_t steady_ms() {"), "std::atomic<int64_t> last_log_ms{0};\n", block(main, "void logf(const char* fmt, ...) {"),
-              main[main.index("std::atomic<int64_t> prepare_moved_ms{0};"):main.index("void prepare_moved(")],
-              block(main, "void prepare_moved("), "std::atomic<int> driver_faults_seen{0};\n", block(main, "void prepare_watchdog() {")]
+              watch]
     exe = compile_run(cxx, "watchdog", WATCH_HEAD + "\n".join(pieces) + WATCH_MAIN, tmp)
     for case, code, need, never in (
             ("stuck", 4, ["waiting on the GPU driver or the disk", "the predicted pipelines (5 of 10)", "STOPPED"], ["faulted"]),
             ("fault", 4, ["faulted 1 time so far", "waiting on the GPU driver, which faulted (above)", "after it faulted (above)", "STOPPED"],
              []),
             ("moving", 0, ["still working on the shader programs"], ["STOPPED", "waiting:"]),
-            ("save", 0, ["still writing the pipeline cache's save"], ["STOPPED"])):
+            ("save", 0, ["still writing the pipeline cache's save", "this is the disk"], ["STOPPED", "(5 s)", "(6 s)"]),
+            ("save-left", 4, ["which still has pipelines it did not finish", "STOPPED: the pipeline cache's save waited 4 s"], []),
+            ("end", 0, ["@@done shaders"], ["STOPPED"])):
         skipped = Path(tmp) / ("skipped-" + case)
         env = dict(os.environ, RX_VK_PREPARE_STALL_S="4", RX_VK_PREPARE_STATUS_S="1", FIXTURE_SKIPPED=str(skipped))
         t0 = time.time()
@@ -268,17 +307,25 @@ def check_sources():
     only = only[:only.index("\n        return true;\n    }\n")]
     for need, why in (("prepare_watchdog();", "the --prepare-shaders run has no watchdog"),
                       ("prepare_moved(part, done, total);", "the watchdog does not see the parts' progress"),
-                      ("prepare_moved(3, 0, 0);", "the watchdog could stop the pipeline cache's save")):
+                      ("prepare_moved(3, 0, 0);", "the watchdog does not know the save from the parts")):
         if need not in only:
             raise SystemExit(why)
-    if only.index("prepare_moved(3, 0, 0);") > only.index("pipeline_cache_save(true);"):
-        raise SystemExit("the watchdog could stop the pipeline cache's save")
-    watch = block(main, "void prepare_watchdog() {")
-    if "TerminateProcess(GetCurrentProcess(), 4);" not in watch or "exit(4)" in watch.replace("_Exit(4)", ""):
-        raise SystemExit("the watchdog ends the run through exit(), which unloads the driver it waits on")
+    save = only.index("pipeline_cache_save(true);")
+    if only.index("prepare_moved(3, 0, 0);") > save:
+        raise SystemExit("the watchdog does not know the save from the parts")
+    after = only[save:]
+    if "prepare_left_workers()" not in after or "prepare_end(0);" not in after:
+        raise SystemExit("a run that left workers in the driver ends through exit(), which can wait on them")
+    end = block(main, "[[noreturn]] void prepare_end(int code) {")
+    if "TerminateProcess(GetCurrentProcess()" not in end or "exit(" in end.replace("_Exit(", ""):
+        raise SystemExit("prepare_end ends the run through exit(), which unloads the driver it waits on")
+    if "prepare_end(4);" not in block(main, "void prepare_watchdog() {"):
+        raise SystemExit("the watchdog does not end a stuck run")
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     if draw.count("note_driver_fault();") < 4:
         raise SystemExit("a fault guard does not count its faults for the watchdog")
+    if block(draw, "void precompile_run(").count("prepare_left_workers_note();") != 1:
+        raise SystemExit("precompile_run goes on from stuck workers without saying so to the save")
 
 
 def check_make_game():

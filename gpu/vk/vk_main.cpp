@@ -743,25 +743,44 @@ std::string skipped_path() {
 //   the last line the run happened to write ("vertex format NVN 0xe -> vk 17") for as long as it ran or hung, and players could
 //   not tell a slow driver from a stuck one.
 // - When it stops for good: a driver that faults inside a pipeline compile (caught by guarded_graphics: "the driver faulted
-//   compiling", above) can be left holding a lock of its own, and every other thread that asks it for anything then waits for
-//   ever: builds stuck on players' cards of all kinds, AMD and NVIDIA (#2107). No part can go on from there, as each needs the
-//   driver. So when nothing has moved for RX_VK_PREPARE_STALL_S seconds (300; 0: never stopped. Long: some steps read the caches or
+//   compiling", above) can leave that compile unfinished inside it, and builds behind it then wait for ever (on AMD, any build of
+//   the same program: #1823's dump of issue 996): builds stuck on players' cards of all kinds, AMD and NVIDIA (#2107). Whatever
+//   the cause, a part that needs the stuck driver cannot go on. So when nothing has moved for RX_VK_PREPARE_STALL_S seconds (300; 0: never stopped. Long: some steps read the caches or
 //   decide the predictions for a while with no count, on a slow disk or CPU too), the run says where it stopped and why, leaves
 //   hookshot_prepare_skipped so the game's own starts do not stop in the same place (what was not prepared is built when first
 //   drawn), and ends at once with exit status 4 (make_game.py: "the GPU driver stopped responding"). Not through exit(): that
 //   unloads the driver, which can wait on the same lock. Before, it waited until make_game.py stopped it after 15 minutes with no
 //   line, and the game's first start then stopped in the same place
-std::atomic<int64_t> prepare_moved_ms{0};
-std::atomic<size_t> prepare_seen_done{0}, prepare_seen_total{0};
-std::atomic<int> prepare_seen_part{-1};
-/// A part's count, from its progress: the watchdog's clock starts again when the part or its count changes. Part 3: the pipeline
-/// cache's save, the last, which has no count (and can take minutes on a large cache: every pipeline was made by then, so the
-/// driver answered; make_game.py's 15 minutes still cover it). The watchdog only reports it
+// - The pipeline cache's save, the last part, has no count and can take minutes on a large cache. When the run went on from a
+//   part and left workers inside the driver (prepare_left_workers), or the driver faulted, the save can wait on them for ever
+//   (vkGetPipelineCacheData), and so can exit() unloading the driver: then the save is stopped as the other parts are, and a run
+//   that gets through it ends at once (prepare_end). Otherwise the save is only reported, and its lines stop after the same 300 s
+//   so that make_game.py's 15 minutes with no line (PREPARE_SILENCE) still stop a save that never ends
+/// (where the run is, for the watchdog: under one lock, so it reads a part with its own count)
+struct PrepareSeen {
+    int part = -1;
+    size_t done = 0, total = 0;
+    int64_t moved_ms = 0;
+};
+std::mutex prepare_seen_mu;
+PrepareSeen prepare_seen;
+/// A part's count, from its progress: the watchdog's clock starts again when the part or its count changes. Part 3: the save
 void prepare_moved(int part, size_t done, size_t total) {
-    if (part != prepare_seen_part.load() || done != prepare_seen_done.load() || !prepare_moved_ms.load()) {
-        prepare_seen_part.store(part), prepare_seen_done.store(done), prepare_seen_total.store(total);
-        prepare_moved_ms.store(steady_ms());
-    }
+    std::lock_guard lk(prepare_seen_mu);
+    if (part != prepare_seen.part || done != prepare_seen.done || !prepare_seen.moved_ms)
+        prepare_seen = {part, done, total, steady_ms()};
+}
+/// The run ends now: the log written out, then TerminateProcess, not exit(), which unloads a driver that can still hold workers
+/// (@@done first for a run that finished: the line the game prints after the preparation, host/hos_main.c)
+[[noreturn]] void prepare_end(int code) {
+    if (host && host->log_flush) host->log_flush();
+    if (!code) std::printf("@@done shaders\n");
+    std::fflush(stdout);
+    std::fflush(stderr);
+#ifdef _WIN32
+    TerminateProcess(GetCurrentProcess(), (UINT)code);
+#endif
+    std::_Exit(code);
 }
 std::atomic<int> driver_faults_seen{0};
 void prepare_watchdog() {
@@ -772,44 +791,59 @@ void prepare_watchdog() {
     std::thread([] {
         static const char* const parts[] = {"the shader programs", "the predicted pipelines", "the noted pipelines",
                                             "the pipeline cache's save"};
+        const int64_t limit_s = stall_s > 0 ? stall_s : 300;   // (the save's lines stop after this, whatever RX_VK_PREPARE_STALL_S)
         for (;;) {
             Sleep(1000);
             const int64_t now = steady_ms();
-            const int part = prepare_seen_part.load();
-            const char* what = part >= 0 && part < 4 ? parts[part] : "the preparation";
-            const size_t done = prepare_seen_done.load(), total = prepare_seen_total.load();
-            const int64_t still = (now - prepare_moved_ms.load()) / 1000;
+            PrepareSeen at;
+            {
+                std::lock_guard lk(prepare_seen_mu);
+                at = prepare_seen;
+            }
+            const char* what = at.part >= 0 && at.part < 4 ? parts[at.part] : "the preparation";
+            const int64_t still = (now - at.moved_ms) / 1000;
             const int faults = driver_faults();
+            const bool left = prepare_left_workers();
+            const bool risky = faults > 0 || left;   // (the driver may be stuck: the save too can wait for ever)
             // (what it waits on: after a fault in the driver, most likely the driver; else the driver or the disk, a slow one
             // reading the caches)
-            const char* waiting_on = faults ? "waiting on the GPU driver, which faulted (above)" : "waiting on the GPU driver or the disk";
+            const char* waiting_on = faults ? "waiting on the GPU driver, which faulted (above)"
+                                     : left ? "waiting on the GPU driver, which still has pipelines it did not finish"
+                                            : "waiting on the GPU driver or the disk";
             if (faults != driver_faults_seen.exchange(faults))
                 logf("vk: preparation: the GPU driver faulted %d time%s so far (above): a driver can stop responding after one, so a "
                      "stop here would be why", faults, faults == 1 ? "" : "s");
-            if (part < 3 && stall_s > 0 && still >= stall_s) {
-                logf("vk: preparation: STOPPED: nothing moved for %d s in %s (%zu of %zu): the GPU driver stopped responding%s. The "
-                     "rest is built in play, when first drawn; updating the GPU driver may help", stall_s, what, done, total,
-                     faults ? " after it faulted (above)" : "");
+            if (stall_s > 0 && still >= stall_s && (at.part < 3 || risky)) {
+                if (at.part < 3)
+                    logf("vk: preparation: STOPPED: nothing moved for %d s in %s (%zu of %zu): the GPU driver stopped responding%s. "
+                         "The rest is built in play, when first drawn; updating the GPU driver may help", stall_s, what, at.done,
+                         at.total, faults ? " after it faulted (above)" : "");
+                else
+                    logf("vk: preparation: STOPPED: %s waited %d s on the GPU driver, %s. The pipelines are made; only this "
+                         "file is left out. Updating the GPU driver may help", what, stall_s,
+                         faults ? "which faulted (above)" : "which still has pipelines it did not finish");
                 if (FILE* f = fopen(skipped_path().c_str(), "wb")) fclose(f);
-                if (host && host->log_flush) host->log_flush();
-                std::fflush(stdout);
-                std::fflush(stderr);
-#ifdef _WIN32
-                TerminateProcess(GetCurrentProcess(), 4);
-#endif
-                std::_Exit(4);
+                prepare_end(4);
             }
             if (now - last_log_ms.load(std::memory_order_relaxed) < quiet_s * 1000) continue;
-            if (part >= 3)
-                logf("vk: preparation: still writing %s (%lld s): every pipeline is made, this is the disk", what, (long long)still);
-            else if (still < quiet_s)
-                logf("vk: preparation: still working on %s: %zu of %zu", what, done, total);
-            else if (stall_s > 0)
+            if (at.part >= 3) {
+                if (risky)
+                    logf("vk: preparation: still writing %s (%lld s), %s. Stopped at %d s if it does not end", what,
+                         (long long)still, waiting_on, stall_s);
+                else if (still < limit_s)
+                    logf("vk: preparation: still writing %s (%lld s): every pipeline is made, this is the disk", what,
+                         (long long)still);
+                else
+                    continue;   // (silent from here: make_game.py's 15 minutes with no line stop a save that never ends)
+            } else if (still < quiet_s) {
+                logf("vk: preparation: still working on %s: %zu of %zu", what, at.done, at.total);
+            } else if (stall_s > 0) {
                 logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s. Stopped at %d s if nothing "
-                     "moves", what, (long long)still, done, total, waiting_on, stall_s);
-            else
-                logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s", what, (long long)still, done,
-                     total, waiting_on);
+                     "moves", what, (long long)still, at.done, at.total, waiting_on, stall_s);
+            } else {
+                logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s", what, (long long)still,
+                     at.done, at.total, waiting_on);
+            }
             if (host && host->log_flush) host->log_flush();
         }
     }).detach();
@@ -1009,9 +1043,14 @@ bool started_up() {
         prepare_moved(2, 0, 0);
         bar.reach(2);
         precompile_run(progress);
-        prepare_moved(3, 0, 0);   // (the pipeline cache written out: the watchdog reports it, never stops it)
+        prepare_moved(3, 0, 0);   // (the pipeline cache written out: the watchdog reports it, and stops it only when risky)
         pipeline_cache_save(true);
         remove(skipped_path().c_str());
+        if (prepare_left_workers() || driver_faults() > 0) {   // (exit() would unload a driver that may still hold workers)
+            logf("vk: preparation: done; the run ends at once (%s)",
+                 prepare_left_workers() ? "pipelines left in the driver" : "the driver faulted");
+            prepare_end(0);
+        }
         return true;
     }
     if (FILE* f = fopen(skipped_path().c_str(), "rb")) {
