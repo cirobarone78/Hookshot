@@ -1355,7 +1355,7 @@ def gen_print(gen):
     h = hashlib.sha1(usedforsecurity=False)
     for name in sorted(os.listdir(gen)):
         p = os.path.join(gen, name)
-        if name not in (LIFT_KEY, KEPT_LIST) and os.path.isfile(p):   # (KEPT_LIST: build.py's, written after the lift)
+        if name not in (LIFT_KEY, KEPT_LIST, KEPT_LIST + ".new") and os.path.isfile(p):   # (KEPT_LIST: build.py's, written after the lift)
             st = os.stat(p)
             h.update(("%s %d %d\n" % (name, st.st_size, st.st_mtime_ns)).encode())
     return h.hexdigest()
@@ -1404,7 +1404,17 @@ def lifted_before(work, key):
 
 
 KEPT_LIST = "lifted_objects.txt"   # (nx2/build.py's list of the lifted files' object keys, in <work>/sa/gen)
-KEPT_STALE = 3   # (nx2/build.py's exit status when that list no longer fits the build: the game is translated again)
+KEPT_SCHEME = 1   # (that list's format: its first line names it with the lift key, nx2/build.py kept_header)
+KEPT_STALE = 75   # (nx2/build.py's exit status when that list no longer fits the build: the game is translated again. Not 3: abort())
+
+
+def kept_list_fits(gen, key):
+    """KEPT_LIST is there and was written for the lift with this key, in this format"""
+    try:
+        with open(os.path.join(gen, KEPT_LIST), encoding="utf-8") as f:
+            return f.readline() == "# lift %s %d\n" % (key, KEPT_SCHEME)
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def kept_before(work, key):
@@ -1420,28 +1430,34 @@ def kept_before(work, key):
         return False
     if any(f.startswith("code_") for f in os.listdir(gen)):
         return False
-    return all(os.path.isfile(p) for p in (os.path.join(gen, KEPT_LIST), os.path.join(gen, "a64_table.c"),
-                                           os.path.join(work, "sa", "image", "image.bin")))
+    return kept_list_fits(gen, key) and all(os.path.isfile(p) for p in (os.path.join(gen, "a64_table.c"),
+                                                                        os.path.join(work, "sa", "image", "image.bin")))
 
 
 def keep_translation(work, key):
     """(after a build that compiled every file) What a player's clean-up keeps of the lift: everything but the lifted C itself (1.5 GB:
     code_*.c) and the build's outputs. The lift's other files (~130 MB: the headers the objects are keyed by, the runtime tables, the
     image) and build.py's list of the lifted files' object keys stay, with the lift key marked "kept" (kept_before). Returns the
-    bytes kept, or None when there is nothing to keep it by (the lift and that list not from this build)"""
+    bytes kept, or None when there is nothing to keep it by (the lift and that list not from this build). A file it cannot remove
+    (Windows: one still held open) is no failed build: the game folder is ready by then. All of sa goes as before, as far as it can"""
     gen = os.path.join(work, "sa", "gen")
-    if not (lifted_before(work, key) or kept_before(work, key)) or not os.path.isfile(os.path.join(gen, KEPT_LIST)):
+    if not (lifted_before(work, key) or kept_before(work, key)) or not kept_list_fits(gen, key):
         return None
-    for f in os.listdir(gen):
-        if f.startswith("code_"):
-            os.remove(os.path.join(gen, f))
-    shutil.rmtree(os.path.join(work, "sa", "build"), ignore_errors=True)
-    with open(os.path.join(gen, LIFT_KEY), "w") as f:
-        f.write(key + "\n" + gen_print(gen) + "\nkept\n")
-    kept = 0
-    for d, _, fs in os.walk(os.path.join(work, "sa")):
-        kept += sum(os.path.getsize(os.path.join(d, f)) for f in fs)
-    return kept
+    try:
+        for f in os.listdir(gen):
+            if f.startswith("code_"):
+                os.remove(os.path.join(gen, f))
+        shutil.rmtree(os.path.join(work, "sa", "build"), ignore_errors=True)
+        with open(os.path.join(gen, LIFT_KEY), "w") as f:
+            f.write(key + "\n" + gen_print(gen) + "\nkept\n")
+        kept = 0
+        for d, _, fs in os.walk(os.path.join(work, "sa")):
+            kept += sum(os.path.getsize(os.path.join(d, f)) for f in fs)
+        return kept
+    except OSError as e:
+        print("the translation could not be kept for the next update (%s): it is translated again then" % e, flush=True)
+        shutil.rmtree(os.path.join(work, "sa"), ignore_errors=True)
+        return None
 
 
 def forget_failed_build(work, linked):
@@ -1860,6 +1876,8 @@ def main(a=None):
     gen_dir = os.path.join(work, "sa", "gen")
     # (issue 1197: a lifted file cut short, "g_module_b" where g_module_base was, stopped the compile at every try. Before the compile
     # every one must end as a function does: one that does not is translated again, once; a second time says what to check)
+    kept_lift = []   # (build.py's --kept-lift: the lift skipped, its objects by the kept list)
+
     def translate():
         for _ in range(2):
             if lifted_before(work, key):   # (never on the second pass: its key was taken away below)
@@ -1867,12 +1885,15 @@ def main(a=None):
             elif kept_before(work, key):   # (a player's update with the same tools: keep_translation, below)
                 print("the game was translated with these tools before (its compiled code kept): translating it again is skipped",
                       flush=True)
-                env["HOOKSHOT_KEPT_LIFT"] = os.path.join(gen_dir, KEPT_LIST)
+                kept_lift[:] = ["--kept-lift", os.path.join(gen_dir, KEPT_LIST)]
             else:
-                env.pop("HOOKSHOT_KEPT_LIFT", None)
+                kept_lift.clear()
                 key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
                 if os.path.exists(key_file):
                     os.remove(key_file)   # (a lift stopped halfway leaves no key behind)
+                for name in (KEPT_LIST, KEPT_LIST + ".new"):   # (the list of the lift before: it names that lift's objects)
+                    with contextlib.suppress(FileNotFoundError):
+                        os.remove(os.path.join(gen_dir, name))
                 # (hookshot) the lifted C of an earlier lift goes first: a file that lift made and this one does not (another builder's
                 # naming, a chunk cut short) was compiled with the new ones, undefined or doubly defined game functions at the link (issue
                 # 1176). The objects stay cached by their contents, so a file this lift writes the same is not compiled again
@@ -1959,8 +1980,8 @@ def main(a=None):
             linking.append(line)
         compiled(line)
     try:
-        if run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compile_line,
-               allow=(KEPT_STALE,) if "HOOKSHOT_KEPT_LIFT" in env else ()) == KEPT_STALE:
+        if run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)] + kept_lift, env, compile_line,
+               allow=(KEPT_STALE,) if kept_lift else ()) == KEPT_STALE:
             # (the translation kept from the last build no longer fits: an object of it gone, other flags or headers. Nothing was
             # compiled: the game is translated, then compiled, as when nothing was kept)
             os.remove(os.path.join(gen_dir, LIFT_KEY))

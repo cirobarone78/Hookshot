@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("make_game_under_test", ROOT / "nx2" / "make_game.py")
@@ -36,8 +37,14 @@ def lifted_work(d, key="k1"):
     (obj / "code_000.o").write_bytes(b"o")
     make_game.write_lift_key(str(work), key)
     # (build.py writes its list after the lift: the lift is still the one its key names)
-    (gen / make_game.KEPT_LIST).write_text("code_000.c %s 17 p\ncode_hot_0.c %s 17 q\n" % ("a" * 40, "b" * 40), newline="\n")
+    (gen / make_game.KEPT_LIST).write_text(header(key) + "code_000.c %s 17 p\ncode_hot_0.c %s 17 q\n" % ("a" * 40, "b" * 40),
+                                           newline="\n")
     return work
+
+
+def header(key):
+    """the kept list's first line: the lift it was written for (build.py kept_header)"""
+    return "# lift %s %d\n" % (key, make_game.KEPT_SCHEME)
 
 
 class KeptTranslationTests(unittest.TestCase):
@@ -62,7 +69,7 @@ class KeptTranslationTests(unittest.TestCase):
             work = lifted_work(d)
             make_game.keep_translation(str(work), "k1")
             (work / "sa" / "build" / "obj").mkdir(parents=True)
-            (work / "sa" / "gen" / make_game.KEPT_LIST).write_text("code_000.c %s 17 p\n" % ("a" * 40), newline="\n")   # (build.py wrote it again)
+            (work / "sa" / "gen" / make_game.KEPT_LIST).write_text(header("k1") + "code_000.c %s 17 p\n" % ("a" * 40), newline="\n")   # (build.py wrote it again)
             self.assertTrue(make_game.kept_before(str(work), "k1"))
             self.assertIsNotNone(make_game.keep_translation(str(work), "k1"))
             self.assertTrue(make_game.kept_before(str(work), "k1"))
@@ -75,6 +82,26 @@ class KeptTranslationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             work = lifted_work(d)
             self.assertIsNone(make_game.keep_translation(str(work), "other"))
+
+    def test_a_list_of_another_lift_is_not_used(self):
+        """the list names the lift it was written for: a list another lift left (or of another format) is not kept by"""
+        for first in ("", header("k0"), "# lift k1 %d\n" % (make_game.KEPT_SCHEME + 1)):
+            with self.subTest(first=first), tempfile.TemporaryDirectory() as d:
+                work = lifted_work(d)
+                lst = work / "sa" / "gen" / make_game.KEPT_LIST
+                lst.write_text(first + lst.read_text().split("\n", 1)[1], newline="\n")
+                self.assertIsNone(make_game.keep_translation(str(work), "k1"))
+                self.assertFalse(make_game.kept_before(str(work), "k1"))
+
+    def test_a_file_that_cannot_be_removed_is_no_failed_build(self):
+        """(Windows: a lifted file still held open) the clean-up lets all of sa go, as far as it can, and the build stands"""
+        with tempfile.TemporaryDirectory() as d:
+            work = lifted_work(d)
+            with mock.patch.object(make_game.os, "remove", side_effect=PermissionError(13, "held")), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertIsNone(make_game.keep_translation(str(work), "k1"))
+            self.assertIn("could not be kept", out.getvalue())
+            self.assertFalse(make_game.kept_before(str(work), "k1"))
 
     def test_lifted_c_back_in_the_folder_is_not_kept(self):
         """another builder's lift in the same folder: the kept mark no longer vouches for it"""
@@ -96,10 +123,14 @@ class KeptTranslationTests(unittest.TestCase):
         finally:
             sys.path.remove(str(ROOT / "nx2"))
         self.assertEqual(build.KEPT_STALE, make_game.KEPT_STALE)
+        self.assertNotEqual(build.KEPT_STALE, 3)   # (abort()'s exit status on Windows)
+        self.assertEqual(build.KEPT_SCHEME, make_game.KEPT_SCHEME)
         self.assertEqual(build.KEPT_LIST, make_game.KEPT_LIST)
         with tempfile.TemporaryDirectory() as d:
             gen = os.path.join(d, "gen")
             os.makedirs(gen)
+            with open(os.path.join(gen, ".lift_key"), "w") as f:   # (make_game.py write_lift_key: the lift's key first)
+                f.write("k1\nprint\n")
             src = os.path.join(gen, "code_000.c")
             with open(src, "w", newline="\n") as f:   # (17 bytes on Windows too)
                 f.write("void f(void) {\n}\n")
@@ -110,6 +141,13 @@ class KeptTranslationTests(unittest.TestCase):
                                    ("cc", os.path.join(gen, "a64_table.c"), os.path.join(d, "t.o"), fl, deps)])
             kept = build.read_kept(os.path.join(gen, build.KEPT_LIST))
             self.assertEqual(kept, {src: (key, 17, build.kept_part(fl, deps))})
+            self.assertTrue(make_game.kept_list_fits(gen, "k1"))   # (the header build.py writes is the one make_game reads)
+            self.assertFalse(make_game.kept_list_fits(gen, "k2"))
+            with open(os.path.join(gen, ".lift_key"), "w") as f:   # (another lift since: the list is not its)
+                f.write("k2\nprint\n")
+            self.assertEqual(build.read_kept(os.path.join(gen, build.KEPT_LIST)), {})
+            with open(os.path.join(gen, ".lift_key"), "w") as f:
+                f.write("k1\nprint\n")
             os.remove(src)
             build.KEPT.clear()
             build.KEPT.update(kept)

@@ -618,12 +618,15 @@ def object_key(src, fl, deps):
 
 # (a player's update: make_game.py deletes the lifted C (1.5 GB) once the game folder is ready, but keeps the compiled objects and
 # this list, gen/lifted_objects.txt: each lifted file's name, its object key, its size, and what of the key is not the source
-# (flags and headers, kept_part). The next build with the same lift key (make_game.py kept_before) skips the lift and sets
-# HOOKSHOT_KEPT_LIFT: the lifted files are then these names, linked from the object cache by these keys, the same objects as
+# (flags and headers, kept_part). The next build with the same lift key (make_game.py kept_before) skips the lift and passes
+# --kept-lift: the lifted files are then these names, linked from the object cache by these keys, the same objects as
 # before. When a key's object is gone or the flags or headers changed, the build stops with KEPT_STALE before compiling anything,
 # and make_game.py translates the game again)
+# The list's first line names the lift it was written for (the lift key in gen/.lift_key) and KEPT_SCHEME: a list another lift
+# left, or one of another format, is not used. KEPT_STALE is not 3, abort()'s exit status on Windows.
 KEPT_LIST = "lifted_objects.txt"
-KEPT_STALE = 3
+KEPT_SCHEME = 1
+KEPT_STALE = 75
 KEPT = {}   # (source path -> (object key, size, kept_part)) for the lifted files that are not on disk
 
 
@@ -638,10 +641,26 @@ def src_size(src):
     return os.path.getsize(src)
 
 
+def lift_key_of(gen):
+    """The key of the lift in gen (the first line of make_game.py's .lift_key), or "-" without one"""
+    try:
+        with open(os.path.join(gen, ".lift_key"), encoding="utf-8") as f:
+            return (f.read().split() or ["-"])[0]
+    except OSError:
+        return "-"
+
+
+def kept_header(key):
+    return "# lift %s %d\n" % (key, KEPT_SCHEME)
+
+
 def read_kept(path):
+    """The list's files, or {} when its first line is not the header of this lift (lift_key_of) and scheme"""
     kept = {}
     gen = os.path.dirname(path)
     with open(path, encoding="utf-8") as f:
+        if f.readline() != kept_header(lift_key_of(gen)):
+            return kept
         for line in f:
             parts = line.split()
             if len(parts) == 4 and parts[2].isdigit():
@@ -659,6 +678,7 @@ def write_kept(gen, jobs):
                                             kept_part(fl, deps)))
     tmp = os.path.join(gen, KEPT_LIST + ".new")
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write(kept_header(lift_key_of(gen)))
         f.writelines(sorted(lines))
     os.replace(tmp, os.path.join(gen, KEPT_LIST))
 
@@ -814,6 +834,8 @@ def main():
     # (CI: a player's build started from the tree the AppImage carries, with no game. Everything up to the compile, without the
     # lift's files; every other file the compile would read must be there, and nothing is compiled. scripts/linux/check_player_build.sh)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--kept-lift", metavar="LIST", help="(make_game.py) the lifted C was let go after the last build: its objects "
+                   "by this list (KEPT_LIST); exit status KEPT_STALE when it no longer fits")
     a = p.parse_args()
     sa = os.path.join(kit.WORK, "sa")
     gen = os.path.join(sa if a.standalone else kit.WORK, "gen")
@@ -840,15 +862,14 @@ def main():
                    (["-DA64_POLL_CTX"] if a.dll else []), deps)   # (as fl below: the flags its objects were built with)
     migrate_stamps(gen, obj_dir, fl, deps)
     chunks = sorted(f for f in os.listdir(gen) if f.startswith("code_") and f.endswith(".c"))
-    kept_list = os.environ.get("HOOKSHOT_KEPT_LIFT", "")
-    if kept_list and a.standalone and not chunks:   # (the lifted C of the last build, let go: KEPT_LIST)
+    if a.kept_lift and a.standalone and not chunks:   # (the lifted C of the last build, let go: KEPT_LIST)
         try:
-            KEPT.update(read_kept(kept_list))
+            KEPT.update(read_kept(a.kept_lift))
         except (OSError, UnicodeDecodeError) as e:
             print("the list of the kept translation could not be read (%s): translating the game again" % e, flush=True)
             return KEPT_STALE
         if not KEPT:
-            print("the list of the kept translation is empty: translating the game again", flush=True)
+            print("the list of the kept translation is empty or from another translation: translating the game again", flush=True)
             return KEPT_STALE
         chunks = sorted(os.path.basename(s) for s in KEPT)
     srcs = [os.path.join(gen, c) for c in chunks]
