@@ -593,6 +593,7 @@ class UpdateTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform.startswith("linux"), "the Linux folder layout")
     def test_a_packaged_build_puts_the_launcher_in_the_folder_and_the_game_in_bin(self):
         import ast
+        import types
         from unittest import mock
         import make_game
         main = next(n for n in ast.parse((ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")).body
@@ -615,7 +616,8 @@ class UpdateTests(unittest.TestCase):
             for name in make_game.BESIDE:   # (a folder from a builder before the launcher: the game and its libraries in it)
                 (out / name).write_bytes(b"old " + name.encode())
             with mock.patch.dict(os.environ, {"HOOKSHOT_TOOLS": str(ROOT)}):
-                exec(finish, make_game.__dict__, {"built": str(built), "out": str(out), "work": str(work)})
+                exec(finish, make_game.__dict__, {"built": str(built), "out": str(out), "work": str(work),
+                                                    "a": types.SimpleNamespace(update=False)})
             self.assertEqual((out / "hookshot").read_bytes(), (ROOT / "builder" / "linux" / "hookshot-folder").read_bytes())
             self.assertTrue((out / "hookshot").stat().st_mode & stat.S_IXUSR)
             self.assertEqual(sorted(p.name for p in out.iterdir()), ["bin", "hookshot", "image.bin"])

@@ -145,7 +145,7 @@ def main():
             command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/D_CRT_SECURE_NO_WARNINGS", str(src),
                        "/Fo" + str(Path(tmp) / "vsync.obj"), "/Fe" + str(exe)]
         else:
-            command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(src), "-o", str(exe)]
+            command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", str(src), "-o", str(exe)]
         subprocess.run(command, cwd=tmp, check=True)
         env = {k: v for k, v in os.environ.items() if k not in ("RX_VK_FIFO", "RX_VK_IMMEDIATE")}
         subprocess.run([str(exe)], check=True, env=env)
