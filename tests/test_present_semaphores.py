@@ -116,6 +116,7 @@ bool create_swapchain(unsigned width,unsigned height) {
 }
 bool reflex_swapchain_stale() {return stale;}
 int menu_vsync() {return 0;}   // (vk_menu.cpp: the V-Sync row, Auto)
+int swapchain_framegen() {return 0;}   // (vk_main.cpp: frame generation's multiplier as the swapchain was made, none)
 std::mutex present_image_mu;
 void present_begin() {
 ''' + begin + r'''

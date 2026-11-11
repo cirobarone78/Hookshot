@@ -3494,8 +3494,10 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     const bool hdr_changed = hdr_was >= 0 && hdr_was != opts.hdr;   // (turned on or off: the swapchain's format)
     if (hdr_was < 0) hdr_was = opts.hdr;
     static int vsync_was = -1;   // (the V-Sync row as the swapchain was made for it: its present mode)
-    const bool vsync_changed = vsync_was >= 0 && vsync_was != menu_vsync();
-    if (vsync_was < 0) vsync_was = menu_vsync();
+    // (and frame generation's multiplier, swapchain_framegen: FIFO under V-Sync Auto at 2x and up, a spare image a frame)
+    const int vsync_now = menu_vsync() * 8 + swapchain_framegen();
+    const bool vsync_changed = vsync_was >= 0 && vsync_was != vsync_now;
+    if (vsync_was < 0) vsync_was = vsync_now;
     const uint64_t want = dev.swap_resize.exchange(0, std::memory_order_acquire);
     if (want || !dev.swapchain || reflex_swapchain_stale() || hdr_changed || vsync_changed) {   // (resized, gone, Reflex, HDR or V-Sync changed)
         std::lock_guard qk(dev.present_mu);
@@ -3508,7 +3510,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
                                                    std::memory_order_release, std::memory_order_relaxed);
             return;   // (the old swapchain may already be retired; do not acquire or reset a frame fence)
         }
-        hdr_was = opts.hdr, vsync_was = menu_vsync();
+        hdr_was = opts.hdr, vsync_was = vsync_now;
     }
     if (src) {   // (the Window scaling filter's row: whether the window is the picture's size. Only the game's frames and the
                  // made ones: the start-up screen (no src) is drawn at the window's own size, which made the row read "Not
