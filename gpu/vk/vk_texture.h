@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "vk_internal.h"
+#include "shadow_res.h"
 
 namespace mkwvk {
 
@@ -92,8 +93,8 @@ struct Texture {
 };
 
 /// The size of a texture's image (the game's size times its Shadow resolution scale)
-inline uint32_t image_width(const Texture* t) { return t->rs == 1.0f ? t->width : (uint32_t)(t->width * t->rs + 0.5f); }
-inline uint32_t image_height(const Texture* t) { return t->rs == 1.0f ? t->height : (uint32_t)(t->height * t->rs + 0.5f); }
+inline uint32_t image_width(const Texture* t) { return shadow_res::image_size(t->width, t->rs); }
+inline uint32_t image_height(const Texture* t) { return shadow_res::image_size(t->height, t->rs); }
 /// A texture made larger found rendered with colour targets: not a shadow map, so its size and format are made at the
 /// game's size from now on
 void shadow_res_refuse(const Texture* t);

@@ -3789,7 +3789,10 @@ Targets targets(NvnState& s) {
                 at.height = at.height ? std::min(at.height, h) : h;
                 if (!at.n) at.samples = tex->samples;
                 // a shadow map made larger (Shadow resolution): a depth-only pass over it is the image's size,
-                // the game's rectangles scaled to it. With colour targets of the game's size it cannot be: logged
+                // the game's rectangles scaled to it. With colour targets of the game's size it cannot be: it is drawn at the
+                // game's size, into the image's top-left corner, so whatever samples this depth afterwards reads the wrong
+                // region. shadow_res_refuse only keeps the next texture made at this size and format at the game's size; this
+                // one keeps its larger image. A logged limitation: OoT's shadow passes are depth-only, and this has not been seen
                 if (tex->rs != 1.0f && !at.n) {
                     at.scale = tex->rs;
                 } else if (tex->rs != 1.0f) {
@@ -3815,8 +3818,8 @@ VkRect2D scissor_rect(const NvnState& s, uint32_t w, uint32_t h, float scale) {
     if (s.scissor[2] > 0 && s.scissor[3] > 0) {
         int64_t a0 = s.scissor[0], b0 = s.scissor[1], a1 = (int64_t)s.scissor[0] + s.scissor[2], b1 = (int64_t)s.scissor[1] + s.scissor[3];
         if (scale != 1.0f) {   // (to the nearest pixel: two rectangles that meet still meet)
-            const auto by = [scale](int64_t v) { return (int64_t)((double)v * scale + (v >= 0 ? 0.5 : -0.5)); };
-            a0 = by(a0), b0 = by(b0), a1 = by(a1), b1 = by(b1);
+            a0 = shadow_res::edge(a0, scale), b0 = shadow_res::edge(b0, scale);
+            a1 = shadow_res::edge(a1, scale), b1 = shadow_res::edge(b1, scale);
         }
         const int64_t x0 = std::clamp<int64_t>(a0, 0, w), y0 = std::clamp<int64_t>(b0, 0, h);
         const int64_t x1 = std::clamp<int64_t>(a1, 0, w), y1 = std::clamp<int64_t>(b1, 0, h);
@@ -4013,6 +4016,9 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     for (int f = 0; f < 2; f++)
         d.sref[f] = s.stencil_ref[f] & 0xFF, d.scmp[f] = s.stencil_value_mask[f] & 0xFF, d.swm[f] = s.stencil_mask[f] & 0xFF;
     d.bias[0] = s.poly_offset[1], d.bias[1] = s.poly_offset[2], d.bias[2] = s.poly_offset[0];
+    // (Shadow resolution: the slope-scaled term is per pixel of depth slope, and a map made k times larger has 1/k the
+    // slope a pixel, so k times the factor keeps the bias the game asked for. Only a depth-only pass over such a map has a scale)
+    if (at.scale != 1.0f) d.bias[2] *= at.scale;
     d.bias_en = s.poly.offset_en != 0;
     {   // (hookshot) The characters' own shadow maps (square, depth only, 768 and less; 1e26755d projects them on the screen): their
         // stored depth is moved away from the light, or they shadow themselves whole: Link and the ferns black in the shade, while
@@ -4167,7 +4173,6 @@ void make_dummies() {
 
 // ---- clears: between the draws of a pass, cut by scissor 0 (as deko3d programs every clear), a channel mask with
 // a full-screen triangle (vkCmdClearAttachments has no write mask; TOTK's maxwell.md 1.3) ----
-VkRect2D clear_rect(const NvnState& s, uint32_t w, uint32_t h, float scale) { return scissor_rect(s, w, h, scale); }
 
 /// The SPIR-V of a module with its Location 0 output moved to location (masked clears of target n)
 std::vector<uint32_t> spirv_location(const uint32_t* w, size_t n, uint32_t location) {
@@ -4370,7 +4375,7 @@ void clear_color_target(VkCommandBuffer cmd, NvnState& s, int index, const float
     clear_after_draws(cmd);
     begin_pass(cmd, at);
     const uint32_t lw = at.width, lh = at.height;
-    const VkRect2D rect = clear_rect(s, lw, lh, at.scale);
+    const VkRect2D rect = scissor_rect(s, lw, lh, at.scale);
     if (!rect.extent.width || !rect.extent.height) return;
     st_clears++, pass().clears++;
     if (mask == 0xF) {
@@ -4415,7 +4420,7 @@ void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool dep
     }
     clear_after_draws(cmd);
     begin_pass(cmd, at);
-    const VkRect2D rect = clear_rect(s, at.width, at.height, at.scale);
+    const VkRect2D rect = scissor_rect(s, at.width, at.height, at.scale);
     if (!rect.extent.width || !rect.extent.height) return;
     VkClearAttachment ca{};
     ca.aspectMask = aspect;

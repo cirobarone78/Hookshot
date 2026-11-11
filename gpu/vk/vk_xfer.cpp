@@ -257,9 +257,8 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
     // texels. Two such alike copy as they are; otherwise a blit scales, where the depth format can be blitted
     const auto upscaled = [](Sub& x) {
         if (x.tex->rs == 1.0f) return;
-        const auto by = [&](int64_t v) { return (int64_t)((double)v * x.tex->rs + 0.5); };
-        const int64_t x1 = by((int64_t)x.x + x.w), y1 = by((int64_t)x.y + x.h);
-        x.x = (int32_t)by(x.x), x.y = (int32_t)by(x.y);
+        const int64_t x1 = shadow_res::edge((int64_t)x.x + x.w, x.tex->rs), y1 = shadow_res::edge((int64_t)x.y + x.h, x.tex->rs);
+        x.x = (int32_t)shadow_res::edge(x.x, x.tex->rs), x.y = (int32_t)shadow_res::edge(x.y, x.tex->rs);
         x.w = (uint32_t)std::max<int64_t>(0, x1 - x.x), x.h = (uint32_t)std::max<int64_t>(0, y1 - x.y);
     };
     if (s.tex->rs != 1.0f || d.tex->rs != 1.0f) {
@@ -347,9 +346,8 @@ void clear_tex(VkCommandBuffer cmd, NvnState& st, const nvn_p_clear_tex& p) {
     uint32_t lw = std::max(1u, s.tex->width >> s.level), lh = std::max(1u, s.tex->height >> s.level);
     const bool whole = !s.x && !s.y && s.w == lw && s.h == lh;
     if (s.tex->rs != 1.0f && !whole) {   // (a shadow map made larger, Shadow resolution: the region in its image's texels)
-        const auto by = [&](int64_t v) { return (int64_t)((double)v * s.tex->rs + 0.5); };
-        const int64_t x1 = by((int64_t)s.x + s.w), y1 = by((int64_t)s.y + s.h);
-        s.x = (int32_t)by(s.x), s.y = (int32_t)by(s.y);
+        const int64_t x1 = shadow_res::edge((int64_t)s.x + s.w, s.tex->rs), y1 = shadow_res::edge((int64_t)s.y + s.h, s.tex->rs);
+        s.x = (int32_t)shadow_res::edge(s.x, s.tex->rs), s.y = (int32_t)shadow_res::edge(s.y, s.tex->rs);
         s.w = (uint32_t)std::max<int64_t>(0, x1 - s.x), s.h = (uint32_t)std::max<int64_t>(0, y1 - s.y);
         lw = image_width(s.tex), lh = image_height(s.tex);
     }

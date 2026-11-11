@@ -1941,15 +1941,15 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         // cascades (1600 x 1600 x 3 in D16 docked). The game samples them by normalized coordinates, so it reads the finer
         // map as it is. A size a multiple of 32 (not the scene's odd dynamic sizes); a size once seen rendered with colour
         // targets is not a shadow map and stays the game's from then on (shadow_res_refuse, vk_draw.cpp targets)
-        // Each side 8192 at most, and the image 1 GB at most
+        // Each side 8192 at most, and the image 1 GB at most (shadow_res.h)
         const float want = shadow_resolution_factor();
-        if (want > 1.0f && depth && (x.aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && x.type == VK_IMAGE_TYPE_2D &&
-            (d.target == NVN_TEXTURE_TARGET_2D || d.target == NVN_TEXTURE_TARGET_2D_ARRAY) && x.samples == VK_SAMPLE_COUNT_1_BIT &&
-            x.levels == 1 && !x.skip && !x.sparse && x.width == x.height && x.width >= 256 && x.width <= 4096 &&
-            x.width % 32 == 0 && !shadow_res_refused(x.width, x.height, d.format)) {
-            const uint64_t texel = std::max(2, bpb), layers = std::max(1u, x.layers);
-            uint32_t side = std::min<uint32_t>({8192u, dev.props.limits.maxImageDimension2D, (uint32_t)(x.width * want + 0.5f)});
-            while (side > x.width && (uint64_t)side * side * layers * texel > (1ull << 30)) side -= 256;
+        if (want > 1.0f && x.type == VK_IMAGE_TYPE_2D &&
+            shadow_res::qualifies(depth && (x.aspect & VK_IMAGE_ASPECT_DEPTH_BIT),
+                                  d.target == NVN_TEXTURE_TARGET_2D || d.target == NVN_TEXTURE_TARGET_2D_ARRAY,
+                                  (uint32_t)x.samples, x.levels, x.skip || x.sparse, x.width, x.height) &&
+            !shadow_res_refused(x.width, x.height, d.format)) {
+            const uint32_t side = shadow_res::side(x.width, std::max(1u, x.layers), (uint32_t)std::max(2, bpb), want,
+                                                   std::min<uint32_t>(8192u, dev.props.limits.maxImageDimension2D));
             if (side > x.width) {
                 x.rs = (float)side / (float)x.width;
                 static int told;
@@ -3597,7 +3597,7 @@ void compact_step(uint64_t completed) {
             ci.flags = t->create_flags;
             ci.imageType = t->type;
             ci.format = t->format;
-            ci.extent = {t->width, t->height, t->depth};
+            ci.extent = {image_width(t), image_height(t), t->depth};   // (a shadow map made larger keeps its size: Shadow resolution)
             ci.mipLevels = t->levels;
             ci.arrayLayers = t->layers;
             ci.samples = t->samples;
@@ -3636,7 +3636,7 @@ void compact_step(uint64_t completed) {
         for (uint32_t l = 0; l < t->levels; l++) {
             VkImageCopy r{};
             r.srcSubresource = r.dstSubresource = {t->aspect, l, 0, t->layers};
-            r.extent = {std::max(1u, t->width >> l), std::max(1u, t->height >> l), std::max(1u, t->depth >> l)};
+            r.extent = {std::max(1u, image_width(t) >> l), std::max(1u, image_height(t) >> l), std::max(1u, t->depth >> l)};
             regions.push_back(r);
         }
         vkCmdCopyImage(cmd, t->image, VK_IMAGE_LAYOUT_GENERAL, image, VK_IMAGE_LAYOUT_GENERAL, (uint32_t)regions.size(), regions.data());
