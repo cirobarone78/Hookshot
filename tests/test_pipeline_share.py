@@ -295,6 +295,11 @@ def check_sources():
     debug = debug[:debug.index("\n}\n")]
     assert debug.count("is_share_row(r)") >= 2, "the Debug tab's layout neither sizes nor draws the row (cheat_value(-1))"
     assert "is_share_row(const Row& r) { return !r.value && r.tab == TAB_DEBUG" in menu
+    # the compact tuning bar (row_value_cell, its prompts) shows it as an action too, not as a page to open
+    cell = body_of(menu, "void row_value_cell(")
+    assert 'is_share_row(r)) choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value' in cell, "the tuning bar shows the row as a page"
+    assert menu.count('is_share_row(r) ? "Save" : "Open"') + menu.count('is_share_row(selr) ? "Save" : "Open"') >= 2, \
+        "a prompt says Open for Save my pipeline list"
     tick = menu[menu.find("void menu_tick() {"):]
     save, catch_all = tick.find("is_share_row(r)) share_pipeline_list()"), tick.find("!r.value && can_bind()) page = 1")
     assert 0 < save < catch_all, "Enter on the row would open the Controls page"

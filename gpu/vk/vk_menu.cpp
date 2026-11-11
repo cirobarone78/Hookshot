@@ -2426,7 +2426,7 @@ void row_value_cell(ui::Ctx& c, const Row& r, ImVec2 va, ImVec2 vb, bool selecte
         choice_cell(c, va, vb, cheat_button_text(r.cheat), selected, false, false, r.cheat == 9);
     } else if (!r.value) {
         if (pending == &r) choice_cell(c, va, vb, "Press again to confirm", selected, false, false);
-        else if (is_share_row(r) && !share_value.empty()) choice_cell(c, va, vb, share_value, selected, false, false);
+        else if (is_share_row(r)) choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value, selected, false, false);   // (an action, not a page)
         else {
             choice_cell(c, va, vb, "", selected, false, false);
             ui::triangle(c, ImVec2(vb.x - 15 * s, mid), 10 * s, 1, selected ? ui::kGoldInk : ui::kInk);
@@ -2628,7 +2628,7 @@ void draw_tune_bar(ui::Ctx& c) {
     if (r.cheat >= 0 && cheat_confirm(r.cheat)) {
         tune_prompts[1] = {ui::kConfirm, cheat_confirm(r.cheat)};
     } else if (!r.value && r.cheat < 0) {
-        tune_prompts[1] = {ui::kConfirm, confirms ? (pending == &r ? "Confirm" : r.name) : "Open"};
+        tune_prompts[1] = {ui::kConfirm, confirms ? (pending == &r ? "Confirm" : r.name) : is_share_row(r) ? "Save" : "Open"};
     }
     const float pw = ui::prompts(c, ImVec2(0, 0), tune_prompts, 4, false);
     const float px0 = bx0 + (bw - pw) * 0.5f;
