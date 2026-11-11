@@ -19,6 +19,12 @@
 // Without Reflex under frame generation its held-back frame added its whole delay (an RTX 5080 at 4x: +12 to +18 ms from
 // input to the screen against frame generation off with Reflex on, PR 2118's review).
 //
+// Each queue submit carries the game frame its GPU work belongs to (VkLatencySubmissionPresentIdNV, reflex_submit_id): the
+// game's rendering the frame being made, a batch the frame of its first command buffer, a present's copy the frame it shows,
+// frame generation's made frames none. Without it the driver guessed the frame of each submit; with frame generation the
+// display thread's copies and DLSS-G's work sit between the game's frames, and its "GPU end" of a frame read 243 to 442 ms
+// against ~21 ms from simulation start to present end (an RTX 5080 at 4x, PR 2118's review).
+//
 // RX_VK_REFLEX_LOG=1: every 300 frames with Reflex on, the driver's own timings (vkGetLatencyTimingsNV) averaged in the log:
 // simulation start to present end, and to the GPU's end of rendering.
 #include "vk_reflex.h"
@@ -233,6 +239,23 @@ void reflex_game_submitted() {
     std::lock_guard lk(r.mu);
     if (!on()) return;
     if (r.frame_marked) mark(VK_LATENCY_MARKER_RENDERSUBMIT_END_NV);
+}
+
+const void* reflex_submit_id(const void* next, uint64_t frame) {
+    static const bool off = getenv("RX_VK_REFLEX_SUBMIT_IDS") && atoi(getenv("RX_VK_REFLEX_SUBMIT_IDS")) == 0;
+    if (off) return next;
+    Reflex& r = rx();
+    std::lock_guard lk(r.mu);
+    if (!on()) return next;
+    uint64_t id = frame;
+    if (id == kReflexThisFrame) {   // (the frame being made: its sleep returned and its markers were given)
+        if (!r.frame_marked) return next;
+        id = r.id;
+    }
+    if (!id || id <= r.last_present_id) return next;   // (none, or a frame shown already: the driver is told of no new work for it)
+    thread_local VkLatencySubmissionPresentIdNV s{VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV};
+    s.pNext = next, s.presentID = id;
+    return &s;
 }
 
 const void* reflex_present_id(const void* next) {

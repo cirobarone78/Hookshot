@@ -26,11 +26,12 @@ functions = '\n'.join(function(marker) for marker in [
     'void reflex_swapchain_created(', 'void reflex_swapchain_destroyed()',
     'void reflex_present_begins()', 'void reflex_submit_ends()',
     'const void* reflex_present_id(', 'void reflex_presented()', 'void reflex_sleep()',
-    'uint64_t reflex_frame()', 'void reflex_game_submitted()',
+    'uint64_t reflex_frame()', 'void reflex_game_submitted()', 'const void* reflex_submit_id(',
 ])
 fixture = r'''
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <initializer_list>
 #include <mutex>
 using VkSwapchainKHR=uint64_t;using VkLatencyMarkerNV=int;
@@ -39,7 +40,9 @@ constexpr int VK_SUCCESS=0,VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV=1,
     VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO=2,VK_STRUCTURE_TYPE_SET_LATENCY_MARKER_INFO_NV=3,
     VK_LATENCY_MARKER_SIMULATION_START_NV=4,VK_LATENCY_MARKER_INPUT_SAMPLE_NV=5,
     VK_LATENCY_MARKER_SIMULATION_END_NV=6,VK_LATENCY_MARKER_RENDERSUBMIT_START_NV=7,
-    VK_LATENCY_MARKER_RENDERSUBMIT_END_NV=8,VK_LATENCY_MARKER_PRESENT_START_NV=9,VK_LATENCY_MARKER_PRESENT_END_NV=10;
+    VK_LATENCY_MARKER_RENDERSUBMIT_END_NV=8,VK_LATENCY_MARKER_PRESENT_START_NV=9,VK_LATENCY_MARKER_PRESENT_END_NV=10,
+    VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV=11;
+struct VkLatencySubmissionPresentIdNV {int sType;const void* pNext=nullptr;uint64_t presentID=0;};
 struct VkLatencySleepInfoNV {int type;uint64_t signalSemaphore=0,value=0;};
 struct VkSemaphoreWaitInfo {int type;unsigned semaphoreCount=0;const uint64_t* pSemaphores=nullptr;const uint64_t* pValues=nullptr;};
 struct VkSetLatencyMarkerInfoNV {int type;uint64_t presentID=0;int marker=0;};
@@ -69,6 +72,7 @@ void log_timings(){}
 template<class... T> void logf(const char*,T...){}
 int vkWaitSemaphores(int,const VkSemaphoreWaitInfo*,uint64_t);
 constexpr uint64_t kReflexThisFrame=~0ull;thread_local uint64_t reflex_present_frame=kReflexThisFrame;
+const void* reflex_submit_id(const void* next,uint64_t frame=kReflexThisFrame);   // (vk_reflex.h's default)
 ''' + functions + r'''
 enum Action {Keep,Retire,Replace,ReuseHandle,LaterSleep,Disable,EnableFG};
 Action action=Keep;
@@ -122,8 +126,23 @@ int main(){
     if(reflex_present_id(&next)!=&next||markers!=2)return 19;   // (5 again: not going up)
     reflex_present_frame=kReflexThisFrame;   // (then frame generation off: the frame being made, 7, goes up from 5)
     if(reflex_present_id(&next)!=&state.pid||*state.pid.pPresentIds!=7||marked_id!=7)return 20;
+    // a queue submit's tag (reflex_submit_id): the frame its GPU work belongs to; none where there is no such frame
+    using Tag=VkLatencySubmissionPresentIdNV;
+    reset();state.id=3;
+    const auto* t=static_cast<const Tag*>(reflex_submit_id(&next));   // (the frame being made)
+    if(t==(const void*)&next||t->sType!=VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV||t->pNext!=&next||t->presentID!=3)return 21;
+    t=static_cast<const Tag*>(reflex_submit_id(nullptr,2));   // (a frame kept since: a batch's first, a set's game frame)
+    if(!t||t->pNext||t->presentID!=2)return 22;
+    if(reflex_submit_id(&next,0)!=&next)return 23;   // (a made frame's copy: none)
+    state.frame_marked=false;if(reflex_submit_id(&next)!=&next)return 24;   // (no frame marked yet)
+    reset();state.id=3;state.last_present_id=3;
+    if(reflex_submit_id(&next)!=&next)return 25;   // (frame 3 shown already: no new work for it)
+    t=static_cast<const Tag*>(reflex_submit_id(&next,4));if(t==(const void*)&next||t->presentID!=4)return 26;
+    reset();wanted=0;if(reflex_submit_id(&next)!=&next)return 27;   // (Reflex off)
+    reset();before_lock=retire_before_lock;if(reflex_submit_id(&next)!=&next||invalid||markers)return 28;   // (retired before its lock)
     std::puts("PASS: Reflex retirement before locks and across waits, reused handles, stable wait targets and recovery; "
-              "with frame generation the game's frames paced, made frames without present ids, the game frame's own id");
+              "with frame generation the game's frames paced, made frames without present ids, the game frame's own id; "
+              "queue submits tagged with their game frame, none for made frames, unmarked or shown frames, or Reflex off");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='reflex-swapchain-') as tmp:

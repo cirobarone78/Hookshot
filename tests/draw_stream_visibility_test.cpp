@@ -82,7 +82,9 @@ uint64_t rec_seq=0;
 std::mutex rec_map_mu;
 std::multimap<uint64_t,uint64_t> value_rec;
 std::set<uint64_t> rec_open_values;
-struct { std::vector<VkCommandBufferSubmitInfo> cbs;uint64_t signal=0,rec=0;bool any_signal=false; } pend;
+struct { std::vector<VkCommandBufferSubmitInfo> cbs;uint64_t signal=0,rec=0;bool any_signal=false;uint64_t reflex=0; } pend;
+uint64_t reflex_frame() { return 0; }   // (vk_reflex.cpp: no Reflex here)
+const void* reflex_submit_id(const void* next, uint64_t = ~0ull) { return next; }   // (vk_reflex.cpp: no tag without Reflex)
 uint64_t batch_next=0;std::chrono::steady_clock::time_point pend_since;
 bool batch=false;bool batch_on() { return batch; }
 int flush_reason=0;constexpr int FR_CAP=1,FR_OTHER=0;bool batch_gpu_idle() { return false; }

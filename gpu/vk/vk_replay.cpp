@@ -105,7 +105,7 @@ const bool rec_thread_hook = (::mkwvk::rec::g_thread_start_hook = [] {
 // (RX_VK_BATCH: see queue_flush_locked)
 VkSemaphore batch_tl = VK_NULL_HANDLE;
 uint64_t batch_next = 0, batch_flushed = 0;
-struct { std::vector<VkCommandBufferSubmitInfo> cbs; uint64_t signal = 0; bool any_signal = false; uint64_t rec = 0; } pend;   // (rec: the recordings' timeline value the held ones reach)
+struct { std::vector<VkCommandBufferSubmitInfo> cbs; uint64_t signal = 0; bool any_signal = false; uint64_t rec = 0; uint64_t reflex = 0; } pend;   // (rec: the recordings' timeline value the held ones reach; reflex: the game frame of the first, vk_reflex.h)
 int64_t st_flushes, st_batched_cbs;
 enum { FR_OTHER, FR_POLL, FR_WAIT, FR_SLOT, FR_PRESENT, FR_CAP, FR_VALUE, FR_COUNT };
 int64_t st_reason[FR_COUNT];
@@ -214,6 +214,7 @@ void queue_flush_locked() {   // (dev.present_mu held)
     si.signalSemaphoreInfoCount = n;
     si.pSignalSemaphoreInfos = sig;
     PROF(PROF_QSUBMIT);
+    si.pNext = reflex_submit_id(nullptr, pend.reflex);   // (NVIDIA Reflex: the game frame of the batch's first command buffer)
     const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, VK_NULL_HANDLE);
     static int failures;
     if (res != VK_SUCCESS && failures++ < 8) logf("vk: batched submit %llu failed (%d)", (unsigned long long)batch_next, (int)res);
@@ -222,7 +223,7 @@ void queue_flush_locked() {   // (dev.present_mu held)
     st_flushes++, st_batched_cbs += (int64_t)pend.cbs.size();
     st_reason[flush_reason]++;
     flush_reason = FR_OTHER;
-    pend.cbs.clear(), pend.any_signal = false, pend.signal = 0, pend.rec = 0;
+    pend.cbs.clear(), pend.any_signal = false, pend.signal = 0, pend.rec = 0, pend.reflex = 0;
 }
 void queue_flush() {
     std::lock_guard lk(dev.present_mu);
@@ -393,7 +394,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
     si.pSignalSemaphoreInfos = nsig ? signals : nullptr;
     std::lock_guard lk(dev.present_mu);   // (one queue: submits and presents take turns)
     if (batch_on()) {
-        if (pend.cbs.empty()) batch_next++, pend_since = std::chrono::steady_clock::now();
+        if (pend.cbs.empty()) batch_next++, pend_since = std::chrono::steady_clock::now(), pend.reflex = reflex_frame();
         for (uint32_t i = 0; i < n; i++) pend.cbs.push_back(cb[i]);
         if (signal_value) pend.signal = std::max(pend.signal, signal.value), pend.any_signal = true;
         if (seq) pend.rec = std::max(pend.rec, seq);
@@ -406,6 +407,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         return;
     }
     PROF(PROF_QSUBMIT);
+    si.pNext = reflex_submit_id(nullptr);   // (NVIDIA Reflex: the frame being made)
     const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, r.fence);
     r.submitted = res == VK_SUCCESS;
     static int failures;
@@ -1585,6 +1587,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         si.pCommandBufferInfos = cb;
         std::lock_guard lk(dev.present_mu);
         queue_flush_locked();
+        si.pNext = reflex_submit_id(nullptr);   // (NVIDIA Reflex: the frame being made; after the flush, which tags its own)
         const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, j->r->fence);
         j->r->submitted = res == VK_SUCCESS;
         if (res != VK_SUCCESS) logf("vk: segment submit %llu failed (%d)", (unsigned long long)j->r->value, (int)res);
@@ -3878,6 +3881,8 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         std::memcpy(r0, st_reason, sizeof r0);
     }
     reflex_submit_ends();
+    // (NVIDIA Reflex: the frame this present shows; with frame generation the set's game frame, none for a made frame)
+    si.pNext = reflex_submit_id(nullptr, reflex_present_frame);
     res = vkQueueSubmit2(dev.queue, 1, &si, f.done);
     if (res == VK_ERROR_DEVICE_LOST) device_lost();
     if (present_defer_into) {   // (present ahead: the copy is queued; present_commit shows it at its time)
