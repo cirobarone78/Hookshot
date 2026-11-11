@@ -501,6 +501,13 @@ bool supported() {
     return answer;
 }
 
+uint64_t memory() {
+    uint64_t sum = 0;
+    for (const Image* t : all_images())
+        if (t->image) sum += allocation_size(t->memory);
+    return sum;
+}
+
 void release() {
     for (Image* t : all_images()) drop_image(*t);   // (retired: freed once the GPU's uses of them are done)
     g.render_width = g.render_height = g.upscale_width = g.upscale_height = 0;
@@ -845,7 +852,7 @@ bool chain_evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
     return true;
 }
 void chain_release() { fsr3::release(); }   // (the passes stay; their images are made again when FSR 3.1 draws next)
-uint64_t chain_memory() { return 0; }
+uint64_t chain_memory() { return fsr3::memory(); }   // (its internal images, for the chain's status line)
 // (fsr_depth: its passes are built with FFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH, scripts/fsr3_shaders.py; retry: an
 // evaluation that fails (no room for its constants in the frame's stream) leaves that frame to the network, and the next one
 // tries again. Named, so a field added to TemporalEngine cannot shift these into another)
