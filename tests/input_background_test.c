@@ -31,6 +31,8 @@ static int64_t now_ns = 10000000000LL, sampling;
 static int key_bind[HOS_KEY_N][2], pad_raw_now;   /* (the keys-only controls after the Switch's buttons) */
 static unsigned char *memory;
 static char last_log[256];
+static int origin_logs;
+static long long logged_origin;
 volatile int64_t hos_hid_last_read;
 volatile int hos_nvn_sync_log_on;
 static void *at(uint64_t address) { CHECK(address <= 512 - 8); return memory + address; }
@@ -44,6 +46,12 @@ int rx_option(int id, int otherwise) { return id == 4 ? menu_background : id == 
 int64_t hos_now_ns(void) { return now_ns; }
 void hos_log(const char *format, ...) {
     va_list args; va_start(args, format); vsnprintf(last_log, sizeof last_log, format, args); va_end(args);
+    if (!strncmp(last_log, "hid: input frame clock origin=", 29)) {
+        origin_logs++;
+        CHECK(sscanf(last_log, "hid: input frame clock origin=%lld native presents; rate=60", &logged_origin) == 1);
+        CHECK(logged_origin == 1000);
+        CHECK(!strcmp(last_log, "hid: input frame clock origin=1000 native presents; rate=60"));
+    }
 }
 HWND GetForegroundWindow(void) { focus_queries++; return (HWND)(uintptr_t)(front ? 1 : 2); }
 DWORD GetWindowThreadProcessId(HWND window, DWORD *pid) { *pid = window == (HWND)(uintptr_t)1 ? 10 : 20; return 1; }
@@ -159,6 +167,7 @@ static void frame_clock_case(const char *name) {
         CHECK(npresses == MAX_PRESSES);
     }
     CHECK(bootstrap_polls == 1);
+    CHECK(origin_logs == (wall ? 0 : 1));
 }
 
 int main(int argc, char **argv) {
