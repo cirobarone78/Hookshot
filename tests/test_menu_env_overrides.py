@@ -43,6 +43,7 @@ FIXTURE = r"""
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <mutex>   // (save() locks since the control bridge, #926)
 #include <string>
 #include "hookshot_env.h"   // (gpu/vk/compat: env_value_off, the switches' rule)
 #include "hos_wide_size.h"   // (host/: the output sizes the menu accepts, hos_output_size_valid)
