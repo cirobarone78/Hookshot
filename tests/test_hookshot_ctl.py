@@ -98,7 +98,7 @@ def serve(f):
                 r.update(teleport=1, child=None, adult="GerudoFortress_Adult")
                 r.update(sent=None if req.get("wait") is False else True)
                 if r["sent"]:
-                    r.update(map="GerudoFortress_Adult")
+                    r.update(map="GerudoFortress_Adult", accepted=req.get("to") != "gerudofortress_adult")
         elif cmd in ("press", "stick", "sequence"):
             r.update(start=frame[0], end=frame[0] + req.get("frames", 8))
         elif cmd == "shot":
@@ -300,8 +300,9 @@ class HookshotCtl(unittest.TestCase):
         self.assertEqual(r.stdout.strip(), "teleport 1 sent: to GerudoFortress_Adult")
         self.assertEqual((self.last("teleport")["to"], self.last("teleport")["timeout"]), (1, 10))
         self.assertNotIn("wait", self.last("teleport"))
-        ctl("teleport", "gerudofortress_adult", env=self.env, check=0)
+        r = ctl("teleport", "gerudofortress_adult", env=self.env, check=0)
         self.assertEqual(self.last("teleport")["to"], "gerudofortress_adult")
+        self.assertIn("did not take it", r.stdout)   # (accepted false: said)
         r = ctl("teleport", "1", "--no-wait", env=self.env, check=0)
         self.assertIn("teleport 1 asked for", r.stdout)
         self.assertIs(self.last("teleport")["wait"], False)

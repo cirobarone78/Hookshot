@@ -166,7 +166,7 @@ static const char *const dest_child[3] = {"KokiriForest_Child", "HyruleField_Chi
 static const char *const dest_adult[3] = {"KokiriForest_Adult", "HyruleField_Adult", "GerudoFortress_Adult"};
 static char fake_map_now[80];
 static volatile int teleport_asked = -1, teleport_held;
-static int tp_ticket, tp_done_ticket, tp_result;   /* (log_lock) */
+static int tp_ticket, tp_done_ticket, tp_result, tp_taking;   /* (log_lock) */
 static int fake_map(char *out, size_t cap) {
     log_lock();
     const int have = fake_map_now[0] != 0;
@@ -192,14 +192,14 @@ static int fake_teleport(int i) {
     log_unlock();
     return ticket;
 }
-static int fake_teleport_result(int ticket, char *why, size_t why_cap, char *map, size_t map_cap) {
+static int fake_teleport_result(int ticket, char *why, size_t why_cap, char *map, size_t map_cap, int *accepted) {
     log_lock();
     int r = -2;
     if (tp_done_ticket == ticket) {
-        r = tp_result;
+        r = tp_result, *accepted = r > 0;
         snprintf(why, why_cap, "%s", r < 0 ? "this destination has no map for the child" : "");
         snprintf(map, map_cap, "%s", r > 0 ? fake_map_now : "");
-    } else if (tp_ticket == ticket && __atomic_load_n(&teleport_asked, __ATOMIC_RELAXED) >= 0) r = 0;
+    } else if (tp_taking == ticket || (tp_ticket == ticket && __atomic_load_n(&teleport_asked, __ATOMIC_RELAXED) >= 0)) r = 0;
     log_unlock();
     return r;
 }
@@ -224,14 +224,19 @@ static void *game_thread(void *unused) {
         uint64_t b = 0;
         int32_t st[4] = {0, 0, 0, 0};
         const int ex = hos_control_input(&b, st);
-        if (!teleport_held) {
+        if (!teleport_held) {   /* (taken, then done a while later, as the game's update takes it and then asks for it) */
             log_lock();
             const int t = __atomic_exchange_n(&teleport_asked, -1, __ATOMIC_RELAXED);
-            if (t >= 0) {
-                tp_done_ticket = tp_ticket, tp_result = dest_child[t] ? 1 : -1;
-                if (dest_child[t]) snprintf(fake_map_now, sizeof fake_map_now, "%s", dest_child[t]);
-            }
+            const int ticket = tp_ticket;
+            if (t >= 0) tp_taking = ticket;
             log_unlock();
+            if (t >= 0) {
+                sleep_ms(20);
+                log_lock();
+                tp_done_ticket = ticket, tp_result = dest_child[t] ? 1 : -1, tp_taking = 0;
+                if (dest_child[t]) snprintf(fake_map_now, sizeof fake_map_now, "%s", dest_child[t]);
+                log_unlock();
+            }
         }
         const int64_t f = fake_frame();
         if (f < FRAMES) seen_buttons[f] = b, memcpy(seen_stick[f], st, sizeof st), seen_exclusive[f] = ex;
@@ -922,7 +927,7 @@ int main(int argc, char **argv) {
         static char r74[8192], r75[8192];
         hear_two(c, "74", r74, "75", r75, sizeof r74, 5000);
         CHECK(strstr(r75, "\"ok\":true") && strstr(r75, "\"teleport\":1") && strstr(r75, "\"child\":\"HyruleField_Child\"") &&
-              strstr(r75, "\"sent\":true,\"map\":\"HyruleField_Child\""));
+              strstr(r75, "\"sent\":true,\"map\":\"HyruleField_Child\",\"accepted\":true"));
         CHECK(strstr(r74, "\"ok\":true") && strstr(r74, "\"map\":\"HyruleField_Child\""));
         CHECK(hear(sub, line, sizeof line, 2000) && strstr(line, "\"event\":\"map\"") &&
               strstr(line, "\"map\":\"HyruleField_Child\",\"from\":null"));

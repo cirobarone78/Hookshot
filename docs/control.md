@@ -263,7 +263,9 @@ Teleport list asks for: the game takes it at the player's next update, in play, 
 
 The reply comes once the game took it (within `timeout`, default 10 s):
 
-- `"sent": true` and `map`, the map it goes to. `wait map` then tells when it arrived.
+- `"sent": true` and `map`, the map it goes to. `wait map` then tells when it arrived. `accepted` is the game's
+  event manager's own answer to the request: `false` was seen when the map then did not change (an arrival event of
+  the previous teleport still playing).
 - `refused`, with the game's reason: an event playing (a cutscene, a map change's), a map loading, another teleport
   in the last 8 s, or no map for Link's age there.
 - `timeout` when the game did not take it: Link is not being updated (the title, the file select, a pause, a load).
@@ -411,7 +413,7 @@ sets `XDG_DATA_HOME` for the run, so it plays from saves of its own. `--env NAME
   are not tested.
 - **The state is a guess** from the draws a frame (above). A scene with unusual counts can be misread; for OoT, `game`'s
   `event` and `loading` and `map` are the game's own.
-- **A teleport the game sent but that did not move Link** (its event failed later) shows only as `wait map` timing out.
+- **A teleport the game sent but that did not move Link**: `accepted` (the event manager's answer) is reported, not turned into an error: `false` was seen once, when the map did not change, but that it always means no move is not established. Otherwise `wait map` times out.
 - **The first `option_get` or `option_set`** after start can wait, on the bridge's thread, for the start-up check of
   the upscalers (NVIDIA's NGX start: about 3 s). The game does not wait for it; other replies to every client wait
   that long.

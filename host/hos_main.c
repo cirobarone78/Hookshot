@@ -799,6 +799,7 @@ static struct {
     int64_t requested_at, check_at;
     unsigned destination;
     const char *why, *banc;   /* (the last call's: why it was not sent, the map it was sent to; the control bridge's reply) */
+    uint64_t result;          /* (and the event manager's answer to the request: 0 seen when the map did not change) */
 } teleport;
 
 static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
@@ -897,6 +898,7 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
     hos_log("cheats: teleport %s to %s at %s (boot %s, event %s, starter %d): request %s, result %#llx",
             child ? "child" : "adult", banc, start, boot, event, with_starter, ok ? "sent" : "not built",
             (unsigned long long)result);
+    teleport.result = result;
     if (ok) teleport.banc = banc;
     else teleport.why = "the game's event request could not be built";
     return ok;   /* (sent; the request's own result is only logged) */
@@ -1013,7 +1015,8 @@ int hos_oot_destination(int index, const char **child, const char **adult) {
 static struct {
     int asked;    /* the destination + 1 waiting to be taken; 0 none */
     int ticket;   /* the last ask's */
-    int done_ticket, result;   /* the last one taken: 1 sent, -1 refused */
+    int taking;   /* the ticket taken by the player's update and not done yet (it is not replaced meanwhile) */
+    int done_ticket, result, accepted;   /* the last one taken: 1 sent, -1 refused; accepted: the event manager's answer */
     char why[96], map[80];
 } oot_bridge_tp;
 int hos_oot_teleport_ask(int index) {
@@ -1024,15 +1027,16 @@ int hos_oot_teleport_ask(int index) {
     ReleaseSRWLockExclusive(&oot_map_lock);
     return ticket;
 }
-/* 1 sent (map: the map it goes to), -1 refused (why: the reason), 0 not taken yet, -2 replaced by a later ask or cancelled */
-int hos_oot_teleport_result(int ticket, char *why, size_t why_cap, char *map, size_t map_cap) {
+/* 1 sent (map: the map it goes to; accepted: whether the game's event manager took the request), -1 refused (why: the
+   reason), 0 not taken yet (or being taken), -2 replaced by a later ask or cancelled */
+int hos_oot_teleport_result(int ticket, char *why, size_t why_cap, char *map, size_t map_cap, int *accepted) {
     AcquireSRWLockShared(&oot_map_lock);
     int r = -2;
     if (oot_bridge_tp.done_ticket == ticket) {
-        r = oot_bridge_tp.result;
+        r = oot_bridge_tp.result, *accepted = oot_bridge_tp.accepted;
         snprintf(why, why_cap, "%s", oot_bridge_tp.why);
         snprintf(map, map_cap, "%s", oot_bridge_tp.map);
-    } else if (oot_bridge_tp.ticket == ticket && oot_bridge_tp.asked) r = 0;
+    } else if (oot_bridge_tp.taking == ticket || (oot_bridge_tp.ticket == ticket && oot_bridge_tp.asked)) r = 0;
     ReleaseSRWLockShared(&oot_map_lock);
     return r;
 }
@@ -1046,13 +1050,15 @@ static int oot_bridge_teleport_take(int *ticket) {   /* (the player's update) th
     AcquireSRWLockExclusive(&oot_map_lock);
     const int asked = oot_bridge_tp.asked;
     *ticket = oot_bridge_tp.ticket;
+    if (asked) oot_bridge_tp.taking = *ticket;   /* (still "not taken yet" to the bridge until done) */
     __atomic_store_n(&oot_bridge_tp.asked, 0, __ATOMIC_RELAXED);
     ReleaseSRWLockExclusive(&oot_map_lock);
     return asked;
 }
 static void oot_bridge_teleport_done(int ticket, int sent) {
     AcquireSRWLockExclusive(&oot_map_lock);
-    oot_bridge_tp.done_ticket = ticket, oot_bridge_tp.result = sent ? 1 : -1;
+    oot_bridge_tp.done_ticket = ticket, oot_bridge_tp.result = sent ? 1 : -1, oot_bridge_tp.taking = 0;
+    oot_bridge_tp.accepted = sent && teleport.result != 0;
     snprintf(oot_bridge_tp.why, sizeof oot_bridge_tp.why, "%s", sent || !teleport.why ? "" : teleport.why);
     snprintf(oot_bridge_tp.map, sizeof oot_bridge_tp.map, "%s", sent && teleport.banc ? teleport.banc : "");
     ReleaseSRWLockExclusive(&oot_map_lock);

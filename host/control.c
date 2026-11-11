@@ -1309,7 +1309,8 @@ static void cmd_teleport(int ci, const JDoc *d, int req, const char *id) {
 /* (pending_tick) what came of a teleport: sent, refused, replaced, or not taken in time (then cancelled) */
 static int teleport_done(Pending *p, Conn *c, int64_t now) {
     char why[128] = "", map[80] = "";
-    const int r = G.game->teleport_result(p->token, why, sizeof why, map, sizeof map);
+    int accepted = 0;
+    const int r = G.game->teleport_result(p->token, why, sizeof why, map, sizeof map, &accepted);
     if (r == 0 && now < p->deadline) return 0;
     if (r == 0) {
         if (G.game->teleport_cancel) G.game->teleport_cancel(p->token);
@@ -1326,6 +1327,7 @@ static int teleport_done(Pending *p, Conn *c, int64_t now) {
         buf_puts(&b, ",\"sent\":true,\"map\":");
         if (map[0]) buf_str(&b, map);
         else buf_puts(&b, "null");
+        buf_printf(&b, ",\"accepted\":%s", accepted ? "true" : "false");
         reply_end(c, &b);
     }
     return 1;
@@ -2256,7 +2258,7 @@ static const char *game_renderer(void) { return rx_describe(); }
 int hos_oot_current_map(char *out, size_t cap);                              /* (hos_main.c) */
 int hos_oot_destination(int index, const char **child, const char **adult);
 int hos_oot_teleport_ask(int index);
-int hos_oot_teleport_result(int ticket, char *why, size_t why_cap, char *map, size_t map_cap);
+int hos_oot_teleport_result(int ticket, char *why, size_t why_cap, char *map, size_t map_cap, int *accepted);
 void hos_oot_teleport_cancel(int ticket);
 int hos_oot_state(int *event, int *loading, int *child);
 static HosControlGame game = {

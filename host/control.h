@@ -55,10 +55,11 @@ typedef struct HosControlGame {
        none), 0 past the last */
     int (*destination)(int index, const char **child, const char **adult);
     /* (OoT) a teleport there asked for, taken at the player's next update (in play): a ticket (> 0), 0 no such
-       destination. A later ask replaces one not taken yet. teleport_result: 1 sent (map: the map it goes to), -1 refused
-       (why: the game's reason), 0 not taken yet, -2 replaced or cancelled. teleport_cancel: not to be taken any more */
+       destination. A later ask replaces one not taken yet. teleport_result: 1 sent (map: the map it goes to; accepted: the
+       game's event manager took the request), -1 refused (why: the game's reason), 0 not taken yet, -2 replaced or
+       cancelled. teleport_cancel: not to be taken any more */
     int (*teleport)(int index);
-    int (*teleport_result)(int ticket, char *why, size_t why_cap, char *map, size_t map_cap);
+    int (*teleport_result)(int ticket, char *why, size_t why_cap, char *map, size_t map_cap, int *accepted);
     void (*teleport_cancel)(int ticket);
     /* (OoT) with the map: an event playing (a cutscene, a map change's), a map loading, Link the child. 0 before any */
     int (*oot_state)(int *event, int *loading, int *child);

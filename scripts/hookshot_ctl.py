@@ -301,7 +301,9 @@ def run(a):
                 show(a, r, lambda r: "teleport %d asked for (child %s, adult %s): wait map to see it arrive" % (
                     r["teleport"], plain_text(r["child"] or "-"), plain_text(r["adult"] or "-")))
             elif not a.arrive:
-                show(a, r, lambda r: "teleport %d sent: to %s" % (r["teleport"], plain_text(r.get("map") or "-")))
+                show(a, r, lambda r: "teleport %d sent: to %s%s" % (
+                    r["teleport"], plain_text(r.get("map") or "-"),
+                    "" if r.get("accepted", True) else " (but the game's event manager did not take it)"))
             else:   # (and until the game is in that map: the arrival)
                 w = check(b.request("wait", timeout=a.arrive, event="map", map=r.get("map")))
                 show(a, dict(r, arrived=w), lambda r: "teleport %d: in %s after %d frames (frame %d)" % (
