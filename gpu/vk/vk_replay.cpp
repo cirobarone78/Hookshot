@@ -1692,8 +1692,13 @@ void bench_frame(int64_t presents) {
 struct SlowWatch {
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
     int64_t prof0[PROF_COUNT];
+    int64_t ms0[4];   // (hookshot: memory sync's parts and the lock wait, at the start)
     const char* what;
-    explicit SlowWatch(const char* w) : what(w) { std::memcpy(prof0, prof_ns, sizeof prof0); }
+    explicit SlowWatch(const char* w) : what(w) {
+        std::memcpy(prof0, prof_ns, sizeof prof0);
+        for (int i = 0; i < 3; i++) ms0[i] = memsync_part_ns[i].load(std::memory_order_relaxed);
+        ms0[3] = memsync_lock_wait_ns.load(std::memory_order_relaxed);
+    }
     ~SlowWatch() {
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         static int logged;
@@ -1708,6 +1713,15 @@ struct SlowWatch {
             const double d = (prof_ns[i] - prof0[i]) / 1e6;
             if (d >= 1.0) k += snprintf(line + k, sizeof line - k, " %s %.1f", names[i], d);
         }
+        {   // (hookshot: which part of "memory sync" it was: the pools' refresh [and its lock waits], the capture, the written pages collected.
+            // Counted across threads, so a part another thread spent meanwhile shows too)
+            const double a = (memsync_part_ns[0].load(std::memory_order_relaxed) - ms0[0]) / 1e6,
+                         b = (memsync_part_ns[1].load(std::memory_order_relaxed) - ms0[1]) / 1e6,
+                         c = (memsync_part_ns[2].load(std::memory_order_relaxed) - ms0[2]) / 1e6,
+                         w = (memsync_lock_wait_ns.load(std::memory_order_relaxed) - ms0[3]) / 1e6;
+            if (a + b + c >= 1.0 || w >= 1.0)
+                k += snprintf(line + k, sizeof line - k, " [memory sync: maps %.1f (lock waits %.1f), capture %.1f, collect %.1f]", a, w, b, c);
+        }
         logf("%s", line);
     }
 };
@@ -1718,6 +1732,8 @@ void submit_memory_work(uint64_t value) {
     PROF(PROF_MEMSYNC);
     const auto m0 = std::chrono::steady_clock::now();
     memory_sync();
+    const auto m1a = std::chrono::steady_clock::now();
+    memsync_part_ns[0] += std::chrono::duration_cast<std::chrono::nanoseconds>(m1a - m0).count();
     // (the capture takes only the mirrored pools' pages, the collection the rest: skipping it whenever a capture was
     // taken, which with the replay thread is at every submit, left every other CPU write uncollected. Textures never
     // saw them: MK World's font cache kept its first glyphs (the menus lost letters), CPU-streamed terrain went stale)
@@ -1726,6 +1742,8 @@ void submit_memory_work(uint64_t value) {
     const auto m2 = std::chrono::steady_clock::now();
     memory_collect_written();
     const auto m3 = std::chrono::steady_clock::now();
+    memsync_part_ns[1] += std::chrono::duration_cast<std::chrono::nanoseconds>(m2 - m1).count();
+    memsync_part_ns[2] += std::chrono::duration_cast<std::chrono::nanoseconds>(m3 - m2).count();
     {   // (every 600 submits: what the memory work before a submit's recording cost)
         static double a, b, c;
         static int64_t k;
