@@ -510,7 +510,8 @@ puts them all back. A gamepad button taken from another Switch button swaps with
 
 **Ocarina notes:** the page gains five rows, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)`, `(X)`, default <kbd>Num 0</kbd>
 <kbd>Num 2</kbd> <kbd>Num 4</kbd> <kbd>Num 6</kbd> <kbd>Num 8</kbd> (low note to high); while the game waits for a
-note it hears only those controls. `HOS_OC_NOTES=0` keeps the shipped note controls and leaves the rows inert.
+note it hears only those controls, and when a dialogue or cutscene takes the buttons the wait ends so they answer
+again. `HOS_OC_NOTES=0` keeps the shipped note controls and leaves the rows inert.
 
 <details>
 <summary>Writing the controls in hookshot_options.ini yourself</summary>

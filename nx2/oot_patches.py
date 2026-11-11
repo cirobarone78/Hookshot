@@ -22,7 +22,7 @@ Each is a runtime switch where it can be, so the game's own path stays reachable
 - The OptimizeChangeBank thread's allocations tried again when their heap is full (host/oot_heap_retry.c): f_804566e0's two
   calls of f_80522050, its GPU memory (GPU_ALLOC_SITES), and its two tryAllocs of CPU buffers (HEAP_ALLOC_SITES). They went on
   with a null pointer and crashed writing through it (issue 1697). The supported build only.
-- Ocarina note controls: the note-wait action's start (f_828a9190) and tick (f_828a9280) report the wait to the host (hos_oc_wait, hos_oc_beat), which swaps the five notes for its own controls (host/nn_hid.c).
+- Ocarina note controls: the note-wait action's start (f_828a9190) and tick (f_828a9280) report the wait to the host (hos_oc_wait, hos_oc_beat), which swaps the five notes for its own controls (host/nn_hid.c); a tick whose gates refuse reports no wait, so a dialogue keeps its buttons.
 """
 import collections
 import glob
@@ -678,6 +678,23 @@ OC_TICK_NEW = ("    c->x[8]=recomp_load8(c,c->x[0] + 24);\n"
                "    hos_oc_wait = (hos_oc_last_kind == 1 || hos_oc_last_kind == 3) ? 1 : 2, hos_oc_beat++;"
                "   /* (nx2/oot_patches.py: re-armed every running tick: the input resets between note windows end "
                "one wait without ending the action; the beat tells the host the wait is alive) */")
+# (the tick's own gates sit after the re-arm: while any of them refuses, the game is not asking for notes, say a
+# dialogue took the buttons; the host must hear that, or its pad swap eats the buttons the dialogue wants)
+OC_TICK_GATES = (
+    ("if (!c->z) { goto L_828a92e4; }",
+     "if (!c->z) { hos_oc_wait = 0; goto L_828a92e4; }"
+     "   /* (nx2/oot_patches.py: the action's mode check refused: no wait) */"),
+    ("c->x[30] = 0x828a92e0ULL; f_806aac40(c);\n"
+     "if (c->x[0] != 0) { goto L_828a92f8; }",
+     "c->x[30] = 0x828a92e0ULL; f_806aac40(c);\n"
+     "if (c->x[0] != 0) { goto L_828a92f8; }\n"
+     "hos_oc_wait = 0;   /* (nx2/oot_patches.py: the input context is gone: no wait) */"),
+    ("c->x[30] = 0x828a9318ULL; f_82856760(c);\n"
+     "if (c->x[0] == 0) { { A64_POLL(c); goto L_828a92e4; } }",
+     "c->x[30] = 0x828a9318ULL; f_82856760(c);\n"
+     "if (c->x[0] == 0) { { A64_POLL(c); hos_oc_wait = 0; goto L_828a92e4; } }"
+     "   /* (nx2/oot_patches.py: the wait's owner refused: no wait, and the pads are the game's again) */"),
+)
 OC_DONE_OLD = "recomp_store32(c,c->x[19] + 24,c->x[9]);"
 OC_DONE_NEW = (OC_DONE_OLD + "\n    hos_oc_wait = 0;"
                "   /* (nx2/oot_patches.py: the wait action finished) */")
@@ -690,8 +707,8 @@ def patch_ocarina_wait(s):
     """The wait action reports itself to the host; None when the lift has no such functions, s unchanged when an anchor drifted or it is applied already (never a half-patch)."""
     splices, hits = [], 0
     for head, pairs in ((OC_ENTRY_HEAD, [(OC_ENTRY_OLD, OC_ENTRY_NEW)]),
-                        (OC_TICK_HEAD, [(OC_TICK_OLD, OC_TICK_NEW), (OC_DONE_OLD, OC_DONE_NEW),
-                                        (OC_RESET_OLD, OC_RESET_NEW)])):
+                        (OC_TICK_HEAD, [(OC_TICK_OLD, OC_TICK_NEW)] + [p for p in OC_TICK_GATES] +
+                                       [(OC_DONE_OLD, OC_DONE_NEW), (OC_RESET_OLD, OC_RESET_NEW)])):
         at = s.find(head)
         if at < 0:
             return None
