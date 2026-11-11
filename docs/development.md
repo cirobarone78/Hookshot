@@ -210,9 +210,14 @@ RX_HOT_OPT=O1 python -I nx2/build.py --standalone --jobs 8
 
 `build.py` run on its own uses no profile unless `RX_PGO` is set. `make_game.py` always passes the shipped profile
 (`work/hookshot_pieces.prof`), so `RX_HOT_OPT=O1` through `make_game.py` gives `-O1` with the profile, which saves less.
-The objects are cached by their flags, so `-O1` and `-O2` objects sit side by side and switching back recompiles nothing
-built before. `make_game.py` leaves `RX_HOT_OPT` and `RX_PGO` out of its lift key: switching does not translate the
-game again.
+Run on its own, `build.py` also lacks the rest of `make_game.py`'s environment (`RX_RELEASE`, `A64_HOT_CHUNK`), so its
+runtime objects differ from a `make_game.py` build's.
+
+The objects are cached by their flags, so `-O1` and `-O2` objects can sit side by side, and `make_game.py` leaves
+`RX_HOT_OPT` and `RX_PGO` out of its lift key. In the checkout's own `work/` folder, or with
+`HOOKSHOT_KEEP_BUILD_FILES=1`, switching back and forth therefore neither translates the game again nor recompiles
+anything built before. In any other `--work` folder, `make_game.py`'s clean-up keeps only the last build's objects and a
+translation that fits them, so each switch translates the game again and recompiles the hot pieces.
 
 What it saves, from the per-file compile times (`build_times.json`) of six earlier full builds on one 24-thread
 desktop, with other work running (not a measured `-O1` build):
