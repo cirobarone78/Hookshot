@@ -403,14 +403,15 @@ HDR peak brightness show only while HDR is on.
   four levels. **FPS** is the number alone (an options file's old On); with frame generation on, it also shows the
   game's own rate. **Frame time** adds the game's frame time and its 1% low (the rate of the slowest 1% of frames over
   the last 10 seconds). From this level on, the number and the frame time are green at the Game frame rate cap's rate,
-  amber under it and red under two thirds of it. **Graph** adds the frame times of the last 4 seconds (each point the
-  slowest frame of its span, so no stutter is missed), with a dashed line at the Game frame rate cap's frame time and
-  a red mark over frames that took more than twice it; its scale follows the usual frame, so a spike is drawn at the
-  top rather than flattening the rest. **Breakdown** adds where the frame's time went on the game's presenting thread,
-  as a bar and in numbers: the game's own code (Game), recording and submitting the GPU's work (Renderer), waiting for
-  the GPU (GPU wait), and waiting for the frame's turn (Pacing: the frame rate cap, vsync, Reflex); then the GPU's own
-  time per frame, and the shaders built and draws left out in the last 4 seconds (red marks on the graph where they
-  happened, the usual cause of a stutter).
+  amber under it and red under two thirds of it. (The cap's rate is the display's refresh instead with V-Sync On when
+  that is slower; with Uncapped and V-Sync not On there is no line, and the colours are against 60.) **Graph** adds
+  the frame times of the last 4 seconds (each point the slowest frame of its span, so no stutter is missed), with a
+  dashed line at the Game frame rate cap's frame time and a red mark over frames that took more than twice it; its
+  scale follows the usual frame, so a spike is drawn at the top rather than flattening the rest. **Breakdown** adds
+  where the frame's time went on the game's presenting thread, as a bar and in numbers: the game's own code (Game),
+  recording and submitting the GPU's work (Renderer), waiting for the GPU (GPU wait), and waiting for the frame's turn
+  (Pacing: the frame rate cap, vsync, Reflex); then the GPU's own time per frame, and the shaders built and draws left
+  out in the last 4 seconds (red marks on the graph where they happened, the usual cause of a stutter).
 - **Volume** scales the game's whole sound, on top of the game's own sound settings and Windows' volume. Its steps
   follow a curve so they sound about even: 50% is a quarter of the level (-12 dB). **Mute in background** silences the
   game while another window has the focus; an overlay such as Steam's or Discord's does not count as another window

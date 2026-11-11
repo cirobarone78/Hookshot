@@ -62,7 +62,7 @@ struct Ring {
     const Frame& back(int i) const { return f[(pushed - 1 - (uint64_t)i) & (N - 1)]; }
     void clear() { pushed = 0; }
 };
-constexpr int kRing = 4096;               // (10 s at 400 fps)
+constexpr int kRing = 16384;              // (10 s at 1600 fps: the 1% low's window whole with the cap Uncapped (1000))
 constexpr int64_t kSecond = 1000000000;
 constexpr int64_t kGraphWindow = 4 * kSecond;   // (the graph's span)
 constexpr int64_t kLowWindow = 10 * kSecond;    // (the 1% low's)
@@ -130,15 +130,30 @@ void columns(const Ring<N>& r, int64_t now, int64_t window, int count, int* out,
     }
 }
 
-/// The game's frame time at the Game frame rate cap the game started with (its row: 0 60, then 90, 120, 144, 165, 240)
-inline double target_ms(int fps_cap) {
-    static const int rates[] = {60, 90, 120, 144, 165, 240};
-    return 1000.0 / rates[std::clamp(fps_cap, 0, 5)];
+/// The Game frame rate cap row's rate (0 60, then 90, 120, 144, 165, 240; 6 Uncapped: 0, no rate); HOS_FPS_MAX over it
+/// (env_max, 0 when not set: host/nn_vi.c fps_max's rules, 1000 and over is uncapped)
+inline int cap_rate(int fps_cap, int env_max = 0) {
+    static const int rates[] = {60, 90, 120, 144, 165, 240, 0};
+    if (env_max > 0) return env_max >= 1000 ? 0 : std::max(env_max, 60);
+    return fps_cap >= 0 && fps_cap <= 6 ? rates[fps_cap] : 60;   // (a value this build does not know: 60, as the host)
 }
+/// The frame time the game aims for, in ms: the cap's, or with V-Sync On (FIFO, no frame generation) the display's refresh
+/// when that is slower; 0 when there is none (Uncapped, without V-Sync)
+inline double target_ms_for(int cap, bool vsync_on, int refresh_hz) {
+    int rate = cap;
+    if (vsync_on && refresh_hz > 0) rate = rate ? std::min(rate, refresh_hz) : refresh_hz;
+    return rate > 0 ? 1000.0 / rate : 0;
+}
+inline double target_ms(int fps_cap) { return target_ms_for(cap_rate(fps_cap), false, 0); }
 /// The graph's top, in ms: twice the target, doubled until the usual frame fits (typical: a high percentile of the columns,
-/// not the slowest, so one spike does not flatten the rest), four times the target at most. A frame past the top is drawn
-/// at it, and marked
+/// not the slowest, so one spike does not flatten the rest), four times the target at most. With no target (Uncapped):
+/// from 4 ms, doubled until half again the usual frame fits, 100 at most. A frame past the top is drawn at it, and marked
 inline double graph_top(double target, double typical) {
+    if (target <= 0) {
+        double top = 4;
+        while (top < typical * 1.5 && top < 100) top *= 2;
+        return std::min(top, 100.0);
+    }
     double top = 2 * target;
     while (top < typical * 1.1 && top < 4 * target) top *= 2;
     return std::min(top, 4 * target);
@@ -150,9 +165,10 @@ inline double typical_ms(float* ms, int n) {
     std::nth_element(ms, ms + k, ms + n);
     return ms[k];
 }
-/// The counter's colour for a frame rate against the cap's: 0 at it (5% under counts), 1 under it, 2 at under two thirds
+/// The counter's colour for a frame rate against the cap's: 0 at it (5% under counts), 1 under it, 2 at under two thirds.
+/// No target (Uncapped): against the console's 60
 inline int rate_grade(double fps, double target_ms) {
-    const double want = 1000.0 / target_ms;
+    const double want = target_ms > 0 ? 1000.0 / target_ms : 60.0;
     return fps >= want * 0.95 ? 0 : fps >= want * 2 / 3 ? 1 : 2;
 }
 

@@ -49,8 +49,11 @@ def main():
     tick = menu[menu.index("void menu_tick()"):menu.index("void menu_record(")]
     need("fps_level_now.store(" in tick and "fps_texts(" in tick, "menu_tick does not tell vk_fps.cpp the level or write the lines")
     need("fps_level_now.store(" in body(menu, "void menu_init()"), "menu_init does not tell vk_fps.cpp the saved level")
+    target = body(menu, "double fps_target_ms()")
+    need("fps_stats::cap_rate(fps_cap_started" in target and "HOS_FPS_MAX" in target and "menu_vsync() == 1" in target,
+         "the target is not the cap the game started with (HOS_FPS_MAX over it), or the display's with V-Sync On")
     draw = body(menu, "void draw_fps(")
-    for use in ("fps_graph(", "fs::target_ms(", "fs::graph_top(", "fps_part_text", "fps_ms_text"):
+    for use in ("fps_graph(", "fps_target_ms()", "fs::graph_top(", "fs::rate_grade(", "fps_part_text", "fps_ms_text"):
         need(use in draw, "draw_fps does not use %s" % use)
 
     replay = (vk / "vk_replay.cpp").read_text(encoding="utf-8")
@@ -72,11 +75,17 @@ def main():
     ver = int(re.search(r"#define MKWVK_API_VERSION (\d+)", api).group(1))
     need(ver >= 15 and "slept_ns" in api, "MkwVkHost has no slept_ns (API version 15)")
     backend = (ROOT / "host" / "rx_backend.c").read_text(encoding="utf-8")
-    need(re.search(r"host_wide_menus,\s*host_slept_ns", backend), "host/rx_backend.c does not give the back end its sleeps")
+    need(re.search(r"host_wide_menus,\s*host_slept_ns,\s*host_fps_timing", backend), "host/rx_backend.c does not give the back end its sleeps")
+    need("host->fps_timing(" in pres, "the host is not told when to time its sleeps")
     threads = (ROOT / "host" / "hos_thread.c").read_text(encoding="utf-8")
     need("0x80590520" in body(threads, "static void slept_since(") and "slept_since(" in body(threads, "HLE(_ZN2nn2os11SleepThread")
          and "hos_poll_slept_ns" in backend and "hos_acquire_slept_ns" in backend,
          "the guest's sleeps are not counted, OoT's present poll apart")
+    # (off: the host reads no clock for them)
+    need("hos_fps_timing ? hos_now_ns() : 0" in body(threads, "HLE(_ZN2nn2os11SleepThread")
+         and "if (hos_fps_timing)" in body((ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8"), "void hos_vi_native_acquire(")
+         and "hos_fps_timing ? hos_now_ns() : 0" in (ROOT / "host" / "hos_svc.c").read_text(encoding="utf-8"),
+         "the host times its sleeps while the Breakdown is off")
     need("hos_acquire_slept_ns" in body((ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8"), "void hos_vi_native_acquire("),
          "the window acquire's pacing sleep is not counted")
 

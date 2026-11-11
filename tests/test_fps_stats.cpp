@@ -107,7 +107,15 @@ int main() {
 
     // the scale: twice the cap's frame time, doubled for a slower frame, 100 ms at most
     CHECK("60 fps", near(fs::target_ms(0), 16.6667, 0.001) && near(fs::target_ms(5), 1000.0 / 240));
-    CHECK("cap out of range", near(fs::target_ms(9), 1000.0 / 240) && near(fs::target_ms(-1), 1000.0 / 60));
+    CHECK("a cap this build does not know: 60, as the host", near(fs::target_ms(9), 1000.0 / 60) && near(fs::target_ms(-1), 1000.0 / 60));
+    CHECK("Uncapped: no target", fs::cap_rate(6) == 0 && fs::target_ms(6) == 0);
+    CHECK("HOS_FPS_MAX over the row", fs::cap_rate(0, 144) == 144 && fs::cap_rate(3, 30) == 60 && fs::cap_rate(0, 1000) == 0);
+    CHECK("V-Sync On at a slower display", near(fs::target_ms_for(144, true, 60), 1000.0 / 60) &&
+                                               near(fs::target_ms_for(60, true, 144), 1000.0 / 60) &&
+                                               near(fs::target_ms_for(0, true, 165), 1000.0 / 165));
+    CHECK("V-Sync, refresh not known", near(fs::target_ms_for(90, true, 0), 1000.0 / 90) && fs::target_ms_for(0, true, 0) == 0);
+    CHECK("Uncapped graph: from 4 ms", fs::graph_top(0, 3.0) == 8.0 && fs::graph_top(0, 1.0) == 4.0 && fs::graph_top(0, 900) == 100.0);
+    CHECK("Uncapped colour: against 60", fs::rate_grade(300, 0) == 0 && fs::rate_grade(50, 0) == 1 && fs::rate_grade(0, 0) == 2);
     CHECK("top at 60 fps", near(fs::graph_top(fs::target_ms(0), 20), 33.333, 0.01));
     CHECK("a slow stretch of 40 ms", near(fs::graph_top(fs::target_ms(0), 40), 66.667, 0.01));
     CHECK("a 2 s stall: four times the cap's at most", near(fs::graph_top(fs::target_ms(0), 2000), 66.667, 0.01));

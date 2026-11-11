@@ -150,6 +150,8 @@ typedef struct MkwVkHost {
        [0] OoT's present poll, waiting for its frame's GPU work; [1] the window's acquire pacing the frames (both whichever
        thread they are on), and the calling thread's other guest sleeps. Asked by the thread that presents, at its present */
     void (*slept_ns)(int64_t out[2]);
+    /* (version 15, hookshot) whether the host times those sleeps: 1 while the Breakdown shows, 0 (the default) costs nothing */
+    void (*fps_timing)(int on);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */

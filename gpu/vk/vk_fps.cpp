@@ -59,6 +59,11 @@ void fps_presented() {
     static int64_t last_at = 0, last_render = 0, last_wait[fs::kParts] = {}, last_slept[2] = {}, last_gpu = 0, last_pipes = 0,
                    last_left = 0, last_slot = 0;
     static int last_level = 0;
+    {   // (the host times its sleeps only while the Breakdown shows: told when that changes)
+        static int told = 0;
+        const int on = level >= fs::kBreakdown;
+        if (on != told && host->fps_timing) host->fps_timing(on), told = on;
+    }
     if (level < fs::kFrameTime) {
         last_at = 0, last_level = level;
         return;
@@ -78,7 +83,7 @@ void fps_presented() {
         fs::Frame f;
         f.at_ns = now;
         const double ms = (now - last_at) / 1e6;
-        if (!breakdown) f.ms = (float)ms;
+        f.ms = (float)ms;   // (the Breakdown's first frame: its time, without parts)
         if (breakdown && last_level >= fs::kBreakdown) {   // (the parts from the Breakdown's first whole frame on)
             const auto d = [](int64_t a, int64_t b) { return std::max<int64_t>(a - b, 0) / 1e6; };
             // (the recording slots' waits are inside the renderer's entries, timed by the replay itself: moved to the GPU's)
@@ -90,7 +95,7 @@ void fps_presented() {
             f.pipelines = (uint16_t)std::clamp<int64_t>(pipes - last_pipes, 0, 65535);
             f.left_out = (uint16_t)std::clamp<int64_t>(left - last_left, 0, 65535);
         }
-        if (f.ms > 0) {
+        if (f.ms > 0) {   // (two presents in the same clock tick: not a frame)
             std::lock_guard lk(ring_mu);
             ring.push(f);
         }

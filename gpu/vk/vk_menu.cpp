@@ -52,6 +52,7 @@
 #endif
 
 namespace mkwvk {
+int display_refresh_mhz();   // (vk_main.cpp: the window's display, asked once a second at most: the FPS counter's V-Sync target)
 HWND app_window();
 
 Options opts;
@@ -1498,6 +1499,13 @@ char fps_part_text[fps_stats::kParts][24];
 char fps_gpu_text[24] = "";
 char fps_built_text[16] = "", fps_left_text[16] = "";
 int fps_cap_started = 0;   // (the Game frame rate cap the game started with: the graph's line)
+/// The FPS counter's target frame time, ms: the cap the game started with (HOS_FPS_MAX over it, as host/nn_vi.c), or the
+/// display's refresh with V-Sync On and no frame generation when that is slower; 0 for none (Uncapped without V-Sync)
+double fps_target_ms() {
+    static const int cap = fps_stats::cap_rate(fps_cap_started, getenv("HOS_FPS_MAX") ? atoi(getenv("HOS_FPS_MAX")) : 0);
+    const bool fifo = menu_vsync() == 1 && opts.framegen == 0;
+    return fps_stats::target_ms_for(cap, fifo, fifo ? (display_refresh_mhz() + 500) / 1000 : 0);
+}
 menu_hit::Map hits;      // (the menu's controls as last drawn: the mouse's, menu_tick)
 float scroll_at[TAB_MOTION + 2];   // (the first row shown, eased toward the selection: the options' tabs and the Motion page, then
                                    // the Controls page: kControlsSlot)
@@ -2482,31 +2490,36 @@ struct Tab {
         char d[2] = {0, 0};
         for (char k = '0'; k <= '9'; k++) d[0] = k, digit = std::max(digit, ui::size_of(f, size, d).x);
     }
-    float width(const char* t) const {
-        float w = 0;
-        char one[2] = {0, 0};
-        for (const char* q = t; *q; q++) one[0] = *q, w += *q >= '0' && *q <= '9' ? digit : ui::size_of(font, px, one).x;
-        return w;
+    static bool dig(char c) { return c >= '0' && c <= '9'; }
+    /// Each piece of t: a digit alone (in its even cell), or a run of what is not one (drawn whole). fn(begin, end, x, width)
+    template <class Fn>
+    float pieces(const char* t, float x, Fn fn) const {
+        const float x0 = x;
+        for (const char* q = t; *q;) {
+            const char* e = q + 1;
+            if (!dig(*q))
+                while (*e && !dig(*e)) e++;
+            const float w = dig(*q) ? digit : font->CalcTextSizeA(px, FLT_MAX, 0, q, e).x;
+            fn(q, e, x, w);
+            x += w, q = e;
+        }
+        return x - x0;
     }
+    float width(const char* t) const { return pieces(t, 0, [](const char*, const char*, float, float) {}); }
+    /// Each piece five times under itself (a faint copy at each diagonal step, a darker one a step down) and once in col: a
+    /// dozen strings make a few hundred quads' worth of glyphs, not a glyph each ten times
     void draw(ImDrawList* d, float x, float y, ImU32 col, const char* t, float s) const {
         const float o = std::max(1.0f, s);
         const int a = std::max(200, (int)((col >> IM_COL32_A_SHIFT) & 0xff));
-        const ImU32 shade = ui::rgba(0, 0, 0, a * 210 / 255), faint = ui::rgba(0, 0, 0, a * 150 / 255);
-        char one[2] = {0, 0};
-        for (const char* q = t; *q; q++) {
-            one[0] = *q;
-            const bool dig = *q >= '0' && *q <= '9';
-            const float adv = ui::size_of(font, px, one).x, gx = x + (dig ? (digit - adv) * 0.5f : 0);
-            if (*q != ' ') {
-                for (int k = 0; k < 8; k++) {   // (around it: the four sides, and the corners at 0.7 of a step)
-                    static const float dx[8] = {-1, 1, 0, 0, -0.7f, 0.7f, -0.7f, 0.7f}, dy[8] = {0, 0, -1, 1, -0.7f, -0.7f, 0.7f, 0.7f};
-                    d->AddText(font, px, ImVec2(gx + dx[k] * o, y + dy[k] * o), faint, one);
-                }
-                d->AddText(font, px, ImVec2(gx, y + o), shade, one);
-                d->AddText(font, px, ImVec2(gx, y), col, one);
-            }
-            x += dig ? digit : adv;
-        }
+        const ImU32 shade = ui::rgba(0, 0, 0, a * 210 / 255), faint = ui::rgba(0, 0, 0, a * 160 / 255);
+        pieces(t, x, [&](const char* q, const char* e, float px0, float w) {
+            if (*q == ' ' && e == q + 1) return;
+            const float gx = px0 + (dig(*q) ? (w - font->CalcTextSizeA(px, FLT_MAX, 0, q, e).x) * 0.5f : 0);
+            static const float dx[4] = {-1, 1, -1, 1}, dy[4] = {-1, -1, 1, 1};
+            for (int k = 0; k < 4; k++) d->AddText(font, px, ImVec2(gx + dx[k] * o * 0.8f, y + dy[k] * o * 0.8f), faint, q, e);
+            d->AddText(font, px, ImVec2(gx, y + o), shade, q, e);
+            d->AddText(font, px, ImVec2(gx, y), col, q, e);
+        });
     }
 };
 
@@ -2545,7 +2558,7 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     const auto at = [&](float w) { return left ? edge : edge - w; };
     // (the number's colour: at FPS the classic green whatever the rate, the counter as it always was (#1957); from Frame time on
     // green at the cap's rate, amber under it, red under two thirds of it, as the frame time beside it)
-    const double target = fs::target_ms(fps_cap_started);
+    const double target = fps_target_ms();   // (0: none, Uncapped: the colours against the console's 60, no line)
     const ImU32 grade_col[3] = {green, ui::rgba(255, 200, 60), ui::rgba(255, 95, 80)};
     const ImU32 num_col = level >= fs::kFrameTime && fps_rate_now > 0 ? grade_col[fs::rate_grade(fps_rate_now, target)] : green;
     {   // (the number and "FPS", as they always looked: outlined, the number's digits on even steps)
@@ -2589,10 +2602,14 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     constexpr int kCols = 104;
     static fs::Frame col[kCols];
     static bool mark[kCols];
-    (void)fps_graph(fps_clock(), kCols, col, mark);
-    double topms;
-    {   // (the scale from the usual frame, not the slowest: a spike past the top is drawn at it, and marked)
-        static float ms[kCols];
+    // (the columns from the ring at most 60 times a second: at the cap Uncapped's 1000 fps, 4 s of frames each present cost
+    // more than the drawing; a 4 s graph moves a column every 40 ms)
+    static double topms = 0;
+    static int64_t graph_at = 0;
+    if (const int64_t now = fps_clock(); now - graph_at >= fs::kSecond / 60 || now < graph_at) {
+        graph_at = now;
+        (void)fps_graph(now, kCols, col, mark);
+        static float ms[kCols];   // (the scale from the usual frame, not the slowest: a spike past the top is drawn at it, and marked)
         int k = 0;
         for (int i = 0; i < kCols; i++)
             if (col[i].ms > 0) ms[k++] = col[i].ms;
@@ -2606,14 +2623,16 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     // (the floor: a faint line; the cap's frame time: a dashed one, its value at the inner end)
     c.d->AddLine(ImVec2(x0, std::floor(gy1) + 0.5f), ImVec2(x1, std::floor(gy1) + 0.5f), ui::rgba(255, 255, 255, 60), std::max(1.0f, s));
     {
-        const float ty = std::floor(gy1 - (float)target * py) + 0.5f, dash = 4 * s, gap = 3 * s;
-        for (float x = x0; x < x1; x += dash + gap)
-            c.d->AddLine(ImVec2(x, ty), ImVec2(std::min(x + dash, x1), ty), ui::rgba(255, 255, 255, 110), std::max(1.0f, s));
         // (the scale's two values outside the graph, on its inner side: the cap's frame time at its line, the top at the top)
         char t[16];
-        snprintf(t, sizeof t, "%.1f", target);
-        lab.draw(c.d, left ? x1 + 5 * s : x0 - 5 * s - lab.width(t), ty - label * 0.55f, ui::rgba(235, 235, 235), t, s);
-        snprintf(t, sizeof t, "%.0f", topms);
+        if (target > 0) {   // (Uncapped without V-Sync: no line)
+            const float ty = std::floor(gy1 - (float)target * py) + 0.5f, dash = 4 * s, gap = 3 * s;
+            for (float x = x0; x < x1; x += dash + gap)
+                c.d->AddLine(ImVec2(x, ty), ImVec2(std::min(x + dash, x1), ty), ui::rgba(255, 255, 255, 110), std::max(1.0f, s));
+            snprintf(t, sizeof t, "%.1f", target);
+            lab.draw(c.d, left ? x1 + 5 * s : x0 - 5 * s - lab.width(t), ty - label * 0.55f, ui::rgba(235, 235, 235), t, s);
+        }
+        snprintf(t, sizeof t, topms < 10 ? "%.1f" : "%.0f", topms);
         lab.draw(c.d, left ? x1 + 5 * s : x0 - 5 * s - lab.width(t), gy0 - label * 0.55f, ui::rgba(200, 200, 200), t, s);
     }
     // (the soft fill: a column each, fading down; then the line over it, broken where a column had no frame, a faint dark line
@@ -2654,7 +2673,7 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
         usual = k ? usual / k : 0;
     }
     for (int i = 0; i < kCols; i++)
-        if ((col[i].ms > 2 * target && col[i].ms > 1.5f * usual) || col[i].ms > topms || (parts && mark[i])) {
+        if ((col[i].ms > 2 * target && col[i].ms > 1.5f * usual) || col[i].ms > topms || (parts && mark[i])) {   // (no target: past half again the usual)
             const float cx = x0 + (i + 0.5f) * cw;
             c.d->AddCircleFilled(ImVec2(cx, gy0 - 3 * s), 2.2f * s, ui::rgba(0, 0, 0, 120));
             c.d->AddCircleFilled(ImVec2(cx, gy0 - 3 * s), 1.6f * s, ui::rgba(240, 100, 85));
