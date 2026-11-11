@@ -460,7 +460,7 @@ play on a controller or the keyboard, until the mouse moves.
 
 **Rumble:** a Nintendo Switch Pro Controller or Joy-Con plays the game's HD rumble as the Switch does, each side and
 both frequency bands as the game asks, with SDL3 (the Windows game brings it; on Linux the system's SDL3, where it has
-one). Other controllers, Switch 2 controllers, a pair of Joy-Cons used as one controller, and SDL2's own library get
+one). Other controllers, the Joy-Con 2, a pair of Joy-Cons used as one controller, and SDL2's own library get
 the game's rumble on their two motors. The menu's Rumble strength scales it too. `HOS_HD_RUMBLE=0` sends the Switch
 controllers the motor rumble too. On Linux, SDL talks to the Switch controller itself through its hidraw device, which
 needs read and write access for your user; Steam's udev rules (the `steam-devices` package on most distributions) give
@@ -468,6 +468,17 @@ it. Without them the kernel's hid-nintendo driver runs the controller, and it ge
 anything SDL reports as a Switch Pro Controller or Joy-Con, and that includes third-party controllers in Switch mode
 (8BitDo, GameSir and others; SDL gives them Nintendo's ids). Some of them may turn it into weak rumble or none: set
 `HOS_HD_RUMBLE=0` to give them the plain motor rumble.
+
+**Switch 2 Pro Controller (USB):** Hookshot sets it up and reads it itself, so it needs no libusb and no special SDL:
+buttons, sticks, motion controls and the game's HD rumble on both sides (frequencies on the scale measured on this
+controller; `HOS_HD_RUMBLE=0` gives it SDL's two fixed frequencies). Plug it in with a cable; Bluetooth is not
+supported. On Windows nothing needs installing. On Linux your user needs access to its USB device: Steam's udev rules
+(`steam-devices`) give it, or a rule like `SUBSYSTEM=="usb", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="2069",
+MODE="0660", TAG+="uaccess"`. While Steam has the controller (Steam Input), it stays Steam's. Home opens the menu;
+Capture and C are left to the system, as on the console. GL and GR press nothing, as on the console until you assign
+them; `HOS_SW2_GL` / `HOS_SW2_GR` set to `south`, `east`, `west`, `north`, `back`, `start`, `lstick`, `rstick`,
+`lshoulder`, `rshoulder`, `up`, `down`, `left`, `right`, `zl` or `zr` make them press that input (`east` is A, `south`
+B). `HOS_NO_SW2=1` leaves the controller to SDL, as before. Not yet tested on the controller itself: reports welcome.
 
 To change which gamepad button or key presses a Switch button, or which keys move and turn the camera, open the
 Controls tab's Controls page. Choose a row and a column (Gamepad or Keyboard), press <kbd>Enter</kbd> (or the bottom

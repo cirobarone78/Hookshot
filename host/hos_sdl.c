@@ -23,6 +23,7 @@ static struct {
     void *PadType, *PadEffect;   /* (optional: HD rumble, host/pad_sdl.c) */
     void *PadHasSensor, *PadSensorEnable, *PadSensorData;   /* (motion: optional, NULL in an SDL without them) */
     void *GetGamepads, *GetGamepadID, *Free;   /* (SDL3) */
+    void *PadVendor, *PadProduct;   /* (optional: which pads host/pad_sw2.c has, by USB id) */
     void *NumJoysticks, *IsGameController, *DeviceInstanceID, *GetJoystick, *JoystickInstanceID;   /* (SDL2) */
 } f;
 #define CALL(type, fn) ((type)f.fn)
@@ -71,6 +72,9 @@ static int get_all(HMODULE m, int three) {
     *(FARPROC *)&f.PadHasSensor = GetProcAddress(m, three ? "SDL_GamepadHasSensor" : "SDL_GameControllerHasSensor");
     *(FARPROC *)&f.PadSensorEnable = GetProcAddress(m, three ? "SDL_SetGamepadSensorEnabled" : "SDL_GameControllerSetSensorEnabled");
     *(FARPROC *)&f.PadSensorData = GetProcAddress(m, three ? "SDL_GetGamepadSensorData" : "SDL_GameControllerGetSensorData");
+    /* (by id in SDL3, by device index in SDL2: before the pad is opened) */
+    *(FARPROC *)&f.PadVendor = GetProcAddress(m, three ? "SDL_GetGamepadVendorForID" : "SDL_JoystickGetDeviceVendor");
+    *(FARPROC *)&f.PadProduct = GetProcAddress(m, three ? "SDL_GetGamepadProductForID" : "SDL_JoystickGetDeviceProduct");
     if (three) {
         GET(SetWindowPosition, "SDL_SetWindowPosition");
         GET(GetPrimaryDisplay, "SDL_GetPrimaryDisplay");
@@ -567,65 +571,94 @@ void hos_sdl_mic_close(void *mic) {
     ((void (*)(void *))rec.Destroy)(mic);
 }
 
-/* ---- controllers ---- */
+/* ---- controllers ----
+   (hookshot) The Switch 2 Pro Controller is host/pad_sw2.c's (unless HOS_NO_SW2=1): its pads come with SDL's in the list
+   (opened by a negative number, which no SDL id or index is), each call below hands them to it, and SDL's own view of
+   the controller (an SDL with libusb, or its HID interface as a plain joystick) is left out of the list. */
+static int sw2_skip(uint32_t what) {   /* (an SDL pad that is a Switch 2 Pro Controller: pad_sw2.c has it) */
+    if (!hos_sw2_enabled() || !f.PadVendor || !f.PadProduct) return 0;
+    const unsigned vid = version == 3 ? CALL(uint16_t (*)(uint32_t), PadVendor)(what) : CALL(uint16_t (*)(int), PadVendor)((int)what);
+    const unsigned pid = version == 3 ? CALL(uint16_t (*)(uint32_t), PadProduct)(what) : CALL(uint16_t (*)(int), PadProduct)((int)what);
+    return vid == 0x057E && pid == 0x2069;   /* (USB 057E:2069 only: the Switch Pro Controller, 057E:2009, stays SDL's) */
+}
 int hos_sdl_pads_list(int32_t *ids, int *opens, int max) {   /* (SDL3 opens by id; SDL2 by device index) */
     int n = 0;
     if (version == 3) {
         int count = 0;
         uint32_t *got = CALL(uint32_t *(*)(int *), GetGamepads)(&count);
-        for (int i = 0; got && i < count && n < max; i++) ids[n] = (int32_t)got[i], opens[n] = (int)got[i], n++;
+        for (int i = 0; got && i < count && n < max; i++)
+            if (!sw2_skip(got[i])) ids[n] = (int32_t)got[i], opens[n] = (int)got[i], n++;
         if (got) CALL(void (*)(void *), Free)(got);
-        return n;
+    } else {
+        const int nj = CALL(int (*)(void), NumJoysticks)();
+        for (int j = 0; j < nj && n < max; j++)
+            if (CALL(int (*)(int), IsGameController)(j) && !sw2_skip((uint32_t)j))
+                ids[n] = CALL(int32_t (*)(int), DeviceInstanceID)(j), opens[n] = j, n++;
     }
-    const int nj = CALL(int (*)(void), NumJoysticks)();
-    for (int j = 0; j < nj && n < max; j++)
-        if (CALL(int (*)(int), IsGameController)(j)) ids[n] = CALL(int32_t (*)(int), DeviceInstanceID)(j), opens[n] = j, n++;
-    return n;
+    return n + hos_sw2_list(ids + n, opens + n, max - n);
 }
 void *hos_sdl_pad_open(int what) {
+    if (what < 0) return hos_sw2_open(what);
     return version == 3 ? CALL(void *(*)(uint32_t), PadOpen)((uint32_t)what) : CALL(void *(*)(int), PadOpen)(what);
 }
-void hos_sdl_pad_close(void *pad) { CALL(void (*)(void *), PadClose)(pad); }
+void hos_sdl_pad_close(void *pad) {
+    if (hos_sw2_is(pad)) hos_sw2_close(pad);
+    else CALL(void (*)(void *), PadClose)(pad);
+}
 int hos_sdl_pad_connected(void *pad) {
+    if (hos_sw2_is(pad)) return hos_sw2_connected(pad);
     return version == 3 ? CALL(_Bool (*)(void *), PadConnected)(pad) : CALL(int (*)(void *), PadConnected)(pad) != 0;
 }
 void hos_sdl_pads_update(void) { CALL(void (*)(void), PadsUpdate)(); }
 int hos_sdl_pad_button(void *pad, int button) {
+    if (hos_sw2_is(pad)) return hos_sw2_button(pad, button);
     return version == 3 ? CALL(_Bool (*)(void *, int), PadButton)(pad, button)
                         : CALL(uint8_t (*)(void *, int), PadButton)(pad, button) != 0;
 }
-int16_t hos_sdl_pad_axis(void *pad, int axis) { return CALL(int16_t (*)(void *, int), PadAxis)(pad, axis); }
+int16_t hos_sdl_pad_axis(void *pad, int axis) {
+    if (hos_sw2_is(pad)) return hos_sw2_axis(pad, axis);
+    return CALL(int16_t (*)(void *, int), PadAxis)(pad, axis);
+}
 const char *hos_sdl_pad_name(void *pad) {
+    if (hos_sw2_is(pad)) return hos_sw2_name(pad);
     const char *n = CALL(const char *(*)(void *), PadName)(pad);
     return n ? n : "?";
 }
 int32_t hos_sdl_pad_id(void *pad) {
+    if (hos_sw2_is(pad)) return hos_sw2_id(pad);
     return version == 3 ? (int32_t)CALL(uint32_t (*)(void *), GetGamepadID)(pad)
                         : CALL(int32_t (*)(void *), JoystickInstanceID)(CALL(void *(*)(void *), GetJoystick)(pad));
 }
 void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms) {
-    if (version == 3) CALL(_Bool (*)(void *, uint16_t, uint16_t, uint32_t), PadRumble)(pad, low, high, ms);
+    if (hos_sw2_is(pad)) hos_sw2_rumble(pad, low, high, ms);
+    else if (version == 3) CALL(_Bool (*)(void *, uint16_t, uint16_t, uint32_t), PadRumble)(pad, low, high, ms);
     else CALL(int (*)(void *, uint16_t, uint16_t, uint32_t), PadRumble)(pad, low, high, ms);
 }
-int hos_sdl_pad_type(void *pad) { return f.PadType ? CALL(int (*)(void *), PadType)(pad) : 0; }
+int hos_sdl_pad_type(void *pad) {   /* (pad_sw2.c's: 0, so pad_sdl.c's Switch HD rumble packets never go to it) */
+    if (hos_sw2_is(pad)) return 0;
+    return f.PadType ? CALL(int (*)(void *), PadType)(pad) : 0;
+}
 int hos_sdl_pad_has_effect(void) { return f.PadEffect != NULL; }
 int hos_sdl_pad_effect(void *pad, const void *data, int size) {
-    if (!f.PadEffect) return 0;
+    if (!f.PadEffect || hos_sw2_is(pad)) return 0;
     if (version == 3) return CALL(_Bool (*)(void *, const void *, int), PadEffect)(pad, data, size);
     return CALL(int (*)(void *, const void *, int), PadEffect)(pad, data, size) == 0;
 }
 /* (motion) type: HOS_SDL_SENSOR_ACCEL or _GYRO, the same numbers in both */
 int hos_sdl_pad_has_sensor(void *pad, int type) {
+    if (hos_sw2_is(pad)) return hos_sw2_has_sensor(pad, type);
     if (!f.PadHasSensor || !f.PadSensorEnable || !f.PadSensorData) return 0;
     return version == 3 ? CALL(_Bool (*)(void *, int), PadHasSensor)(pad, type)
                         : CALL(int (*)(void *, int), PadHasSensor)(pad, type) != 0;
 }
 int hos_sdl_pad_sensor_enable(void *pad, int type, int on) {
+    if (hos_sw2_is(pad)) return hos_sw2_sensor_enable(pad, type, on);
     if (!f.PadSensorEnable) return 0;
     return version == 3 ? CALL(_Bool (*)(void *, int, _Bool), PadSensorEnable)(pad, type, on != 0)
                         : CALL(int (*)(void *, int, int), PadSensorEnable)(pad, type, on != 0) == 0;
 }
 int hos_sdl_pad_sensor(void *pad, int type, float *data, int n) {
+    if (hos_sw2_is(pad)) return hos_sw2_sensor(pad, type, data, n);
     if (!f.PadSensorData) return 0;
     return version == 3 ? CALL(_Bool (*)(void *, int, float *, int), PadSensorData)(pad, type, data, n)
                         : CALL(int (*)(void *, int, float *, int), PadSensorData)(pad, type, data, n) == 0;

@@ -85,3 +85,23 @@ enum { HOS_SDL_SENSOR_ACCEL = 1, HOS_SDL_SENSOR_GYRO = 2 };
 int hos_sdl_pad_has_sensor(void *pad, int type);
 int hos_sdl_pad_sensor_enable(void *pad, int type, int on);   /* 1 when done */
 int hos_sdl_pad_sensor(void *pad, int type, float *data, int n);   /* 1 when read */
+
+/* ---- (hookshot) the Switch 2 Pro Controller over USB, host/pad_sw2.c's own driver: the calls above hand its pads to
+   these (pad_sdl.c sees one more pad). hos_sw2_enabled: 0 with HOS_NO_SW2=1 (SDL has the controller then, as before) ---- */
+int hos_sw2_enabled(void);
+int hos_sw2_is(const void *pad);
+int hos_sw2_list(int32_t *ids, int *opens, int max);
+void *hos_sw2_open(int what);
+void hos_sw2_close(void *pad);
+int hos_sw2_connected(void *pad);
+int32_t hos_sw2_id(void *pad);
+const char *hos_sw2_name(void *pad);
+int hos_sw2_button(void *pad, int button);
+int16_t hos_sw2_axis(void *pad, int axis);
+int hos_sw2_has_sensor(void *pad, int type);
+int hos_sw2_sensor_enable(void *pad, int type, int on);
+int hos_sw2_sensor(void *pad, int type, float *data, int n);
+void hos_sw2_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms);   /* (two motors, as SDL_RumbleGamepad) */
+/* the game's vibration values for the left and right side ({amp_low, freq_low, amp_high, freq_high}, as host/hd_rumble.h's
+   hd_rumble_felt gives them), at the Insert menu's Rumble strength (percent) */
+void hos_sw2_rumble_hd(void *pad, const float left[4], const float right[4], int percent);

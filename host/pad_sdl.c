@@ -12,7 +12,10 @@
    accelerometer (Switch Pro and pads in Switch mode, DualSense, DualShock 4, others) that was used last has them read
    each poll and turned into the six-axis state OoT aims with (host/hos_motion.h), which nn_hid.c's
    GetSixAxisSensorStates gives the game; Motion sensitivity X/Y and Invert motion X/Y apply there. Off, or with no such pad, the game sees the pad
-   lying still, as before. */
+   lying still, as before.
+
+   (hookshot) A Switch 2 Pro Controller on USB comes through the same calls from host/pad_sw2.c's own driver (no SDL
+   underneath): host/hos_sdl.c hands its pads over; it gets the game's vibration values for its HD rumble. */
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,6 +98,15 @@ static int pads_start(void) {
     /* (with no window nothing reads SDL's quit event: SDL's own SIGINT/SIGTERM handlers turned a timeout's or a service
        manager's SIGTERM into that event, and the run went on until SIGKILL. Without them the signals end it as usual) */
     if (getenv("HOS_HEADLESS")) hos_sdl_hint("SDL_NO_SIGNAL_HANDLERS", "1");
+    /* (hookshot) the Switch 2 Pro Controller is host/pad_sw2.c's: SDL's HIDAPI leaves it alone (an SDL built with libusb
+       would take the same USB interfaces), by its ids only: the Joy-Con 2 and the GameCube controller stay SDL's. What the
+       player set in the environment is kept */
+    if (hos_sw2_enabled()) {
+        const char *had = getenv("SDL_HIDAPI_IGNORE_DEVICES");
+        char ignore[512];
+        snprintf(ignore, sizeof ignore, "%s%s0x057e/0x2069", had && *had ? had : "", had && *had ? "," : "");
+        hos_sdl_hint("SDL_HIDAPI_IGNORE_DEVICES", ignore);
+    }
     if (!hos_sdl_init(HOS_SDL_GAMEPAD)) {
         hos_log("hid: SDL could not start its controller support: %s", hos_sdl_error());
         return 0;
@@ -145,6 +157,17 @@ static void hd_open(int i, void *gc) {
     pads[i].hd_ns = 0;
     const uint8_t n[4] = {0x00, 0x01, 0x40, 0x40};
     hd_rumble_packet(HD_RUMBLE_PRO, n, n, pads[i].hd_sent);
+}
+
+/* (hookshot) whether host/pad_sw2.c's Switch 2 Pro Controllers get the game's HD rumble (HOS_HD_RUMBLE=0: the motor
+   rumble, which pad_sw2.c plays at SDL's fixed frequencies) */
+static int sw2_hd_rumble(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("HOS_HD_RUMBLE");
+        on = !(e && !strcmp(e, "0"));
+    }
+    return on;
 }
 
 /* A pad's HD rumble, each poll: its packet when due (hd_rumble_due). 1 when the pad plays HD rumble (the motor rumble
@@ -350,8 +373,9 @@ static void pads_poll(void) {
         rumble_strength((uint16_t)rumble_low, (uint16_t)rumble_high, strength, motors);
         const uint16_t lo = motors[0], hi = motors[1];
         uint8_t side[3][4];   /* (the HD rumble pads': each side's bytes, then both merged for a single Joy-Con) */
+        float felt[3][4];     /* (and the values they come from: the Switch 2 Pro Controller's, host/pad_sw2.c) */
         {
-            float hv[2][4], felt[3][4];
+            float hv[2][4];
             AcquireSRWLockShared(&hd_lock);
             memcpy(hv, hd_values, sizeof hv);
             ReleaseSRWLockShared(&hd_lock);
@@ -399,6 +423,10 @@ static void pads_poll(void) {
                     if (hos_sdl_pad_button(gc, k)) sig |= 1ULL << k;
                 for (int k = 0; k < 4; k++) sig |= (uint64_t)(v[k] > 0 ? 1 : v[k] < 0 ? 2 : 0) << (32 + 2 * k);
                 if (sig != pads[i].input_sig) pads[i].input_sig = sig, pads[i].used_ns = now;
+            }
+            if (hos_sw2_is(gc) && sw2_hd_rumble()) {   /* (the Switch 2 Pro Controller: the game's HD rumble, both sides) */
+                hos_sw2_rumble_hd(gc, felt[0], felt[1], strength);
+                continue;
             }
             if (hd_poll(i, side, now)) continue;
             if (rumble_due(lo, hi, pads[i].rumble_lo, pads[i].rumble_hi, now, pads[i].rumble_ns)) {
