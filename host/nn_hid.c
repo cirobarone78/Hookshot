@@ -604,13 +604,15 @@ void hos_bind(int set, int button, int slot, int code) {
 static volatile LONG pad_raw_now;   /* the gamepads' inputs at the last read, 1 << HOS_PAD_* */
 uint32_t hos_pad_raw(void) { return (uint32_t)pad_raw_now; }
 
-/* A stick axis cut at the dead zone, as XInput's and SDL's pads both are (pad_sdl.c): zone is the Insert menu's "Stick
-   dead zone" (option 11), 0 XInput's own 7849 (~24%, the only one before issue 752), 1 to 5 5%, 10%, 15%,
-   20%, 30%. Per axis, as before: the game's own dead zone still follows */
-int32_t hos_stick_axis(int16_t v, int zone) {
+/* Apply the Insert menu's Stick dead zone to each stick as a pair, for XInput and SDL.
+   Keep both components outside the circle so the filter does not snap toward an axis. */
+void hos_filter_stick(int16_t x, int16_t y, int zone, int32_t out[2]) {
     static const int32_t cut[6] = {7849, 1638, 3277, 4915, 6553, 9830};
-    const int32_t a = v < -32767 ? -32767 : v, t = cut[(unsigned)zone < 6 ? zone : 0];
-    return (a > t || a < -t) ? a : 0;
+    const int32_t a = x < -32767 ? -32767 : x, b = y < -32767 ? -32767 : y;
+    const int32_t t = cut[(unsigned)zone < 6 ? zone : 0];
+    const int active = a * a + b * b > t * t;   /* both components are clamped, so the sum fits in int32_t */
+    out[0] = active ? a : 0;
+    out[1] = active ? b : 0;
 }
 
 static void pads_read(uint64_t *buttons, int32_t stick[4]) {
@@ -687,7 +689,8 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
             int32_t v[4];
             int rx_option(int id, int otherwise);
             const int zone = rx_option(11, 0);   /* (the menu's Stick dead zone) */
-            for (int i = 0; i < 4; i++) v[i] = hos_stick_axis(thumb[i], zone);
+            hos_filter_stick(thumb[0], thumb[1], zone, v);
+            hos_filter_stick(thumb[2], thumb[3], zone, v + 2);
             if (rx_option(16, 0)) v[2] = -v[2];
             if (rx_option(17, 0)) v[3] = -v[3];
             stick_max(s, v);
