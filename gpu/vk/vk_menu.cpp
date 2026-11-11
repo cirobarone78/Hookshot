@@ -1565,7 +1565,7 @@ bool share_spawn(std::vector<std::string> argv, const std::string* input = nullp
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     if (input) {
-        if (pipe(fds)) return posix_spawn_file_actions_destroy(&fa), false;
+        if (pipe2(fds, O_CLOEXEC)) return posix_spawn_file_actions_destroy(&fa), false;   // (no other child holds it open)
         posix_spawn_file_actions_adddup2(&fa, fds[0], 0);
         posix_spawn_file_actions_addclose(&fa, fds[1]);
     } else {
@@ -1573,6 +1573,7 @@ bool share_spawn(std::vector<std::string> argv, const std::string* input = nullp
     }
     posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
     posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addclosefrom_np(&fa, 3);   // (a browser or file manager keeps none of the game's files, nor a clipboard pipe)
     std::vector<char*> args;
     for (std::string& a : argv) args.push_back(a.data());
     args.push_back(nullptr);

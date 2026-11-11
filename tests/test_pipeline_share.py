@@ -278,6 +278,10 @@ def check_sources():
     assert "ps::share_zip(" in body and "state_list_snapshot(" in body and "ps::check_list(" in body
     assert 'env_on("HOS_HEADLESS")' in body, "a run without a window would open the browser"
     assert body.find("ps::check_list(") < body.find("ps::share_zip("), "the list is zipped before it is checked"
+    spawn = menu[menu.find("bool share_spawn("):]
+    spawn = spawn[:spawn.index("\n}\n")]
+    assert "pipe2(fds, O_CLOEXEC)" in spawn and "addclosefrom_np(&fa, 3)" in spawn, \
+        "a desktop program can inherit the clipboard pipe (wl-copy then waits for the browser to exit)"
     for word in ("WinHttp", "curl", "POST"):
         assert word not in body, "Save my pipeline list uploads something (%s)" % word
     # the builders
