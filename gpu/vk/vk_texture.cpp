@@ -3886,6 +3886,24 @@ void texture_frame(uint64_t completed) {
         // Safety clamp: do not exceed 75% of driver-allowed memory on constrained VRAM (prevents VK_ERROR_DEVICE_LOST)
         budget = std::min(budget, (allowed / 4) * 3);
     }
+    // (hookshot) Near the driver's limit the budget steps down: 55% of what it allows from 90% used, 47% from 94%, 40% from 97%,
+    // kept until the count is back under 85%. At the limit nothing below squeezes while the blocks have room, and the blocks keep
+    // what an eviction frees, so the count stayed there: the driver paged and the replay waited for the GPU in bursts of seconds
+    // (Hyrule Castle Town's market on a 12 GB card). Not from the start: Hyrule Field fits at 91%, and uploads more with less
+    if (known && !vram_env) {
+        constexpr uint64_t tight_pct = 40;
+        static int tight = 0;   // (0: not; 1 to 3: the step)
+        const int now = used > allowed / 100 * 97 ? 3 : used > allowed / 100 * 94 ? 2 : used > allowed / 100 * 90 ? 1 : 0;
+        if (now > tight) {
+            if (now == 3)
+                logf("vk: VRAM at the driver's limit (%llu of %llu MB): textures held to %llu%% of it until it is back under 85%%",
+                     (unsigned long long)(used >> 20), (unsigned long long)(allowed >> 20), (unsigned long long)tight_pct);
+            tight = now;
+        } else if (used < allowed / 100 * 85) {
+            tight = 0;
+        }
+        if (tight) budget = std::min(budget, allowed / 100 * (tight == 3 ? tight_pct : tight == 2 ? tight_pct + 7 : tight_pct + 15));
+    }
     // (near what the driver allows, the budget shrinks by the excess. The excess of what the process holds less the
     // free space in VMA's blocks, which new images take before VMA makes a block: measured by the blocks alone, the
     // textures evicted freed space inside them that the driver still counted, so 10 frames later the budget shrank
