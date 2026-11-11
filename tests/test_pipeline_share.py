@@ -137,6 +137,10 @@ def check_python(tmp):
     assert str(t) not in report and os.path.expanduser("~") not in report, "a path of the player's is in the report"
     assert sorted(os.listdir(out)) == [Path(path).name], "something besides the zip was left in the folder"
 
+    # the list is read once, and the bytes zipped are the bytes checked (a game appending between two reads changed them)
+    src = (ROOT / "nx2" / "pipeline_share.py").read_text(encoding="utf-8")
+    mz = src[src.find("def make_zip("):src.find("def main(")]
+    assert mz.count("read_list(") == 1 and "open(path" not in mz, "make_zip reads the list more than once"
     # older logs: the driver from its number; no log: the version file; settings: handheld, DLAA, the game's own output
     (g / "hookshot_log.txt").write_text("[hos host] vk: NVIDIA GeForce RTX 3090, Vulkan 1.4, driver 0x9b118180; mesh shaders yes\n",
                                         encoding="utf-8")

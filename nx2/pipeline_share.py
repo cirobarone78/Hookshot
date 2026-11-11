@@ -19,6 +19,7 @@ both builders through this file: the Linux one imports it (builder/linux/hooksho
 import argparse
 import datetime
 import json
+import lzma
 import os
 import platform
 import re
@@ -55,14 +56,21 @@ class ShareError(Exception):
     """Why there is nothing to share: said to the player as it is"""
 
 
-def check_list(path):
-    """The list's records, checked as nx2/pipeline_states.py --check checks a list (strict: whole records). ShareError with the
-    reason when it is missing, not a list this build reads, cut short or empty"""
-    if not os.path.isfile(path):
+def read_list(path):
+    """(the list's bytes as read, once, and its records): the bytes checked as nx2/pipeline_states.py --check checks a list
+    (strict: whole records), so the zip holds exactly what was checked. ShareError with the reason when it is missing, not a list
+    this build reads, cut short or empty"""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except FileNotFoundError:
         raise ShareError("No pipeline list yet: %s is not in the game folder. The game writes it as you play: play a while, then "
                          "save it again." % LIST)
     try:
-        recs = pipeline_states.read(path, strict=True)
+        body = lzma.decompress(data) if data[:6] == pipeline_states.XZ_MAGIC else data
+        recs = pipeline_states.parse(body, path, strict=True)
+    except lzma.LZMAError as e:
+        raise ShareError("%s cannot be shared: a damaged xz file (%s)." % (LIST, e))
     except SystemExit as e:   # (pipeline_states says why, with the path)
         why = str(e).replace(path + ": ", "")
         if why.startswith("not a pipeline state list"):   # (its advice is the developers': make it again with this build)
@@ -70,7 +78,12 @@ def check_list(path):
         raise ShareError("%s cannot be shared: %s." % (LIST, why.rstrip(".")))
     if not recs:
         raise ShareError("%s holds no pipelines yet. Play a while, then save it again." % LIST)
-    return recs
+    return data, recs
+
+
+def check_list(path):
+    """The list's records (read_list)"""
+    return read_list(path)[1]
 
 
 def read_ini(folder):
@@ -288,9 +301,7 @@ def make_zip(folder, out_dir=None, day=None):
     """The zip for the issue, from the game folder: (its path, the filled template, the number of pipelines). ShareError when the
     list is missing or not one to share (nothing written then)"""
     path = os.path.join(folder, LIST)
-    recs = check_list(path)
-    with open(path, "rb") as f:
-        data = f.read()
+    data, recs = read_list(path)   # (read once: the bytes checked are the bytes zipped)
     text = template(details(folder, recs))
     out_dir = out_dir or downloads_dir()
     os.makedirs(out_dir, exist_ok=True)
