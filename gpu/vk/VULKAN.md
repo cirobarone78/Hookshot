@@ -68,9 +68,8 @@ for TOTK: pools imported as host memory, a recorder thread, graphics pipeline li
 
 ## Status (Nov 2026): it renders
 
-The replay draws, dispatches, clears, copies and presents. A frame dumped with
-`RX_VK_DUMP=<file.ppm> RX_VK_DUMP_AT=<present>` is the game's map screen, right way up and in colour, with its
-textures crisp (compare `RX_VK_DUMP_TEX=<dir>`, which writes the decoded textures themselves).
+The replay draws, dispatches, clears, copies and presents. A frame dumped with `RX_VK_DUMP=<present>` is the game's
+map screen, right way up and in colour, with its textures crisp.
 
 What it took, in the order it blocked a picture:
 
@@ -87,8 +86,8 @@ What it took, in the order it blocked a picture:
   NVIDIA's gap), and MKW's map, terrain and character art are ASTC, so every one is decoded on upload. The first
   version hand-rolled the block-linear unswizzle and used totk-pc-recomp's decoder: the result had the right colours
   in the right places but every detail shredded into block-sized noise (text unreadable, a dither lattice over flat
-  areas). Dumping a decoded texture (`RX_VK_DUMP_TEX=<dir>`) showed the corruption was already there, before any
-  draw. The fix is to stop guessing: `gpu/vk/vk_upload.cpp` now calls suyu's own `Tegra::Texture::UnswizzleTexture`
+  areas). Dumping a decoded texture (a switch of the time, since removed) showed the corruption was already there, before
+  any draw. The fix is to stop guessing: `gpu/vk/vk_upload.cpp` now calls suyu's own `Tegra::Texture::UnswizzleTexture`
   and `Tegra::Texture::ASTC::DecompressSerial` (`gpu/third_party/suyu/video_core/textures/`), the exact pair the
   working WebGPU back end decodes with in rx_texture.cpp. Those two files are built into `mkw_vk.dll` now
   (nx2/build.py `vk_sources()`, with suyu's root on the include path). The dumped map texture is pixel-crisp

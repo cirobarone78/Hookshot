@@ -403,7 +403,7 @@ def patch_text_speed(s):
         return None
     end = s.find("\nvoid f_", head + len(TEXT_HEAD))
     body = s[head:end if end >= 0 else len(s)]
-    for old in (TEXT_OLD_POLLED, TEXT_OLD):   # (with the interrupt poll before the block's backward goto, or without: --no-polls)
+    for old in (TEXT_OLD_POLLED, TEXT_OLD):   # (with the interrupt poll before the block's backward goto, or without: a lift run by hand with nx2/lift.py --no-polls)
         if old + TEXT_ADD in body:   # (applied already: a second run)
             return s
         if body.count(old) == 1:
