@@ -16,6 +16,7 @@ FIXTURE = r"""
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -29,7 +30,8 @@ struct Info {
     std::vector<Desc> storage_buffers_descriptors, image_buffer_descriptors, image_descriptors;
 };
 struct Stage { Info info; };
-int scans, early_reads, translation_waits, pipeline_waits, draws, output, st_waits, st_pending_skips;
+int scans, early_reads, translation_waits, bounded_waits, pipeline_waits, draws, output, st_waits, st_pending_skips;
+bool fast_translation;   // (whether the bounded wait sees the translation finish)
 double st_wait_ms;
 // Instrument only fixture iteration: reject inspecting ordinary stages before acquire-ready publication.
 struct Stages {
@@ -77,6 +79,12 @@ void jobs_wait(const std::atomic<bool>& ready) {
     if (&ready == &current->ready) { ++translation_waits; publish(); }
     else { ++pipeline_waits; pipe_entry.ready.store(true, std::memory_order_release); }
 }
+bool jobs_wait_for(const std::atomic<bool>& ready, double) {
+    ++bounded_waits;
+    if (&ready == &current->ready && fast_translation) publish();
+    return ready.load(std::memory_order_acquire);
+}
+uint64_t texture_frame_no() { return 1; }
 bool targets_persistent(const Targets& at) { return at.persistent; }
 bool exposure_log_on() { return false; }
 void exposure_note(NvnState&, const Program&) {}
@@ -94,23 +102,27 @@ void decision(const Program* cp, const Targets& at) {
 }
 int failures;
 void check(bool ok, const char* label) { if (!ok) { ++failures; std::printf("FAIL %s\n", label); } }
-void scenario(int kind, bool translated, bool pipeline_hot, bool persistent) {
-    scans = early_reads = translation_waits = pipeline_waits = draws = output = st_pending_skips = 0;
-    Program p; current = &p; effect = kind;
+void scenario(int kind, bool translated, bool pipeline_hot, bool persistent, bool fast = true) {
+    scans = early_reads = translation_waits = bounded_waits = pipeline_waits = draws = output = st_pending_skips = 0;
+    Program p; current = &p; effect = kind; fast_translation = fast;
     if (translated) publish();
     pipe_entry.ready.store(pipeline_hot, std::memory_order_release);
     const bool force = std::getenv("RX_VK_PIPE_SKIP") && std::atoi(std::getenv("RX_VK_PIPE_SKIP")) == 0;
     const bool legacy = std::getenv("RX_VK_PIPE_SKIP") && std::atoi(std::getenv("RX_VK_PIPE_SKIP")) == 2;
-    const bool skip_unknown = legacy && !translated && persistent;
+    // (default and 1: an unknown translation on persistent targets is waited for within a frame's bound, then left out)
+    const bool bounded = !force && !legacy && !translated && persistent;
+    const bool skip_unknown = (legacy && !translated && persistent) || (bounded && !fast);
     const bool should_draw = !skip_unknown && (pipeline_hot || force || !persistent || kind != 0);
     decision(&p, {persistent});
     char label[120];
-    std::snprintf(label, sizeof label, "kind%d translated%d hot%d persistent%d force%d", kind, translated, pipeline_hot, persistent, force);
+    std::snprintf(label, sizeof label, "kind%d translated%d hot%d persistent%d fast%d force%d", kind, translated, pipeline_hot,
+                  persistent, fast, force);
     const int before = failures;
     check(draws == int(should_draw), label);
     if (kind && should_draw) check(output == 42, "producer write absent at fake consumer");
     check(!early_reads, "metadata inspected before publication");
-    check(translation_waits == int(!translated && !skip_unknown), "translation wait mode");
+    check(translation_waits == int(!translated && !skip_unknown && !bounded), "translation wait mode");
+    check(bounded_waits == int(bounded), "bounded translation wait mode");
     if (pipeline_hot || force || !persistent || skip_unknown) check(scans == 0, "unnecessary classification");
     check(pipeline_waits == int(!pipeline_hot && should_draw), "pending pipeline must publish before draw");
     std::printf("%s %s draws%d skips%d scans%d twait%d pwait%d\n", failures == before ? "PASS" : "RED", label,
@@ -123,6 +135,9 @@ int main() {
     scenario(1, true, false, false);
     scenario(1, false, false, false);
     scenario(0, false, false, false);
+    // (a translation that does not finish within the frame's bound: left out on persistent targets by default)
+    for (int kind = 0; kind <= 4; ++kind)
+        for (bool hot : {false, true}) scenario(kind, false, hot, true, false);
     std::printf("%d failures; fake CPU decision check only\n", failures);
     return failures ? 1 : 0;
 }
@@ -156,15 +171,16 @@ def main():
                 env["RX_VK_PIPE_SKIP"] = mode
             result = subprocess.run([str(exe)], env=env, capture_output=True, text=True, timeout=10)
             lines = result.stdout.splitlines()
-            complete = "0 failures; fake CPU decision check only" in lines and sum(l.startswith("PASS kind") for l in lines) == 23
+            complete = "0 failures; fake CPU decision check only" in lines and sum(l.startswith("PASS kind") for l in lines) == 33
             ok = result.returncode == 0 and complete
             print(f"RX_VK_PIPE_SKIP={mode if mode is not None else 'unset'}: {'PASS' if ok else 'FAIL'}")
             if not ok:
                 failed = True
-                print("fixture failed or did not finish all 23 cases\n" + result.stdout + result.stderr)
+                print("fixture failed or did not finish all 33 cases\n" + result.stdout + result.stderr)
         if failed:
             raise SystemExit(1)
-    print("PASS: unknown translations wait by default; mode 2 restores their old skip; translated writers wait; hot draws do not scan stages")
+    print("PASS: unknown translations wait within a frame's bound by default, then are left out on persistent targets; mode 0 "
+          "waits them out; mode 2 restores their old skip; translated writers wait; hot draws do not scan stages")
 
 
 if __name__ == "__main__":

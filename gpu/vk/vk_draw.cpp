@@ -6508,9 +6508,33 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         st_waits++;
         st_wait_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     };
+    // (hookshot) A translation not ready, for a draw whose targets hold an earlier frame's picture: waited for at most
+    // RX_VK_TRANSLATE_WAIT_MS (8) a frame in all, on each recording thread, without taking the job onto this thread, and then
+    // left out of the frame. Waiting it out (#1573) brought back the 0.2-3 s pauses at an area's first new programs, the most
+    // reported stutter (#1573's own run: 3.12 s of waits against 0.92 s); left out at once (v2.1.0, RX_VK_PIPE_SKIP=2) it
+    // lost the writes of translations that finish in a moment. A target made this frame still waits it out.
+    // RX_VK_TRANSLATE_WAIT_MS=-1: always waited out, as #1573
+    static const double translate_wait_ms = [] {
+        const char* e = getenv("RX_VK_TRANSLATE_WAIT_MS");
+        return e ? atof(e) : 8.0;
+    }();
     if (!cp->ready.load(std::memory_order_acquire)) {
         if (legacy_translation_skip && targets_persistent(at)) return void(st_pending_skips++);
-        wait_for(cp->ready);
+        if (!always_wait && translate_wait_ms >= 0 && targets_persistent(at)) {
+            static thread_local uint64_t budget_frame = ~0ull;
+            static thread_local double budget_left = 0;
+            const uint64_t frame = texture_frame_no();
+            if (frame != budget_frame) budget_frame = frame, budget_left = translate_wait_ms;
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool ready = jobs_wait_for(cp->ready, budget_left);
+            const double took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            budget_left -= took;
+            st_waits++;
+            st_wait_ms += took;
+            if (!ready) return void(st_pending_skips++);
+        } else {
+            wait_for(cp->ready);
+        }
     }
     if (exposure_log_on() && cp) exposure_note(s, *cp);
     if (cp->failed) SKIP_HERE();
