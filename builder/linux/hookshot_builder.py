@@ -38,7 +38,8 @@ DLSS_LICENSE = (
     "NVIDIA DLSS is NVIDIA's, not Hookshot's. With it ticked, the build downloads NVIDIA's DLSS SDK (release v310.9.16) from "
     "github.com/NVIDIA/DLSS, under NVIDIA's own license, the NVIDIA RTX SDKs license:\n\n"
     "https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt\n\n"
-    "Its files stay on this PC (in the builder's ngx-sdk folder, and libnvidia-ngx-dlss.so in the game folder's ngx folder). "
+    "Its files stay on this PC (in the builder's ngx-sdk folder, and libnvidia-ngx-dlss.so and libnvidia-ngx-dlssg.so in "
+    "the game folder's ngx folder). "
     "Hookshot never includes or shares them: never share a game folder built with them.\n\n"
     "Do you accept NVIDIA's license?"
 )
