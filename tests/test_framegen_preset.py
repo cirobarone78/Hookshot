@@ -64,6 +64,8 @@ int step_engine(int, int dir, unsigned) { return dir; }   // (the Upscaler by en
 void step_render(int up, int value, int dir, int* u, int* r) { *u = up, *r = value + dir; }
 }
 namespace mr { constexpr int kMax = 8; }
+/* (the Game language row's hook in set_row: language.txt, not written here) */
+namespace i18n { inline void set_game_language(int) {} }
 void restart_values(int*) {}
 struct { void note(const int*) {} } restart_state;
 bool can_mic() { return false; }

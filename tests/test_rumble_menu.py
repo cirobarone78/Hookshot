@@ -78,6 +78,8 @@ int step_engine(int, int, unsigned) { return 0; }   // (the Upscaler by engine)
 void step_render(int up, int v, int dir, int* u, int* r) { *u = up, *r = v + dir; }
 }
 namespace mr { constexpr int kMax = 8; }
+/* (the Game language row's hook in set_row: language.txt, not written here) */
+namespace i18n { inline void set_game_language(int) {} }
 void restart_values(int*) {}
 struct { void note(const int*) {} } restart_state;
 %(is_slider)s
