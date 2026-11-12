@@ -47,6 +47,7 @@
 #include "vk_antilag.h"
 #include "upscaler_rows.h"
 #include "menu_restart.h"
+#include "display_modes.h"   // (the Aspect ratio and Output resolution rows: the screen's sizes and their shapes)
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
@@ -301,54 +302,165 @@ bool screen_size(uint32_t* w, uint32_t* h) {
 #endif
     return false;
 }
+/// The main screen's display modes, each as Windows lists it (every refresh rate and depth: display_modes.h keeps each size once);
+/// none where they are not known
+std::vector<display_modes::Size> screen_modes() {
+    std::vector<display_modes::Size> v;
+#ifdef _WIN32
+    DEVMODEW m{};
+    m.dmSize = sizeof m;
+    for (DWORD i = 0; EnumDisplaySettingsW(nullptr, i, &m); i++) v.push_back({(uint32_t)m.dmPelsWidth, (uint32_t)m.dmPelsHeight});
+#endif
+    return v;
+}
 // The output the menu's sizes are shown for: the Output resolution row's (applied at the next start), so the rows below follow a change
 // at once; the Handheld profile runs the game's own (1536x864)
 struct Out {
     uint32_t w, h;
 };
-// The Output resolution's choices: the sizes offered (0 the game's own), then, last, a size of the player's own from
-// hookshot_options.ini (output_res=<width>x<height>, host/nn_applet.c hos_output_parse: the same rules) when it is none of them.
-// The ini keeps the size, not the choice's number: output_res=3840x2160
+namespace dm = display_modes;
+// The Output resolution's choices: 0 the game's own (2048x1152), then the sizes the main screen offers (display_modes.h: its
+// display modes and its own size, each side rounded down to 8, those the game accepts, with the common sizes of the shapes
+// they have, 1440p, 4K and 5K at 16:9 on a 1080p screen too, by width then height; HOS_DISPLAY_MODES=<w>x<h>,... for a run;
+// where they are not known, the sizes offered before: 1920x1080, 2560x1440, 3840x2160, 5120x1440, 5120x2880), then, last,
+// a size of the player's own from hookshot_options.ini (output_res=<width>x<height>, host/nn_applet.c hos_output_parse: the
+// same rules) when it is none of them. The ini keeps the size, not the choice's number: output_res=3840x2160
+constexpr Out kGameOutput{2048, 1152};
+// (the sizes offered before the screen's: output_res=0 to 5 as saved then, and where the screen's are not known, by width then
+// height. nx2/pipeline_share.py OUTPUTS mirrors it)
 constexpr Out kOutputs[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}, {1920, 1080}, {5120, 1440}, {5120, 2880}};
-constexpr int kCustomOutput = std::size(kOutputs), kLastOutput = kCustomOutput;
+const std::vector<Out>& outputs() {
+    static const std::vector<Out> v = [] {
+        const char* e = getenv("HOS_DISPLAY_MODES");
+        std::vector<Out> o{kGameOutput};
+        std::vector<dm::Size> modes = e ? dm::parse_list(e) : screen_modes();
+        uint32_t sw = 0, sh = 0;
+        if (!e && !modes.empty() && screen_size(&sw, &sh)) {
+            // (the screen's own size, and its shape at the most pixels a picture of another shape takes when the size itself
+            // is past what the game accepts: a 7680x2160 32:9 screen gets 6256x1760, so its shape is still offered)
+            modes.push_back({sw, sh});
+            unsigned w = 0, h = 0;
+            if (sh && !hos_output_size_valid(sw & ~7u, sh & ~7u)) {
+                hos_wide_size(sh, hos_wide_clamp((double)sw / sh), hos_wide_max_px(), &w, &h);
+                if (dm::ratio_name({w, h}) == dm::ratio_name({sw, sh})) modes.push_back({w, h});
+            }
+        }
+        for (dm::Size s : dm::with_common(dm::offered(modes)))
+            if (!(s.w == kGameOutput.w && s.h == kGameOutput.h)) o.push_back({s.w, s.h});
+        if (o.size() == 1) {
+            o.insert(o.end(), std::begin(kOutputs) + 1, std::end(kOutputs));
+            std::sort(o.begin() + 1, o.end(), [](Out a, Out b) { return a.w != b.w ? a.w < b.w : a.h < b.h; });
+        }
+        return o;
+    }();
+    return v;
+}
+int custom_index() { return (int)outputs().size(); }   // (the player's own size's choice: after the sizes offered)
+int last_output() { return custom_index(); }
 Out custom_output{0, 0};   // (the player's own size; 0 x 0: none)
-int output_choice(int v) { return v >= 0 && (v < kCustomOutput || (v == kCustomOutput && custom_output.w)) ? v : 0; }
+int output_choice(int v) { return v >= 0 && (v < custom_index() || (v == custom_index() && custom_output.w)) ? v : 0; }
 Out output_at(int v) {
     v = output_choice(v);
-    return v == kCustomOutput ? custom_output : kOutputs[v];
+    return v == custom_index() ? custom_output : outputs()[v];
+}
+/// The choice of size w x h: one of the sizes offered, else the player's own from now on
+int output_choice_of(uint32_t w, uint32_t h) {
+    for (int i = 0; i < custom_index(); i++)
+        if (outputs()[i].w == w && outputs()[i].h == h) return i;
+    custom_output = {w, h};
+    return custom_index();
 }
 /// output_res= (or HOS_OUTPUT_RES) to a choice: "<width>x<height>" (each side a multiple of 8, rounded down; at least 640 x 360,
 /// at most 5120 x 2880's pixels, 5:4 to 48:9), one of the sizes offered or the player's own (custom_output); the numbers saved
-/// before (0 to 5) as theirs; anything else the game's own (host/nn_applet.c hos_output_parse: the same rules)
+/// before (0 to 5: 2048x1152, 2560x1440, 3840x2160, 1920x1080, 5120x1440, 5120x2880) as those sizes; anything else the game's
+/// own (host/nn_applet.c hos_output_parse: the same rules)
 int parse_output(const char* text) {
     unsigned w = 0, h = 0;
     if (text && sscanf(text, "%u%*[xX]%u", &w, &h) == 2) {
         w &= ~7u, h &= ~7u;
         if (!hos_output_size_valid(w, h))
             return 0;
-        for (int i = 0; i < kCustomOutput; i++)
-            if (kOutputs[i].w == w && kOutputs[i].h == h) return i;
-        custom_output = {w, h};
-        return kCustomOutput;
+        return output_choice_of(w, h);
     }
     const int v = text ? atoi(text) : 0;
-    return v >= 0 && v < kCustomOutput ? v : 0;
+    return v >= 1 && v < (int)std::size(kOutputs) ? output_choice_of(kOutputs[v].w, kOutputs[v].h) : 0;
 }
-// (the choices from smallest to largest, by width then height: 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440,
-// 5120x2880, and the player's own in its place)
+dm::Size size_of(Out o) { return {o.w, o.h}; }
+/// Every choice's size, in choice order (the player's own last, when there is one)
+std::vector<dm::Size> output_sizes() {
+    std::vector<dm::Size> v;
+    for (int i = 0; i <= last_output(); i++)
+        if (output_choice(i) == i) v.push_back(size_of(output_at(i)));
+    return v;
+}
+/// The Aspect ratio row's shapes: those of the choices, narrowest first
+std::vector<dm::Shape> output_shapes() { return dm::shapes(output_sizes()); }
+/// The shape (a place in output_shapes) of choice v
+int output_shape_of(int v) { return dm::shape_index(output_shapes(), size_of(output_at(v))); }
+// (the choices of id's shape, the Aspect ratio row's, from smallest to largest by width then height: 1920x1080, 2048x1152,
+// 2560x1440, 3840x2160 at 16:9, the player's own in its place)
 int step_output_choice(int id, int dir) {
-    int order[kLastOutput + 1], n = 0;
-    for (int i = 0; i <= kLastOutput; i++)
-        if (output_choice(i) == i) order[n++] = i;
-    std::sort(order, order + n, [](int a, int b) {
+    const std::string shape = dm::ratio_name(size_of(output_at(id)));
+    std::vector<int> order;
+    for (int i = 0; i <= last_output(); i++)
+        if (output_choice(i) == i && dm::ratio_name(size_of(output_at(i))) == shape) order.push_back(i);
+    std::sort(order.begin(), order.end(), [](int a, int b) {
         const Out x = output_at(a), y = output_at(b);
         return x.w != y.w ? x.w < y.w : x.h < y.h;
     });
-    const int at = (int)(std::find(order, order + n, output_choice(id)) - order);
-    return order[std::clamp(at + dir, 0, n - 1)];
+    const int at = (int)(std::find(order.begin(), order.end(), output_choice(id)) - order.begin());
+    return order[std::clamp(at + dir, 0, (int)order.size() - 1)];
 }
-/// The picture an Output resolution choice makes: a custom surround output takes its own shape;
-/// otherwise the Aspect ratio at Monitor's shape takes the screen's. Both keep at most hos_wide_max_px() pixels, matching
+/// The monitor's shape: the main screen's (as host/hos_main.c takes it), when it is one the row lists; "" where the screen's
+/// size is not known or its shape is not offered (a portrait screen): the row then marks none, and ultrawide= is kept as read
+std::string monitor_shape() {
+    uint32_t sw = 0, sh = 0;
+    if (!screen_size(&sw, &sh)) return std::string();
+    const std::string name = dm::ratio_name({sw, sh});
+    for (const dm::Shape& s : output_shapes())
+        if (s.name == name) return name;
+    return std::string();
+}
+/// The shape the Aspect ratio row's value v names: a place in output_shapes, the shapes of the choices, narrowest first
+std::string aspect_shape(int v) {
+    const std::vector<dm::Shape> shapes = output_shapes();
+    return shapes.empty() ? std::string("16:9") : shapes[std::clamp(v, 0, (int)shapes.size() - 1)].name;
+}
+/// The row's value for shape name (16:9's when it is not one of them)
+int aspect_index(const std::string& name) {
+    const std::vector<dm::Shape> shapes = output_shapes();
+    for (int i = 0; i < (int)shapes.size(); i++)
+        if (shapes[i].name == name) return i;
+    for (int i = 0; i < (int)shapes.size(); i++)
+        if (shapes[i].name == "16:9") return i;
+    return 0;
+}
+/// Whether the row's value v is the monitor's shape (ultrawide=1: host/hos_main.c gives a 16:9 size the monitor's shape)
+bool aspect_is_monitors(int v) {
+    const std::string m = monitor_shape();
+    return !m.empty() && aspect_shape(v) == m;
+}
+int ultrawide_started = 1;   // (ultrawide= as the game started with it: saved again where the monitor's shape is not known)
+/// The Aspect ratio row's value for Output resolution choice v: a size of a shape of its own is that shape; a 16:9 one is the
+/// monitor's shape when ultrawide (0 or 1, as host/hos_main.c started with it) follows the monitor, else 16:9
+int aspect_of_choice(int v, int ultrawide) {
+    const Out o = output_at(v);
+    if (hos_output_own_shape(o.w, o.h)) return aspect_index(dm::ratio_name(size_of(o)));
+    const std::string m = monitor_shape();
+    return aspect_index(ultrawide == 1 && !m.empty() ? m : std::string("16:9"));
+}
+/// The Output resolution the Aspect ratio row's value v takes: the one chosen when it has that shape; else the screen's own
+/// size when it has it; else the one whose height is nearest the screen's (display_modes.h pick)
+int output_for_aspect(int v) {
+    const std::string name = aspect_shape(v);
+    if (dm::ratio_name(size_of(output_at(opts.output_res))) == name) return opts.output_res;
+    uint32_t sw = 0, sh = 0;
+    screen_size(&sw, &sh);
+    const int i = dm::pick(output_sizes(), name, {sw & ~7u, sh & ~7u});
+    return i < 0 ? opts.output_res : i;   // (output_sizes' places are the choices' numbers)
+}
+/// The picture an Output resolution choice makes: a size not 16:9 (the Aspect ratio row's 21:9, 16:10, 4:3...) takes its own
+/// shape; a 16:9 one, at the monitor's own Aspect ratio, the screen's. Both keep at most hos_wide_max_px() pixels, matching
 /// host/hos_main.c at startup (host/hos_wide_size.h); otherwise the
 /// 16:9 output. The game's own choice (0) as it is (its size comes from the game's graphics scale). *native: the screen's own size
 Out picture_for(int v, bool* native = nullptr) {
@@ -356,18 +468,18 @@ Out picture_for(int v, bool* native = nullptr) {
     Out o = output_at(v);
     uint32_t sw = 0, sh = 0;
     if (native) *native = false;
-    const bool surround = hos_output_is_surround(o.w, o.h);
-    if (v && !opts.handheld && (surround || opts.ultrawide)) {
-        const bool have_screen = screen_size(&sw, &sh);
-        const double want = surround ? (double)o.w / o.h : have_screen ? (double)sw / sh : 0.0;
+    const bool own = hos_output_own_shape(o.w, o.h);
+    const bool have_screen = screen_size(&sw, &sh);
+    if (v && !opts.handheld && (own || aspect_is_monitors(opts.ultrawide))) {
+        const double want = own ? (double)o.w / o.h : have_screen ? (double)sw / sh : 0.0;
         const double game = 16.0 / 9.0;
         if (want > game * 1.01 || (want > 1.0 && want < game * 0.99)) {
             unsigned w = 0, h = 0;
             hos_wide_size(o.h, hos_wide_clamp(want), hos_wide_max_px(), &w, &h);
             o = Out{w, h};
         }
-        if (native) *native = o.w == sw && o.h == sh;
     }
+    if (native && v && !opts.handheld) *native = sw && o.w == (sw & ~7u) && o.h == (sh & ~7u);
     return o;
 }
 Out shown_output() {
@@ -460,6 +572,26 @@ const char* tx_output_res(int v) {
     snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, native ? " (native)" : v ? "" : " (game's)");
     return b;
 }
+/// The Aspect ratio row (ultrawide=): the shapes of the sizes offered, narrowest first, the monitor's own named so
+const char* tx_ultrawide(int v) {
+    static std::string b;
+    b = aspect_shape(v);
+    if (aspect_is_monitors(v)) b += " (monitor's)";
+    return b.c_str();
+}
+/// The Aspect ratio: the monitor's own shape, the game's 16:9, or another shape, wider or narrower than 16:9
+const char* hn_ultrawide(int v, int variant) {
+    static const char* const t[] = {
+        "Your monitor's own shape: the picture fills it. The HUD keeps its 16:9 shape in the middle.",
+        "The game's own shape.",
+        "Wider than 16:9: the camera sees more at the sides. The HUD and menus keep the middle 16:9.",
+        "Narrower than 16:9: the picture keeps its height, and the HUD fills its width."};
+    if (variant >= 0) return variant < (int)std::size(t) ? t[variant] : nullptr;
+    if (aspect_is_monitors(v)) return t[0];
+    const std::vector<dm::Shape> shapes = output_shapes();
+    const double r = shapes.empty() ? 16.0 / 9.0 : shapes[std::clamp(v, 0, (int)shapes.size() - 1)].r, game = 16.0 / 9.0;
+    return r > game * 1.01 ? t[2] : r < game * 0.99 ? t[3] : t[1];
+}
 /// Anisotropic filtering: the game's own, or 2x to 16x (vk_draw.cpp aniso_override)
 const char* tx_anisotropy(int v) {
     static const char* t[] = {"Game's", "2x", "4x", "8x", "16x"};
@@ -477,7 +609,6 @@ const char* tx_text_size(int v) {
     return t[v];
 }
 const char* tx_fov(int v) { return v == 100 ? "100% (original)" : tx_percent(v); }
-const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }   // (the Aspect ratio row: a shape, not on or off)
 const char* tx_prompts(int v) {
     static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
     return t[std::min(std::max(v, 0), (int)HOS_PROMPT_N)];
@@ -706,13 +837,26 @@ const char* hn_vsync(int v, int variant) {
     }
     return variant <= 0 ? t[std::clamp(v, 0, 2)] : nullptr;
 }
-MENU_HINTS(hn_output_res, 0, "The game's own size.",
-           "The sharpest on a 2560x1440 screen: nothing to scale to the window.",
-           "The sharpest on a 3840x2160 screen. The game's render targets get a bigger GPU pool, so a full-size 3D fits.",
-           "The sharpest on a 1920x1080 screen: the HUD and text pixel for pixel, nothing to scale to the window.",
-           "The sharpest on a 5120x1440 ultrawide screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.",
-           "The sharpest on a 5120x2880 (5K) screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.",
-           "Your own size, from output_res= in hookshot_options.ini.")
+/// The Output resolution: the game's own, the player's own, or one of the screen's sizes as it compares with the screen (its
+/// own, larger, smaller; nothing where the screen's size is not known)
+const char* hn_output_res(int v, int variant) {
+    static const char* const t[] = {
+        "The game's own size.",
+        "Your screen's own size: the HUD and text pixel for pixel, nothing to scale to the window.",
+        "Larger than your screen: drawn bigger, then scaled down to the window. Sharper, and slower. The game's render "
+        "targets get a bigger GPU pool, so a full-size 3D fits.",
+        "Smaller than your screen: faster, and scaled up to the window.",
+        "Your own size, from output_res= in hookshot_options.ini."};
+    if (variant >= 0) return variant < (int)std::size(t) ? t[variant] : nullptr;
+    v = output_choice(v);
+    if (!v) return t[0];
+    if (v == custom_index()) return t[4];
+    uint32_t sw = 0, sh = 0;
+    if (!screen_size(&sw, &sh)) return nullptr;
+    bool native = false;
+    const Out o = picture_for(v, &native);
+    return native ? t[1] : (uint64_t)o.w * o.h > (uint64_t)sw * sh ? t[2] : t[3];
+}
 /// The Window scaling filter: its filter, or that none is needed at this window's size
 const char* hn_filter(int v, int variant) {
     static const char* const t[] = {"The plain copy.", "Sharper.", "Sharper still; can ring on edges."};
@@ -730,7 +874,6 @@ const char* hn_sharpness(int v, int variant) {
 }
 MENU_HINTS(hn_handheld, 0, "As on a TV: the game at the Output resolution's size.",
            "As in the hands: the game at the console's handheld size (1536x864), lighter on the GPU.")
-MENU_HINTS(hn_ultrawide, 0, "The game's own shape.", "The camera takes the screen's shape, wider or narrower. The HUD keeps its 16:9 shape in the middle.")
 const char* tx_wide_menus(int v) {
     static const char* t[] = {"Full width", "Centred, blurred sides", "Centred, black bars"};
     return t[std::min(std::max(v, 0), 2)];
@@ -785,7 +928,12 @@ Row rows[] = {
     // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, its sharpening; then
     // the frames, and the window it is shown in)
     {TAB_GRAPHICS, "Resolution and upscaling", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
-    {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res,
+    // (the shape, then its sizes: the screen's display modes, display_modes.h; outputs_sync sets both rows' ends at the start)
+    {TAB_GRAPHICS, "Aspect ratio", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
+     "The picture's shape: your monitor's own (the default: wider on an ultrawide, narrower on 4:3 or 16:10), the game's "
+     "16:9, or another your screen has. The Output resolution lists that shape's sizes. Applies after a restart.", hn_ultrawide,
+     true, true},
+    {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, 0, 1, tx_output_res,
      "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
      hn_output_res, true, true},
     {TAB_GRAPHICS, "Profile", &opts.handheld, 0, 1, 1, tx_profile,
@@ -824,9 +972,6 @@ Row rows[] = {
      "Whether a frame waits for the display's refresh before it is shown. Changes at once.", hn_vsync, false, true},
     {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_filter,
      "How the finished picture is scaled to the window, when its size differs from the Output resolution.", hn_filter},
-    {TAB_GRAPHICS, "Aspect ratio", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
-     "The picture's shape: your monitor's (the default: wider on an ultrawide, narrower on 4:3 or 16:10), or the game's 16:9. "
-     "Applies after a restart.", hn_ultrawide, true, true},
     {TAB_GRAPHICS, "Ultrawide menus", &opts.wide_menus, 0, 2, 1, tx_wide_menus,
      "With the Aspect ratio at the monitor's shape: the pause, item and map menus, and what shows beside them. Loading "
      "screens and pre-rendered movies, which draw no world either, get the same sides. Changes at once.", hn_wide_menus, false, true},
@@ -1181,6 +1326,24 @@ const char* cheat_button_text(int i) {
 }
 constexpr int kRows = sizeof rows / sizeof rows[0];
 
+/// (hookshot) The Aspect ratio and Output resolution rows' ends from the screen's sizes and the player's own (known once the
+/// options and HOS_OUTPUT_RES are read), and the Aspect ratio of the size chosen: a size of a shape of its own is that shape,
+/// a 16:9 one is the monitor's shape or 16:9, as ultrawide= says (menu_init, before restart_init: what the run starts with)
+void outputs_sync() {
+    const std::vector<dm::Shape> shapes = output_shapes();
+    for (Row& r : rows) {
+        if (r.value == &opts.output_res) r.hi = last_output();
+        if (r.value == &opts.ultrawide) r.hi = std::max(0, (int)shapes.size() - 1);
+    }
+    ultrawide_started = std::clamp(opts.ultrawide, 0, 1);
+    opts.ultrawide = aspect_of_choice(opts.output_res, ultrawide_started);
+    std::string list;
+    for (const dm::Shape& s : shapes) list += (list.empty() ? "" : ", ") + s.name;
+    logf("vk: the Output resolution's sizes: %d (%s), the game's own and %s; shapes %s", custom_index(),
+         getenv("HOS_DISPLAY_MODES") ? "HOS_DISPLAY_MODES" : "the screen's modes",
+         custom_output.w ? "the player's own" : "no other", list.c_str());
+}
+
 int cur_tab = TAB_GRAPHICS;
 int tab_selected[TAB_COUNT + 1] = {};   // (and the Motion page's)
 bool is_motion_row(const Row& r) { return r.tab == TAB_CONTROLS && !r.value && !strcmp(r.name, "Motion"); }
@@ -1272,7 +1435,7 @@ int drag_row = -1;
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
 bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed || r.value == &opts.fov; }
 /// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
-bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed || r.value == &opts.fov; }
+bool stops_at_ends(const Row& r) { return r.value == &opts.ultrawide || r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed || r.value == &opts.fov; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
 int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
 // (hookshot) A run's environment over a saved row (RX_VK_PACE=1, HOS_OUTPUT_RES=...): for that run only. save() writes the
@@ -1454,8 +1617,10 @@ void save() {
         for (const Row& r : rows) {
             if (r.value == &opts.output_res) {   // (the size itself: host/nn_applet.c reads it)
                 const int v = saved_value(r.value);
-                const Out o = v == kCustomOutput && player_custom_output.w && env_holds(r.value) ? player_custom_output : output_at(v);
+                const Out o = v == custom_index() && player_custom_output.w && env_holds(r.value) ? player_custom_output : output_at(v);
                 fprintf(f, "%s=%ux%u\n", ini_key(r), o.w, o.h);
+            } else if (r.value == &opts.ultrawide) {   // (the Aspect ratio: 1 the monitor's own shape, else 0; output_res holds the rest)
+                fprintf(f, "%s=%d\n", ini_key(r), monitor_shape().empty() ? ultrawide_started : aspect_is_monitors(saved_value(r.value)) ? 1 : 0);
             } else if (r.value) {
                 fprintf(f, "%s=%d\n", ini_key(r), saved_value(r.value));
             }
@@ -1779,7 +1944,7 @@ std::vector<std::string> share_values(long long pipelines, bool v2) {
     v[0] = HOOKSHOT_VERSION;
     v[1] = share_os() + "; " + dev.props.deviceName + ", driver " + driver_text();
     const Out o = shown_output();
-    v[2] = ps::output_text(o.w, o.h, opts.handheld != 0, output_choice(opts.output_res) == 0, opts.ultrawide != 0);
+    v[2] = ps::output_text(o.w, o.h, opts.handheld != 0, output_choice(opts.output_res) == 0, aspect_is_monitors(opts.ultrawide));
     v[3] = std::string(tx_upscaler(opts.dlss)) + ", " + tx_resolution(opts.resolution);
     v[4] = std::string(tx_framegen(std::clamp(opts.framegen, 0, 8))) + " / " + tx_hdr(opts.hdr);
     std::vector<std::string> mods;
@@ -1907,6 +2072,11 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         apply_preset(*r.value);
     } else {
         *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
+        // (another shape: the Output resolution moves to one of its sizes, the screen's own when it has that shape)
+        if (r.value == &opts.ultrawide) {
+            const int out = output_for_aspect(*r.value);
+            if (out != opts.output_res) opts.output_res = out, env_release(&opts.output_res);
+        }
         // (another Upscaler: the Render resolution moves to the nearest of its steps, DLSS's modes or the game's)
         if (r.value == &opts.dlss) {   // (a slider stop kept)
             opts.resolution = ur::snap_render(upscaler(), opts.resolution);
@@ -3565,8 +3735,10 @@ void menu_init() {
         // (the Aspect ratio from options_version 6: a file from before wrote ultrawide=0, the 16:9 default then, whether
         // chosen or not. On a screen narrower than 16:9 host/hos_main.c starts the game at the monitor's shape for it
         // (host/hos_wide_size.h hos_aspect_on), and the row follows what the host started with: a picture narrower than
-        // 16:9 there. On Linux too, where the menu has no screen size of its own)
-        if (version < 6 && opts.ultrawide == 0 && host && host->aspect_ratio) {
+        // 16:9 there. On Linux too, where the menu has no screen size of its own. Not with HOS_ASPECT, a debugging switch
+        // the host takes instead of the file: the shape it started with is then the switch's, not a move, and the next save
+        // would keep a choice the player never made)
+        if (version < 6 && opts.ultrawide == 0 && !getenv("HOS_ASPECT") && host && host->aspect_ratio) {
             const float started = host->aspect_ratio();
             if (started > 1.0f && started < 16.0f / 9.0f * 0.99f) opts.ultrawide = 1;
         }
@@ -3598,6 +3770,7 @@ void menu_init() {
         player_custom_output = custom_output;   // (parse_output replaces the player's own size with the environment's)
         env_override(&opts.output_res, parse_output(e));
     }
+    outputs_sync();   // (the Aspect ratio follows the size read)
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
 }
 
@@ -3825,6 +3998,13 @@ int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
     Row& r = rows[i];
     if (row_fixed(r.value)) return bridge_fill(i, out), -1;
     const int want = std::min(std::max(value, r.lo), r.value == &opts.pad_layout ? std::min(r.hi, 2) : r.hi);   // (3: Custom, shown only)
+    if (r.value == &opts.output_res && output_choice(want) == want &&
+        dm::ratio_name(size_of(output_at(want))) != dm::ratio_name(size_of(output_at(opts.output_res)))) {
+        // (a size of another shape: the Aspect ratio moves to it first, as a player would, which takes the Output resolution
+        // into that shape's sizes; the walk below goes on from there)
+        for (Row& a : rows)
+            if (a.value == &opts.ultrawide) set_row(a, aspect_of_choice(want, aspect_is_monitors(opts.ultrawide) ? 1 : 0), 1, false);
+    }
     if (r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.output_res) {
         // (the Render resolution's Native is a place of its own, DLAA or FSR 4's native AA, whatever the value it kept; the
         // Upscaler that runs, as set_row steps it: a saved DLAA that cannot run here is the game's own, and its values count)

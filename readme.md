@@ -291,7 +291,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | Tab | Option | Choices | Default |
 |---|---|---|---|
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) | Custom |
-| | Output resolution | 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440, 5120x2880 (after a restart) | 2048x1152 |
+| | Aspect ratio | The shapes your screen's resolutions have, narrowest first (5:4, 4:3, 16:10, 16:9, 21:9, 32:9, ...), your monitor's own marked "(monitor's)" (after a restart) | Your monitor's |
+| | Output resolution | The Aspect ratio's sizes: your screen's resolutions and the common ones (1440p, 4K, 5K at 16:9; 1920x1200, 2560x1600 at 16:10; 3440x1440 at 21:9; ...), and 2048x1152 (the game's own) at 16:9 (after a restart) | 2048x1152 |
 | | Profile | Docked, Handheld (after a restart) | Docked |
 | | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below), Off (no upscaling) | Game's own |
 | | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (shown where DLSS runs; used by DLSS and DLAA) | Transformer (K) |
@@ -306,7 +307,6 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Fullscreen | Off, On (the same as <kbd>F11</kbd>) | Off |
 | | V-Sync | Auto, On, Off | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos | Off |
-| | Aspect ratio | 16:9, Monitor's shape: wider than 16:9, or narrower down to 5:4 (after a restart) | Monitor's shape |
 | | HDR | Off, Expanded, Native (the game's) | Off |
 | | HDR paper white | 80 to 400 nits (while HDR is on) | 200 nits |
 | | HDR peak brightness | 400 to 4000 nits (while HDR is on) | 1000 nits |
@@ -381,19 +381,24 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   and **Sharpness** sharpens it, by the picture's pixels: when the window is much larger than the picture (the Handheld
   Profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
   suit.
-- **Output resolution:** its rows below show the sizes for the output you chose. Docked only. On a 1920x1080 display,
-  the 1920x1080 option keeps HUD and text sharp when the game fills the screen by mapping them pixel for pixel. At
-  3840x2160 the game's render targets get a bigger GPU pool, so a full-size 3D fits. On a 5120x1440 (32:9) ultrawide
-  monitor, 5120x1440 gives a native frame with a sharp HUD. The **Aspect ratio**'s default, Monitor's shape, widens the
-  cameras to the frame's shape and keeps the HUD and movies in the middle 16:9; at 16:9, the game's 16:9 picture is
-  stretched across the 32:9 output, sharp but wide. Options saved by an older version at 16:9, the default then, move to
-  Monitor's shape on a screen narrower than 16:9 (16:10 such as the Steam Deck's, or 4:3), where 16:9 only adds bars above
-  and below; an ultrawide keeps its 16:9. For a size the menu does not offer (3440x1440, 2560x1080, ...), set
+- **Aspect ratio** and **Output resolution:** the menu lists the resolutions your screen offers (its display modes, as
+  Windows lists them, DSR's included), with the common sizes of each of those shapes your screen does not list (1440p, 4K
+  and 5K at 16:9, 1920x1200 and 2560x1600 at 16:10, 3440x1440 at 21:9, ...), grouped by shape. **Aspect ratio** lists
+  the shapes, your monitor's own marked "(monitor's)" (the default: 21:9 on an ultrawide, 16:10 on a 16:10 screen);
+  **Output resolution** then lists that shape's sizes, your screen's own marked "(native)". A size larger than your
+  screen is drawn at that size and scaled down to the window. Docked only. A shape other than 16:9 widens the cameras (21:9, 32:9) or narrows the
+  picture (16:10, 4:3, 5:4) and keeps the HUD and movies in the middle 16:9. At 16:9 on a 5120x1440 (32:9) monitor, the
+  game's 16:9 picture is stretched across the 32:9 output, sharp but wide. Options saved by an older version at 16:9,
+  the default then, move to Monitor's shape on a screen narrower than 16:9 (16:10 such as the Steam Deck's, or 4:3),
+  where 16:9 only adds bars above and below; an ultrawide keeps its 16:9. The output's rows below show the sizes for the
+  output you chose. At your screen's own size the HUD and text map pixel for pixel. Above 2560x1440 the game's render
+  targets get a bigger GPU pool, so a full-size 3D fits. Where the screen's modes are not known (Linux), the menu offers
+  1920x1080, 2560x1440, 3840x2160, 5120x1440 and 5120x2880. For a size the menu does not offer, set
   `output_res=<width>x<height>` in `hookshot_options.ini`: each side a multiple of 8, at least 640x360, at most 5120x2880's
   pixels, and between 5:4 and 48:9 in shape; anything else uses the game's 2048x1152. The menu then offers it as its own
-  choice. With the **Aspect ratio** at Monitor's shape, a picture wider than 16:9 is kept to 5120x2160's pixels, so above
-  that a wide size is not a native frame. A custom output wider than 32:9 also sets the camera shape, even when the OS
-  reports a single 16:9 primary monitor. For three 16:9 monitors, use `5760x1080` or `7680x1440` and a window or logical display
+  choice. A picture wider or narrower than 16:9 is kept to 5120x2160's pixels, so above that a size of another shape is
+  not a native frame. A size's own shape sets the camera's, even when the OS reports a single 16:9 primary monitor. For
+  three 16:9 monitors, use `5760x1080` or `7680x1440` and a window or logical display
   that spans all three. Both render at full size: 7680x1440 has 5120x2160's pixels, the most a wide picture takes.
   For one run, set `HOS_OUTPUT_RES` to a size, such as `HOS_OUTPUT_RES=3840x2160`.
 - **Window scaling filter** matters only when your window's size differs from the Output resolution: for the sharpest

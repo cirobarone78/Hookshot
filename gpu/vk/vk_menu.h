@@ -22,9 +22,9 @@ struct Options {
     int fps_cap = 0;      // (hookshot) Frame rate cap: 0 60 (the console's), 90, 120, 144, 165, 240, 6 Uncapped (host/nn_vi.c reads frame_rate_cap= at the start)
     int resolution = 0;   // the 3D's (Render resolution): 0 Auto (the game's dynamic resolution), else a share of the output,
                           // 1..6 = 100%, 75%, 67%, 50%, 58%, 33% (upscaler_rows.h; nx2/oot_patches.py)
-    int output_res = 0;   // the game's whole frame, docked: 0 its 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080, 4 5120x1440, 5 5120x2880,
-                          // 6 the player's own (vk_menu.cpp custom_output); saved as the size (output_res=3840x2160) and read once, at the start
-                          // (host/nn_applet.c)
+    int output_res = 0;   // the game's whole frame, docked: 0 its 2048x1152, then the sizes the screen offers (vk_menu.cpp outputs,
+                          // display_modes.h), then the player's own (custom_output); saved as the size (output_res=3840x2160) and read
+                          // once, at the start (host/nn_applet.c)
     int upscale = 0;      // to the window (Window scaling filter, saved as upscaling): 0 off (the plain copy), 1 Catmull-Rom, 2 Lanczos
     int reflex = 0;       // NVIDIA Reflex: 0 off, 1 on, 2 on + boost (vk_reflex.cpp; NVIDIA GPUs with VK_NV_low_latency2)
     int antilag = 0;      // AMD Anti-Lag 2: 0 off, 1 on (vk_antilag.cpp; AMD GPUs with VK_AMD_anti_lag)
@@ -38,9 +38,11 @@ struct Options {
                           // device's limit at most; gpu/vk/vk_draw.cpp aniso_override, RX_VK_ANISO over it)
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
     int handheld = 0;     // the game's handheld profile: ~4 fps, softer; read once, at the start (host/nn_applet.c)
-    int ultrawide = 1;    // the Aspect ratio row: 1 the monitor's shape (the default), 0 the game's 16:9; read once, at the start
-                          // (host/hos_main.c, as ultrawide= in the options file; an older file's 0 on a screen narrower than
-                          // 16:9 moves to 1, options_version 6: host/hos_wide_size.h hos_aspect_on)
+    int ultrawide = 1;    // the Aspect ratio row. Saved as ultrawide=, read once, at the start (host/hos_main.c): 1 the monitor's own
+                          // shape (the default), 0 the game's 16:9 (an older file's 0 on a screen narrower than 16:9 moves to 1,
+                          // options_version 6: host/hos_wide_size.h hos_aspect_on). In the menu, from menu_init on: a place in
+                          // vk_menu.cpp's output_shapes, the shapes of the sizes offered, the monitor's own marked; another shape than
+                          // 16:9 and the monitor's is output_res's own (outputs_sync, save)
     int wide_menus = 1;   // ultrawide: the pause, item and map menus 0 at full width (stretched), 1 in the middle 16:9 with the sides
                           // blurred, 2 with black bars (nx2/oot_wide.py, vk_framegen.cpp)
     int show_fps = 0;     // (hookshot) the FPS counter: 0 Off, 1 FPS, 2 Frame time, 3 Graph, 4 Breakdown (fps_stats.h; saved as fps_counter=, an old On is 1)

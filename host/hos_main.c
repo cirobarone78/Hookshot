@@ -1753,7 +1753,7 @@ static int game_main(int argc, char **argv) {
     {   /* (hookshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
            Aspect ratio (on unless it says 0) takes the main monitor's shape. The game's picture takes that shape at its own height (the
            world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio.
-           A custom output wider than 32:9 takes precedence over both HOS_ASPECT and the Aspect ratio, matching the menu's picture. Wider
+           An output that is not 16:9 takes precedence over both HOS_ASPECT and the Aspect ratio, matching the menu's picture. Wider
            than 16:9 the HUD, menus and movies keep the middle 16:9; narrower they fill the picture's width. Until now the one 16:9
            constant in the game's data was changed and the 16:9 picture stretched to the window. */
         const char *e = getenv("HOS_ASPECT");
@@ -1784,8 +1784,9 @@ static int game_main(int argc, char **argv) {
         extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
         uint32_t hos_output_size(int height);
         const uint32_t output_w = hos_output_size(0), output_h = hos_output_size(1);
-        /* A custom surround output explicitly requests that shape, even if the OS reports one monitor. */
-        if (hos_output_is_surround(output_w, output_h)) want = (float)output_w / (float)output_h;
+        /* An output of a shape of its own (the Insert menu's Aspect ratio: 21:9, 16:10, 4:3, a 32:9 surround...) asks for that
+           shape, over HOS_ASPECT and Ultrawide, even if the OS reports one monitor (host/hos_wide_size.h) */
+        if (hos_output_own_shape(output_w, output_h)) want = (float)output_w / (float)output_h;
         const double game = 16.0 / 9.0;
         /* (a screen narrower than 16:9 too, 16:10 to 5:4: the picture keeps the game's height and is narrower, the
            cameras take its ratio, and the HUD fills its width instead of a middle 16:9 wider than the screen. A 4:3 CRT
