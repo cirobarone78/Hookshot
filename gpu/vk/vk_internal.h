@@ -237,6 +237,7 @@ bool create_buffer_cached(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
 void flush_mapped(VmaAllocation allocation, uint64_t size);
 void flush_mapped_range(VmaAllocation allocation, uint64_t offset, uint64_t size);
 void invalidate_mapped(VmaAllocation allocation, uint64_t size);   // (the CPU is to read what the GPU wrote: a no-op in coherent memory)
+void invalidate_mapped_range(VmaAllocation allocation, uint64_t offset, uint64_t size);
 bool flush_mapped_checked(VmaAllocation allocation, uint64_t size);
 bool invalidate_mapped_checked(VmaAllocation allocation, uint64_t size);
 void memory_stamp_gpu(uint64_t guest, uint64_t size);   // (a GPU write: memory_stamp, and the pages noted)

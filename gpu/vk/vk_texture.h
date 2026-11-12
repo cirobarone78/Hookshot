@@ -10,8 +10,10 @@
 // with the Switch 2 GOB swizzle); other formats are unswizzled on the CPU straight into the staging memory.
 #pragma once
 
-#include <string>
+#include <atomic>
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -92,6 +94,21 @@ struct Texture {
         uint32_t level;
     };
     std::vector<BlockAttachment> block_attachments;
+    struct AutoReadback {
+        static constexpr uint32_t kSlots = 4;
+        static constexpr uint32_t kMaxUnpolledWrites = 64;
+        VkBuffer buf = VK_NULL_HANDLE;
+        VmaAllocation alloc = nullptr;
+        void* map = nullptr;
+        uint64_t slot_sz = 0;
+        uint64_t copy_bytes = 0;
+        uint64_t slot_val[kSlots]{};
+        uint32_t head = 0;
+        uint32_t unpolled_writes = 0;
+        bool ready = false;
+        std::atomic<bool> dirty_in_rec{false};
+    };
+    std::unique_ptr<AutoReadback> auto_rb;
 };
 
 /// Makes texels [x, x + w) x [y, y + h) of level `level`, layers [first, first + count), of a sparse texture resident
@@ -105,6 +122,8 @@ void texture_resident_flush(Texture* tex);
 /// What the replay's recording is: the main command buffer, and the one uploads and new images' layout changes go to
 /// (submitted right before it, so nothing has to end a render pass for them)
 void texture_begin_recording(VkCommandBuffer upload_cmd, uint64_t value);
+/// Copies any polled small GPU-written textures dirtied in this recording into their host-cached readback ring
+void texture_end_recording(VkCommandBuffer cmd, uint64_t value);
 /// true when anything was recorded into the upload command buffer since texture_begin_recording
 bool texture_uploads_recorded();
 /// The recording's upload command buffer, to record into (its first use orders it after the work before)

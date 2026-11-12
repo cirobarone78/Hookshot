@@ -276,6 +276,9 @@ void flush_mapped_range(VmaAllocation allocation, uint64_t offset, uint64_t size
 void invalidate_mapped(VmaAllocation allocation, uint64_t size) {
     if (size) vmaInvalidateAllocation(vma, allocation, 0, size);
 }
+void invalidate_mapped_range(VmaAllocation allocation, uint64_t offset, uint64_t size) {
+    if (size) vmaInvalidateAllocation(vma, allocation, offset, size);
+}
 bool flush_mapped_checked(VmaAllocation allocation, uint64_t size) {
     return !size || vmaFlushAllocation(vma, allocation, 0, size) == VK_SUCCESS;
 }

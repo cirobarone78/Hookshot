@@ -1811,8 +1811,11 @@ bool texture_dirty(Texture& tex, uint32_t gen, Ranges& out) {
 
 uint64_t destroy_gen = 1;   // (bumped when textures go: what was resolved to them goes stale)
 
+void auto_rb_forget(Texture& tex);
+
 void destroy_later(Texture& tex) {
     destroy_gen++;
+    auto_rb_forget(tex);
     Dead d{tex.last_value, tex.image, tex.allocation, {}, {}};
     if (tex.pool_key && tex.allocation && tex.sparse_chunks.empty() && pool_cap()) {   // (a render target's: to the pool, its views too)
         d.pool_key = tex.pool_key, d.view_map = std::move(tex.views), d.bytes = tex.bytes + tex.pad;
@@ -2652,6 +2655,10 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
         tex->upload_gen = gen;
         tex->gpu_written = false;
         tex->released = false;
+        if (tex->auto_rb) {
+            tex->auto_rb->ready = false;
+            tex->auto_rb->dirty_in_rec.store(false, std::memory_order_relaxed);
+        }
     } else if (tex->bc) {
         // (hookshot) a BC3 image holds nothing until its encode has run. Marked uploaded as the others are, its blocks as the
         // memory had them were drawn as coloured noise, and never made again unless the game wrote its memory: the path, the
@@ -2929,6 +2936,8 @@ namespace {
 constexpr uint64_t kFlushMax = 16ull << 20;   // (the small ones: render targets that size and more are not)
 std::mutex vw_mu;
 std::map<uint64_t, uint64_t> vw;   // (storage start -> end of the GPU-written textures of virtual pools that may be flushed)
+std::vector<Texture*> auto_rb_live;
+std::atomic<bool> auto_rb_dirty_any{false};
 bool flushable(const Texture& t) {
     if (!t.guest_size || t.guest_size > kFlushMax || t.astc || t.bc || t.sparse || t.skip ||
         t.samples != VK_SAMPLE_COUNT_1_BIT || t.aspect != VK_IMAGE_ASPECT_COLOR_BIT || t.bpb <= 0 || !t.image ||
@@ -2956,6 +2965,19 @@ void vw_forget(const Texture& t) {   // (the entry goes; other listed textures a
             uint64_t& end = vw[t.gpu];
             end = std::max(end, t.gpu + it->second->guest_size);
         }
+}
+void auto_rb_forget(Texture& tex) {
+    auto it = std::find(auto_rb_live.begin(), auto_rb_live.end(), &tex);
+    if (it != auto_rb_live.end()) auto_rb_live.erase(it);
+    if (tex.auto_rb && tex.auto_rb->buf) {
+        uint64_t v = tex.last_value;
+        for (uint64_t sv : tex.auto_rb->slot_val) v = std::max(v, sv);
+        Dead d{v, VK_NULL_HANDLE, nullptr, {}, {}};
+        d.buffer = tex.auto_rb->buf;
+        d.buffer_alloc = tex.auto_rb->alloc;
+        dead.push_back(std::move(d));
+    }
+    tex.auto_rb.reset();
 }
 // (a command buffer of its own for the read-backs, submitted and waited for at once)
 VkCommandPool rb_pool = VK_NULL_HANDLE;
@@ -3015,6 +3037,7 @@ struct Flush {
     struct Part { uint32_t level, layer; uint64_t at, n; LevelGeo g; };
     std::vector<Part> parts;
     uint64_t total = 0;
+    uint64_t offset = 0;
     VkBuffer buf = VK_NULL_HANDLE;
     VmaAllocation alloc = nullptr;
     void* map = nullptr;
@@ -3066,7 +3089,7 @@ bool flush_finish(Flush& f, bool gpu_ok) {
     const std::vector<Part>& parts = f.parts;
     void* map = f.map;
     bool ok = f.ok && gpu_ok;
-    if (ok && !flush_uncached()) invalidate_mapped(f.alloc, total);
+    if (ok && !flush_uncached() && f.alloc) invalidate_mapped_range(f.alloc, f.offset, total);
     if (ok && total <= 64) {   // (RX_VK_LOG_TINY_FLUSH=1: the values of tiny ones, 400 lines: a 1 x 1 luminance)
         static const bool log_tiny = env_on("RX_VK_LOG_TINY_FLUSH");
         static int logged;
@@ -3182,6 +3205,65 @@ bool flush_texture(Texture& t, uint64_t clip_lo, uint64_t clip_hi) {
 }
 } // namespace
 
+void texture_end_recording(VkCommandBuffer cmd, uint64_t value) {
+    if (!auto_rb_dirty_any.exchange(false, std::memory_order_relaxed)) return;
+    bool barrier_done = false;
+    for (size_t i = 0; i < auto_rb_live.size();) {
+        Texture* t = auto_rb_live[i];
+        if (!t || !t->auto_rb || !t->auto_rb->dirty_in_rec.exchange(false, std::memory_order_relaxed)) {
+            i++;
+            continue;
+        }
+        Texture::AutoReadback& rb = *t->auto_rb;
+        if (!value || !t->gpu_written || !flushable(*t)) {
+            rb.ready = false;
+            i++;
+            continue;
+        }
+        if (++rb.unpolled_writes > Texture::AutoReadback::kMaxUnpolledWrites) {
+            auto_rb_forget(*t);
+            continue;
+        }
+        i++;
+        if (!barrier_done) {
+            barrier_done = true;
+            VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+            b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+            b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+            VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            d.memoryBarrierCount = 1;
+            d.pMemoryBarriers = &b;
+            vkCmdPipelineBarrier2(cmd, &d);
+        }
+        const LevelGeo g = level_geo(*t, 0);
+        const uint32_t slot = rb.head++ % Texture::AutoReadback::kSlots;
+        VkBufferImageCopy r{};
+        r.bufferOffset = (VkDeviceSize)slot * rb.slot_sz;
+        r.bufferRowLength = g.tw * (uint32_t)t->block_w;
+        r.bufferImageHeight = g.th * (uint32_t)t->block_h;
+        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        r.imageExtent = {g.w, g.h, g.d};
+        vkCmdCopyImageToBuffer(cmd, t->image, VK_IMAGE_LAYOUT_GENERAL, rb.buf, 1, &r);
+        rb.slot_val[slot] = value;
+        rb.ready = true;
+        t->last_value = std::max(t->last_value, value);
+    }
+    if (barrier_done) {
+        VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        b.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        b.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+        VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        d.memoryBarrierCount = 1;
+        d.pMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(cmd, &d);
+        last_barrier_cmd = VK_NULL_HANDLE;
+    }
+}
+
 void texture_describe_written(uint64_t lo, uint64_t size, std::string& out) {
     const uint64_t hi = lo + size;
     int n = 0;
@@ -3222,10 +3304,56 @@ int texture_flush_to_guest(uint64_t lo, uint64_t size) {
         for (auto it = vw.lower_bound(lo > kFlushMax ? lo - kFlushMax : 0); it != vw.end() && it->first < hi;)
             it = it->second > lo ? vw.erase(it) : std::next(it);
     }
+    static const bool no_auto_rb = env_on("RX_VK_NO_AUTO_READBACK");
     int done = 0;
     uint64_t bytes = 0;
     for (Texture* t : todo) {
-        if (!flush_texture(*t, lo, hi)) continue;
+        bool flushed_ok = false;
+        bool served_from_ring = false;
+        if (!no_auto_rb && t->auto_rb && t->auto_rb->ready && !t->auto_rb->dirty_in_rec.load(std::memory_order_relaxed)) {
+            Texture::AutoReadback& rb = *t->auto_rb;
+            rb.unpolled_writes = 0;
+            const uint32_t slot = (rb.head - 1) % Texture::AutoReadback::kSlots;
+            if (rb.slot_val[slot]) vk_timeline_wait(rb.slot_val[slot]);
+            if (vk_timeline_completed() >= rb.slot_val[slot]) {
+                Flush f{t, lo, hi};
+                f.parts.push_back({0, 0, 0, rb.copy_bytes, level_geo(*t, 0)});
+                f.total = (rb.copy_bytes + 15) & ~15ull;
+                f.offset = (uint64_t)slot * rb.slot_sz;
+                f.map = (uint8_t*)rb.map + (size_t)f.offset;
+                f.alloc = rb.alloc;
+                f.ok = true;
+                flushed_ok = flush_finish(f, true);
+                served_from_ring = flushed_ok;
+            }
+        }
+        if (!served_from_ring) {
+            if (t->auto_rb) {
+                t->auto_rb->unpolled_writes = 0;
+                t->auto_rb->ready = false;
+                t->auto_rb->dirty_in_rec.store(false, std::memory_order_relaxed);
+            }
+            flushed_ok = flush_texture(*t, lo, hi);
+            if (flushed_ok && !no_auto_rb && !t->auto_rb && t->guest_size <= 65536 && t->levels == 1 && t->layers == 1 &&
+                t->type != VK_IMAGE_TYPE_3D && flushable(*t)) {
+                const LevelGeo g = level_geo(*t, 0);
+                const uint64_t copy_bytes = (uint64_t)g.tw * g.th * g.td * (uint64_t)t->bpb;
+                if (copy_bytes) {
+                    auto rb = std::make_unique<Texture::AutoReadback>();
+                    rb->copy_bytes = copy_bytes;
+                    rb->slot_sz = std::max<uint64_t>((copy_bytes + 63) & ~63ull, dev.props.limits.nonCoherentAtomSize);
+                    if (create_buffer_cached((VkDeviceSize)Texture::AutoReadback::kSlots * rb->slot_sz,
+                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT, rb->buf, rb->alloc, &rb->map) &&
+                        rb->map) {
+                        t->auto_rb = std::move(rb);
+                        auto_rb_live.push_back(t);
+                    } else if (rb->buf) {
+                        destroy_buffer(rb->buf, rb->alloc);
+                    }
+                }
+            }
+        }
+        if (!flushed_ok) continue;
         done++, bytes += t->guest_size;
         if (t->gpu < lo || t->gpu + t->guest_size > hi) continue;   // (a part of it: the rest is still only in the image)
         // (its memory is its content now: CPU writes to it count again, and an image made over it uploads it)
@@ -3259,6 +3387,8 @@ void texture_written(Texture* tex, const char* why) {
                  tex->released ? " (released)" : "", (unsigned long long)tex->first_seen, (unsigned long long)frame_no);
     }
     vw_note(*tex);
+    if (tex->auto_rb && !tex->auto_rb->dirty_in_rec.exchange(true, std::memory_order_relaxed))
+        auto_rb_dirty_any.store(true, std::memory_order_relaxed);
     tex->only_cleared = false;
     if (tex->sparse && !tex->gpu_written) {
         static int logged;
@@ -4501,7 +4631,13 @@ void texture_read_texels(const nvn_tex* t, unsigned level, unsigned layer0, cons
         const uint64_t guest = host->gpu_guest(t->gpu);
         if (guest) memory_stamp(guest, t->L.size);
         auto [a, b] = by_gpu.equal_range(t->gpu);
-        for (auto it = a; it != b; ++it) it->second->gpu_written = false, it->second->checked_epoch = 0;
+        for (auto it = a; it != b; ++it) {
+            it->second->gpu_written = false, it->second->checked_epoch = 0;
+            if (it->second->auto_rb) {
+                it->second->auto_rb->ready = false;
+                it->second->auto_rb->dirty_in_rec.store(false, std::memory_order_relaxed);
+            }
+        }
     }
 }
 

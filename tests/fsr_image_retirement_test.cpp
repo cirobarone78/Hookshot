@@ -66,6 +66,7 @@ void gprof_submitted(int slot, bool) {
 void gpu_time_end(Recording&) {}
 void end_pass(VkCommandBuffer) {}
 void flush_ub_updates(VkCommandBuffer) {}
+void texture_end_recording(VkCommandBuffer, uint64_t) {}
 void memory_end_submission(VkCommandBuffer) {}
 void full_barrier(VkCommandBuffer, const char*) {}
 void logf(const char*, ...) {}
