@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 18
+#define MKWVK_API_VERSION 19
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -183,6 +183,9 @@ typedef struct MkwVkHost {
     /* (version 17, hookshot) what of the button prompts a change of face or controls reaches at once (host/prompts.c):
        HOS_PROMPTS_LIVE_* bits; 0 none (a mod's files, built without the prompts, or not loaded yet) */
     int (*prompts_live)(void);
+    /* (version 19) Base RomFS assets for native UI fonts, from folder or selected image.
+       NULL/zero buffer queries total length; nonzero reads must complete exactly. Host buffer, not guest memory. */
+    int (*romfs_read)(const char *rel, uint64_t offset, void *out, uint64_t size, uint64_t *length);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */
