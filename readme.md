@@ -800,6 +800,14 @@ To enable the debug tools, turn **Debug tools** on in the menu's Debug tab (or a
 `hookshot_env.txt` in the game folder). The tools then show below it on the same tab. The tab's Developer section,
 always shown, has the Descriptor reuse, Sampler cache, Robust buffers and ASTC as RGBA8 rows.
 
+The Teleport list shows a picture of the chosen destination above its help, taken from your own game: the first time Link
+stays a few seconds in a place, with no map loading and no cutscene, Hookshot keeps a screenshot of it in
+`teleport_captures.bin` in the game folder (nothing is shipped or sent anywhere). It shows the picture for Link's current
+age, or the other age's when there is only that one. To replace a picture, choose a button in **Retake picture** (a key, a
+mouse button or a controller button the game and Hookshot don't already use), then press it in play: the screenshot is
+taken again where you are. **Free camera** with a retake gets views Link can't reach. Delete `teleport_captures.bin` to
+start over.
+
 `RX_VK_UI_GAME_FONT=0` draws the menu with the included font (Libertinus) even when the game's files have the game's own
 menu font. `RX_VK_UI_PROMPTS=pad` (or `keys`) shows the controller's (or the keyboard's) prompts whatever was used last,
 for screenshots.
