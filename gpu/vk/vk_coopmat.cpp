@@ -351,6 +351,8 @@ bool table_loop_wanted(VkDriverId driver, bool dynamic_indexing, const char* env
 }
 } // namespace
 
+bool coopmat_software() { return Shader::Backend::SPIRV::mma_software; }
+
 void coopmat_init() {
     // (amd-fix) NaN guard on float colour outputs (mma_layout.h frag_nan_guard), on every card since v2.0.6 as NX2navi's patch 0027
     // has it: the neon plants were reported on NVIDIA cards too, and one NaN texel spreads through bloom and blur. RX_VK_NAN_GUARD=0:

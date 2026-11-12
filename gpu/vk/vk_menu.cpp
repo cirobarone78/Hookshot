@@ -1443,7 +1443,7 @@ void save() {
             if (!eq || eq == line) continue;
             const std::string key(line, (size_t)(eq - line));
             // (memory_budget too: save() writes it, and the file's old line, kept after it, won at the next start)
-            bool mine = key == "microphone_device" || key == "options_version" || key == "memory_budget";
+            bool mine = key == "microphone_device" || key == "options_version" || key == "memory_budget" || key == "upscaler_default";
             for (const Row& r : rows)
                 if (!mine && r.value && key == ini_key(r)) mine = true;
             if (!mine) others += line, others += others.back() == '\n' ? "" : "\n";
@@ -1464,11 +1464,13 @@ void save() {
         // (not a row: the budgets Custom keeps. 0 too: with a preset on, the VRAM budget row chosen by the player, which the next
         // start must not take back to the preset's)
         fprintf(f, "memory_budget=%d\n", opts.budget);
+        if (opts.upscaler_default) fputs("upscaler_default=1\n", f);   // (not a row: the Upscaler nobody chose, see menu_upscaler_default)
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on; 5: the
         // Menu shortcut "Insert, F1 or Esc" by default, see menu_init; 6: the Aspect ratio's 16:9 from before moves on a
-        // screen narrower than 16:9, see menu_init and host/hos_wide_size.h)
-        fprintf(f, "options_version=6\n");
+        // screen narrower than 16:9, see menu_init and host/hos_wide_size.h;
+        // 7: the Upscaler's default settled for the device, see menu_upscaler_default)
+        fprintf(f, "options_version=7\n");
         fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
         for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the keys-only controls, HOS_KEY_*, have no pad_ line)
@@ -1881,11 +1883,11 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     if (row_fixed(r.value)) return;
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
     // (the Upscaler by engine; the Render resolution's Native is the engine's full-size form: upscaler_rows.h)
-    if (r.value == &opts.dlss) v = ur::step_engine(upscaler(), dir, upscalers_available());
+    if (r.value == &opts.dlss) v = ur::step_engine(upscaler(), dir, upscalers_available()), opts.upscaler_default = false;
     if (r.value == &opts.resolution) {
         int up = upscaler(), res = *r.value;
         ur::step_render(upscaler(), *r.value, dir, &up, &res);
-        if (up != upscaler()) opts.dlss = up;   // (Native in or out: DLAA / DLSS, FSR 4's native AA / FSR 4)
+        if (up != upscaler()) opts.dlss = up, opts.upscaler_default = false;   // (Native in or out: DLAA / DLSS, FSR 4's native AA / FSR 4)
         v = res;
     }
     if (r.value == &opts.output_res) {   // (smallest to largest: step_output_choice)
@@ -3499,6 +3501,20 @@ void startup_screen(const StartupView* view) {
 }
 
 static bool first_start = false;   // (menu_init: no options file yet. menu_first_start_for_gpu picks the preset for the card)
+
+// (hookshot) Without matrix hardware (AMD RDNA2 such as the Steam Deck, Intel) the game's own upscaler runs its network's matrix
+// multiplies in a shader function: ~12 ms of a Steam Deck frame for that one dispatch (issue 1000), which FSR 3.1 replaces. There AMD
+// FSR 3.1 is the default Upscaler; with matrix hardware the game's own stays. Until the player moves the Upscaler row the
+// default is settled again at each start (upscaler_default=1 in the file), so another GPU, or a run with RX_VK_MMA_SOFTWARE=1,
+// gets its own; an Upscaler the player chose is kept
+void menu_upscaler_default(bool software_matrices) {
+    if (!opts.upscaler_default) return;
+    opts.dlss = upscaler_rows::GAME;
+    if (!software_matrices || !fsr3::supported()) return;
+    opts.dlss = upscaler_rows::FSR3;
+    logf("vk: Upscaler AMD FSR 3.1 by default: no matrix hardware here, the game's own network would run in software (the menu's Upscaler row chooses)");
+}
+
 void menu_init() {
     static bool done;
     if (done) return;
@@ -3535,6 +3551,7 @@ void menu_init() {
             if (!strcmp(line, "options_version")) version = atoi(eq + 1);
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
             if (!strcmp(line, "menu_size") && atoi(eq + 1) == 0) menu_auto = true;
+            if (!strcmp(line, "upscaler_default")) opts.upscaler_default = atoi(eq + 1) != 0;
             if (!strcmp(line, "memory_budget")) opts.budget = std::min(std::max(atoi(eq + 1), 0), 5), has_memory_budget = true;
             has_vram_budget |= !strcmp(line, "vram_budget");
             if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone, by its name)
@@ -3570,10 +3587,13 @@ void menu_init() {
             const float started = host->aspect_ratio();
             if (started > 1.0f && started < 16.0f / 9.0f * 0.99f) opts.ultrawide = 1;
         }
+        // (an Upscaler from before options_version 7 was written whether chosen or not: the game's own is the default there)
+        if (version < 7 && opts.dlss == 0) opts.upscaler_default = true;   // (0: the game's own)
     }
     first_start = !has_options;
     // An opt-in profile for 4 GB cards: keep existing options authoritative, but make a first run usable on
     // low-VRAM hardware without requiring the menu to render first.
+    if (!has_options) opts.upscaler_default = true;
     if (!has_options && env_on("RX_VK_LOW_SPEC")) {
         apply_preset(1);
         opts.upscale = 0;

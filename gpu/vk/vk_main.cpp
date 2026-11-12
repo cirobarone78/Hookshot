@@ -595,6 +595,8 @@ bool create_device() {
         vkGetPhysicalDeviceProperties2(dev.physical, &p2);
         dev.max_push_descriptors = pp.maxPushDescriptors;
     }
+    // (after the push-descriptor limit: fsr3::supported() reads it, and caches its answer for the run)
+    menu_upscaler_default(coopmat_software());
     return true;
 }
 
