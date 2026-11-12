@@ -52,6 +52,7 @@ NX2_RT = os.path.join(kit.HERE, "rt")
 HOST = os.path.join(kit.HERE, "..", "host")
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 ZSTD = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))
+MONOCYPHER = os.path.join(kit.HERE, "..", "third_party", "monocypher")
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # (hookshot) work/hot_order.txt: the functions that run, hottest first (sampled), packed together by the linker; RX_NO_ORDER=1: off
 PGO = os.environ.get("RX_PGO", "")
@@ -147,7 +148,8 @@ def HOT_ORDER():
 
 
 HOST_LIBS = ["-lpthread", "-ldl", "-lm"] if LINUX else \
-    ["-lwinhttp", "-luser32", "-lwinmm", "-ladvapi32", "-lole32", "-lshell32", "-lgdi32", "-ldbghelp"]
+    ["-lwinhttp", "-luser32", "-lwinmm", "-ladvapi32", "-lole32", "-lshell32", "-lgdi32", "-ldbghelp",
+     "-lws2_32", "-lbcrypt"]   # (co-op's UDP socket and random bytes: host/coop_net.c)
 GPU = os.path.join(kit.HERE, "..", "gpu")
 # FFmpeg (libavcodec's VP8/VP9 decoders, swscale) for nn::codec's video decoders (host/nn_video.c): the static build
 # in the Eglantine clone's package cache
@@ -993,6 +995,10 @@ def main():
     if host_srcs:
         jobs += zstd_jobs(cc, target() + CPU + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DZSTD_DISABLE_ASM",
                                                 "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"], obj_dir, "zstd_")
+    # Monocypher 4.0.2 (third_party/monocypher): co-op's cryptography (host/coop_proto.c)
+    if host_srcs:
+        jobs.append((cc, os.path.join(MONOCYPHER, "monocypher.c"), os.path.join(obj_dir, "monocypher.o"),
+                     target() + CPU + ["-O2", "-g0", "-Wno-everything"], b"monocypher-4.0.2"))
     # the renderer (C++20, NDEBUG: no asserts in it or suyu), when a wgpu-native release is there
     wgpu = a.standalone and not LINUX and os.path.isfile(os.path.join(WGPU, "include", "webgpu", "webgpu.h"))
     if a.standalone and not wgpu and not LINUX:
