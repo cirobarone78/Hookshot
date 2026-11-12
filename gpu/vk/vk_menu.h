@@ -54,6 +54,9 @@ struct Options {
     int pad_background = 0;   // the controllers count while another window has the focus (host/nn_hid.c; HOS_INPUT_BACKGROUND)
     int mouse_native = 0; // the mouse turns the camera's own angles (host/mouse_native.c); 0: as the right stick
     int disable_camera_centering = 0; // 0: stock movement-follow turning; 1: keep the player's horizontal direction
+    int first_person = 0; // (hookshot) the view at Link's eyes while he walks (host/hos_first_person.c); 0: the game's camera
+    int fp_height = 150; // (hookshot) that eye's height over Link's origin in hundredths of a metre, 50 to 250 (host/hos_first_person.c; HOS_OPT_FP_HEIGHT, 52)
+    int fp_offset = 15;  // (hookshot) its offset along the view in hundredths of a metre, 0 to 100 (host/hos_first_person.c; HOS_OPT_FP_OFFSET, 53)
     int mouse_sens = 100; // the mouse's sensitivity in percent: 0.1 degrees a count at 100 with native look (host/nn_hid.c)
     int mouse_invert = 0; // the mouse's up and down swapped
     int text_speed = 0;   // how fast dialogue prints: 0 the game's, 1 2x, 2 4x, 3 instant (host/nn_vi.c, nx2/oot_patches.py; HOS_TEXT_SPEED)

@@ -54,6 +54,7 @@ static int captured = 1, menu_invert, menu_native = 1;
 int rx_option(int id, int otherwise) { return id == 8 ? menu_invert : id == 6 ? menu_native : otherwise; }
 int hos_mouse_take(int32_t *dx, int32_t *dy) { *dx = move_x, *dy = move_y; move_x = move_y = 0; return captured; }
 void hos_mouse_give_back(int32_t dx, int32_t dy) { move_x += dx, move_y += dy; }
+void hos_first_person_camera(uint64_t camera) { (void)camera; }   /* (first person's publish, host/hos_first_person.c) */
 int hos_mouse_native(void);
 void hos_mouse_camera(uint64_t camera);
 static const uint64_t CAM = HOS_HEAP_BASE + 10 * 4096 + 0x40, OTHER = HOS_HEAP_BASE + 20 * 4096;

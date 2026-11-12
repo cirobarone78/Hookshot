@@ -4815,6 +4815,9 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_VOLUME) return opts.volume;
         if (id == HOS_OPT_MUTE_BACKGROUND) return opts.mute_background;
         if (id == HOS_OPT_DISABLE_CAMERA_CENTERING) return opts.disable_camera_centering;
+        if (id == HOS_OPT_FIRST_PERSON) return opts.first_person;
+        if (id == HOS_OPT_FP_HEIGHT) return opts.fp_height;
+        if (id == HOS_OPT_FP_OFFSET) return opts.fp_offset;
         if (id == HOS_OPT_TEXT_SIZE) return opts.text_size;
         if (id == HOS_OPT_CAMERA_SPEED) return opts.camera_speed;
         if (id == HOS_OPT_PROMPTS) return opts.prompts;

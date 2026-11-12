@@ -1166,7 +1166,8 @@ static void oot_bridge_teleport_done(int ticket, int sent) {
     ReleaseSRWLockExclusive(&oot_map_lock);
 }
 
-static uint64_t oot_gameplay_view(Ctx *c) {
+/* camera zero's view: the free camera's check of it, and first person's (host/hos_first_person.c declares this) */
+uint64_t oot_gameplay_view(Ctx *c) {
     const uint64_t singleton = recomp_load64(c, 0x84ca6bc0ULL);
     const uint64_t manager = singleton ? recomp_load64(c, singleton) : 0;
     const uint64_t cameras = manager && recomp_load32(c, manager + 32) ? recomp_load64(c, manager + 40) : 0;
@@ -1227,6 +1228,7 @@ static int oot_flight_moved_away(Ctx *c, uint64_t actor, const float held[3]) {
 
 static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {
     int rx_option(int id, int otherwise);
+    void hos_first_person_player(uint64_t actor, const float position[3]);   /* (hos_first_person.c) */
     static uint64_t flying_actor, marked_actor, marked_controller;
     static int64_t last_tick, last_player_tick;
     static float target[3], velocity[3], mark[3], yaw;
@@ -1239,6 +1241,11 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     if (!flying) flying_actor = 0;
     const int64_t now = hos_now_ns();
     __atomic_store_n(&flight_player_seen, now, __ATOMIC_RELAXED);
+    {   /* (first person reads his position at the view: a snapshot, never the actor itself) */
+        float position[3];
+        for (unsigned i = 0; i < 3; i++) position[i] = oot_load_float(c, actor + 796 + i * 4);
+        hos_first_person_player(actor, position);
+    }
     if (marked_actor != actor || now - last_player_tick > 2000000000LL) marked_controller = 0;
     last_player_tick = now;
     int action = rx_option(HOS_OPT_CHEAT_ACTION, 0);

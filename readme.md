@@ -329,6 +329,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | Controls | Controller in background | Off, On | Off |
 | | Mouse camera | As the stick, Native | As the stick |
 | | Disable camera centering | Off, On | Off |
+| | First person | Off, On | Off |
+| | First person height | 0.50 m to 2.50 m, in steps of 0.05 | 1.50 m |
+| | First person offset | 0.00 m to 1.00 m, in steps of 0.05 | 0.15 m |
 | | Mouse sensitivity | 0.10 to 5.00 | 1.00 |
 | | Invert mouse vertical | Off, On | Off |
 | | Invert camera X | Off, On | Off |
@@ -463,6 +466,17 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 - **Camera speed** is how fast the right stick turns the camera, in percent of the game's own speed. The camera keys
   follow it, and so does the mouse with Mouse camera on As the stick; Native mouse look has its own sensitivity. The
   game's own camera speed option still picks the speed this multiplies.
+- **First person:** On draws the view at Link's eyes while he walks and runs, turned by the mouse (with Mouse camera:
+  Native) or the right stick as in third person. The game's own camera takes over for aiming, shops and cutscenes, and
+  may for targeting, climbing and swimming — its own first person aim view (the slingshot, the bow, the hookshot) passes
+  through untouched, and the view is back at Link's eyes as he walks again, with no flash of where he looked before he
+  aimed. A camera recentering (the Z tap) holds the view briefly rather than pop. The view keeps the game's camera
+  angles — their rest tilt is lifted a little toward level, by `HOS_FP_PITCH` (0.12 radians) — and the eye itself is not
+  checked against walls. **First person height** places the eye over
+  Link's origin (1.50 m is about adult Link's eyes, 1.00 m a child's) and **First person offset** moves it along the
+  view (0.15 m, past the face); both apply at once while he walks, for trying variations in game. `HOS_FIRST_PERSON=1`
+  turns it on for one run; `HOS_FP_UP` and `HOS_FP_FORWARD` (in metres) move the eye for one run over the rows. Disable
+  camera centering keeps the view where you turn it.
 - **Stick dead zone:** how far a stick moves before it counts, on each axis. Default is XInput's (about 24%); lower suits
   a precise stick, higher one that drifts. The game keeps a dead zone of its own after it.
 - **Rumble strength** scales the controller's rumble: 100% is the game's own, Off turns it off. The game's HD rumble

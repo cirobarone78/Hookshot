@@ -34,6 +34,7 @@
 
 int hos_mouse_take(int32_t *dx, int32_t *dy);                                   /* display.c */
 void hos_mouse_give_back(int32_t dx, int32_t dy);                               /* display.c */
+void hos_first_person_camera(uint64_t camera);                                  /* hos_first_person.c */
 int rx_option(int id, int otherwise);
 extern double hos_mouse_sens;
 
@@ -75,6 +76,9 @@ int hos_disable_camera_centering(void) { return rx_option(45, 0); }
 
 /* f_80644c80's first line (nx2/oot_patches.py): cam is the player camera, the game's thread */
 void hos_mouse_camera(uint64_t cam) {
+    /* (first person takes the same pointer, whatever turns the camera: the mouse is one way to turn it, and it works with
+       a pad alone, so this is before native_on) */
+    if (cam && looks_like_camera(cam)) hos_first_person_camera(cam);
     if (!cam || !native_on() || !looks_like_camera(cam)) return;
     /* Only while it is the view: following Link (3) or turned by the player (4). Aiming the slingshot in first person
        leaves this camera updating with its state 0 while another one draws (traced at Hyrule Castle); shops are reported

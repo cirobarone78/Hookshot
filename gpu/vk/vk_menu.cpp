@@ -155,6 +155,12 @@ const char* tx_sens(int v) {
     snprintf(b, sizeof b, "%.2f", v / 100.0);
     return b;
 }
+// (hookshot) first person's two place rows (Controls, beside its switch): hundredths of a metre, shown as metres
+const char* tx_metres(int v) {
+    static char b[12];
+    snprintf(b, sizeof b, "%.2f m", v / 100.0);
+    return b;
+}
 // (the game's picture and the window it is shown in, as the last present had them: menu_note_present_sizes)
 std::atomic<uint64_t> present_sizes{0};
 bool filter_needed() {
@@ -895,7 +901,7 @@ Row rows[] = {
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
 
-    // Controls (12 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
+    // Controls (15 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background, false, true},
     {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
@@ -903,6 +909,17 @@ Row rows[] = {
     {TAB_CONTROLS, "Disable camera centering", &opts.disable_camera_centering, 0, 1, 1, tx_onoff,
      "Stops the camera gradually turning toward the direction you move, useful with native mouse look. Off keeps the "
      "game's standard behavior. Manual camera controls and recentering still work.", nullptr, false, true},
+    {TAB_CONTROLS, "First person", &opts.first_person, 0, 1, 1, tx_onoff,
+     "The view at Link's eyes while he walks and runs, turned by the mouse or the right stick as in third person. The "
+     "game's own camera takes over for aiming, shops and cutscenes, and may for targeting, climbing and swimming. The "
+     "view keeps the game's camera angles, their rest tilt lifted a little toward level, and is not held back by "
+     "walls.", nullptr, false, true},
+    {TAB_CONTROLS, "First person height", &opts.fp_height, 50, 250, 5, tx_metres,
+     "How high the first person eye sits over Link's origin, in metres: 1.50 is about adult Link's eyes, 1.00 a "
+     "child's. Applies at once while he walks.", nullptr, false, true},
+    {TAB_CONTROLS, "First person offset", &opts.fp_offset, 0, 100, 5, tx_metres,
+     "How far the first person eye moves along the view, in metres, past the back of Link's head: 0.15 clears his "
+     "face, 0 is inside it. Applies at once while he walks.", nullptr, false, true},
     {TAB_CONTROLS, "Mouse sensitivity", &opts.mouse_sens, 10, 500, 10, tx_sens,
      "How far the camera turns for a mouse movement, with either Mouse camera: at 1.00 native look turns 0.1 degree a "
      "count. The - and = keys change it in game too.", nullptr, false, true},
@@ -1270,9 +1287,9 @@ constexpr int64_t kMarqueeStep = 150000000LL, kMarqueeRest = 1200000000LL;   // 
 int hover_tab = -1;
 int drag_row = -1;
 bool mouse_read = false;   // (the menu has read the mouse since it opened)
-bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed || r.value == &opts.fov; }
+bool is_slider(const Row& r) { return r.value == &opts.sharpness || r.value == &opts.mouse_sens || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed || r.value == &opts.fov || r.value == &opts.fp_height || r.value == &opts.fp_offset; }
 /// (a scale: the arrows and a click stop at its ends; Rumble strength would go from Off to its strongest)
-bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed || r.value == &opts.fov; }
+bool stops_at_ends(const Row& r) { return r.value == &opts.mouse_sens || r.value == &opts.rumble || r.value == &opts.gyro_sens_x || r.value == &opts.gyro_sens_y || r.value == &opts.volume || r.value == &opts.camera_speed || r.value == &opts.fov || r.value == &opts.fp_height || r.value == &opts.fp_offset; }
 /// (the ini's Rumble strength on the menu's steps: 0 to 150, the nearest 25)
 int rumble_step(int v) { return (std::min(std::max(v, 0), 150) + 12) / 25 * 25; }
 // (hookshot) A run's environment over a saved row (RX_VK_PACE=1, HOS_OUTPUT_RES=...): for that run only. save() writes the
