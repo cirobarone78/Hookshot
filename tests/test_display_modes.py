@@ -13,7 +13,9 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
 
 DRIVER = r"""
-#define _CRT_SECURE_NO_WARNINGS   // (the Windows CRT marks getenv and sscanf deprecated: an error under -Werror)
+#ifndef _CRT_SECURE_NO_WARNINGS   // (the Windows CRT marks getenv and sscanf deprecated: an error under -Werror)
+#define _CRT_SECURE_NO_WARNINGS
+#endif
 #include <cassert>
 #include <cstdio>
 #include <string>
