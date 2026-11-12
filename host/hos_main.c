@@ -667,7 +667,7 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
         if (oot_gamedata_string(c, 0x1d6189dau, map, sizeof map) && map[0]) {   /* Sequence_CurrentBanc */
             snprintf(line, sizeof line, "%s (%s)", map,
                      oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? "child" : "adult") : "age not known");
-            if (strcmp(line, logged)) hos_log("map: %s", line), memcpy(logged, line, sizeof logged);
+            if (strcmp(line, logged)) hos_log("map: %s", line), snprintf(logged, sizeof logged, "%s", line);
         }
     }
     if (!probed && oot_pouch_count(c, "Item_DekuSeed") >= 0) {

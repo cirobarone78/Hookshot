@@ -362,12 +362,15 @@ def main():
               "this PC's system reads " + system)
 
         # 6. NUL bytes, one in a line and a run of them at the end (what a power cut or a hard kill leaves): the copy is the
-        # log byte for byte, its paths redacted, and the map after the NUL is the place
-        nul = tmp / "nul.log"
+        # log byte for byte, its paths redacted, and the map after the NUL is the place. (The file is not named nul.log: on
+        # Windows NUL with any extension is the null device, so nothing was written and an empty log was read back; the
+        # read-back below says so if a name ever does that again)
+        nul = tmp / "power-cut.log"
         nul_text = ("[hos host] hookshot " + VERSION + "\n[hos Main] fs: mounted content: -> " + home + "/Games\n"
                     "[hos Main] map: KokiriForest_Child (child)\n[hos Main] half a line\0 [hos Main] map: LostWoods_Child (child)\n" +
                     "\0" * 4096)
         nul.write_bytes(nul_text.encode("utf-8"))
+        check(nul.read_bytes() == nul_text.encode("utf-8"), "the test's own log with NUL bytes was not written as given")
         folders, out = run(exe, "plain", game, str(nul), home, user, windows)
         copy = (game_path / folders[0] / "hookshot_log.txt").read_bytes()
         check(copy == nul_text.replace(home, home_as).encode("utf-8"), "the copy of a log with NUL bytes differs: %r" % copy[-200:])
