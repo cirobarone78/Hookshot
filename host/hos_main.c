@@ -1713,6 +1713,10 @@ static int game_main(int argc, char **argv) {
         return 2;
     }
     if (env_on("HOS_TRACE")) hos_trace = 1;
+    if (env_on("HOS_HLE_STATS")) {
+        void hos_hle_stats_start(void);
+        hos_hle_stats_start();
+    }
     if (!hos_user_dir) hos_user_dir = "user";
     CreateDirectoryA(hos_user_dir, NULL);
     if (!reserve_guest()) {

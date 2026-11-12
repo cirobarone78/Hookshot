@@ -1071,7 +1071,7 @@ Each row is priced from these runs: **cost** is the on-CPU time of every sample 
    `HOS_FPS_MAX=240 HOS_FPS_LOG=1 HOS_WINDOW_SIZE=2560x720 HOS_ASPECT=3.5556 HOS_PRESENT_TRACE=<run>/presents.csv`
    - **Unsampled runs:** at least three; this is the *Measured without the sampler* table.
    - **Sampled runs:** at least three, with `HOS_PROFILE=5 HOS_SAMPLE_ALL=<run>/all.txt`. The sampler records while the file `<run>/all.txt.go` exists, so create it at the start of the measured window and delete it at the end.
-   - **One run for call counts** (optional) with `HOS_HLE_STATS=1`. The HLE call counters are not in `main` yet: the counts on this page come from a build of the same commit with a local diagnostic that counts each HLE entry and logs `hle:` summaries every 5 s. Without such a build leave `--calls` out; the function tables then have no calls column, and `--calls` on a run with no `hle:` lines is refused rather than ignored.
+   - **One run for call counts** (optional) with `HOS_HLE_STATS=1`. The HLE call counters are in `main`: the switch counts every HLE entry and host call and logs `hle:` summaries every 5 s ([development.md](development.md#time-and-profiles)). Counting costs a little, so this run is not one of the measured ones. The counts on this page were made before the counters reached `main`, by a local patch that logged the same lines. On a build from before the counters leave `--calls` out; the function tables then have no calls column, and `--calls` on a run with no `hle:` lines is refused rather than ignored.
 3. **What a run folder must hold:**
 
    | file | contents |

@@ -16,7 +16,7 @@
 #define HOS_HOSTCALL_MAX 8192
 
 typedef void (*HostFn)(Ctx *c, void *user);
-typedef struct { HostFn fn; void *user; char name[64]; volatile LONG calls; } HostCall;
+typedef struct { HostFn fn; void *user; char name[64]; volatile LONG calls; LONG before; } HostCall;
 static HostCall calls[HOS_HOSTCALL_MAX];
 static volatile LONG ncalls;
 static SRWLOCK lock = SRWLOCK_INIT;
@@ -61,7 +61,7 @@ A64Fn a64_lookup_host(uint64_t addr) {
     const uint64_t i = (addr - HOS_HOSTCALL_BASE) / 16;
     if (i >= (uint64_t)ncalls || calls[i].user) return NULL;
     static int slow = -1;
-    if (slow < 0) slow = env_on("HOS_HOSTCALL_STATS") || hos_trace || env_on("HOS_HOSTCALL_SLOW");
+    if (slow < 0) slow = env_on("HOS_HOSTCALL_STATS") || hos_trace || hos_hle_stats || env_on("HOS_HOSTCALL_SLOW");
     return slow ? NULL : (A64Fn)(void *)calls[i].fn;
 }
 
@@ -87,10 +87,10 @@ int a64_call_miss(Ctx *c, uint64_t target) {
     uint64_t i = (target - HOS_HOSTCALL_BASE) / 16;
     if (i >= (uint64_t)ncalls) return 0;
     HostCall *h = &calls[i];
-    /* (the ring and the counts only for HOS_HOSTCALL_STATS / tracing: every NVN call took two interlocked increments
-       on lines all game threads share) */
+    /* (the ring and the counts only for HOS_HOSTCALL_STATS / HOS_HLE_STATS / tracing: every NVN call took two interlocked
+       increments on lines all game threads share) */
     static int stats = -1;
-    if (stats < 0) stats = env_on("HOS_HOSTCALL_STATS") || hos_trace;
+    if (stats < 0) stats = env_on("HOS_HOSTCALL_STATS") || hos_trace || hos_hle_stats;
     if (!stats) {
         h->fn(c, h->user);
         return 1;
@@ -105,6 +105,70 @@ int a64_call_miss(Ctx *c, uint64_t target) {
                                      (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3]);
     h->fn(c, h->user);
     return 1;
+}
+
+/* HOS_HLE_STATS=1 (off by default): every 5 s, how often each HLE function (hos.h's HLE) and each host call ran in that
+   time, the most called first: "hle: <total> calls of <n> functions in 5 s", then lines of "<count> <name>;" (HLE functions
+   by their mangled name, cut at 64 characters). scripts/cpu_report.py --calls reads them. HLE functions called from host
+   code (one HLE function calling another) count too; the sdk's NVN exports count as their host call (nvn2_dispatch). */
+int hos_hle_stats;
+static HleCount *volatile hos_hle_list;
+void hos_hle_counted(HleCount *h, void (*fn)(Ctx *c), Ctx *c) {
+    if (!h->listed && !InterlockedExchange(&h->listed, 1)) {   /* (its first call puts it on the list, once) */
+        HleCount *head;
+        do h->next = head = hos_hle_list;
+        while (InterlockedCompareExchangePointer((PVOID volatile *)&hos_hle_list, h, head) != head);
+    }
+    InterlockedIncrement(&h->calls);
+    fn(c);
+}
+/* (the counts wrap: a 32-bit LONG passes its maximum after 2^31 calls, so a count since the last report is the difference
+   taken unsigned) */
+typedef struct { const char *name; unsigned long n; } HleRow;
+static int hos_hle_row_cmp(const void *a, const void *b) {
+    const unsigned long x = ((const HleRow *)a)->n, y = ((const HleRow *)b)->n;
+    return (x < y) - (x > y);
+}
+static void hos_hle_report(void) {
+    enum { TOP = HOS_HOSTCALL_MAX + 2048 };
+    static HleRow row[TOP];
+    int n = 0;
+    unsigned long long total = 0;
+    for (HleCount *h = hos_hle_list; h && n < TOP; h = h->next) {
+        const long now = h->calls;
+        const unsigned long d = (unsigned long)now - (unsigned long)h->before;
+        h->before = now;
+        if (d) row[n].name = h->name, row[n].n = d, n++, total += d;
+    }
+    const LONG nc = ncalls;
+    for (LONG i = 0; i < nc && n < TOP; i++) {
+        const LONG now = calls[i].calls;
+        const unsigned long d = (ULONG)now - (ULONG)calls[i].before;
+        calls[i].before = now;
+        if (d) row[n].name = calls[i].name, row[n].n = d, n++, total += d;
+    }
+    qsort(row, n, sizeof *row, hos_hle_row_cmp);
+    /* (every row is printed: a row left out would lose its counts for good, as its baseline moved on) */
+    hos_log("hle: %llu calls of %d functions in 5 s", total, n);
+    char line[1024];
+    int len = 0;
+    for (int i = 0; i < n; i++) {
+        len += snprintf(line + len, sizeof line - len, " %lu %.64s;", row[i].n, row[i].name);
+        if (len > 800 || i == n - 1) { hos_log("hle:%s", line); len = 0; }
+    }
+}
+static DWORD WINAPI hos_hle_thread(void *p) {
+    (void)p;
+    for (;;) {
+        Sleep(5000);
+        hos_hle_report();
+    }
+    return 0;
+}
+/* hos_main.c, before the game starts: counting and the 5 s log from here on */
+void hos_hle_stats_start(void) {
+    hos_hle_stats = 1;
+    CreateThread(NULL, 0, hos_hle_thread, NULL, 0, NULL);
 }
 
 /* Call guest code from inside a host function (an HLE handler), with up to four arguments, on the current guest

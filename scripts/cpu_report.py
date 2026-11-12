@@ -41,7 +41,9 @@ def load_map(path):
             m = MAP_LINE.match(line)
             if m:
                 obj = re.sub(r"^.*[\\/]", "", m.group(3))
-                rows.append((int(m.group(2), 16), m.group(1), obj))
+                # (host/hos.h's HLE: a body not inlined into its imp_<sym> entry is hle_<sym>; it is the same function)
+                sym = "imp_" + m.group(1)[4:] if m.group(1).startswith("hle_") else m.group(1)
+                rows.append((int(m.group(2), 16), sym, obj))
     if base is None:
         base = BASES.get(os.path.splitext(path)[1].replace(".map", ""), 0x140000000)
     rows.sort()
@@ -342,9 +344,10 @@ def hle_calls(folder, blocks=4):
     secs = 0.0
     for h in use:
         secs += float(re.search(r"in ([0-9.]+) s", lines[h]).group(1))
-        for l in lines[h + 1:h + 40]:
-            if "hle: " not in l or re.search(r"hle: \d+ calls of", l):
-                break
+        # (the rows run to the next summary; lines other threads logged in between are skipped)
+        for l in lines[h + 1:next((i for i in heads if i > h), len(lines))]:
+            if not re.search(r"hle: \d+ ", l) or re.search(r"hle: \d+ calls of", l):
+                continue
             for n, name in re.findall(r"(\d+) ([^;]+?)(?:;|$)", l.split("hle: ", 1)[1]):
                 calls[name.strip()] += int(n)
     return {k: v / secs for k, v in calls.items()}, secs
@@ -706,8 +709,8 @@ def main():
     total = med([sum(r["c"]["owner_fn"].values()) for r in runs]) or 1
     cps, csecs = hle_calls(a.calls) if a.calls else ({}, None)
     if a.calls and not cps:
-        raise SystemExit("--calls %s: no 'hle:' summaries in its game.log (HOS_HLE_STATS=1 needs a build with the HLE call "
-                         "counters, see docs/cpu-profile.md)" % a.calls)
+        raise SystemExit("--calls %s: no 'hle:' summaries in its game.log (a run with HOS_HLE_STATS=1, on a build that has the "
+                         "HLE call counters: see docs/cpu-profile.md)" % a.calls)
     cfps = window_of(a.calls)[0] if a.calls else None
     if cps:
         w("Call counts come from `%s`, a run of the same scene with the HLE call counters on (`HOS_HLE_STATS=1`), %d s of "

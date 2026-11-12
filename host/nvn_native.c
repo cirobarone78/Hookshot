@@ -3199,13 +3199,17 @@ int nvn_native_on(void) { return 1; }   /* (mkw-recomp: there is no emulated GPU
 
 /* An NVN function the SDK exports, called directly (gen/nvn2_exports.c: lift.py --standalone hooks every one, so
    the console driver in the SDK never runs): the same function the proc table hands out */
+static void nvn2_counted(Ctx *c, void *addr) {   /* (HOS_HLE_STATS: through a64_call_miss, which counts host calls) */
+    int a64_call_miss(Ctx *c, uint64_t target);
+    a64_call_miss(c, (uint64_t)(uintptr_t)addr);
+}
 void nvn2_dispatch(Ctx *c, const char *name, void **cache) {
     if (!cache[0]) {
         uint64_t a = nvn_native_proc(name);
         uint64_t hos_hostcall_target(uint64_t addr, void (**fn)(Ctx *, void *), void **user);   /* hos_hostcall.c */
         void (*fn)(Ctx *, void *) = NULL;
         void *user = NULL;
-        hos_hostcall_target(a, &fn, &user);
+        if (hos_hostcall_target(a, &fn, &user) && hos_hle_stats) fn = nvn2_counted, user = (void *)(uintptr_t)a;
         cache[1] = user;
         __atomic_store_n(&cache[0], (void *)fn, __ATOMIC_RELEASE);
     }
