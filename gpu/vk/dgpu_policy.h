@@ -1,0 +1,171 @@
+// The dGPU policy's decisions (RX_VK_DGPU=1, gpu/vk/vk_memory.cpp): rules apart from Vulkan so tests/test_dgpu_*.py
+// can run them, as vram_pressure.h and movie_upscale_policy.h do for theirs.
+//
+// A PC game engine owns its GPU: it uploads what the GPU reads often into VRAM once, renders into device-local
+// targets, and reads results back only where it must. Hookshot instead mirrors whole guest pools into VRAM by
+// default and keeps the copies coherent around every submission, because the console's unified memory says the CPU
+// may read anything at any time. On a dGPU at 4K that coherence is the frame's cost (600 submits: 3879 write-back
+// diff runs, 3344.4 MB compared; mirror syncs 782 dirty pages from captures against 173553 from earlier; 199 of
+// 3000 readbacks waited 16.78 ms each; the GPU sat near idle while 1080p held 60 fps and 4K fell to 35.6). The
+// policy turns that around: every pool starts bound in guest memory - the GPU reads and writes it where it is,
+// nothing copied, nothing compared - and a pool earns a mirror only when a measured trial proves the mirror buys
+// GPU time. What a PC engine does by hand, measured pool by pool.
+#pragma once
+
+#include <cstdint>
+#include <cstdlib>
+
+namespace dgpu {
+
+// A promotion trial for one pool, phases on the game's own frames:
+// Base - the pool in guest memory, its window's frame time kept as the before;
+// Mirror - the caller gives the pool its mirror (made at the pool's next binding, as stock makes one) and the
+//          phase settles: the make copies the whole pool into it, and the first frames on new buffer addresses are
+//          the make's own cost, not the pool's;
+// Measure - the same frame time with the mirror, the after.
+// One trial at a time (a second's numbers would read against a frame the first was still moving; Triforce's
+// demotion ran one the same way). The caller feeds every submission's frame number and the present-to-present
+// time total (present_time_total_ns, vk_replay.cpp: one clock read a present, always on, and never reset - the
+// 120-frame status line resets st_gpu_ns, the trials' deltas must not see that). Present to present, not the
+// recordings' GPU timestamps: the mirror's cost is mostly CPU (the sync around a submission) and in the upload
+// command buffer, which the timestamps never time, and a GPU-only verdict kept mirrors while the frame was
+// CPU-bound - the case this policy exists for. The mirror's benefit shows the same way (VRAM reads where PCIe
+// would show on a small-BAR device), so the verdict charges and credits the whole frame.
+enum class Act : uint8_t {
+    None,     // the phase runs on
+    Mirror,   // the before is measured: give the pool its mirror now
+    Decide,   // the after is measured: compare with mirror_worth and keep the mirror or release it
+    Abort,    // the mirror never came on for the settle to wait out: no verdict, the pool is free to trial again
+};
+
+struct Trial {
+    enum Phase : uint8_t { Idle, Base, Settle, Measure };
+    Phase phase = Idle;
+    uint64_t lo = 0;          // the pool in trial (its guest start; 0 while none)
+    uint64_t f0 = 0;          // the frame the phase began at
+    int64_t g0 = 0;           // the GPU time total when it began
+    double direct_ms = 0;     // the GPU's ms a frame with the pool in guest memory
+    double mirror_ms = 0;     // the same with its mirror
+    uint64_t base_binds = 0;  // the pool's binds the before window gathered (the after window's are compared with it)
+
+    // The windows, in frames. 120 is some 3.5 s at 35 fps - long enough that a momentary stall in one does not
+    // decide; 12 of settle covers the make's copy (a pool of a few hundred MB copies in a few ms of GPU time) and
+    // the first frames' pipeline warm-up - but the settle may not START until the mirror is really on: its make
+    // happens at the pool's next binding, which a slow or idle pool may not deliver for a while, and measuring
+    // with a half-made mirror reads the make's own copy as the pool's cost. The caller passes whether the pool's
+    // mirror is bound now; Settle holds until it is, and gives up after a whole window of waiting (the caller
+    // releases such a trial without a verdict, so the pool can be trialed later). Triforce measured with 10 and
+    // 90; the wider windows cost a few seconds per trial and buy a verdict that holds.
+    static constexpr uint32_t kSettle = 12, kWindow = 120;
+
+    void start(uint64_t pool_lo, uint64_t frame, int64_t gpu_ns) {
+        lo = pool_lo, phase = Base, f0 = frame, g0 = gpu_ns, direct_ms = 0, mirror_ms = 0, base_binds = 0;
+    }
+    void stop() { phase = Idle, lo = 0; }
+
+    // The frame's ms (present to present) over the phase so far (a frame count of zero: nothing measured yet).
+    double ms(uint64_t frame, int64_t gpu_ns) const {
+        return frame > f0 ? (double)(gpu_ns - g0) / (double)(frame - f0) / 1e6 : 0.0;
+    }
+
+    Act step(uint64_t frame, int64_t gpu_ns, bool mirror_ready = true) {
+        if (phase == Idle) return Act::None;
+        if (phase == Base && frame >= f0 + kWindow) {
+            direct_ms = ms(frame, gpu_ns);
+            phase = Settle, f0 = frame, g0 = gpu_ns;
+            return Act::Mirror;
+        }
+        if (phase == Settle) {
+            // (the make is recorded at the pool's next binding, which may be slow to come: hold here until it is
+            // on, and give up - no verdict, the caller releases without one - after a window of waiting)
+            if (!mirror_ready) {
+                if (frame >= f0 + kSettle + kWindow) {
+                    stop();
+                    return Act::Abort;
+                }
+                return Act::None;
+            }
+            if (frame >= f0 + kSettle) {
+                phase = Measure, f0 = frame, g0 = gpu_ns;
+                return Act::None;
+            }
+        }
+        if (phase == Measure && frame >= f0 + kWindow) {
+            mirror_ms = ms(frame, gpu_ns);
+            phase = Idle;   // (the verdict is the caller's: mirror_worth below; stop() clears lo)
+            return Act::Decide;
+        }
+        return Act::None;
+    }
+};
+
+// The verdict: the mirror keeps the pool only when it is clearly faster, a gain both in percent and in
+// milliseconds, so a noise-level 1% win does not buy a pool a mirror and the sync around it for good. The knobs
+// (RX_VK_DGPU_GAIN, a percent, 10; RX_VK_DGPU_FLOOR, ms, 0.25) are read in vk_memory.cpp and passed here, so this
+// stays pure. Why both, as whichever is larger: the percent alone keeps a mirror for 0.05 ms of 5 (noise), the
+// floor alone for 0.25 ms of 20 (nothing a frame would miss) - and neither should gate the other: 1.09 ms saved
+// of a 10.32 ms frame (10.6%) is a real win at the 10% knob even though it is under 10% + 0.25 ms. Measured in
+// the game: that pool's verdict is in the race's logs. The window's own noise (a load, a menu) is held off by the
+// caller, which starts a trial only on a sane baseline.
+inline bool mirror_worth(double direct_ms, double mirror_ms, double gain_pct, double floor_ms) {
+    const double saved = direct_ms - mirror_ms;
+    return saved > direct_ms * gain_pct / 100.0 && saved > floor_ms;
+}
+
+// A trial candidate, by its window: reads that could possibly pay for the verdict's floor, and not write-dominated.
+// The physics sets the floor: a mirror must save RX_VK_DGPU_FLOOR (0.25 ms) a frame across the window's ~120 frames
+// - some 30 ms - and pool reads run over PCIe at the measured couple of GB/s only for pools reading hundreds of MB
+// a window; below that no verdict is reachable and the trial is churn by construction (measured: a 48 MB pool
+// reading 2 MB a window began three times a run and could never win). 256 MB is that budget with margin. The caller
+// has already filtered retired pools and pools tried before.
+inline bool trial_candidate(uint64_t read_bytes, uint64_t wrote_bytes) {
+    return read_bytes >= (256ull << 20) && wrote_bytes < read_bytes;
+}
+
+// An anchor of the trial's scene: the guest range a pool covered when the mirror phase began. Anchored by range,
+// not by pool id: the allocator recycles guest memory, and the same range re-imported under a new id (measured:
+// 0x109a rebinding as 0x7fd3 at sizes 80/160/64 MB with its binds stable) is the scene's same pool - by id every
+// recycle would read as the scene moving.
+struct Anchor {
+    uint64_t lo, hi;
+};
+
+// does a pool's range hit one of the scene's anchors? any overlap counts: the recycled pool's size moves (measured
+// 80/160/64 MB), and a scene change's new pools land at other ranges
+inline bool anchor_hit(uint64_t lo, uint64_t hi, const Anchor* anchors, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (lo < anchors[i].hi && anchors[i].lo < hi) return true;
+    return false;
+}
+
+// The A/B's validity, checked at the verdict: the two windows must have measured the same scene and the same
+// workload on it. The scene moved only when a SUBSTANTIAL fraction of the anchored set changed - a real scene
+// change moves most of the set, while Hyrule Field's streaming moves 1-2 anchors a window (measured), guests
+// crossing whatever floor anchors them - and 2 at least, so a small anchor set's single straddler does not void.
+// The workload moved when the trial pool's own bind count moved over two times either way (a menu, a LOD switch).
+// Either one voids the A/B: no verdict, no skip line, and the caller counts such endings against a cap. What must
+// never void it: the mirror serving the pool's reads, which collapses the guest-memory-served binds (~70x measured)
+// while the scene and the workload stand still - that is the mirror working, and the caller's per-path counting
+// keeps it out of these numbers.
+inline bool ab_voided(uint64_t base_binds, uint64_t binds, size_t anchors_changed, size_t anchors_total) {
+    const bool scene_moved = anchors_changed >= 2 && anchors_changed * 4 > anchors_total;
+    return scene_moved || binds > 2 * base_binds || 2 * binds < base_binds;
+}
+
+// A skip-list line: one hex pool start, one a line, as Triforce's keep list keeps them; anything from '#' on is a
+// note. False for a blank or commented line, so the reader skips it without stopping. A leading '-' is refused
+// (strtoull would take "-1a2b" as a wrap-around number), and the line must END at the number: "1a2bxyz" would
+// otherwise file a pool that was never measured.
+inline bool keep_line(const char* s, uint64_t& lo) {
+    while (*s == ' ' || *s == '\t' || *s == '\r') s++;
+    if (*s == '\0' || *s == '\n' || *s == '#' || *s == '-') return false;
+    char* end = nullptr;
+    const unsigned long long v = strtoull(s, &end, 16);
+    if (end == s || v == 0) return false;
+    while (*end == ' ' || *end == '\t' || *end == '\r') end++;
+    if (*end != '\0' && *end != '\n' && *end != '#') return false;
+    lo = (uint64_t)v;
+    return true;
+}
+
+}   // namespace dgpu
