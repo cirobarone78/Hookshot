@@ -826,6 +826,17 @@ cards, or where the GPU cannot multiply the networks' matrices itself, the movie
 not change the gameplay upscaler, and movies can look softer. `RX_VK_NETWORK_KEEP=all` takes precedence and keeps the
 movie networks.
 
+On cards whose cooperative matrices are 16x16x16 only, such as AMD's RDNA3 and RDNA4 cards (tested on an RX 9070 XT with
+RADV), the game's upscaling networks run their matrix multiplies on those matrices through shared memory, once a
+self-test at start matches them against the software multiplies (`vk: matrix multiplies on 16x16x16 cooperative
+matrices` in the log). The game's own anti-aliasing then works at every Render resolution, and the movies keep their
+upscaler. `RX_VK_NETWORK_KEEP` then applies only to a network the route cannot take (the log names it). One difference
+from the console remains: an infinite value in a network's first matrix makes its row NaN where the console gives an
+infinity, which only a network that has already overflowed can meet. `RX_VK_MMA_STAGED=0` turns this off: the software
+multiplies, with the 75% network stood in and the other shares' networks left out, as before. Use it too if the game
+stops at start after `vk: staged matrix self-test` in the log. It is on by default with Mesa's RADV driver only, where it
+was tested; on other drivers (AMD's own, on Windows and Linux) `RX_VK_MMA_STAGED=1` tries it, self-test first.
+
 `RX_VK_SKIP_CODE=<prefix,...>` leaves out the draws of every program with a stage whose native code key starts with one
 of the prefixes (the keys the log prints after "its code:"). On a Steam Deck, `RX_VK_SKIP_CODE=2c56dc1006942f74`
 avoids a GPU hang in Kokiri Forest and the Great Deku Tree: the GPU runs for seconds in the programs that share that

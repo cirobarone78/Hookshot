@@ -718,6 +718,13 @@ public:
     Id OpCooperativeMatrixMulAddKHR(Id result_type, Id a, Id b, Id c);
     /// (hookshot) SPV_KHR_cooperative_matrix: load from memory (layout and stride are ids).
     Id OpCooperativeMatrixLoadKHR(Id result_type, Id pointer, Id layout, Id stride);
+    /// (hookshot) The same with a memory operand (NonPrivatePointer under the Vulkan memory model, for one).
+    Id OpCooperativeMatrixLoadKHR(Id result_type, Id pointer, Id layout, Id stride,
+                                  spv::MemoryAccessMask memory_access);
+    /// (hookshot) SPV_KHR_cooperative_matrix: store object, a cooperative matrix, through pointer (layout and stride
+    /// are ids, as the load's), with an optional memory operand.
+    Id OpCooperativeMatrixStoreKHR(Id pointer, Id object, Id layout, Id stride,
+                                   std::optional<spv::MemoryAccessMask> memory_access = std::nullopt);
 
     /// Full signed interger multiplication of Operand 1 and Operand 2.
     Id OpSMulExtended(Id result_type, Id operand_1, Id operand_2);

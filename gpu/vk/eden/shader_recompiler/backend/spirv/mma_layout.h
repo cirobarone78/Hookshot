@@ -16,6 +16,16 @@ inline std::array<uint32_t, 8> mma_order_a{0, 1, 2, 3, 4, 5, 6, 7};
 inline std::array<uint32_t, 4> mma_order_b{0, 1, 2, 3};
 inline std::array<uint32_t, 4> mma_order_c{0, 1, 2, 3};
 inline bool mma_software = false;   // (HMMA_nx2 in software: emit_spirv_warp.cpp, RX_VK_MMA_SOFTWARE=1)
+// (hookshot) HMMA_nx2 on 16x16x16 f16 -> f32 cooperative matrices, staged through shared memory (mma_staged.h): for cards
+// whose cooperative matrices lack 16x8x16 (RDNA3/4 on RADV), on once vk_coopmat.cpp's staged self-test passed;
+// RX_VK_MMA_STAGED=0: off (the software function, as before). mma_software is false then. A program the route cannot take
+// (mma_route.h PlanMatrixRoute: its stage, its width, or its shared memory with the scratch past mma_staged_shared_limit)
+// keeps the software function for its multiplies, as every program had before (or native: mma_staged_native)
+inline bool mma_staged = false;
+inline uint32_t mma_staged_shared_limit = 0;   // (bytes: the device's maxComputeSharedMemorySize)
+// (hookshot) With the staged route, the programs it cannot take go native, not to the software function: RX_VK_MMA_STAGED=1
+// on a card whose 16x8x16 matrices check out too (vk_coopmat.cpp). Which route a program takes: mma_route.h
+inline bool mma_staged_native = false;
 // (amd-fix) float colour outputs carry no NaN or infinity to their target (EmitSetFragColor): one NaN texel spreads
 // through bloom/blur/downsample averages into glowing blocks (OoT's flowers on AMD, Hookshot issue 606). On for every
 // card since v2.0.6 (vk_coopmat.cpp coopmat_init); RX_VK_NAN_GUARD=0 turns it off. Idea from NX2navi patch 0027.

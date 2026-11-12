@@ -513,6 +513,11 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
             ctx.AddCapability(spv::Capability::GroupNonUniformVote);
         }
     }
+    // (hookshot) this program's matrix route, not the device's (EmitContext::DefineMatrixRoute): native, the software
+    // function, or 16x16x16 matrices staged through shared memory (mma_staged.h). The cooperative matrices of the native
+    // and staged routes want the Vulkan memory model
+    const bool mma_software{ctx.mma_software_here};
+    const bool mma_staged{ctx.mma_staged_here};
     if (info.uses_cooperative_matrix && !mma_software) {
         ctx.AddExtension("SPV_KHR_cooperative_matrix");
         ctx.AddCapability(spv::Capability::CooperativeMatrixKHR);
@@ -524,6 +529,9 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
     if (info.uses_cooperative_matrix && mma_software) {   // (hookshot: DefineSoftwareMatrixFunction's)
         ctx.AddCapability(spv::Capability::GroupNonUniform);
         ctx.AddCapability(spv::Capability::GroupNonUniformShuffle);
+    }
+    if (info.uses_cooperative_matrix && mma_staged) {   // (hookshot: DefineStagedMatrixFunction's SubgroupId and lanes)
+        ctx.AddCapability(spv::Capability::GroupNonUniform);
     }
     if (info.uses_quad_shuffles) {
         if (profile.support_quad_shuffles) {
@@ -674,7 +682,8 @@ void PatchMeshInstructions(std::vector<u32>& code, const EmitContext& ctx) {
 
 std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program, Bindings& bindings) {
     EmitContext ctx{profile, runtime_info, program, bindings};
-    if (program.info.uses_cooperative_matrix && mma_software) DefineSoftwareMatrixFunction(ctx);
+    if (program.info.uses_cooperative_matrix && ctx.mma_software_here) DefineSoftwareMatrixFunction(ctx);
+    if (program.info.uses_cooperative_matrix && ctx.mma_staged_here) DefineStagedMatrixFunction(ctx);
     Id main{};
     if (runtime_info.mesh_fallback_vertex) {   // (hookshot: the fallback's generated vertex stage, which reads the records)
         const Id void_function{ctx.TypeFunction(ctx.void_id)};

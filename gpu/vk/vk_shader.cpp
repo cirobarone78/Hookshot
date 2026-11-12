@@ -31,6 +31,8 @@
 #include <vector>
 
 #include "shader_recompiler/backend/spirv/mma_layout.h"
+#include "shader_recompiler/backend/spirv/mma_route.h"
+#include "shader_recompiler/backend/spirv/mma_staged.h"
 #include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/ir_opt/fragment_output_guard.h"
 #include "shader_recompiler/ir_opt/scene_tonemap_pass.h"
@@ -946,6 +948,13 @@ std::atomic<int64_t> st_translated, st_failed, st_translate_ns;
 
 } // namespace
 
+Shader::Backend::SPIRV::MatrixRoute program_matrix_route(const Program& p) {
+    using namespace Shader::Backend::SPIRV;
+    if (p.stages.empty()) return mma_software ? MatrixRoute::Software : MatrixRoute::None;
+    const Shader::Stage stage = p.compute ? Shader::Stage::Compute : Shader::Stage::VertexB;   // (graphics: never staged)
+    return PlanMatrixRoute(profile(), stage, p.stages[0].info, p.shared_memory, p.workgroup).route;
+}
+
 Shader::AttributeType attribute_type_of(uint32_t vattr) {
     // (NVN vertex formats: the integer ones read as integers, everything else as float)
     const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&vattr);
@@ -1176,11 +1185,14 @@ uint64_t translator_stamp() {
         // (and the vendor fixes of the translation, vk_vendor.h: out-of-bounds fetches, NaN tests, the gather offset)
         const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (mma_software ? 4u : 0u) |
                                (global_table_loop ? 8u : 0u) | (fetch_bounds ? 16u : 0u) | (nan_bits ? 32u : 0u) |
-                               (profile().need_gather_subpixel_offset ? 64u : 0u) | (fetch_bounds_buffers ? 128u : 0u);
+                               (profile().need_gather_subpixel_offset ? 64u : 0u) | (fetch_bounds_buffers ? 128u : 0u) |
+                               (mma_staged ? 256u : 0u) | (mma_staged_native ? 512u : 0u);   // (hookshot: the staged matrix route)
         add(&flags, sizeof flags);
         add(mma_order_a.data(), sizeof(uint32_t) * mma_order_a.size());
         add(mma_order_b.data(), sizeof(uint32_t) * mma_order_b.size());
         add(mma_order_c.data(), sizeof(uint32_t) * mma_order_c.size());
+        // (the staged route's: which programs take it, PlanStagedScratch, depends on the device's shared memory)
+        if (mma_staged) add(&mma_staged_shared_limit, sizeof mma_staged_shared_limit);
     }
     // (RX_VK_GP_, not RX_VK_GP: that took RX_VK_GPL with it, which changes no translation, and switching the stage libraries on
     // threw the whole program cache away. What the libraries are good for is the prepare's second stamp, vk_draw.cpp warmed_stamp)
@@ -1252,8 +1264,16 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             // took minutes each for AMD's compiler (the black screen with sound, Hookshot issue 26: JaredEzz's analysis) and the movies ran at 10 fps
             // (issues 38, 43). Left out, the last pass becomes a linear upscale of the movie (upscale_stub in vk_draw.cpp): the same picture at 60
             // fps, a little softer. The gameplay TAAU network stays. RX_VK_NETWORK_KEEP=<key prefixes>, "all": every one runs
+            // (hookshot) With the staged route (16x16x16 matrices through shared memory, vk_coopmat.cpp) the card runs every
+            // network as NVIDIA's do: none is left out, and RX_VK_NETWORK_KEEP does not apply to them. A program the route
+            // cannot take (PlanMatrixRoute, the translator's own test) has its multiplies in the software function, and is left
+            // out as before unless kept; the kept ones are then the gameplay networks of every Render resolution share (100%:
+            // 9dc98871, 75%: fd029a31, 67/58/50%: 66766196, f10782f9, 72ba090c), so their anti-aliasing stays
             if (t->program.info.uses_cooperative_matrix) {
-                static const std::string keep = getenv("RX_VK_NETWORK_KEEP") ? getenv("RX_VK_NETWORK_KEEP") : "fd029a317a9a4b94,9dc98871eb7fc101";   // (amd-fix: 9dc98871 resolves the dynamic-resolution scene to 2048x1152; left out, the 3D picture is black under the HUD)
+                using namespace Shader::Backend::SPIRV;
+                static const std::string keep = getenv("RX_VK_NETWORK_KEEP") ? getenv("RX_VK_NETWORK_KEEP")
+                    : mma_staged ? "fd029a317a9a4b94,9dc98871eb7fc101,6676619641320ba7,f10782f9e58b6a7c,72ba090c70fe2614"
+                                 : "fd029a317a9a4b94,9dc98871eb7fc101";   // (amd-fix: 9dc98871 resolves the dynamic-resolution scene to 2048x1152; left out, the 3D picture is black under the HUD)
                 char hex[24];
                 snprintf(hex, sizeof hex, "%016llx", (unsigned long long)p.key);
                 bool kept_one = keep == "all";
@@ -1263,8 +1283,29 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                     kept_one = !k.empty() && !strncmp(hex, k.c_str(), k.size());
                     at = e == std::string::npos ? keep.size() : e + 1;
                 }
-                if ((!kept_one && (Shader::Backend::SPIRV::mma_software || dev.props.vendorID != 0x10DE)) || env_on("RX_VK_NO_F16") || !dev.vk12.shaderFloat16)
-                    throw std::runtime_error("a network left out on this card");
+                const MatrixRoutePlan route = PlanMatrixRoute(profile(), t->program.stage, t->program.info,
+                                                              t->program.shared_memory_size, t->program.workgroup_size);
+                const bool left_out = (!kept_one && route.route != MatrixRoute::Staged &&
+                                       (route.route == MatrixRoute::Software || dev.props.vendorID != 0x10DE)) ||
+                                      env_on("RX_VK_NO_F16") || !dev.vk12.shaderFloat16;   // (#2343: no f16, the networks left out)
+                if (mma_staged) {   // (each network once: which route its multiplies take)
+                    static std::mutex mu;
+                    static std::unordered_set<uint64_t> told;
+                    std::lock_guard lk(mu);
+                    if (told.size() < 64 && told.insert(p.key).second) {
+                        const auto& wg = t->program.workgroup_size;
+                        if (route.route == MatrixRoute::Staged)
+                            logf("vk: network %s: matrix multiplies staged through shared memory (workgroup %ux%ux%u, %u bytes of its "
+                                 "own, the scratch from %u, %u in all)%s", hex, wg[0], wg[1], wg[2], t->program.shared_memory_size,
+                                 route.scratch.offset, route.scratch.size, left_out ? ": left out (RX_VK_NO_F16)" : "");
+                        else
+                            logf("vk: network %s: matrix multiplies %s, the staged route cannot take it (workgroup %ux%ux%u, %u "
+                                 "bytes of shared memory, the device's limit %u)%s", hex,
+                                 route.route == MatrixRoute::Native ? "native" : "in the software function", wg[0], wg[1], wg[2],
+                                 t->program.shared_memory_size, mma_staged_shared_limit, left_out ? ": left out" : "");
+                    }
+                }
+                if (left_out) throw std::runtime_error("a network left out on this card");
             }
             const std::vector<uint32_t> spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_pinned(), rt, t->program, bindings);
             // (EvilOOT) RX_VK_DUMP_SPV=<folder>: the SPIR-V of the programs RX_VK_MISS_LOG_PROG names (all: unset), for spirv-val

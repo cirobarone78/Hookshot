@@ -31,6 +31,7 @@
 #include <signal.h>
 
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
+#include "shader_recompiler/backend/spirv/mma_route.h"
 
 #include "vk_paths.h"
 #include "vk_draw.h"
@@ -3426,6 +3427,11 @@ std::string state_list_snapshot(bool* present) { return state_list_bytes(present
 /// the start's cache; before the cache is loaded, with none. (Outside the unnamed namespace: vk_fsr3.cpp links to it)
 VkResult shared_compute_pipeline(const VkComputePipelineCreateInfo* ci, VkPipeline* out) {
     return cached_compute(ci, out);
+}
+// (hookshot) guarded_compute for vk_coopmat.cpp's tests at start: a driver that faults compiling one fails that test (the
+// matrix multiplies then go as without it), not the game
+VkResult guarded_compute_pipeline(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
+    return guarded_compute(cache, ci, pl);
 }
 /// (hookshot) The driver faults the pipeline compiles caught so far (guarded_graphics, guarded_compute): the preparation's
 /// watchdog says so (vk_main.cpp). Outside the unnamed namespace: vk_main.cpp links to it
@@ -7159,7 +7165,15 @@ bool movie_upscale(VkCommandBuffer cmd, uint32_t in_handle, uint32_t out_handle,
 // of GPU time (vk_replay.cpp), they are left out from then on, as on AMD: the linear upscale below, the same picture a little
 // softer. The gameplay networks are never left out. RX_VK_NETWORK_KEEP=all: never
 std::atomic<bool> movie_networks_slow{false};
-bool gameplay_network(uint64_t key) { return key == 0xfd029a317a9a4b94ull || key == 0x9dc98871eb7fc101ull; }
+// (the 3/4 TAAU network and the full-size pass; with the staged matrix route (vk_coopmat.cpp) the card runs the networks of the
+// Render resolution row's other shares too (67%: 6676619641320ba7, 58%: f10782f9e58b6a7c, 50%: 72ba090c70fe2614), and they are
+// gameplay's as well: never replaced by the movies' linear upscale. Without it they are left out where the software function
+// would run them (vk_shader.cpp), and upscale_stub's generic fallback stands in for them as before)
+bool gameplay_network(uint64_t key) {
+    if (key == 0xfd029a317a9a4b94ull || key == 0x9dc98871eb7fc101ull) return true;
+    return Shader::Backend::SPIRV::mma_staged &&
+           (key == 0x6676619641320ba7ull || key == 0xf10782f9e58b6a7cull || key == 0x72ba090c70fe2614ull);
+}
 
 static movie_upscale_policy::Mode movie_upscale_mode() {
     // Read on first dispatch, after host/hos_main.c has loaded hookshot_env.txt.
@@ -7244,8 +7258,12 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     }
     // Failed upscales can receive RGB9E5 bits in a shared R11 image, including the 75% gameplay TAAU.
     // Match the observed base-level 2D case only; other fallbacks keep their existing blit.
+    // (hookshot) Every network but the full-size pass, by key, not by gameplay_network: on the staged matrix route that names
+    // the 67/58/50% networks too, and one of those that failed (a pipeline the driver did not make, RX_VK_NO_F16) reaches this
+    // with RGB9E5 input like any other: blitted raw, its picture took the neon colours of issues 425/508
     const bool gameplay_taau = key == 0xfd029a317a9a4b94ull;
-    if ((!gameplay_network(key) || gameplay_taau) && in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
+    const bool full_size_pass = key == 0x9dc98871eb7fc101ull;
+    if (!full_size_pass && in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
         src->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && dst->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 &&
         (fd.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) &&
         src->type == VK_IMAGE_TYPE_2D && dst->type == VK_IMAGE_TYPE_2D && src->depth == 1 && dst->depth == 1 &&
@@ -7312,15 +7330,19 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
 /// (hookshot) OoT's gameplay TAAU network (fd029a317a9a4b94) stood in for: its input upscaled into its output
 /// (shaders/taau_upscale.comp). The network's translation loses the blue channel, the yellow cast over every
 /// scene; with this the picture is right, without the network's temporal anti-aliasing.
-/// RX_VK_TAAU_KEYS=<program key prefixes,...> (default fd029a317a9a4b94; "-": none, the network runs)
-bool taau_key(uint64_t key) {
+/// RX_VK_TAAU_KEYS=<program key prefixes,...> (default: fd029a317a9a4b94 where its matrix multiplies are the software
+/// function's, or with RX_VK_NO_F16; "-": none, the network runs)
+bool taau_key(const Program& p) {
     // (the real network where the card runs it as the console does; on the software multiplies it cost most of a frame on AMD's cards, and a
-    // locked 60 with this in its place: Hookshot issue 52)
-    static const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS")
-                              : Shader::Backend::SPIRV::mma_software || env_on("RX_VK_NO_F16")
-                                    ? "fd029a317a9a4b94" : "-";   // (RX_VK_NO_F16: vk_shader.cpp leaves the network out)
+    // locked 60 with this in its place: Hookshot issue 52. Which route this program's multiplies take is the translator's own test
+    // (program_matrix_route): on the staged route (vk_coopmat.cpp) the network runs, unless that route cannot take it)
+    static const char* keys = getenv("RX_VK_TAAU_KEYS");
+    static const bool no_f16 = env_on("RX_VK_NO_F16");   // (vk_shader.cpp leaves the network out)
+    if (!keys)
+        return p.key == 0xfd029a317a9a4b94ull &&
+               (no_f16 || program_matrix_route(p) == Shader::Backend::SPIRV::MatrixRoute::Software);
     char hex[24];
-    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)key);
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)p.key);
     bool match = false;
     for (const char* q = keys; *q && !match;) {
         const char* e = q;
@@ -7329,6 +7351,17 @@ bool taau_key(uint64_t key) {
         q = *e ? e + 1 : e;
     }
     return match;
+}
+/// (hookshot) For the log of a compute pipeline the driver did not make: which route a network's matrix multiplies took
+/// (mma_route.h), "" for the other programs
+static const char* matrix_route_note(const Program& p) {
+    using Shader::Backend::SPIRV::MatrixRoute;
+    switch (program_matrix_route(p)) {
+    case MatrixRoute::Native: return " (a network, its matrix multiplies native)";
+    case MatrixRoute::Software: return " (a network, its matrix multiplies in the software function)";
+    case MatrixRoute::Staged: return " (a network, its matrix multiplies staged through shared memory: RX_VK_MMA_STAGED=0 turns that off)";
+    default: return "";
+    }
 }
 static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageView output_view,
                           Texture* out, uint32_t level, uint64_t key, const char* keys, bool temporal) {
@@ -7458,7 +7491,9 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
 bool fsr3_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (p.stages.empty() || !fsr3_inputs::wanted()) return false;
     const Stage& st = p.stages[0];
-    if (!gameplay_network(p.key) && !(st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 &&
+    // (the two it knows by key, whichever matrix route runs the others: gameplay_network names them too on the staged one)
+    const bool known = p.key == 0xfd029a317a9a4b94ull || p.key == 0x9dc98871eb7fc101ull;
+    if (!known && !(st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 &&
                                       st.info.image_descriptors.size() == 1))
         return false;
     if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
@@ -7473,7 +7508,7 @@ bool fsr3_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     uint32_t level = 0;
     const uint32_t out_handle = handle_of(s, st, od, 0);
     if (out_handle) texture_view_of(out_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
-    return fsr3_upscale(cmd, p.key, gameplay_network(p.key), in, dw().imgs[0].imageView, out, dw().imgs[ntex].imageView, level);
+    return fsr3_upscale(cmd, p.key, known, in, dw().imgs[0].imageView, out, dw().imgs[ntex].imageView, level);
 }
 /// (hookshot) A temporal upscaler (NVIDIA DLSS, AMD FSR 4: vk_temporal.cpp) in place of the gameplay upscale network, when
 /// one is on and its inputs are as expected: the network's input as it samples it, its output's storage view
@@ -7484,7 +7519,9 @@ bool temporal_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p)
     // only when the texture is this frame's scene, in the gameplay networks' input format, and the image the picture)
     if ((!temporal_wanted() && !temporal_off()) || p.stages.empty()) return false;   // (Off: the network's stretch)
     const Stage& st = p.stages[0];
-    if (!gameplay_network(p.key) && !(st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 &&
+    // (the two it knows by key, whichever matrix route runs the others: gameplay_network names them too on the staged one)
+    const bool known = p.key == 0xfd029a317a9a4b94ull || p.key == 0x9dc98871eb7fc101ull;
+    if (!known && !(st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 &&
                                       st.info.image_descriptors.size() == 1))
         return false;
     if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
@@ -7499,7 +7536,7 @@ bool temporal_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p)
     uint32_t level = 0;
     const uint32_t out_handle = handle_of(s, st, od, 0);
     if (out_handle) texture_view_of(out_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
-    const bool done = temporal_upscale(cmd, p.key, gameplay_network(p.key), in, dw().imgs[0].imageView, out, dw().imgs[ntex].imageView, level);
+    const bool done = temporal_upscale(cmd, p.key, known, in, dw().imgs[0].imageView, out, dw().imgs[ntex].imageView, level);
     // (its actor motion may have drawn with a pipeline, viewport and descriptors of its own: the next draw sets all of its again)
     last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
     vertex_set.on = false, last_ib.on = false;
@@ -7544,7 +7581,7 @@ static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture
     return true;
 }
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
-    if (!taau_key(p.key) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
+    if (!taau_key(p) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
     const Stage& st = p.stages[0];
     if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return false;
     size_t ntex = 0;   // (build_descriptors' image infos: the textures', then the images')
@@ -7915,7 +7952,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     // (hookshot) compute pipelines too, for the driver's own cache: built in play they stopped the game while the driver compiled
     // them, seconds each for the culling programs (53caac5f: 6.5 s, 41 s inlined), which looked like a hang
     const auto warm_compute = [&](Program& p) {
-        if (!warm_cs || taau_key(p.key)) return;
+        if (!warm_cs || taau_key(p)) return;
         ensure_layout(p);
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -8626,7 +8663,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     // 2026-11-08). The dispatch waits up to 50 ms for it, which covers NVIDIA's compiles; one still compiling after that is left
     // out until it is ready, as graphics draws are. RX_VK_COMPUTE_WAIT=1: waited for, as before)
     static const bool compute_wait = env_on("RX_VK_COMPUTE_WAIT");
-    if (!compute_wait && !p.compute_pipeline && !taau_key(p.key) && p.compute_state.load(std::memory_order_acquire) != 2) {
+    if (!compute_wait && !p.compute_pipeline && !taau_key(p) && p.compute_state.load(std::memory_order_acquire) != 2) {
         int none = 0;
         const bool fresh = p.compute_state.compare_exchange_strong(none, 1);
         if (fresh) {
@@ -8660,7 +8697,8 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 VkPipeline made = VK_NULL_HANDLE;
                 if (const VkResult r = cached_compute(&ci, &made); r != VK_SUCCESS || !made) {
                     static std::atomic<int> told{0};
-                    if (told++ < 20) logf("vk: compute pipeline of %016llx not made (%d)", (unsigned long long)q.key, (int)r);
+                    if (told++ < 20)
+                        logf("vk: compute pipeline of %016llx not made (%d)%s", (unsigned long long)q.key, (int)r, matrix_route_note(q));
                     q.failed = true;
                 } else {
                     q.compute_pipeline = made;
@@ -8702,7 +8740,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         if (p.failed || !p.compute_pipeline) SKIP_HERE();
     }
     ParLock plk(!p.compute_pipeline);
-    if (!p.compute_pipeline && !taau_key(p.key)) {   // (a stood-in network is never compiled)
+    if (!p.compute_pipeline && !taau_key(p)) {   // (a stood-in network is never compiled)
         pcache_init();
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -8722,7 +8760,8 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         }
         if (const VkResult made = cached_compute(&ci, &p.compute_pipeline); made != VK_SUCCESS) {
             static std::atomic<int> told{0};
-            if (told++ < 20) logf("vk: compute pipeline of %016llx not made (%d)", (unsigned long long)p.key, (int)made);
+            if (told++ < 20)
+                logf("vk: compute pipeline of %016llx not made (%d)%s", (unsigned long long)p.key, (int)made, matrix_route_note(p));
             p.compute_pipeline = VK_NULL_HANDLE;
             p.failed = true;
             SKIP_HERE();

@@ -209,6 +209,10 @@ public:
         return Constant(F32[1], value);
     }
 
+    /// (hookshot) A load or store of the program's own Workgroup memory: NonPrivatePointer where workgroup_non_private
+    Id LoadWorkgroup(Id result_type, Id pointer);
+    void StoreWorkgroup(Id pointer, Id object);
+
     const Profile& profile;
     const RuntimeInfo& runtime_info;
     Stage stage{};
@@ -268,6 +272,19 @@ public:
     Id is_helper_invocation{};
     Id subgroup_local_invocation_id{};
     Id software_matrix_function{};   // (hookshot: emit_spirv_warp.cpp)
+    // (hookshot) this program's HMMA_nx2 route (DefineMatrixRoute; mma_layout.h, mma_staged.h): its multiplies in the software
+    // function (the device's route, or the staged route's fallback for a program it cannot take), or staged through the
+    // shared block's scratch from u32 word mma_scratch_word, a subgroup's by its SubgroupId (staged_matrix_function,
+    // emit_spirv_warp.cpp); neither: native
+    bool mma_software_here{};
+    bool mma_staged_here{};
+    // (hookshot) the program's own Workgroup loads and stores NonPrivatePointer and its barriers MakeAvailable|MakeVisible: a
+    // staged program, which the route moved onto the Vulkan memory model (DefineMatrixRoute). LoadWorkgroup, StoreWorkgroup
+    bool workgroup_non_private{};
+    u32 mma_scratch_word{};
+    u32 mma_shared_size{};   // (bytes: the shared block, the program's own and the scratch)
+    Id subgroup_id{};
+    Id staged_matrix_function{};
     Id subgroup_mask_eq{};
     Id subgroup_mask_lt{};
     Id subgroup_mask_le{};
@@ -450,6 +467,7 @@ private:
     void DefineCommonConstants();
     void DefineInterfaces(const IR::Program& program);
     void DefineLocalMemory(const IR::Program& program);
+    void DefineMatrixRoute(const IR::Program& program);
     void DefineSharedMemory(const IR::Program& program);
     void DefineSharedMemoryFunctions(const IR::Program& program);
     void DefineConstantBuffers(const Info& info, u32& binding);

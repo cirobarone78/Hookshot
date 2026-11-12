@@ -7,6 +7,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
+#include "shader_recompiler/backend/spirv/mma_staged.h"
 
 namespace Shader::Backend::SPIRV {
 namespace {
@@ -503,11 +504,28 @@ void DefineSoftwareMatrixFunction(EmitContext& ctx) {
 }
 
 
+// (hookshot) HMMA on 16x16x16 cooperative matrices staged through the shared block's scratch, in one function as the
+// software one is (mma_staged.h; EmitContext::DefineMatrixRoute placed the scratch and defined SubgroupId)
+void DefineStagedMatrixFunction(EmitContext& ctx) {
+    const StagedTypes types{ctx.U32[1], ctx.F16[1], ctx.F32[1], ctx.U32[2], ctx.U32[4], ctx.F16[2], ctx.F32[2]};
+    const auto word = [&ctx](Id index) {
+        return ctx.uses_explicit_workgroup_layout
+                   ? ctx.OpAccessChain(ctx.shared_u32, ctx.shared_memory_u32, ctx.u32_zero_value, index)
+                   : ctx.OpAccessChain(ctx.shared_u32, ctx.shared_memory_u32, index);
+    };
+    ctx.staged_matrix_function = MakeStagedMatrixFunction(ctx, types, word, ctx.subgroup_local_invocation_id,
+                                                          ctx.subgroup_id, ctx.mma_scratch_word);
+    ctx.Name(ctx.staged_matrix_function, "hmma_staged");
+}
+
 // (hookshot) HMMA_nx2: D(16x8) = A(16x16) * B(16x8) + C on the subgroup's cooperative matrices. Each
 // lane's fragment registers hold its elements in the console's order (two f16 a word); they go to and come
-// from the device's elements in its own order (mma_layout.h, measured by vk_coopmat.cpp).
+// from the device's elements in its own order (mma_layout.h, measured by vk_coopmat.cpp). This program's route
+// (EmitContext::DefineMatrixRoute) may instead be the software function above, or 16x16x16 matrices staged through
+// the shared block's scratch (mma_staged.h)
 Id EmitMatrixMulAddF16(EmitContext& ctx, Id a, Id b, Id c) {
-    if (mma_software) return ctx.OpFunctionCall(ctx.U32[2], ctx.software_matrix_function, a, b, c);
+    if (ctx.mma_software_here) return ctx.OpFunctionCall(ctx.U32[2], ctx.software_matrix_function, a, b, c);
+    if (ctx.mma_staged_here) return ctx.OpFunctionCall(ctx.U32[2], ctx.staged_matrix_function, a, b, c);
     const Id f16{ctx.F16[1]};
     const Id scope{ctx.Const(static_cast<u32>(spv::Scope::Subgroup))};
     const auto type = [&](u32 rows, u32 columns, spv::CooperativeMatrixUse use) {

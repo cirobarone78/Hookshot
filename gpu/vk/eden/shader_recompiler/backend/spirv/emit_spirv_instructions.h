@@ -638,6 +638,7 @@ Id EmitShuffleButterfly(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id
 Id EmitQuadBroadcast(EmitContext& ctx, Id value, Id lane);
 Id EmitMatrixMulAddF16(EmitContext& ctx, Id a, Id b, Id c);
 void DefineSoftwareMatrixFunction(EmitContext& ctx);
+void DefineStagedMatrixFunction(EmitContext& ctx);
 Id EmitQuadSwap(EmitContext& ctx, Id value, Id direction);
 Id EmitFSwizzleAdd(EmitContext& ctx, Id op_a, Id op_b, Id swizzle);
 Id EmitDPdxFine(EmitContext& ctx, Id op_a);

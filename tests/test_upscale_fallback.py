@@ -154,8 +154,11 @@ bool movie_upscale(VkCommandBuffer, uint64_t, uint64_t, Texture *) {
     movie_calls++;
     return movie;
 }
+// (vk_draw.cpp's on the staged matrix route, its widest: the 67/58/50% networks are gameplay's too. upscale_stub must still
+// decode their RGB9E5 input when one of them failed: only the full-size pass is left to the blit)
 bool gameplay_network(uint64_t key) {
-    return key == 0xfd029a317a9a4b94ull || key == 0x9dc98871eb7fc101ull;
+    return key == 0xfd029a317a9a4b94ull || key == 0x9dc98871eb7fc101ull || key == 0x6676619641320ba7ull ||
+           key == 0xf10782f9e58b6a7cull || key == 0x72ba090c70fe2614ull;
 }
 enum class ViewUse { Sample, Storage };
 VkImageView texture_view(Texture *t, const nvn_tex *, const nvn_view *v, VkImageViewType type,
@@ -219,6 +222,12 @@ int main(int argc, char **argv) {
         key = 0xfd029a317a9a4b94ull;
     if (mode == "9dc")
         key = 0x9dc98871eb7fc101ull;
+    if (mode == "staged-67")   // (the Render resolution row's other shares' networks, failed on the staged route)
+        key = 0x6676619641320ba7ull;
+    if (mode == "staged-58")
+        key = 0xf10782f9e58b6a7cull;
+    if (mode == "staged-50")
+        key = 0x72ba090c70fe2614ull;
     if (mode == "pipeline-failure" || mode == "fd-pipeline-failure")
         pipeline_ok = false;
     if (mode == "no-storage" || mode == "fd-no-storage")
@@ -235,7 +244,7 @@ int main(int argc, char **argv) {
     state.tex[5][0] = 1;
     state.img[5][0] = 2;
     assert(upscale_stub((VkCommandBuffer)5, state, key));
-    if (mode == "captured" || mode == "fd") {
+    if (mode == "captured" || mode == "fd" || mode.rfind("staged-", 0) == 0) {
         if (typed_calls != 1 || views != 2 || blits != 0) {
             puts("RED: RGB9E5 input still used physical-format blit");
             return 7;
@@ -285,6 +294,7 @@ def main():
         cases = ('captured', 'r11', 'movie', 'view', 'skip', 'mip', 'swizzle', 'fd', 'fd-r11',
                  'fd-view', 'fd-pipeline-failure', 'fd-no-storage', 'fd-no-e5-sample',
                  'fd-no-e5-linear', 'fd-null-input-view', 'fd-null-output-view', '9dc',
+                 'staged-67', 'staged-58', 'staged-50',
                  'pipeline-failure', 'no-storage', 'no-e5-sample', 'no-e5-linear',
                  'null-input-view', 'null-output-view')
         for case in cases:

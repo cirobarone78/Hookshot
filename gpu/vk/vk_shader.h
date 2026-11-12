@@ -15,6 +15,10 @@
 #include "vk_internal.h"
 #include "vk_state.h"
 
+namespace Shader::Backend::SPIRV {
+enum class MatrixRoute : uint32_t;   // (eden/.../backend/spirv/mma_route.h)
+}
+
 namespace mkwvk {
 
 struct Stage {
@@ -83,6 +87,10 @@ struct Program {
 };
 
 enum class ProgramKind { Graphics, Compute, Mesh };
+
+/// (hookshot) The route a program's matrix multiplies take on this device (PlanMatrixRoute in mma_route.h, the translator's
+/// own test), from what the program keeps of its translation: its stage's info, workgroup and shared memory
+Shader::Backend::SPIRV::MatrixRoute program_matrix_route(const Program& p);
 
 /// The program variant for the bound state (translated at first use; null when it does not translate).
 /// color_types: the attachments' Shader::AttributeType (Float / SignedInt / UnsignedInt), for the fragment outputs.

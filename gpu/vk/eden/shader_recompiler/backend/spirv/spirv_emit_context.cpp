@@ -19,6 +19,8 @@
 #include "common/div_ceil.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
+#include "shader_recompiler/backend/spirv/mma_route.h"
+#include "shader_recompiler/backend/spirv/mma_staged.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
@@ -445,7 +447,7 @@ Id CasLoop(EmitContext& ctx, Operation operation, Id array_pointer, Id element_p
     const Id tries_var{CasTriesVariable(ctx)};
     const Id word_pointer{is_struct ? ctx.OpAccessChain(element_pointer, base, zero, index)
                                     : ctx.OpAccessChain(element_pointer, base, index)};
-    ctx.OpStore(expected_var, ctx.OpLoad(ctx.U32[1], word_pointer));
+    ctx.OpStore(expected_var, is_shared ? ctx.LoadWorkgroup(ctx.U32[1], word_pointer) : ctx.OpLoad(ctx.U32[1], word_pointer));
     ctx.OpBranch(loop_header);
     ctx.AddLabel(loop_header);
 
@@ -578,6 +580,7 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     }
     DefineMesh(program);
     DefineLocalMemory(program);
+    DefineMatrixRoute(program);   // (hookshot: before the shared memory, which the staged route's scratch is part of)
     DefineSharedMemory(program);
     DefineSharedMemoryFunctions(program);
     DefineConstantBuffers(program.info, uniform_binding);
@@ -711,16 +714,59 @@ void EmitContext::DefineLocalMemory(const IR::Program& program) {
     }
 }
 
+// (hookshot) Which route this program's HMMA_nx2 takes: PlanMatrixRoute (mma_route.h), the test vk_shader.cpp and
+// vk_draw.cpp decide by too. Staged (mma_staged.h): the scratch (kStagedBytes a subgroup) after the program's own shared
+// memory, in the same block (with the explicit layout the Workgroup variables must all be blocks, and they alias). The
+// program's own shared memory is then on the Vulkan memory model, which the cooperative matrices want (emit_spirv.cpp):
+// its loads and stores non-private and its barriers making them available and visible, as the GLSL450 model's
+// implicitly coherent shared memory had them (workgroup_non_private)
+void EmitContext::DefineMatrixRoute(const IR::Program& program) {
+    mma_shared_size = program.shared_memory_size;
+    const MatrixRoutePlan plan{PlanMatrixRoute(profile, stage, program.info, program.shared_memory_size,
+                                               program.workgroup_size)};
+    mma_software_here = plan.route == MatrixRoute::Software;
+    if (plan.route != MatrixRoute::Staged) {
+        return;
+    }
+    // (PlanMatrixRoute takes only programs for which DefineInputs made the lane id and DefineCommonTypes f16)
+    if (!Sirit::ValidId(subgroup_local_invocation_id) || !Sirit::ValidId(F16[1])) {
+        throw LogicError("HMMA_nx2 staged without the lane id or f16");
+    }
+    mma_staged_here = true;
+    workgroup_non_private = true;
+    mma_scratch_word = plan.scratch.offset / 4;
+    mma_shared_size = plan.scratch.size;
+    AddCapability(spv::Capability::GroupNonUniform);
+    subgroup_id = DefineInput(*this, U32[1], false, spv::BuiltIn::SubgroupId);
+}
+
+Id EmitContext::LoadWorkgroup(Id result_type, Id pointer) {
+    if (workgroup_non_private) {
+        return OpLoad(result_type, pointer, spv::MemoryAccessMask::NonPrivatePointer);
+    }
+    return OpLoad(result_type, pointer);
+}
+
+void EmitContext::StoreWorkgroup(Id pointer, Id object) {
+    if (workgroup_non_private) {
+        OpStore(pointer, object, spv::MemoryAccessMask::NonPrivatePointer);
+        return;
+    }
+    OpStore(pointer, object);
+}
+
 void EmitContext::DefineSharedMemory(const IR::Program& program) {
     uses_explicit_workgroup_layout =
         profile.support_explicit_workgroup_layout &&
         (!program.info.uses_int8 || profile.support_workgroup_layout_8bit_access) &&
         (!program.info.uses_int16 || profile.support_workgroup_layout_16bit_access);
-    if (program.shared_memory_size == 0) {
+    // (hookshot: with the staged route's scratch, DefineMatrixRoute; else the program's own size)
+    const u32 shared_memory_size{mma_shared_size};
+    if (shared_memory_size == 0) {
         return;
     }
     const auto make{[&](Id element_type, u32 element_size) {
-        const u32 num_elements{Common::DivCeil(program.shared_memory_size, element_size)};
+        const u32 num_elements{Common::DivCeil(shared_memory_size, element_size)};
         const Id array_type{TypeArray(element_type, Const(num_elements))};
         Decorate(array_type, spv::Decoration::ArrayStride, element_size);
 
@@ -755,7 +801,7 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
         std::tie(shared_memory_u32x4, shared_u32x4, std::ignore) = make(U32[4], 16);
         return;
     }
-    const u32 num_elements{Common::DivCeil(program.shared_memory_size, 4U)};
+    const u32 num_elements{Common::DivCeil(shared_memory_size, 4U)};
     const Id type{TypeArray(U32[1], Const(num_elements))};
     shared_memory_u32_type = TypePointer(spv::StorageClass::Workgroup, type);
 
@@ -781,7 +827,7 @@ void EmitContext::DefineSharedMemory(const IR::Program& program) {
         const Id bit_offset{OpBitwiseAnd(U32[1], shift_offset, Const(mask))};
         const Id count{Const(size)};
         const Id word_pointer{OpAccessChain(shared_u32, shared_memory_u32, word_offset)};
-        OpStore(expected_var, OpLoad(U32[1], word_pointer));
+        OpStore(expected_var, LoadWorkgroup(U32[1], word_pointer));
         OpBranch(loop_header);
 
         AddLabel(loop_header);

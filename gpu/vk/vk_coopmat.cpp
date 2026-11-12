@@ -8,6 +8,11 @@
 // lane holds the same positions as the console's fragments do (PTX mma.m16n8k16's layout), only the order within the
 // lane differs, and that order (mma_layout.h) is all the emitter needs. A multiply in the console's layout is then
 // checked against the CPU's (exact: small integers). Anything else, or RX_VK_NATIVE_MMA=0, keeps the expansion.
+//
+// (hookshot) Cards whose cooperative matrices are 16x16x16 only (RDNA3/4 on RADV): their lanes hold other positions, which
+// no reordering within a lane can make the console's. There the multiplies go through shared memory instead
+// (eden/.../mma_staged.h), once a self-test of that route's own function on random problems matches the software
+// function's arithmetic (vk_mma_staged_test.h); otherwise, or with RX_VK_MMA_STAGED=0, the software function as before.
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -16,13 +21,16 @@
 #include <vector>
 
 #include "vk_internal.h"
+#include "vk_mma_staged_test.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
+#include "shader_recompiler/backend/spirv/mma_staged.h"
 #include <sirit/sirit.h>
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
 
 namespace mkwvk {
+VkResult guarded_compute_pipeline(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl);   // (vk_draw.cpp)
 namespace {
 
 uint16_t to_half(float f) {   // (small integers only: exact)
@@ -109,8 +117,9 @@ std::vector<uint32_t> build_shader(const std::function<void(TestShader&)>& body)
     return m.Assemble();
 }
 
-// one dispatch of a 32-lane shader over words (in and out)
-bool run_shader(const std::vector<uint32_t>& code, std::vector<uint32_t>& data) {
+// one dispatch of a 32-lane shader over words (in and out): groups workgroups, with whole subgroups when asked (a
+// workgroup a multiple of 32 lanes wide, as vk_draw.cpp's pin_subgroup gives the game's programs)
+bool run_shader(const std::vector<uint32_t>& code, std::vector<uint32_t>& data, uint32_t groups = 1, bool full_subgroups = false) {
     const VkDeviceSize size = data.size() * 4;
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bi.size = size;
@@ -156,10 +165,12 @@ bool run_shader(const std::vector<uint32_t>& code, std::vector<uint32_t>& data) 
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo lanes{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
     lanes.requiredSubgroupSize = 32;   // (as the programs it stands for will run: vk_main.cpp)
     if (dev.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) cpi.stage.pNext = &lanes;
+    if (full_subgroups) cpi.stage.flags |= VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
     cpi.layout = layout;
     VkPipeline pipeline{};
-    const VkResult pr = module ? vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &cpi, nullptr, &pipeline)
-                               : VK_ERROR_INITIALIZATION_FAILED;
+    // (behind vk_draw.cpp's fault guard, as the game's own compute pipelines: a driver that faults compiling a test fails
+    // the test, -77, and the multiplies go as without that route)
+    const VkResult pr = module ? guarded_compute_pipeline(VK_NULL_HANDLE, &cpi, &pipeline) : VK_ERROR_INITIALIZATION_FAILED;
     bool ok = false;
     if (pr == VK_SUCCESS) {
         VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
@@ -188,7 +199,7 @@ bool run_shader(const std::vector<uint32_t>& code, std::vector<uint32_t>& data) 
         vkBeginCommandBuffer(cmd, &cbb);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
-        vkCmdDispatch(cmd, 1, 1, 1);
+        vkCmdDispatch(cmd, groups, 1, 1);
         VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
         mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, mb.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
         mb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, mb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
@@ -331,6 +342,37 @@ bool test_multiply() {
     return bad == 0;
 }
 
+/// (hookshot) The staged route (mma_staged.h) on this device: random HMMA problems through the route's own function in
+/// workgroups of four subgroups, against the software function's arithmetic (vk_mma_staged_test.h). It passes when no
+/// element is further from that than HMMA's two f16 roundings and the f32 sums allow, the small-integer problems are exact,
+/// the program's own shared memory is untouched, and at most 2% of the elements differ by a rounding at all, 0.8% of a
+/// kind of problem's and 2.4% of those at one place of D (an f32 summation order differs in a few in ten thousand; a wrong
+/// rounding mode would show in half of them, a wrong lane at its places). False: why says why
+bool test_staged(std::string& why) {
+    namespace T = mma_staged_test;
+    const Shader::Backend::SPIRV::StagedScratch scratch = T::scratch_for(dev.props.limits.maxComputeSharedMemorySize);
+    if (!scratch.fits) {
+        why = "no room for its scratch in shared memory";
+        return false;
+    }
+    constexpr uint32_t groups = 16;
+    T::Report total;
+    for (const uint64_t seed : {0x5eed0f0a2c0ffee1ull, 0x9dc98871eb7fc101ull}) {
+        std::vector<uint32_t> data = T::make_data(groups, seed);
+        if (!run_shader(T::build(scratch, groups), data, groups, true)) {
+            why = "its test dispatch did not run";
+            return false;
+        }
+        total.add(T::check(data, groups, seed));
+    }
+    logf("vk: staged matrix self-test: %s", T::summary(total).c_str());
+    if (!total.passed(20)) {
+        why = total.worst.empty() ? "its results are not the software function's" : "its results are not the software function's: " + total.worst;
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 // (vk_main.cpp, once the device is made: dev.coop_matrix says the extension and its feature are on)
@@ -343,6 +385,46 @@ void software_multiplies(const char* why) {
     dev.native_mma = true;
     logf("vk: matrix multiplies in software (%s)", why);
 }
+
+/// (hookshot) Cooperative matrices of 16x16x16 only (RDNA3/4 on RADV): the multiplies staged through shared memory
+/// (mma_staged.h), when the device has what the route needs and its self-test passes. False: not on, and logged why.
+/// Asked (RX_VK_MMA_STAGED=1): on any driver; otherwise on Mesa RADV only, the driver it was tested on (AMD's own driver
+/// lists 16x16x16 on RDNA2 too, without the matrix hardware, and has crashed building such pipelines there)
+bool staged_multiplies(const std::vector<VkCooperativeMatrixPropertiesKHR>& props, const char* otherwise, bool asked) {
+    bool shape = false;   // (f16 x f16 -> f32: the f32 sums HMMA's roundings are made from, mma_staged.h)
+    for (const auto& p : props)
+        shape |= p.MSize == 16 && p.NSize == 16 && p.KSize == 16 && p.AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                 p.BType == VK_COMPONENT_TYPE_FLOAT16_KHR && p.CType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
+                 p.ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR && p.scope == VK_SCOPE_SUBGROUP_KHR;
+    VkPhysicalDeviceCooperativeMatrixPropertiesKHR stages{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
+    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    p2.pNext = &stages;
+    vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+    std::string why;
+    if (!shape) why = "no 16x16x16 f16 -> f32 cooperative matrices";
+    else if (!(stages.cooperativeMatrixSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT)) why = "no cooperative matrices in compute shaders";
+    else if (!dev.vk12.shaderFloat16) why = "no f16 shaders";
+    else if (!(dev.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) || !dev.vk13.computeFullSubgroups)
+        why = "compute subgroups cannot be held to 32 lanes, whole";
+    else if (!asked && dev.driver_id != VK_DRIVER_ID_MESA_RADV)
+        why = "tested on Mesa RADV only so far (RX_VK_MMA_STAGED=1 tries it on this driver)";
+    else {
+        // (said before it runs: should the driver hang or fail the device in it, the log's last line says how to start without it)
+        logf("vk: staged matrix self-test (RX_VK_MMA_STAGED=0 starts without it and without the route)");
+        test_staged(why);
+    }
+    if (!why.empty()) {
+        logf("vk: staged matrix multiplies not used: %s; %s instead", why.c_str(), otherwise);
+        return false;
+    }
+    Shader::Backend::SPIRV::mma_staged = true;
+    Shader::Backend::SPIRV::mma_staged_shared_limit = dev.props.limits.maxComputeSharedMemorySize;
+    dev.native_mma = true;
+    logf("vk: matrix multiplies on 16x16x16 cooperative matrices, staged through shared memory (%u bytes a subgroup; the "
+         "self-test passed; RX_VK_MMA_STAGED=0: %s)", Shader::Backend::SPIRV::kStagedBytes, otherwise);
+    return true;
+}
+
 /// (hookshot, mma_layout.h global_table_loop) Intel's Mesa driver only for now (Mesa inlines DontInline; Windows not tried); env is
 /// RX_VK_GM_LOOP, 0 or 1 over the default. A table indexed by the loop's counter needs dynamic indexing of storage buffer arrays
 /// (tests/test_global_table_loop.py)
@@ -396,12 +478,24 @@ void coopmat_init() {
         shape |= p.MSize == 16 && p.NSize == 8 && p.KSize == 16 && p.AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
                  p.BType == VK_COMPONENT_TYPE_FLOAT16_KHR && p.CType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
                  p.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR && p.scope == VK_SCOPE_SUBGROUP_KHR;
+    // (hookshot) Without 16x8x16, the staged route (mma_staged.h) when its self-test passes, on Mesa RADV. RX_VK_MMA_STAGED=0:
+    // never (the software function, as before it); =1: on any driver, and tried first even where 16x8x16 is there (a test of
+    // the route on NVIDIA's cards)
+    const char* staged_env = std::getenv("RX_VK_MMA_STAGED");
+    const bool staged_off = staged_env && *staged_env && !std::atoi(staged_env);
+    const bool staged_first = staged_env && std::atoi(staged_env) == 1;
+    if (staged_off && !shape) logf("vk: staged matrix multiplies off (RX_VK_MMA_STAGED=0)");
+    const bool staged = !staged_off && (!shape || staged_first) &&
+                        staged_multiplies(props, shape ? "the native route" : "the software function", staged_first);
+    if (staged && !shape) return;
     if (!shape) {
         software_multiplies("the cooperative matrices lack 16x8x16 f16");
         return;
     }
+    // (with the staged route first where 16x8x16 is there too: the native route is checked as below all the same, and takes the
+    // programs the staged one cannot (mma_staged_native, mma_route.h); those keep the software function if it does not check out)
     if (!dev.vk12.shaderFloat16) {
-        software_multiplies("no f16 shaders");
+        if (!staged) software_multiplies("no f16 shaders");
         return;
     }
     bool ok = measure_order() && test_multiply();
@@ -422,10 +516,20 @@ void coopmat_init() {
     override_order("RX_VK_MMA_B_ORDER", Shader::Backend::SPIRV::mma_order_b);
     override_order("RX_VK_MMA_C_ORDER", Shader::Backend::SPIRV::mma_order_c);
     if (!ok) {
+        if (staged) {
+            logf("vk: the programs the staged route cannot take: matrix multiplies in the software function (the cooperative "
+                 "matrix layout is not the console's)");
+            return;
+        }
         software_multiplies("the cooperative matrix layout is not the console's");
         return;
     }
     dev.native_mma = true;
+    if (staged) {
+        Shader::Backend::SPIRV::mma_staged_native = true;
+        logf("vk: native matrix multiplies for the programs the staged route cannot take (the console's fragment layout checked)");
+        return;
+    }
     logf("vk: native matrix multiplies on (cooperative matrices, the console's fragment layout checked)");
 }
 

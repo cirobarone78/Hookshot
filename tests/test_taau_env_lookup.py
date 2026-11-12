@@ -21,7 +21,7 @@ def block(source, marker):
 
 
 def fixture(source):
-    return (PREFIX + block(source, 'bool taau_key(uint64_t key) {') + '\n' +
+    return (PREFIX + block(source, 'bool taau_key(const Program& p) {') + '\n' +
             block(source, 'bool taau_stand_in(VkCommandBuffer cmd,') + '\n' + SUFFIX)
 
 
@@ -43,7 +43,7 @@ static const char* fixture_getenv(const char* name) {
 // (env_on, the switches' rule (hookshot_env.h, included first), over the fixture's environment)
 static bool fixture_env_on(const char* name) { const char* v = fixture_getenv(name); return v && !env_value_off(v); }
 #define env_on fixture_env_on
-namespace Shader { namespace Backend { namespace SPIRV { static bool mma_software = true; } } }
+namespace Shader { namespace Backend { namespace SPIRV { enum class MatrixRoute : uint32_t { None, Native, Software, Staged }; } } }
 using VkCommandBuffer = int;
 using VkImageView = int;
 constexpr int VK_IMAGE_VIEW_TYPE_2D=2, VK_FORMAT_B10G11R11_UFLOAT_PACK32=7;
@@ -53,6 +53,10 @@ struct Info { std::vector<Desc> texture_descriptors, image_descriptors; };
 struct Stage { Info info; };
 struct NvnState {};
 struct Program { uint64_t key; std::vector<Stage> stages; };
+// (vk_shader.cpp's: the route the translator gives the program's matrix multiplies on this device, mma_route.h)
+static Shader::Backend::SPIRV::MatrixRoute matrix_route = Shader::Backend::SPIRV::MatrixRoute::Software;
+static int route_calls;
+static Shader::Backend::SPIRV::MatrixRoute program_matrix_route(const Program&) { ++route_calls; return matrix_route; }
 struct Texture { int format=VK_FORMAT_B10G11R11_UFLOAT_PACK32; };
 static Texture texture;
 static struct { bool push_descriptor=false; } dev;
@@ -90,15 +94,22 @@ static unsigned failures=0;
 static void check(bool ok,const char* what){if(!ok){++failures;fprintf(stderr,"FAIL: %s\n",what);}}
 int main(int argc,char** argv){
     if(argc!=2)return 90;
+    using Shader::Backend::SPIRV::MatrixRoute;
     uint64_t target=0xfd029a317a9a4b94ull;bool expected=true;
-    if(!strcmp(argv[1],"hardware"))Shader::Backend::SPIRV::mma_software=false,expected=false;
-    else if(!strcmp(argv[1],"no-f16"))Shader::Backend::SPIRV::mma_software=false,no_f16="1";
+    if(!strcmp(argv[1],"hardware"))matrix_route=MatrixRoute::Native,expected=false;
+    else if(!strcmp(argv[1],"no-f16"))matrix_route=MatrixRoute::Native,no_f16="1";
+    else if(!strcmp(argv[1],"staged"))matrix_route=MatrixRoute::Staged,expected=false;   // (the staged route takes the network: it runs)
+    else if(!strcmp(argv[1],"staged-software"))matrix_route=MatrixRoute::Software;      // (the route cannot take it: the software function's)
+    else if(!strcmp(argv[1],"staged-listed"))matrix_route=MatrixRoute::Staged,configured_keys="fd029a";   // (listed: stood in all the same)
     else if(!strcmp(argv[1],"empty"))configured_keys="",expected=false;
     else if(!strcmp(argv[1],"disabled"))configured_keys="-",expected=false;
     else if(!strcmp(argv[1],"custom"))configured_keys="0123456789abcdef",target=0x0123456789abcdefull;
     else if(!strcmp(argv[1],"prefixes"))configured_keys="abcd,fd029a";
     else if(strcmp(argv[1],"software"))return 91;
-    check(taau_key(target)==expected && !taau_key(0),"existing key matcher unchanged");
+    const Program target_program{target,{}},other{0,{}};
+    check(taau_key(target_program)==expected && !taau_key(other),"existing key matcher unchanged");
+    route_calls=0;
+    check(!taau_key(other) && route_calls==0,"another program's dispatch never asks its matrix route");
     NvnState state{};Program program{target,{}};Stage stage;
     stage.info.texture_descriptors={{1,23},{2,23}};stage.info.image_descriptors={{1,23}};program.stages.push_back(stage);
     key_reads=0;
@@ -164,13 +175,15 @@ def main():
                        str(exe)]
         subprocess.run(command, cwd=folder, check=True)
         failed = False
-        for case in ('software', 'hardware', 'no-f16', 'empty', 'disabled', 'custom', 'prefixes'):
+        for case in ('software', 'hardware', 'no-f16', 'staged', 'staged-software', 'staged-listed', 'empty', 'disabled',
+                     'custom', 'prefixes'):
             result = subprocess.run([str(exe), case], cwd=folder)
             print(case, 'exit', result.returncode, flush=True)
             failed |= result.returncode != 0
         if failed:
             raise SystemExit(1)
-    print('PASS: seven key configurations; rejected lookups removed, eligible per-call forwarding preserved')
+    print('PASS: ten key configurations (the default by the program\'s matrix route); rejected lookups removed, eligible '
+          'per-call forwarding preserved')
 
 
 if __name__ == '__main__':
