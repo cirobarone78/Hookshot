@@ -1783,21 +1783,32 @@ def place_fsr_runtime(out):
 
 def place_ngx_runtime(out):
     """(NVIDIA DLSS) a game built with NVIDIA's SDK (HOOKSHOT_NGX_SDK, as nx2/build.py takes it) gets DLSS's runtime in its ngx
-    folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
-    NGX's core (_nvngx.dll is the driver's) and nothing beside the exe. Returns the file placed, or None"""
+    folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux; and
+    DLSS Frame Generation's beside it (nvngx_dlssg.dll, libnvidia-ngx-dlssg.so.<version>), without which NGX takes the
+    driver's own, maybe older, copy. Never NGX's core (_nvngx.dll is the driver's) and nothing beside the exe. Returns DLSS's
+    runtime placed, or None"""
     ngx = ngx_script()
     platform = ngx_platform()
     sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
     if not sdk or not (os.path.isfile(ngx.library(sdk, platform)) and os.path.isfile(ngx.runtime(sdk, platform))):
-        # (a folder built with DLSS before and rebuilt without it loses NVIDIA's runtime too)
-        stale = os.path.join(out, "ngx", ngx.runtime_name(platform))
-        if os.path.isfile(stale):
-            with contextlib.suppress(OSError):
-                os.remove(stale)
-                os.rmdir(os.path.dirname(stale))
+        # (a folder built with DLSS before and rebuilt without it loses NVIDIA's runtimes too)
+        for kind in ngx.RUNTIMES:
+            stale = os.path.join(out, "ngx", ngx.runtime_name(platform, kind))
+            if os.path.isfile(stale):
+                with contextlib.suppress(OSError):
+                    os.remove(stale)
+        with contextlib.suppress(OSError):
+            os.rmdir(os.path.join(out, "ngx"))
         return None
     dst = ngx.install_runtime(sdk, platform, os.path.join(out, "ngx"))
     print("NVIDIA DLSS: %s (NVIDIA's, under NVIDIA's license: never share this game folder)" % dst, flush=True)
+    fg = os.path.join(out, "ngx", ngx.runtime_name(platform, "framegen"))
+    if os.path.isfile(ngx.runtime(sdk, platform, "framegen")):
+        print("NVIDIA DLSS Frame Generation: %s (NVIDIA's too)" % fg, flush=True)
+    else:
+        print("NVIDIA DLSS Frame Generation: %s has no %s yet (scripts/ngx_sdk.py, or the Builder's DLSS tick, fetches it): "
+              "until then NGX takes the driver's own, which may be older" % (sdk, ngx.runtime_name(platform, "framegen")),
+              flush=True)
     return dst
 
 
