@@ -54,6 +54,7 @@ namespace ur = mkwvk::upscaler_rows;
 using namespace mkwvk;
 // (the screen's display modes: none, so the sizes offered before them, 16:9 but 5120x1440, 32:9)
 std::vector<display_modes::Size> screen_modes() { return {}; }
+bool screen_size(uint32_t*, uint32_t*) { return false; }   // (the main screen: not known here)
 
 #define CHECK(x, ...) do { if (!(x)) { std::fprintf(stderr, "FAIL %d: %s: ", __LINE__, #x); std::fprintf(stderr, __VA_ARGS__); std::fputc('\n', stderr); failed = 1; } } while (0)
 /* OUTPUTS */

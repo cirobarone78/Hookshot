@@ -52,6 +52,11 @@ using namespace mkwvk;
 // (the screen's display modes: HOS_DISPLAY_MODES names them here)
 std::vector<display_modes::Size> screen_modes() { return {}; }
 void outputs_sync() {}   // (the rows' ends and the Aspect ratio from the sizes read: not what this checks)
+// (the main screen: not known here, so no shape is the monitor's and ultrawide= is saved as read)
+bool screen_size(uint32_t*, uint32_t*) { return false; }
+std::string monitor_shape() { return {}; }
+int ultrawide_started = 1;
+bool aspect_is_monitors(int) { return false; }
 #ifdef _WIN32
 static int setenv(const char* name, const char* value, int) { return _putenv_s(name, value); }
 #endif
@@ -98,11 +103,11 @@ bool has(const char* line) { return slurp().find(line) != std::string::npos; }
 int main(int argc, char** argv) {
     CHECK(argc == 2);
     ini_file = argv[1];
-    setenv("HOS_DISPLAY_MODES", "1920x1080,2560x1440", 1);   // (the screen's sizes: the game's own, then these two)
+    setenv("HOS_DISPLAY_MODES", "1920x1080,2560x1440", 1);   // (the screen's sizes: the game's own, these, 16:9's common ones)
     // The player's own: pace off, Per frame, 75%, Bilinear, 3x, a size of their own
     opts.pace = 0, opts.realtime = 0, opts.resolution = 2, opts.upscale = 0, opts.framegen = 3;
     opts.output_res = parse_output("3000x1688");
-    CHECK(opts.output_res == custom_index() && custom_index() == 3);
+    CHECK(opts.output_res == custom_index() && custom_index() == 7);   // (2048x1152, 1280x720 to 5120x2880, then the player's)
     setenv("RX_VK_PACE", "1", 1);
     setenv("HOS_REALTIME_STEP", "1", 1);
     setenv("HOS_DYNRES", "1", 1);
@@ -138,7 +143,7 @@ int main(int argc, char** argv) {
     CHECK(has("frame_generation=2\n"));
     CHECK(has("upscaling=0\n"));   // (the others still the player's)
     opts.output_res = parse_output("2560x1440");
-    CHECK(opts.output_res == 2);
+    CHECK(opts.output_res == 3 && output_at(3).w == 2560 && output_at(3).h == 1440);
     save();
     CHECK(has("output_res=2560x1440\n"));
     // A preset (or the Upscaler's snap) sets an overridden row to the very value the environment forced: the menu's, saved

@@ -36,6 +36,23 @@ inline std::vector<Size> offered(const std::vector<Size>& modes) {
     return v;
 }
 
+/// Common sizes of each shape, beyond what a screen lists: 1440p, 4K and 5K at 16:9, 16:10's and 4:3's, 21:9's and 32:9's.
+/// Each side a multiple of 8 (1366x768, 1600x900 and 1680x1050 are not: a screen that has them lists them, rounded)
+inline const std::vector<Size>& common_sizes() {
+    static const std::vector<Size> v = {
+        {1280, 720},  {1920, 1080}, {2560, 1440}, {3200, 1800}, {3840, 2160}, {5120, 2880},   // 16:9
+        {1280, 800},  {1920, 1200}, {2560, 1600}, {2880, 1800}, {3840, 2400},                 // 16:10
+        {1024, 768},  {1280, 960},  {1440, 1080}, {1600, 1200}, {1920, 1440}, {2048, 1536}, {2880, 2160},   // 4:3
+        {1280, 1024},                                                                          // 5:4
+        {1920, 1280}, {2160, 1440}, {3000, 2000},                                              // 3:2
+        {2560, 1080}, {3440, 1440}, {3840, 1600}, {5120, 2160},                                // 21:9
+        {3840, 1080}, {5120, 1440}};                                                           // 32:9
+    return v;
+}
+/// sizes (offered's) and the common sizes of the shapes they have: a screen's 16:9 gets 1440p and 4K though it lists
+/// neither; a shape it has none of gets none. Each once, by width then height
+inline std::vector<Size> with_common(const std::vector<Size>& sizes);
+
 /// "1920x1080,2560x1080" (HOS_DISPLAY_MODES): the sizes in it, as a screen's modes (anything else between them skipped)
 inline std::vector<Size> parse_list(const char* text) {
     std::vector<Size> v;
@@ -77,6 +94,15 @@ inline std::string ratio_name(Size s) {
     return text;
 }
 
+inline std::vector<Size> with_common(const std::vector<Size>& sizes) {
+    std::vector<std::string> have;
+    for (Size s : sizes) have.push_back(ratio_name(s));
+    std::vector<Size> all = sizes;
+    for (Size c : common_sizes())
+        if (std::find(have.begin(), have.end(), ratio_name(c)) != have.end()) all.push_back(c);
+    return offered(all);
+}
+
 /// A shape the Aspect ratio row lists: its name and the ratio it is ordered by (the first size of it that was seen)
 struct Shape {
     std::string name;
@@ -99,20 +125,22 @@ inline int shape_index(const std::vector<Shape>& shapes, Size s) {
         if (shapes[i].name == n) return i;
     return 0;
 }
-/// Of the sizes with shape name, the one to take when that shape is chosen: the screen's own size if it is one; else the
-/// largest no taller than the screen (DSR's larger sizes are a choice, not where a shape starts); else the smallest; with no
-/// screen size known, the largest. -1 when none has it
+/// Of the sizes with shape name, the one to take when that shape is chosen: the screen's own size if it is one; else the one
+/// whose height is nearest the screen's, the lower of two as near (21:9 on a 1080p screen: 2560x1080; 3:2 there: 1920x1280,
+/// not 720x480; DSR's larger sizes stay a choice, not where a shape starts); with no screen size known, the largest. -1 when
+/// none has it
 inline int pick(const std::vector<Size>& sizes, const std::string& name, Size screen) {
-    int fits = -1, small = -1, large = -1;
+    int best = -1;
     const auto px = [&](int i) { return (uint64_t)sizes[i].w * sizes[i].h; };
+    const auto off = [&](int i) { return sizes[i].h > screen.h ? sizes[i].h - screen.h : screen.h - sizes[i].h; };
     for (int i = 0; i < (int)sizes.size(); i++) {
         if (ratio_name(sizes[i]) != name) continue;
         if (sizes[i] == screen) return i;
-        if (screen.h && sizes[i].h <= screen.h && (fits < 0 || px(i) > px(fits))) fits = i;
-        if (small < 0 || px(i) < px(small)) small = i;
-        if (large < 0 || px(i) > px(large)) large = i;
+        if (best < 0) best = i;
+        else if (!screen.h) best = px(i) > px(best) ? i : best;
+        else if (off(i) < off(best) || (off(i) == off(best) && sizes[i].h < sizes[best].h)) best = i;
     }
-    return !screen.h ? large : fits >= 0 ? fits : small;
+    return best;
 }
 
 }  // namespace mkwvk::display_modes

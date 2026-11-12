@@ -291,8 +291,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | Tab | Option | Choices | Default |
 |---|---|---|---|
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+) | Custom |
-| | Aspect ratio | 16:9, Monitor's shape (wider than 16:9, or narrower down to 5:4), then the other shapes your screen's resolutions have: 4:3, 16:10, 21:9, 32:9, ... (after a restart) | Monitor's shape |
-| | Output resolution | Your screen's resolutions of the Aspect ratio's shape, and 2048x1152 (the game's own) at 16:9 (after a restart) | 2048x1152 |
+| | Aspect ratio | The shapes your screen's resolutions have, narrowest first (5:4, 4:3, 16:10, 16:9, 21:9, 32:9, ...), your monitor's own marked "(monitor's)" (after a restart) | Your monitor's |
+| | Output resolution | The Aspect ratio's sizes: your screen's resolutions and the common ones (1440p, 4K, 5K at 16:9; 1920x1200, 2560x1600 at 16:10; 3440x1440 at 21:9; ...), and 2048x1152 (the game's own) at 16:9 (after a restart) | 2048x1152 |
 | | Profile | Docked, Handheld (after a restart) | Docked |
 | | Upscaler | Game's own, NVIDIA DLSS, NVIDIA DLAA (only in builds with NVIDIA's DLSS SDK, below; DLSS and DLAA on RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4, AMD FSR 4 Native AA (only in builds with FSR 4, below), Off (no upscaling) | Game's own |
 | | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (shown where DLSS runs; used by DLSS and DLAA) | Transformer (K) |
@@ -382,9 +382,11 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   Profile's 1536x864 on a 4K screen), a Sharpness kept from an older version is stronger than it was, so a lower one may
   suit.
 - **Aspect ratio** and **Output resolution:** the menu lists the resolutions your screen offers (its display modes, as
-  Windows lists them, DSR's included), grouped by shape. **Aspect ratio** is 16:9, Monitor's shape (the default), or
-  another shape your screen has (4:3, 16:10, 21:9, 32:9, ...); **Output resolution** then lists that shape's sizes, your
-  screen's own marked "(native)". Docked only. A shape other than 16:9 widens the cameras (21:9, 32:9) or narrows the
+  Windows lists them, DSR's included), with the common sizes of each of those shapes your screen does not list (1440p, 4K
+  and 5K at 16:9, 1920x1200 and 2560x1600 at 16:10, 3440x1440 at 21:9, ...), grouped by shape. **Aspect ratio** lists
+  the shapes, your monitor's own marked "(monitor's)" (the default: 21:9 on an ultrawide, 16:10 on a 16:10 screen);
+  **Output resolution** then lists that shape's sizes, your screen's own marked "(native)". A size larger than your
+  screen is drawn at that size and scaled down to the window. Docked only. A shape other than 16:9 widens the cameras (21:9, 32:9) or narrows the
   picture (16:10, 4:3, 5:4) and keeps the HUD and movies in the middle 16:9. At 16:9 on a 5120x1440 (32:9) monitor, the
   game's 16:9 picture is stretched across the 32:9 output, sharp but wide. Options saved by an older version at 16:9,
   the default then, move to Monitor's shape on a screen narrower than 16:9 (16:10 such as the Steam Deck's, or 4:3),

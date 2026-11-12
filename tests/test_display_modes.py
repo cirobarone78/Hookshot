@@ -65,10 +65,26 @@ int main() {
     assert(v[pick(v, "21:9", {3440, 1440})] == (Size{3440, 1440}));
     assert(v[pick(v, "21:9", {1920, 1080})] == (Size{2560, 1080}));   // (the largest no taller than the screen)
     assert(v[pick(v, "21:9", {0, 0})] == (Size{3840, 1600}));   // (no screen known: the largest)
-    assert(v[pick(v, "32:9", {1280, 720})] == (Size{5120, 1440}));   // (none that low: the smallest)
+    assert(v[pick(v, "32:9", {1280, 720})] == (Size{5120, 1440}));   // (the only one)
+    // (the height nearest the screen's, the lower of two as near: 3:2 on a 1080p screen is 1920x1280, not 720x480)
+    const std::vector<Size> c = with_common(offered(parse_list("720x480,1280x720,1920x1080")));
+    assert(c[pick(c, "3:2", {1920, 1080})] == (Size{1920, 1280}));
+    assert(c[pick(c, "16:9", {1920, 1200})] == (Size{1920, 1080}));   // (a 16:10 screen: 1080 and 1440 are 120 and 240 off)
+    assert(c[pick(c, "16:9", {2560, 1260})] == (Size{1920, 1080}));   // (180 off either way: the lower)
     assert(v[pick(v, "16:9", {3440, 1440})] == (Size{2560, 1440}));
     assert(v[pick(v, "4:3", {0, 0})] == (Size{1024, 768}));
     assert(pick(v, "3:2", {3440, 1440}) == -1);
+    // (the common sizes of the shapes a screen has: a 1080p 16:9 screen with a 4:3 mode gets 1440p, 4K, 5K and 4:3's, no 21:9)
+    const std::string common = sizes(with_common(offered(parse_list("1024x768,1280x720,1920x1080"))));
+    std::printf("common: %s\n", common.c_str());
+    assert(common == "1024x768 1280x720 1280x960 1440x1080 1600x1200 1920x1080 1920x1440 2048x1536 2560x1440 2880x2160 "
+                     "3200x1800 3840x2160 5120x2880");
+    for (Size c : common_sizes()) {   // (every common size one the game takes, and of a shape the row names)
+        assert(hos_output_size_valid(c.w, c.h) && c.w % 8 == 0 && c.h % 8 == 0);
+        assert(ratio_name(c).find('.') == std::string::npos);
+    }
+    const std::string wide = sizes(with_common(offered(parse_list("3440x1440"))));   // (an ultrawide: 21:9's)
+    assert(wide == "2560x1080 3440x1440 3840x1600 5120x2160");
     // (no modes known: nothing offered, no shapes)
     assert(offered({}).empty() && shapes({}).empty() && parse_list(nullptr).empty() && parse_list("").empty());
     // (the host and the menu: a size more than 1 % off 16:9 keeps its own shape, a 16:9 one does not)
