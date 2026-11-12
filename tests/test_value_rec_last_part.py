@@ -25,6 +25,7 @@ struct Recording { uint64_t value = 0; };
 std::mutex rec_map_mu;
 std::map<uint64_t, uint64_t> value_rec;
 std::vector<uint64_t> rec_open_values;
+static bool first_part;   // (RX_VK_WAIT_FIRST_PART=1 with mirrors on: the first part's, as before #2419)
 static void note(Recording& r, uint64_t seq) {
     /* BOOKKEEPING */
 }
@@ -58,6 +59,14 @@ int main() {
     Recording f{12};
     note(f, 2);
     expect(12, 5, "an older seq leaves the later recording");
+    // RX_VK_WAIT_FIRST_PART=1 (an A/B where pools have VRAM mirrors): a split submission keeps its first part
+    first_part = true;
+    Recording g{20}, h{20};
+    note(g, 6);
+    rec_open_values.push_back(20);
+    note(h, 7);
+    expect(20, 6, "RX_VK_WAIT_FIRST_PART: the first part's recording");
+    first_part = false;
     if (failures) return 1;
     std::printf("PASS: a submission recorded in parts maps to its last part's recording\n");
     return 0;

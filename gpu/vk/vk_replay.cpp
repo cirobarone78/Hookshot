@@ -383,6 +383,16 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         signals[nsig].value = seq;
         signals[nsig].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         nsig++;
+        // (RX_VK_WAIT_FIRST_PART=1, an A/B of what the last-part rule below costs where the buffer pools have VRAM mirrors
+        // (discrete GPUs): a value keeps its first part's recording, as before #2419. #2419 measured it only on an iGPU, where the
+        // later parts read guest memory in place (38-49 fps after, 45-70 before, on a ROG Ally X); with mirrors they read what was
+        // synced at submit, but pools left without a mirror (the budget full, over 1 GB) are still read in place, so this can bring
+        // back #997's one-frame flashes there. Never with mirrors off)
+        static const bool first_part = [] {
+            const bool v = env_on("RX_VK_WAIT_FIRST_PART") && memory_mirrors_on();
+            if (v) logf("vk: fence waits return after a split submission's first part (RX_VK_WAIT_FIRST_PART)");
+            return v;
+        }();
         std::lock_guard mk(rec_map_mu);
         // (a submission is recorded in parts (maybe_split, a parallel replay's segments), each part's recording with the
         // submission's value: the value's recording is its last part's, the latest seq. emplace kept the first part's,
@@ -393,7 +403,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         const auto finished_in = [&](uint64_t v) {
             auto it = value_rec.find(v);
             if (it == value_rec.end()) value_rec.emplace(v, seq);
-            else if (it->second < seq) it->second = seq;
+            else if (!first_part && it->second < seq) it->second = seq;
         };
         for (uint64_t v : rec_open_values) finished_in(v);
         if (r.value) finished_in(r.value);

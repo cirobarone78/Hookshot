@@ -2147,6 +2147,9 @@ bool import_in_background(uint64_t guest, uint64_t size) {
     return true;
 }
 } // namespace
+bool memory_mirrors_on() {
+    return mirror_on();
+}
 uint64_t device_vram_bytes() {
     uint64_t vram = 0;
     for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
