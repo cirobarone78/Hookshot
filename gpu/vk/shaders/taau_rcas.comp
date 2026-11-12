@@ -1,0 +1,43 @@
+#version 450
+// (hookshot) The TAAU stand-in's upscale, second pass: FSR 1's RCAS over taau_easu.comp's
+// `mid` (still in the source's sqrt-encoded perceptual space, FSR 1's expected input: the
+// edge detection and lobe weights were tuned for [0,1] perceptual values), squared once at
+// this pass's output; the flash/NaN bound of the old stand-in (taau_upscale.comp) kept:
+// each pixel bounded by this pass's own last output (hist) when it is last frame's or so.
+//
+// FidelityFX Super Resolution 1.0, Copyright (c) 2021 Advanced Micro Devices, Inc. All
+// rights reserved. (MIT-style, as rx_present_fx.cpp carries it.)
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 1, r11f_g11f_b10f) uniform readonly image2D mid;
+layout(binding = 2, r11f_g11f_b10f) uniform writeonly image2D dst;
+layout(binding = 3, r11f_g11f_b10f) uniform image2D hist;
+layout(push_constant) uniform P { ivec2 size; ivec2 src_size; int valid; float sharp; } pc;
+
+vec3 ld(ivec2 q) { return imageLoad(mid, clamp(q, ivec2(0), pc.size - 1)).rgb; }
+
+void main() {
+    const ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(g, pc.size))) return;
+    const vec3 b = ld(g + ivec2(0, -1));
+    const vec3 d = ld(g + ivec2(-1, 0));
+    const vec3 e = ld(g);
+    const vec3 f = ld(g + ivec2(1, 0));
+    const vec3 h = ld(g + ivec2(0, 1));
+    const vec3 mn4 = min(min(b, d), min(f, h));
+    const vec3 mx4 = max(max(b, d), max(f, h));
+    const vec3 hitMin = mn4 / max(4.0 * mx4, vec3(1e-5));
+    const vec3 hitMax = (vec3(1.0) - mx4) / min(4.0 * mn4 - 4.0, vec3(-1e-5));
+    const vec3 lobeRGB = max(-hitMin, hitMax);
+    const float lobe = max(-0.1875, min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * pc.sharp;
+    vec3 c = (lobe * (b + d + h + f) + e) / (4.0 * lobe + 1.0);
+    c *= c;   // (the perceptual encoding undone once here: EASU filtered the sqrt-encoded input as-is, FSR 1's
+              // expected space, and this square gives the linear colour the output and the bound below want)
+    if ((pc.valid & 1) != 0) {   // taau_upscale.comp's bound, unchanged (bit 0 only: the higher bits are FXAA's,
+                                 // taau_upscale.comp after PR #1115, and never turn this bound on)
+        const vec3 p = imageLoad(hist, g).rgb;
+        c = mix(c, p, bvec3(isnan(c.r) || isinf(c.r), isnan(c.g) || isinf(c.g), isnan(c.b) || isinf(c.b)));
+        c = clamp(c, p * 0.6, p * 1.5 + 0.01);
+    }
+    imageStore(dst, g, vec4(c, 1.0));
+    imageStore(hist, g, vec4(c, 1.0));
+}

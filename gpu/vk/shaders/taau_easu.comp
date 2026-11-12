@@ -1,0 +1,104 @@
+#version 450
+// (hookshot) The TAAU stand-in's upscale, first pass: FSR 1's EASU (ffx_fsr1.h; the WGSL
+// port rx_present_fx.cpp runs at present, back in GLSL compute). Its input is the scene
+// colour in RGB9E5, sqrt-encoded (the network's perceptual encoding), filtered as it is:
+// FSR 1 expects perceptually encoded input, so its edge detection and luma weights work in
+// the space they were tuned for, and the encoding is undone once, by a square at
+// taau_rcas.comp's output; 12 taps gathered per output pixel, filtered with an anisotropic
+// kernel stretched along the estimated edge direction, clamped to the 4 nearest texels
+// (no ringing). Written to `mid` at the output's size; taau_rcas.comp finishes it.
+//
+// FidelityFX Super Resolution 1.0, Copyright (c) 2021 Advanced Micro Devices, Inc. All
+// rights reserved. (MIT-style, as rx_present_fx.cpp carries it.)
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D src;
+layout(binding = 1, r11f_g11f_b10f) uniform writeonly image2D mid;
+layout(push_constant) uniform P { ivec2 size; ivec2 src_size; int valid; float sharp; } pc;
+
+vec3 ld(ivec2 q) {   // the source texel, clamped to the image; the sqrt encoding kept (FSR 1 runs on
+    q = clamp(q, ivec2(0), pc.src_size - 1);   // perceptual input, and B10G11R11 keeps the darks in it;
+    return texelFetch(src, q, 0).rgb;   // taau_rcas.comp squares once at its output)
+}
+float luma(vec3 c) { return c.g + 0.5 * (c.r + c.b); }   // FSR's cheap approximation
+
+void easu_set(inout vec2 dir, inout float len, float w, float lA, float lB, float lC, float lD, float lE) {
+    const float dirX = lD - lB;
+    const float dX = max(abs(lD - lC), abs(lC - lB));
+    float lenX = dX > 0.0 ? clamp(abs(dirX) / dX, 0.0, 1.0) : 0.0;
+    lenX *= lenX;
+    const float dirY = lE - lA;
+    const float dY = max(abs(lE - lC), abs(lC - lA));
+    float lenY = dY > 0.0 ? clamp(abs(dirY) / dY, 0.0, 1.0) : 0.0;
+    lenY *= lenY;
+    dir += vec2(dirX, dirY) * w;
+    len += (lenX + lenY) * w;
+}
+void easu_tap(inout vec3 aC, inout float aW, vec2 off, vec2 dir, vec2 len, float lob, float clp, vec3 c) {
+    const vec2 v = vec2(dot(off, dir), dot(off, vec2(-dir.y, dir.x))) * len;
+    const float d2 = min(dot(v, v), clp);
+    float wB = 0.4 * d2 - 1.0;
+    float wA = lob * d2 - 1.0;
+    wB *= wB;
+    wA *= wA;
+    wB = 1.5625 * wB - 0.5625;
+    aC += c * (wB * wA);
+    aW += wB * wA;
+}
+void main() {
+    const ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(g, pc.size))) return;
+    const vec2 con0 = vec2(pc.src_size) / vec2(pc.size);   // rx_present_fx.cpp's con0
+    const vec2 con0zw = 0.5 * con0 - 0.5;
+    // the output pixel's position in the source (texel centres at integers)
+    vec2 pp = vec2(g) * con0 + con0zw;
+    const vec2 fp = floor(pp);
+    pp -= fp;
+    const ivec2 f0 = ivec2(fp);
+    //    b c
+    //  e f g h
+    //  i j k l
+    //    n o
+    const vec3 bC = ld(f0 + ivec2(0, -1)); const vec3 cC = ld(f0 + ivec2(1, -1));
+    const vec3 eC = ld(f0 + ivec2(-1, 0)); const vec3 fC = ld(f0);          const vec3 gC = ld(f0 + ivec2(1, 0)); const vec3 hC = ld(f0 + ivec2(2, 0));
+    const vec3 iC = ld(f0 + ivec2(-1, 1)); const vec3 jC = ld(f0 + ivec2(0, 1)); const vec3 kC = ld(f0 + ivec2(1, 1)); const vec3 lC = ld(f0 + ivec2(2, 1));
+    const vec3 nC = ld(f0 + ivec2(0, 2)); const vec3 oC = ld(f0 + ivec2(1, 2));
+    const float bL = luma(bC), cL = luma(cC), eL = luma(eC), fL = luma(fC), gL = luma(gC), hL = luma(hC);
+    const float iL = luma(iC), jL = luma(jC), kL = luma(kC), lL = luma(lC), nL = luma(nC), oL = luma(oC);
+    // the direction and edge length, bilinearly weighted over the 4 nearest texels' neighbourhoods
+    vec2 dir = vec2(0.0);
+    float len = 0.0;
+    easu_set(dir, len, (1.0 - pp.x) * (1.0 - pp.y), bL, eL, fL, gL, jL);
+    easu_set(dir, len, pp.x * (1.0 - pp.y), cL, fL, gL, hL, kL);
+    easu_set(dir, len, (1.0 - pp.x) * pp.y, fL, iL, jL, kL, nL);
+    easu_set(dir, len, pp.x * pp.y, gL, jL, kL, lL, oL);
+    const vec2 dir2 = dir * dir;
+    float dirR = dir2.x + dir2.y;
+    const bool zro = dirR < 1.0 / 32768.0;
+    dirR = zro ? 1.0 : inversesqrt(dirR);   // (rx_present_fx.cpp's zero-direction case)
+    dir = (zro ? vec2(1.0, dir.y) : dir) * dirR;
+    len *= 0.5;
+    len *= len;
+    const float stretch = dot(dir, dir) / max(abs(dir.x), abs(dir.y));
+    const vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
+    const float lob = 0.5 - 0.29 * len;
+    const float clp = 1.0 / lob;
+    const vec3 min4 = min(min(fC, gC), min(jC, kC));
+    const vec3 max4 = max(max(fC, gC), max(jC, kC));
+    vec3 aC = vec3(0.0);
+    float aW = 0.0;
+    easu_tap(aC, aW, vec2( 0.0, -1.0) - pp, dir, len2, lob, clp, bC);
+    easu_tap(aC, aW, vec2( 1.0, -1.0) - pp, dir, len2, lob, clp, cC);
+    easu_tap(aC, aW, vec2(-1.0,  1.0) - pp, dir, len2, lob, clp, iC);
+    easu_tap(aC, aW, vec2( 0.0,  1.0) - pp, dir, len2, lob, clp, jC);
+    easu_tap(aC, aW, vec2( 0.0,  0.0) - pp, dir, len2, lob, clp, fC);
+    easu_tap(aC, aW, vec2(-1.0,  0.0) - pp, dir, len2, lob, clp, eC);
+    easu_tap(aC, aW, vec2( 1.0,  1.0) - pp, dir, len2, lob, clp, kC);
+    easu_tap(aC, aW, vec2( 2.0,  1.0) - pp, dir, len2, lob, clp, lC);
+    easu_tap(aC, aW, vec2( 2.0,  0.0) - pp, dir, len2, lob, clp, hC);
+    easu_tap(aC, aW, vec2( 1.0,  0.0) - pp, dir, len2, lob, clp, gC);
+    easu_tap(aC, aW, vec2( 1.0,  2.0) - pp, dir, len2, lob, clp, oC);
+    easu_tap(aC, aW, vec2( 0.0,  2.0) - pp, dir, len2, lob, clp, nC);
+    // normalized, and clamped to the 4 nearest texels (no ringing)
+    const vec3 c = abs(aW) > 1e-6 ? aC / aW : fC;
+    imageStore(mid, g, vec4(min(max4, max(min4, c)), 1.0));
+}

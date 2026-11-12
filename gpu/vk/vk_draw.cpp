@@ -7,6 +7,7 @@
 //
 // Pipelines persist in a VkPipelineCache next to the executable (mkw_vk_pipelines.bin).
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <iterator>
 #include <tuple>
@@ -59,6 +60,8 @@
 #include "shaders/clear_vert_spv.h"
 #include "shaders/taau_upscale_comp_spv.h"
 #include "shaders/shadow_stab_comp_spv.h"
+#include "shaders/taau_easu_comp_spv.h"
+#include "shaders/taau_rcas_comp_spv.h"
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
@@ -7173,7 +7176,8 @@ static bool movie_keep_all_networks() {
 }
 
 static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageView output_view,
-                          Texture* out, uint32_t level, uint64_t key, const char* keys, bool temporal);
+                          Texture* out, uint32_t level, uint64_t key, const char* keys, bool temporal,
+                          uint32_t src_w, uint32_t src_h);
 static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture* src, const nvn_tex* in, Texture* dst,
                                       const nvn_tex* out);
 
@@ -7268,7 +7272,8 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
                                                          &output_format, VK_FORMAT_B10G11R11_UFLOAT_PACK32);
             if (input_view && output_view && input_format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 &&
                 output_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 &&
-                typed_upscale(cmd, input_view, output_view, dst, 0, key, "generic RGB9E5 fallback", false)) {
+                typed_upscale(cmd, input_view, output_view, dst, 0, key, "generic RGB9E5 fallback", false,
+                              src->width, src->height)) {
                 full_barrier(cmd);
                 texture_written(dst);
                 if (gameplay_taau) {
@@ -7331,46 +7336,65 @@ bool taau_key(uint64_t key) {
     return match;
 }
 static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageView output_view,
-                          Texture* out, uint32_t level, uint64_t key, const char* keys, bool temporal) {
+                          Texture* out, uint32_t level, uint64_t key, const char* keys, bool temporal,
+                          uint32_t src_w, uint32_t src_h) {
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR || !input_view || !output_view || !out) return false;
-    static VkPipeline pipe = VK_NULL_HANDLE;
+    if (!src_w || !src_h) return false;
+    // (FSR 1's EASU + RCAS in the stand-in's place (shaders/taau_easu.comp, taau_rcas.comp); RX_VK_TAAU_MODE=bilinear:
+    // the old one-tap stand-in, for an A/B. RX_VK_TAAU_SHARPNESS=<stops> (0 the sharpest, 2 soft; default 0.2).
+    // RX_VK_TAAU_FXAA (PR #1115) belongs to the bilinear stand-in only: the FSR path replaces it, its EASU kernel
+    // doing the edge work FXAA was added for, and the flag is read by nothing here; set RX_VK_TAAU_MODE=bilinear
+    // with it for the FXAA picture)
+    static const bool bilinear = getenv("RX_VK_TAAU_MODE") && !strcmp(getenv("RX_VK_TAAU_MODE"), "bilinear");
+    static const float sharpness = [] {
+        const char* e = getenv("RX_VK_TAAU_SHARPNESS");
+        return e ? std::clamp((float)atof(e), 0.0f, 2.0f) : 0.2f;
+    }();
+    static VkPipeline pipe_easu = VK_NULL_HANDLE, pipe_rcas = VK_NULL_HANDLE, pipe_linear = VK_NULL_HANDLE;
     static VkPipelineLayout layout = VK_NULL_HANDLE;
     static VkSampler linear = VK_NULL_HANDLE;
     static bool tried = false;
     if (!tried) {
         tried = true;
-        VkDescriptorSetLayoutBinding b[3] = {{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        VkDescriptorSetLayoutBinding b[4] = {{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
                                              {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-                                             {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+                                             {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                                             {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
         VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
-        li.bindingCount = 3, li.pBindings = b;
+        li.bindingCount = 4, li.pBindings = b;
         VkDescriptorSetLayout set{};
         vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &set);
-        const VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 12};
+        const VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 24};   // (size, src_size, valid, sharp)
         VkPipelineLayoutCreateInfo pi{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pi.setLayoutCount = 1, pi.pSetLayouts = &set, pi.pushConstantRangeCount = 1, pi.pPushConstantRanges = &pr;
         vkCreatePipelineLayout(dev.device, &pi, nullptr, &layout);
-        VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-        mi.codeSize = sizeof TAAU_UPSCALE_COMP_SPV, mi.pCode = TAAU_UPSCALE_COMP_SPV;
-        VkShaderModule m{};
-        vkCreateShaderModule(dev.device, &mi, nullptr, &m);
-        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-        ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", nullptr};
-        ci.layout = layout;
-        if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
-        vkDestroyShaderModule(dev.device, m, nullptr);
+        auto make = [&](const uint32_t* code, size_t bytes, VkPipeline& into) {
+            VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+            mi.codeSize = bytes, mi.pCode = code;
+            VkShaderModule m{};
+            vkCreateShaderModule(dev.device, &mi, nullptr, &m);
+            VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+            ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", nullptr};
+            ci.layout = layout;
+            if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &into) != VK_SUCCESS) into = VK_NULL_HANDLE;
+            vkDestroyShaderModule(dev.device, m, nullptr);
+        };
+        make(TAAU_EASU_COMP_SPV, sizeof TAAU_EASU_COMP_SPV, pipe_easu);
+        make(TAAU_RCAS_COMP_SPV, sizeof TAAU_RCAS_COMP_SPV, pipe_rcas);
+        make(TAAU_UPSCALE_COMP_SPV, sizeof TAAU_UPSCALE_COMP_SPV, pipe_linear);
         VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-        si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+        si.magFilter = si.minFilter = VK_FILTER_LINEAR;   // (only binding 0 wants a sampler; the shaders texelFetch)
         si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         si.maxLod = 0.25f;
         vkCreateSampler(dev.device, &si, nullptr, &linear);
-        logf("vk: typed upscale helper %s%s", keys,
-             pipe ? "" : ": its pipeline was not made");
+        const bool ok = bilinear ? pipe_linear != VK_NULL_HANDLE : pipe_easu && pipe_rcas;
+        logf("vk: typed upscale helper %s: %s%s", keys, bilinear ? "bilinear" : "FSR 1 EASU + RCAS",
+             ok ? "" : ": its pipeline was not made");
     }
-    if (!pipe) return false;
+    if (bilinear ? !pipe_linear : (!pipe_easu || !pipe_rcas)) return false;
     uint32_t size[3] = {std::max(1u, out->width >> level), std::max(1u, out->height >> level), 0};
-    // (the stand-in's last output, which bounds this one's pixels: shaders/taau_upscale.comp. Made again at a new size,
+    // (the stand-in's last output, which bounds this one's pixels: shaders/taau_rcas.comp. Made again at a new size,
     // the first frame unbounded; RX_VK_TAAU_NO_CLAMP=1: never bounded)
     struct History {
         VkImage image = VK_NULL_HANDLE;
@@ -7379,14 +7403,9 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
         uint32_t width = 0, height = 0;
         uint64_t frame = 0;
     };
-    static History histories[2];
+    static History histories[2], mids[2];   // (a slot of each per caller: the TAAU stand-in's, the generic fallback's)
     History& history = histories[temporal ? 0 : 1];
-    auto& hist = history.image;
-    auto& hist_mem = history.memory;
-    auto& hist_view = history.view;
-    auto& hist_w = history.width;
-    auto& hist_h = history.height;
-    auto& hist_frame = history.frame;
+    History& mid = mids[temporal ? 0 : 1];
     // (off by default: bounding a pixel by the last frame's smeared everything that moves (the user: blurry, warping)
     // and only dimmed the flashes; RX_VK_TAAU_CLAMP=1 turns it on)
     static const bool no_clamp = !env_on("RX_VK_TAAU_CLAMP");
@@ -7401,54 +7420,87 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
         destroy_image(old_hist[i].image, old_hist[i].mem);
         old_hist.erase(old_hist.begin() + (ptrdiff_t)i);
     }
-    if (hist_w != size[0] || hist_h != size[1]) {
-        // (the one before is kept for the while: work in flight may still use it)
-        if (hist && !leak) old_hist.push_back({hist, hist_mem, hist_view, texture_frame_no()});
-        hist = VK_NULL_HANDLE, hist_view = VK_NULL_HANDLE;
+    // (EASU's `mid' and the RCAS bound's `hist': the same image, made again at a new size. The one before is kept for
+    // the while: work in flight may still use it)
+    auto make_image = [&](History& h) {
+        if (h.width == size[0] && h.height == size[1]) return true;
+        if (h.image && !leak) old_hist.push_back({h.image, h.memory, h.view, texture_frame_no()});
+        h.image = VK_NULL_HANDLE, h.view = VK_NULL_HANDLE;
         VkImageCreateInfo ic{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         ic.imageType = VK_IMAGE_TYPE_2D, ic.format = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
         ic.extent = {size[0], size[1], 1}, ic.mipLevels = 1, ic.arrayLayers = 1, ic.samples = VK_SAMPLE_COUNT_1_BIT;
         ic.tiling = VK_IMAGE_TILING_OPTIMAL, ic.usage = VK_IMAGE_USAGE_STORAGE_BIT;
-        if (!create_image(ic, hist, hist_mem)) { hist = VK_NULL_HANDLE; return false; }
+        if (!create_image(ic, h.image, h.memory)) { h.image = VK_NULL_HANDLE; return false; }
         VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        vc.image = hist, vc.viewType = VK_IMAGE_VIEW_TYPE_2D, vc.format = ic.format;
+        vc.image = h.image, vc.viewType = VK_IMAGE_VIEW_TYPE_2D, vc.format = ic.format;
         vc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCreateImageView(dev.device, &vc, nullptr, &hist_view);
+        vkCreateImageView(dev.device, &vc, nullptr, &h.view);
         VkImageMemoryBarrier2 ib{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};   // (UNDEFINED -> GENERAL, once)
         ib.srcStageMask = VK_PIPELINE_STAGE_2_NONE, ib.srcAccessMask = VK_ACCESS_2_NONE;
         ib.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         ib.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         ib.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         ib.srcQueueFamilyIndex = ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        ib.image = hist, ib.subresourceRange = vc.subresourceRange;
+        ib.image = h.image, ib.subresourceRange = vc.subresourceRange;
         VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         di.imageMemoryBarrierCount = 1, di.pImageMemoryBarriers = &ib;
         vkCmdPipelineBarrier2(cmd, &di);
-        hist_w = size[0], hist_h = size[1], hist_frame = 0;
-    }
+        h.width = size[0], h.height = size[1], h.frame = 0;
+        return true;
+    };
+    if (!make_image(history) || (!bilinear && !make_image(mid))) return false;
     // (bounded when the history is last frame's or so: a pause of the TAAU, a menu, starts again unbounded)
     const uint64_t now_frame = texture_frame_no();
-    size[2] = temporal && !no_clamp && hist_frame && now_frame - hist_frame <= 3 ? 1u : 0u;
+    size[2] = temporal && !no_clamp && history.frame && now_frame - history.frame <= 3 ? 1u : 0u;
     // (the gameplay stand-in's edges: FXAA in the shader. RX_VK_TAAU_FXAA=0: the plain linear upscale as before; 2: the
-    // pixels it changed drawn red)
+    // pixels it changed drawn red. The bilinear stand-in only: EASU's edge-adaptive kernel replaces it there, and the
+    // EASU+RCAS push-constant's valid field is 0/1)
     static const int fxaa = getenv("RX_VK_TAAU_FXAA") ? atoi(getenv("RX_VK_TAAU_FXAA")) : 1;
-    if (temporal && fxaa) size[2] |= fxaa == 2 ? 6u : 2u;
-    hist_frame = now_frame;
-    const VkDescriptorImageInfo in_info{linear, input_view, VK_IMAGE_LAYOUT_GENERAL};
-    const VkDescriptorImageInfo out_info{VK_NULL_HANDLE, output_view, VK_IMAGE_LAYOUT_GENERAL};
-    const VkDescriptorImageInfo hist_info{VK_NULL_HANDLE, hist_view, VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet w[3]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                              {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
-    w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    w[0].pImageInfo = &in_info;
-    w[1].dstBinding = 1, w[1].descriptorCount = 1, w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    w[1].pImageInfo = &out_info;
-    w[2].dstBinding = 2, w[2].descriptorCount = 1, w[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    w[2].pImageInfo = &hist_info;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
-    vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 3, w);
-    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 12, size);
-    vkCmdDispatch(cmd, (size[0] + 7) / 8, (size[1] + 7) / 8, 1);
+    if (bilinear && temporal && fxaa) size[2] |= fxaa == 2 ? 6u : 2u;
+    history.frame = now_frame;
+    if (bilinear) {   // (the old stand-in: out at binding 1, hist at binding 2, as taau_upscale.comp binds them)
+        const VkDescriptorImageInfo in_info{linear, input_view, VK_IMAGE_LAYOUT_GENERAL};
+        const VkDescriptorImageInfo out_info{VK_NULL_HANDLE, output_view, VK_IMAGE_LAYOUT_GENERAL};
+        const VkDescriptorImageInfo hist_info{VK_NULL_HANDLE, history.view, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet w[3]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                  {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
+        w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w[0].pImageInfo = &in_info;
+        w[1].dstBinding = 1, w[1].descriptorCount = 1, w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        w[1].pImageInfo = &out_info;
+        w[2].dstBinding = 2, w[2].descriptorCount = 1, w[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        w[2].pImageInfo = &hist_info;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_linear);
+        vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 3, w);
+        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 12, size);
+        vkCmdDispatch(cmd, (size[0] + 7) / 8, (size[1] + 7) / 8, 1);
+    } else {
+        // (EASU: src -> mid; then RCAS: mid -> out, bounded by hist. sharp = exp2(-stops), as rx_present_fx.cpp's rcas.x)
+        struct PC { int32_t size[2]; int32_t src_size[2]; int32_t valid; float sharp; };
+        const PC pc{{(int32_t)size[0], (int32_t)size[1]}, {(int32_t)src_w, (int32_t)src_h},
+                    (int32_t)size[2], std::exp2(-sharpness)};
+        const VkDescriptorImageInfo in_info{linear, input_view, VK_IMAGE_LAYOUT_GENERAL};
+        const VkDescriptorImageInfo mid_info{VK_NULL_HANDLE, mid.view, VK_IMAGE_LAYOUT_GENERAL};
+        const VkDescriptorImageInfo out_info{VK_NULL_HANDLE, output_view, VK_IMAGE_LAYOUT_GENERAL};
+        const VkDescriptorImageInfo hist_info{VK_NULL_HANDLE, history.view, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet w[4]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                  {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
+        w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w[0].pImageInfo = &in_info;
+        w[1].dstBinding = 1, w[1].descriptorCount = 1, w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        w[1].pImageInfo = &mid_info;
+        w[2].dstBinding = 2, w[2].descriptorCount = 1, w[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        w[2].pImageInfo = &out_info;
+        w[3].dstBinding = 3, w[3].descriptorCount = 1, w[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        w[3].pImageInfo = &hist_info;
+        vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 4, w);
+        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_easu);
+        vkCmdDispatch(cmd, (size[0] + 7) / 8, (size[1] + 7) / 8, 1);
+        full_barrier(cmd);   // (EASU's stores -> RCAS's loads)
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_rcas);
+        vkCmdDispatch(cmd, (size[0] + 7) / 8, (size[1] + 7) / 8, 1);
+    }
     descriptors_disturbed();   // (the program's own pushes are gone from the bind point)
     if (temporal) probe_image(cmd, out, level, 0, key, 't');
     return true;
@@ -7557,8 +7609,16 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (!handle) return false;
     texture_view_of(handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
     if (!out || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return false;
+    // (the source's size, which EASU's sampling constants need: resolved as build_descriptors resolves the textures')
+    const auto& td = st.info.texture_descriptors[0];
+    const uint32_t in_handle = handle_of(s, st, td, 0);
+    Texture* in_tex = nullptr;
+    uint32_t in_level = 0;
+    if (in_handle) texture_view_of(in_handle, view_type(td.type), ViewUse::Sample, VK_FORMAT_UNDEFINED, &in_tex, &in_level);
+    if (!in_tex) return false;
     const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
-    return typed_upscale(cmd, dw().imgs[0].imageView, dw().imgs[ntex].imageView, out, level, p.key, keys, true);
+    return typed_upscale(cmd, dw().imgs[0].imageView, dw().imgs[ntex].imageView, out, level, p.key, keys, true,
+                         std::max(1u, in_tex->width >> in_level), std::max(1u, in_tex->height >> in_level));
 }
 
 bool precompile_wanted() {

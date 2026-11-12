@@ -172,9 +172,9 @@ VkImageView texture_view(Texture *t, const nvn_tex *, const nvn_view *v, VkImage
     return missing_output_view ? 0 : (VkImageView)102;
 }
 static bool typed_upscale(VkCommandBuffer, VkImageView input, VkImageView output, Texture *t,
-                          uint32_t level, uint64_t, const char *, bool temporal) {
+                          uint32_t level, uint64_t, const char *, bool temporal, uint32_t src_w, uint32_t src_h) {
     assert(input == (VkImageView)101 && output == (VkImageView)102 && t == &dst && level == 0 &&
-           !temporal);
+           !temporal && src_w == src.width && src_h == src.height);
     typed_calls++;
     return pipeline_ok;
 }

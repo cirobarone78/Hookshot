@@ -46,15 +46,15 @@ static bool fixture_env_on(const char* name) { const char* v = fixture_getenv(na
 namespace Shader { namespace Backend { namespace SPIRV { static bool mma_software = true; } } }
 using VkCommandBuffer = int;
 using VkImageView = int;
-constexpr int VK_IMAGE_VIEW_TYPE_2D=2, VK_FORMAT_B10G11R11_UFLOAT_PACK32=7;
-enum class ViewUse { Storage };
-struct Desc { unsigned count=1; int format=23; };
+constexpr int VK_IMAGE_VIEW_TYPE_2D=2, VK_FORMAT_B10G11R11_UFLOAT_PACK32=7, VK_FORMAT_UNDEFINED=0;
+enum class ViewUse { Storage, Sample };
+struct Desc { unsigned count=1; int format=23; unsigned char type=2; };
 struct Info { std::vector<Desc> texture_descriptors, image_descriptors; };
 struct Stage { Info info; };
 struct NvnState {};
 struct Program { uint64_t key; std::vector<Stage> stages; };
-struct Texture { int format=VK_FORMAT_B10G11R11_UFLOAT_PACK32; };
-static Texture texture;
+struct Texture { int format=VK_FORMAT_B10G11R11_UFLOAT_PACK32; unsigned width=1024, height=512; };
+static Texture texture, in_texture;
 static struct { bool push_descriptor=false; } dev;
 static bool vkCmdPushDescriptorSetKHR=true;
 struct ImageInfo { VkImageView imageView; };
@@ -70,18 +70,28 @@ static uint32_t forwarded_level;
 static uint64_t forwarded_key;
 static std::string forwarded_text;
 static bool forwarded_temporal;
+static uint32_t forwarded_src_w, forwarded_src_h;
 static uint32_t handle_of(const NvnState&,const Stage&,const Desc&,uint32_t index){
     ++handle_calls;return index==0?handle_value:0;
 }
 static int image_format(int f){return f+100;}
+static int view_type(unsigned char){return VK_IMAGE_VIEW_TYPE_2D;}   // (the descriptors' type: a 2D view here)
+static bool resolve_input=true;
 static VkImageView texture_view_of(uint32_t handle,int type,ViewUse use,int format,Texture** out,uint32_t* level){
     ++view_calls;
-    if(handle!=5 || type!=VK_IMAGE_VIEW_TYPE_2D || use!=ViewUse::Storage || format!=123) return 0;
-    *out=resolve_image?&texture:nullptr;*level=7;return 99;
+    if(handle!=5 || type!=VK_IMAGE_VIEW_TYPE_2D) return 0;
+    if(use==ViewUse::Storage){   // (the stand-in's output image)
+        if(format!=123) return 0;
+        *out=resolve_image?&texture:nullptr;*level=7;return 99;
+    }
+    if(use!=ViewUse::Sample || format!=VK_FORMAT_UNDEFINED) return 0;   // (its input texture, EASU's source size)
+    *out=resolve_input?&in_texture:nullptr;*level=7;return 98;
 }
-static bool typed_upscale(VkCommandBuffer cmd,VkImageView input,VkImageView output,Texture* out,uint32_t level,uint64_t key,const char* text,bool temporal){
+static bool typed_upscale(VkCommandBuffer cmd,VkImageView input,VkImageView output,Texture* out,uint32_t level,
+                          uint64_t key,const char* text,bool temporal,uint32_t src_w,uint32_t src_h){
     ++upscale_calls;forwarded_cmd=cmd;forwarded_input=input;forwarded_output=output;forwarded_texture=out;
-    forwarded_level=level;forwarded_key=key;forwarded_text=text;forwarded_temporal=temporal;return upscale_result;
+    forwarded_level=level;forwarded_key=key;forwarded_text=text;forwarded_temporal=temporal;
+    forwarded_src_w=src_w;forwarded_src_h=src_h;return upscale_result;
 }
 '''
 
@@ -120,12 +130,14 @@ int main(int argc,char** argv){
         dw().imgs[3].imageView=0;rejected("no output view");dw().imgs[3].imageView=44;
         handle_value=0;rejected("no handle");handle_value=5;
         resolve_image=false;rejected("no resolved image");resolve_image=true;
+        resolve_input=false;rejected("no resolved input texture");resolve_input=true;
         texture.format=0;rejected("wrong output format");texture.format=VK_FORMAT_B10G11R11_UFLOAT_PACK32;
         auto accepted=[&](const char* text,bool result){
             key_reads=0;int prior=upscale_calls;upscale_result=result;
             check(taau_stand_in(19,state,program)==result,"eligible helper result forwarded");
             check(upscale_calls==prior+1 && key_reads==(configured_keys?2:1),"eligible invocation retains per-call lookup count");
             check(forwarded_cmd==19 && forwarded_input==11 && forwarded_output==44 && forwarded_texture==&texture && forwarded_level==7 && forwarded_key==target && forwarded_temporal,"eligible arguments preserved");
+            check(forwarded_src_w==(1024>>7) && forwarded_src_h==(512>>7),"source size forwarded shifted by its level");
             check(forwarded_text==text,"current key text forwarded verbatim");
         };
         accepted(configured_keys?configured_keys:"fd029a317a9a4b94",true);
