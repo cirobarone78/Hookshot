@@ -44,6 +44,9 @@ enum { HOS_OPT_PROMPTS = 46 };
    makes the scene buffer RGBA16F only then, so Native HDR with the row on Vanilla keeps the game's R11G11B10F and the
    temporal upscalers, which take only that scene) */
 enum { HOS_OPT_HDR_TONEMAP = 47 };
+/* Gameplay's vertical field of view, percent of the game's current angle; 100 is unchanged. */
+/* 49 and 50 are reserved for Walk mode and Walk speed (#2345). */
+enum { HOS_OPT_FOV = 51 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position (the bottom face button first:
@@ -248,7 +251,7 @@ typedef struct MkwVkRenderer {
     /* the Insert menu's settings rows (shown on this PC; not the headings or the debug tools): the index-th, to list them (0:
        past the last; an index is no name, rows come and go), and the one whose hookshot_options.ini key is key set to value
        as the menu's Left and Right set it, kept in the options file, out the row after it (1 set, 0 no such row, -1 nothing
-       to choose on this PC) */
+       to choose on this PC, -2 no step of a list row reaches value here, left as it was) */
     int (*setting)(int index, MkwVkSetting *out);
     int (*setting_set)(const char *key, int value, MkwVkSetting *out);
 } MkwVkRenderer;

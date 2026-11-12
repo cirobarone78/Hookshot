@@ -45,7 +45,9 @@ VkSemaphore batch_tl = reinterpret_cast<VkSemaphore>(uintptr_t(3));
 std::mutex rec_map_mu;
 std::map<uint64_t,uint64_t> value_rec;
 std::vector<uint64_t> rec_open_values;
-struct { std::vector<VkCommandBufferSubmitInfo> cbs; uint64_t signal = 0, rec = 0; bool any_signal = false; } pend;
+struct { std::vector<VkCommandBufferSubmitInfo> cbs; uint64_t signal = 0, rec = 0; bool any_signal = false; uint64_t reflex = 0; } pend;
+uint64_t reflex_frame() { return 0; }   // (vk_reflex.cpp: no Reflex here)
+const void* reflex_submit_id(const void* next, uint64_t = ~0ull) { return next; }   // (vk_reflex.cpp: no tag without Reflex)
 std::chrono::steady_clock::time_point pend_since;
 int st_flushes = 0, st_reason[2]{};
 int64_t st_batched_cbs = 0;
@@ -68,6 +70,7 @@ void memory_end_submission(VkCommandBuffer) {}
 void full_barrier(VkCommandBuffer, const char*) {}
 void logf(const char*, ...) {}
 void device_lost() { need(false, "unexpected device loss"); }
+void note_timeline_sent(uint64_t) {}
 uint64_t oldest_unfinished() { return oldest; }
 #define PROF(x) ((void)0)
 VKAPI_ATTR VkResult VKAPI_CALL vkEndCommandBuffer(VkCommandBuffer) { return VK_SUCCESS; }

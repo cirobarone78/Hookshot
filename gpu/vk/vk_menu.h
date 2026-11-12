@@ -38,7 +38,9 @@ struct Options {
                           // device's limit at most; gpu/vk/vk_draw.cpp aniso_override, RX_VK_ANISO over it)
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
     int handheld = 0;     // the game's handheld profile: ~4 fps, softer; read once, at the start (host/nn_applet.c)
-    int ultrawide = 0;    // the camera at the monitor's shape when it is wider than 16:9; read once, at the start (host/hos_main.c)
+    int ultrawide = 1;    // the Aspect ratio row: 1 the monitor's shape (the default), 0 the game's 16:9; read once, at the start
+                          // (host/hos_main.c, as ultrawide= in the options file; an older file's 0 on a screen narrower than
+                          // 16:9 moves to 1, options_version 6: host/hos_wide_size.h hos_aspect_on)
     int wide_menus = 1;   // ultrawide: the pause, item and map menus 0 at full width (stretched), 1 in the middle 16:9 with the sides
                           // blurred, 2 with black bars (nx2/oot_wide.py, vk_framegen.cpp)
     int show_fps = 0;     // (hookshot) the FPS counter: 0 Off, 1 FPS, 2 Frame time, 3 Graph, 4 Breakdown (fps_stats.h; saved as fps_counter=, an old On is 1)
@@ -55,6 +57,7 @@ struct Options {
     int mouse_sens = 100; // the mouse's sensitivity in percent: 0.1 degrees a count at 100 with native look (host/nn_hid.c)
     int mouse_invert = 0; // the mouse's up and down swapped
     int text_speed = 0;   // how fast dialogue prints: 0 the game's, 1 2x, 2 4x, 3 instant (host/nn_vi.c, nx2/oot_patches.py; HOS_TEXT_SPEED)
+    int fov = 100;        // vertical gameplay field of view, 50..150% of the game's current angle (host/oot_fov.c)
     int text_size = 0;    // dialogue and signs' text size: 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% (host/oot_text_size.c,
                           // nx2/oot_patches.py; HOS_TEXT_SIZE)
     int camera_speed = 100;   // (hookshot) the right stick's camera turn in percent of the game's, 50 to 400 (host/nn_vi.c, nx2/oot_patches.py: HOS_OPT_CAMERA_SPEED, 48)
