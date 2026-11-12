@@ -137,8 +137,8 @@ const char* tx_nits(int v) {
     return b;
 }
 const char* tx_fps_cap(int v) {
-    static const char* const t[] = {"60 (the console's)", "90", "120", "144", "165", "240", "Uncapped"};
-    return t[v < 0 ? 0 : v > 6 ? 6 : v];
+    static const char* const t[] = {"60 (the console's)", "90", "120", "144", "165", "240", "Uncapped", "30"};
+    return t[v < 0 ? 0 : v > 7 ? 7 : v];
 }
 // (hookshot) Motion controls: the choice, and whether a connected controller has a gyroscope (host/pad_sdl.c). Either can be
 // chosen whatever is connected: a pad plugged in later is read when it comes
@@ -806,10 +806,11 @@ Row rows[] = {
      "Who makes the frames at 2x and up. NVIDIA DLSS Frame Generation needs a temporal Upscaler (DLSS, DLAA or FSR) for "
      "the scene's depth and motion. Changes at once.", hn_framegen_by, false, true},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
-    {TAB_GRAPHICS, "Game frame rate cap", &opts.fps_cap, 0, 6, 1, tx_fps_cap,
+    {TAB_GRAPHICS, "Game frame rate cap", &opts.fps_cap, 0, 7, 1, tx_fps_cap,
      "Limits frames rendered by the game. Generated frames are additional. Takes a restart. "
-     "Past 60 is experimental: the game keeps real time, but some cutscenes and bosses can misbehave (Gohma, the intro's "
-     "narration). 60 is the safe choice. Uncapped: as fast as the PC can, still at real time; with V-Sync on, the display's "
+     "30 reduces rendering work and keeps real time even with Game speed set to Per frame. Past 60 is experimental: some "
+     "cutscenes and bosses can misbehave (Gohma, the intro's narration). 60 is the safe choice. "
+     "Uncapped: as fast as the PC can, still at real time; with V-Sync on, the display's "
      "refresh rate is the limit.",
      nullptr, true, true},
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
