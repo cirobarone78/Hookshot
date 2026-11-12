@@ -184,8 +184,19 @@ public partial class MainWindow : Window
         else if (game != null && !sourcePicked) mode = Mode.UpToDate;
         else if (latestTag != null && builder != null && builder != updateTarget) mode = Mode.UpdateBuilder;
         else mode = Mode.Build;
+        // (an up-to-date game without an upscaler ticked here: Update builds it again with it, as Play would change nothing)
+        var lacking = mode == Mode.UpToDate
+            ? UpscalerParts.Missing(OutPath.Text, DlssTick.IsChecked == true, FsrTick.IsChecked == true, fsrLicense)
+            : new List<string>();
+        if (lacking.Count > 0) mode = Mode.UpdateGame;
         switch (mode)
         {
+            case Mode.UpdateGame when lacking.Count > 0:
+                FilesTitle.Text = "Update to add " + string.Join(" and ", lacking);
+                FilesSub.Text = $"Your game was built without {string.Join(" and ", lacking)}. Update builds it again from the game " +
+                                "files kept in its folder, with what is ticked below. Your saves stay.";
+                BuildButton.Content = "Update";
+                break;
             case Mode.UpdateGame:
                 FilesTitle.Text = "Update available";
                 FilesSub.Text = $"Hookshot {updateTarget} is available. Your game is {game}: Update builds it again from the game files kept in " +
@@ -850,7 +861,8 @@ public partial class MainWindow : Window
             case Mode.UpdateGame:   // (the kept game files; the newer builder first when this one is older)
                 if (!OlderOk(GameVersion(OutPath.Text))) return;
                 SaveSettings();
-                Updater.UpdateFolder(this, OutPath.Text, updateTarget, fetched: false, named: Switching);
+                // (an up-to-date game built again for an upscaler it lacks: its own version, also when GitHub did not answer)
+                Updater.UpdateFolder(this, OutPath.Text, updateTarget ?? GameVersion(OutPath.Text), fetched: false, named: Switching);
                 return;
             case Mode.UpToDate:
                 finished = OutPath.Text;
@@ -908,6 +920,7 @@ public partial class MainWindow : Window
         else if (DlssTick.IsChecked == true)
             dlssLicense = true;
         SaveSettings();   // (kept at once, not only when Build is pressed: ticked and closed, it is still ticked next time)
+        RefreshMode();    // (a game built without it: Update, not Play)
     }
 
     const string FsrLicense =
@@ -934,6 +947,7 @@ public partial class MainWindow : Window
             if (!fsrLicense) FsrTick.IsChecked = false;
         }
         SaveSettings();
+        RefreshMode();   // (a game built without it: Update, not Play)
     }
 
     static readonly (string Id, string Build, string Update)[] Stages =
