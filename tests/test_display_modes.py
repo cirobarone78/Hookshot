@@ -13,6 +13,7 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
 
 DRIVER = r"""
+#define _CRT_SECURE_NO_WARNINGS   // (the Windows CRT marks getenv and sscanf deprecated: an error under -Werror)
 #include <cassert>
 #include <cstdio>
 #include <string>
@@ -115,7 +116,7 @@ def main():
         src = Path(tmp) / "display_modes.cpp"
         exe = Path(tmp) / ("display_modes.exe" if os.name == "nt" else "display_modes")
         src.write_text(DRIVER, encoding="utf-8")
-        subprocess.run([args.cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT), str(src), "-o", str(exe)],
+        subprocess.run([args.cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-I", str(ROOT), str(src), "-o", str(exe)],
                        check=True)
         subprocess.run([str(exe)], check=True)
 
